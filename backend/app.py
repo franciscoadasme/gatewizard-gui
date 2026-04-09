@@ -27,6 +27,11 @@ class LoadPdbRequest(BaseModel):
     path: str = Field(..., description="Absolute path to a PDB/mmCIF file")
 
 
+class SelectRequest(BaseModel):
+    path: str = Field(..., description="Absolute path to a PDB/mmCIF file")
+    selection: str = Field(..., description="MDAnalysis selection string")
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
@@ -70,6 +75,36 @@ def load_pdb(payload: LoadPdbRequest) -> dict:
 
     return {
         "n_atoms": n_atoms,
+        "path": path,
+        "positions": positions,
+        "elements": elements,
+    }
+
+
+@app.post("/select")
+def select(payload: SelectRequest) -> dict:
+    path = os.path.abspath(os.path.expanduser(payload.path))
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    try:
+        u = mda.Universe(path)
+        atoms = u.select_atoms(payload.selection)
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+    coords = np.asarray(atoms.positions, dtype=np.float64)
+    # TODO: remove centering (leave it to the camera rig)
+    try:
+        com = atoms.center_of_mass()
+    except Exception:
+        com = np.mean(coords, axis=0)
+    coords = coords - com
+
+    positions: List[float] = coords.reshape(-1).tolist()
+    elements: List[str] = atoms.elements.tolist()
+
+    return {
+        "n_atoms": len(atoms),
         "path": path,
         "positions": positions,
         "elements": elements,

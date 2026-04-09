@@ -12,6 +12,15 @@ export function loadPdb(filePath) {
   return backendJson('/load-pdb', { path: filePath })
 }
 
+/**
+ * @param {string} filePath
+ * @param {string} selection
+ * @returns {Promise<{ n_atoms: number, positions: number[], elements: string[] }>}
+ */
+export async function selectAtoms(filePath, selection) {
+  return backendJson('/select', { path: filePath, selection })
+}
+
 // Helper functions for the backend API.
 
 /**

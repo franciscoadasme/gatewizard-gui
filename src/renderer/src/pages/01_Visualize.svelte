@@ -1,10 +1,13 @@
 <script>
   import MoleculeCanvas from '../components/MoleculeCanvas.svelte'
-  import { loadPdb } from '../lib/backendApi.js'
+  import { loadPdb, selectAtoms } from '../lib/backendApi.js'
 
   /** Shown under the buttons: PDB info or ping output. */
   let sidebarResult = $state('')
   let openPdbLoading = $state(false)
+  let filePath = $state(null)
+  let selection = $state(null)
+  let selectionError = $state(null)
 
   /** Passed to Threlte viewer (positions + elements from backend). */
   /** @type {null | { n_atoms: number, positions: number[], elements: string[] }} */
@@ -31,6 +34,15 @@
       openPdbLoading = false
     }
   }
+
+  async function onSelect() {
+    try {
+      structure = await selectAtoms(filePath, selection)
+      selectionError = null
+    } catch (ex) {
+      selectionError = ex instanceof Error ? ex.message : String(ex)
+    }
+  }
 </script>
 
 <div class="flex flex-1 divide-x divide-neutral-800">
@@ -53,6 +65,16 @@
         disabled={openPdbLoading}>Download PDB</button
       >
     </form>
+    <input
+      type="text"
+      class="w-full rounded-md border p-2 dark:border-neutral-700 dark:hover:bg-neutral-700"
+      placeholder="Selection (e.g. protein)"
+      bind:value={selection}
+      onchange={onSelect}
+    />
+    {#if selectionError}
+      <p class="text-red-500 text-xs font-semibold">{selectionError}</p>
+    {/if}
     {#if sidebarResult}
       <p
         class="rounded-md border border-neutral-700 bg-neutral-900/50 p-2 font-mono text-sm text-neutral-200"
