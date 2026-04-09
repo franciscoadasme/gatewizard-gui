@@ -8,9 +8,19 @@ from typing import List
 import numpy as np
 import MDAnalysis as mda
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 app = FastAPI(title="GateWizard Backend")
+
+# Renderer may load from Vite (e.g. http://localhost:5173) while the API is on
+# 127.0.0.1:8765 — browsers require CORS for that cross-origin fetch.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class LoadPdbRequest(BaseModel):

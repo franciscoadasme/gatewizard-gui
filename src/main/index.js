@@ -169,16 +169,6 @@ app.on('window-all-closed', () => {
 
 // In this file you can include the rest of your app's specific main process
 // code. You can also put them in separate files and require them here.
-ipcMain.handle('backend:ping', async () => {
-  const response = await fetch(`${BACKEND_URL}/ping`)
-  if (!response.ok) {
-    throw new Error(`Ping failed: HTTP ${response.status}`)
-  }
-  return await response.json()
-})
-
-ipcMain.handle('backend:getBaseUrl', () => BACKEND_URL)
-
 ipcMain.handle('dialog:openPdb', async () => {
   const win = BrowserWindow.getFocusedWindow()
   const result = await dialog.showOpenDialog(win ?? undefined, {
@@ -193,31 +183,4 @@ ipcMain.handle('dialog:openPdb', async () => {
     return { canceled: true }
   }
   return { canceled: false, filePath: result.filePaths[0] }
-})
-
-ipcMain.handle('backend:loadPdb', async (_event, filePath) => {
-  const response = await fetch(`${BACKEND_URL}/load-pdb`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: filePath })
-  })
-  let data = {}
-  try {
-    data = await response.json()
-  } catch {
-    data = {}
-  }
-  if (!response.ok) {
-    const detail = data.detail
-    const msg =
-      typeof detail === 'string'
-        ? detail
-        : Array.isArray(detail)
-          ? detail.map((d) => d.msg ?? JSON.stringify(d)).join('; ')
-          : detail
-            ? JSON.stringify(detail)
-            : `HTTP ${response.status}`
-    throw new Error(msg)
-  }
-  return data
 })

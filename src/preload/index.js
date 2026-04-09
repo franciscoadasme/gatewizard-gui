@@ -3,10 +3,7 @@ import { electronAPI } from '@electron-toolkit/preload'
 
 // Custom APIs for renderer
 const api = {
-  getBackendBaseUrl: () => ipcRenderer.invoke('backend:getBaseUrl'),
-  loadPdb: (filePath) => ipcRenderer.invoke('backend:loadPdb', filePath),
-  openPdbDialog: () => ipcRenderer.invoke('dialog:openPdb'),
-  pingBackend: () => ipcRenderer.invoke('backend:ping')
+  openPdbDialog: () => ipcRenderer.invoke('dialog:openPdb')
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to
