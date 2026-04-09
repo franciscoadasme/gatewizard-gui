@@ -1,7 +1,82 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
-import { join } from 'path'
-import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { spawn } from 'child_process'
+import path, { join } from 'path'
+import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import { ensureMambaRuntime, getLaunchPythonPath } from './runtime-bootstrap.js'
+
+const BACKEND_URL = 'http://127.0.0.1:8765'
+
+let backendProcess = null
+
+function getBackendScriptPath() {
+  if (app.isPackaged) {
+    return join(process.resourcesPath, 'backend', 'app.py')
+  }
+  return join(app.getAppPath(), 'backend', 'app.py')
+}
+
+function getRequirementsPath() {
+  if (app.isPackaged) {
+    return join(process.resourcesPath, 'backend', 'requirements.txt')
+  }
+  return join(app.getAppPath(), 'backend', 'requirements.txt')
+}
+
+async function waitForBackendHealth(timeoutMs = 120000) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    try {
+      const response = await fetch(`${BACKEND_URL}/health`)
+      if (response.ok) {
+        return
+      }
+    } catch {
+      // Backend not listening yet
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200))
+  }
+  throw new Error(
+    `Python backend did not respond at ${BACKEND_URL}. Check logs or set GATEWIZARD_RUNTIME_PREFIX / GATEWIZARD_PYTHON.`
+  )
+}
+
+function getBackendEnv() {
+  const env = { ...process.env }
+  const prefix = env.CONDA_PREFIX
+  if (prefix) {
+    const binDir = process.platform === 'win32' ? join(prefix, 'Scripts') : join(prefix, 'bin')
+    env.PATH = `${binDir}${path.delimiter}${env.PATH || ''}`
+  }
+  return env
+}
+
+function startBackend() {
+  const pythonBin = getLaunchPythonPath()
+  const backendScript = getBackendScriptPath()
+
+  backendProcess = spawn(pythonBin, [backendScript], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: getBackendEnv()
+  })
+
+  backendProcess.stdout?.on('data', (chunk) => {
+    process.stdout.write(`[backend] ${chunk}`)
+  })
+  backendProcess.stderr?.on('data', (chunk) => {
+    process.stderr.write(`[backend] ${chunk}`)
+  })
+  backendProcess.on('error', (err) => {
+    process.stderr.write(`[backend] failed to spawn ${pythonBin}: ${err.message}\n`)
+  })
+}
+
+function stopBackend() {
+  if (backendProcess && !backendProcess.killed) {
+    backendProcess.kill()
+    backendProcess = null
+  }
+}
 
 function createWindow() {
   // Create the browser window.
@@ -38,7 +113,7 @@ function createWindow() {
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
 
@@ -52,6 +127,24 @@ app.whenReady().then(() => {
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
 
+  try {
+    await ensureMambaRuntime({
+      requirementsPath: getRequirementsPath(),
+      onStatus: (msg) => process.stdout.write(`[runtime] ${msg}\n`)
+    })
+  } catch (error) {
+    await dialog.showErrorBox('Runtime bootstrap failed', error.message)
+    app.quit()
+    return
+  }
+
+  startBackend()
+  try {
+    await waitForBackendHealth()
+  } catch (error) {
+    await dialog.showErrorBox('Backend failed to start', error.message)
+  }
+
   createWindow()
 
   app.on('activate', function () {
@@ -59,6 +152,10 @@ app.whenReady().then(() => {
     // dock icon is clicked and there are no other windows open.
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+})
+
+app.on('before-quit', () => {
+  stopBackend()
 })
 
 // Quit when all windows are closed, except on macOS. There, it's common
@@ -72,3 +169,12 @@ app.on('window-all-closed', () => {
 
 // In this file you can include the rest of your app's specific main process
 // code. You can also put them in separate files and require them here.
+ipcMain.handle('backend:ping', async () => {
+  const response = await fetch(`${BACKEND_URL}/ping`)
+  if (!response.ok) {
+    throw new Error(`Ping failed: HTTP ${response.status}`)
+  }
+  return await response.json()
+})
+
+ipcMain.handle('backend:getBaseUrl', () => BACKEND_URL)
