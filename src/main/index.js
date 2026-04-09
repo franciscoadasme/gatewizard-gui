@@ -178,3 +178,46 @@ ipcMain.handle('backend:ping', async () => {
 })
 
 ipcMain.handle('backend:getBaseUrl', () => BACKEND_URL)
+
+ipcMain.handle('dialog:openPdb', async () => {
+  const win = BrowserWindow.getFocusedWindow()
+  const result = await dialog.showOpenDialog(win ?? undefined, {
+    title: 'Open PDB',
+    filters: [
+      { name: 'Structure', extensions: ['pdb', 'ent', 'cif', 'mmcif'] },
+      { name: 'All files', extensions: ['*'] }
+    ],
+    properties: ['openFile']
+  })
+  if (result.canceled || result.filePaths.length === 0) {
+    return { canceled: true }
+  }
+  return { canceled: false, filePath: result.filePaths[0] }
+})
+
+ipcMain.handle('backend:loadPdb', async (_event, filePath) => {
+  const response = await fetch(`${BACKEND_URL}/load-pdb`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: filePath })
+  })
+  let data = {}
+  try {
+    data = await response.json()
+  } catch {
+    data = {}
+  }
+  if (!response.ok) {
+    const detail = data.detail
+    const msg =
+      typeof detail === 'string'
+        ? detail
+        : Array.isArray(detail)
+          ? detail.map((d) => d.msg ?? JSON.stringify(d)).join('; ')
+          : detail
+            ? JSON.stringify(detail)
+            : `HTTP ${response.status}`
+    throw new Error(msg)
+  }
+  return data
+})
