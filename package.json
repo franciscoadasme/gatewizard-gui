@@ -20,7 +20,10 @@
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
-    "electron-updater": "^6.3.9"
+    "@threlte/core": "^8.5.9",
+    "@threlte/extras": "^9.14.5",
+    "electron-updater": "^6.3.9",
+    "three": "^0.183.2"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config": "^2.1.0",
