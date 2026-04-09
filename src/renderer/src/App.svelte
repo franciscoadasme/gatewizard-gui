@@ -56,7 +56,9 @@
   })
 </script>
 
-<div class="flex min-h-screen flex-col dark:bg-neutral-900 dark:text-white">
+<div
+  class="flex min-h-screen flex-col dark:bg-neutral-900 dark:text-white divide-y dark:divide-neutral-800"
+>
   <header class="px-4 py-2 dark:bg-neutral-800">
     <form class="flex items-center gap-2">
       <label for="directory" class="text-sm font-medium dark:text-neutral-400"
@@ -78,7 +80,7 @@
     </form>
   </header>
 
-  <nav class="flex items-center gap-2 p-4">
+  <nav class="flex items-center gap-2 p-4 text-sm">
     <p class="dark:text-neutral-200">Stages:</p>
     <div class="flex divide-x divide-neutral-300 overflow-clip rounded-md dark:divide-neutral-700">
       {#each stages as stage (stage.id)}
@@ -99,7 +101,5 @@
     {/if}
   </main>
 
-  <footer class="border-t px-2 py-1 text-xs dark:border-neutral-800 dark:text-neutral-500">
-    Status bar
-  </footer>
+  <footer class="px-2 py-1 text-xs dark:text-neutral-500">Status bar</footer>
 </div>
