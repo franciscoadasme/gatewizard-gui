@@ -11,6 +11,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from gatewizard.core.preparation import PreparationManager
+
 app = FastAPI(title="GateWizard Backend")
 
 # Renderer may load from Vite (e.g. http://localhost:5173) while the API is on
@@ -30,6 +32,11 @@ class LoadPdbRequest(BaseModel):
 class SelectRequest(BaseModel):
     path: str = Field(..., description="Absolute path to a PDB/mmCIF file")
     selection: str = Field(..., description="MDAnalysis selection string")
+
+
+class RunPropKaRequest(BaseModel):
+    path: str = Field(..., description="Absolute path to a PDB/mmCIF file")
+    targetPh: float = Field(..., description="Target pH")
 
 
 @app.get("/health")
@@ -109,6 +116,21 @@ def select(payload: SelectRequest) -> dict:
         "positions": positions,
         "elements": elements,
     }
+
+
+@app.post("/run-propka")
+def run_propka(payload: RunPropKaRequest) -> dict:
+    path = os.path.abspath(os.path.expanduser(payload.path))
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    try:
+        manager = PreparationManager(propka_version="3")
+        pka_file = manager.run_analysis(path)
+        summary_file = manager.extract_summary(pka_file)
+        residues = manager.parse_summary(summary_file)
+        return dict(residues=residues)
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
 
 
 if __name__ == "__main__":

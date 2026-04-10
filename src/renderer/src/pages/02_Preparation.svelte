@@ -2,14 +2,30 @@
   import Button from '../components/ui/Button.svelte'
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Divider from '../components/ui/Divider.svelte'
+  import { runPropKa } from '../lib/backendApi'
 
   let capProtein = $state(false)
   let disulfideBonds = $state([])
   let maxDisulfideDistance = $state(2.5)
   let targetPh = $state(7.0)
-  let workingFile = $state('foo.pdb')
+  let workingFile = $state('1EVE.pdb')
+  /** @type {{residue: string, res_id: number, chain: string, pka: number, atom: string, atom_type: string, model_pka: number}[]} */
+  let residues = $state([])
+  let runningPropKa = $state(false)
 
   let protonatedFile = $derived(workingFile.replace('.pdb', '_protonated.pdb'))
+
+  async function onRunPropKa() {
+    try {
+      runningPropKa = true
+      const data = await runPropKa(workingFile, parseFloat(targetPh))
+      residues = data.residues
+    } catch (error) {
+      alert(error instanceof Error ? error.message : String(error))
+    } finally {
+      runningPropKa = false
+    }
+  }
 </script>
 
 <div class="flex flex-1 divide-x divide-neutral-800 select-none">
@@ -50,7 +66,9 @@
         <Checkbox name="protein-cap" bind:checked={capProtein} />
         <label for="protein-cap">Cap protein termini (ACE/NME)</label>
       </div>
-      <Button type="submit" className="w-full">Run PropKa</Button>
+      <Button type="submit" className="w-full" onclick={onRunPropKa} disabled={runningPropKa}>
+        {runningPropKa ? 'Running PropKa...' : 'Run PropKa'}
+      </Button>
     </form>
     <Divider />
     <form class="space-y-2">
@@ -91,5 +109,7 @@
       Protonated file: {protonatedFile}<br />
       Working file: {workingFile}
     </p>
+    <pre class="rounded-md border p-2 dark:border-neutral-800">{JSON.stringify(residues, null, 2)}
+    </pre>
   </div>
 </div>
