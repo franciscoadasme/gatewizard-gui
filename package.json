@@ -6,7 +6,7 @@
   "author": "example.com",
   "homepage": "https://electron-vite.org",
   "scripts": {
-    "format": "prettier --plugin prettier-plugin-svelte --write .",
+    "format": "prettier --write .",
     "lint": "eslint --cache .",
     "start": "electron-vite preview",
     "dev": "electron-vite dev",
@@ -37,6 +37,7 @@
     "eslint-plugin-svelte": "^3.13.1",
     "prettier": "^3.7.4",
     "prettier-plugin-svelte": "^3.4.0",
+    "prettier-plugin-tailwindcss": "^0.7.2",
     "svelte": "^5.45.6",
     "tailwindcss": "^4.2.2",
     "vite": "^7.2.6"

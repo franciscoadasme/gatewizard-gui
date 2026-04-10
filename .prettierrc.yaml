@@ -2,8 +2,12 @@ singleQuote: true
 semi: false
 printWidth: 100
 trailingComma: none
+# Tailwind v4: entry CSS so the plugin can resolve theme / custom config for sorting
+tailwindStylesheet: ./src/renderer/src/assets/main.css
 plugins:
+  # prettier-plugin-tailwindcss must be listed last
   - prettier-plugin-svelte
+  - prettier-plugin-tailwindcss
 overrides:
   - files: '*.svelte'
     options:
