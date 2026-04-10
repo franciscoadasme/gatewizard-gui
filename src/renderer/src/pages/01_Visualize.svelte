@@ -1,5 +1,6 @@
 <script>
   import MoleculeCanvas from '../components/MoleculeCanvas.svelte'
+  import Button from '../components/ui/Button.svelte'
   import { loadPdb, selectAtoms } from '../lib/backendApi.js'
 
   /** Shown under the buttons: PDB info or ping output. */
@@ -47,11 +48,12 @@
 
 <div class="flex flex-1 divide-x divide-neutral-800">
   <div class="flex w-60 flex-col gap-2 p-2">
-    <button
-      class="w-full rounded-md p-2 active:translate-y-0.5 disabled:opacity-50 dark:bg-neutral-800 dark:hover:bg-neutral-700"
+    <Button
+      className="w-full"
+      variant="outline"
       type="button"
       disabled={openPdbLoading}
-      onclick={onOpenPdb}>{openPdbLoading ? '...' : 'Open PDB...'}</button
+      onclick={onOpenPdb}>{openPdbLoading ? '...' : 'Open PDB...'}</Button
     >
     <form class="flex flex-col gap-1">
       <input
@@ -59,10 +61,8 @@
         class="w-full rounded-md border p-2 dark:border-neutral-700 dark:hover:bg-neutral-700"
         placeholder="PDB ID (e.g. 1crn)"
       />
-      <button
-        class="w-full rounded-md p-2 active:translate-y-0.5 disabled:opacity-50 dark:bg-neutral-800 dark:hover:bg-neutral-700"
-        type="submit"
-        disabled={openPdbLoading}>Download PDB</button
+      <Button className="w-full" variant="outline" type="submit" disabled={openPdbLoading}
+        >Download PDB</Button
       >
     </form>
     <input
@@ -73,7 +73,7 @@
       onchange={onSelect}
     />
     {#if selectionError}
-      <p class="text-red-500 text-xs font-semibold">{selectionError}</p>
+      <p class="text-xs font-semibold text-red-500">{selectionError}</p>
     {/if}
     {#if sidebarResult}
       <p

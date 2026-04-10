@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte'
+  import Button from './components/ui/Button.svelte'
 
   const pageModules = import.meta.glob('./pages/*.svelte', { eager: true })
 
@@ -57,7 +58,7 @@
 </script>
 
 <div
-  class="flex min-h-screen flex-col dark:bg-neutral-900 dark:text-white divide-y dark:divide-neutral-800"
+  class="flex min-h-screen flex-col divide-y dark:divide-neutral-800 dark:bg-neutral-950 dark:text-white"
 >
   <header class="px-4 py-2 dark:bg-neutral-800">
     <form class="flex items-center gap-2">
@@ -66,7 +67,7 @@
       >
       <select
         id="directory"
-        class="flex-1 rounded-md border border-neutral-300 p-2 disabled:bg-neutral-100 disabled:text-neutral-500 dark:bg-neutral-800 dark:disabled:bg-neutral-900 dark:border-neutral-700"
+        class="flex-1 rounded-md border border-neutral-300 p-2 disabled:bg-neutral-100 disabled:text-neutral-500 dark:border-neutral-700 dark:bg-neutral-800 dark:disabled:bg-neutral-900"
         disabled
       >
         <option value="">Select a directory</option>
@@ -74,9 +75,7 @@
         <option value="2">2</option>
         <option value="3">3</option>
       </select>
-      <button type="submit" class="rounded-md dark:bg-neutral-700 px-4 py-2 text-white"
-        >Browse</button
-      >
+      <Button type="submit">Browse</Button>
     </form>
   </header>
 
@@ -95,7 +94,7 @@
     </div>
   </nav>
 
-  <main class="flex-1 flex overflow-auto">
+  <main class="flex flex-1 overflow-auto">
     {#if ActivePage}
       <ActivePage />
     {/if}
