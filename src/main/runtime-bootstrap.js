@@ -235,7 +235,7 @@ export async function ensureMambaRuntime(options) {
     MAMBA_ROOT_PREFIX: mambaRoot
   }
 
-  const condaPkgs = [`python=${PYTHON_SPEC}`, 'pip']
+  const condaPkgs = [`python=${PYTHON_SPEC}`, 'pip', 'ambertools']
 
   if (!(await fileExists(runtimePrefix))) {
     onStatus(`Creating environment: python=${PYTHON_SPEC}...`)

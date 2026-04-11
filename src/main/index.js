@@ -47,6 +47,10 @@ function getBackendEnv() {
   if (prefix) {
     const binDir = process.platform === 'win32' ? join(prefix, 'Scripts') : join(prefix, 'bin')
     env.PATH = `${binDir}${path.delimiter}${env.PATH || ''}`
+    // packmol-memgen needs AMBERHOME to discover packmol, tleap, etc.
+    if (!env.AMBERHOME) {
+      env.AMBERHOME = prefix
+    }
   }
   return env
 }

@@ -3,7 +3,10 @@ import { electronAPI } from '@electron-toolkit/preload'
 
 // Custom APIs for renderer
 const api = {
-  openPdbDialog: () => ipcRenderer.invoke('dialog:openPdb')
+  openPdbDialog: () => ipcRenderer.invoke('dialog:openPdb'),
+  openDirectoryDialog: () => ipcRenderer.invoke('dialog:openDirectory'),
+  openLigandFileDialog: (title, extensions) =>
+    ipcRenderer.invoke('dialog:openLigandFile', title, extensions)
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to
