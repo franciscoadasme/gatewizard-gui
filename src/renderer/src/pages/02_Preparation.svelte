@@ -4,6 +4,9 @@
   import Divider from '../components/ui/Divider.svelte'
   import { runPropKa } from '../lib/backendApi'
 
+  /** @type {{ workingDir?: string }} */
+  let { workingDir = '' } = $props()
+
   let capProtein = $state(false)
   let disulfideBonds = $state([])
   let maxDisulfideDistance = $state(2.5)

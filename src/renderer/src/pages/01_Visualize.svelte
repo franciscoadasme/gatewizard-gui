@@ -3,6 +3,9 @@
   import Button from '../components/ui/Button.svelte'
   import { loadPdb, selectAtoms } from '../lib/backendApi.js'
 
+  /** @type {{ workingDir?: string }} */
+  let { workingDir = '' } = $props()
+
   /** Shown under the buttons: PDB info or ping output. */
   let sidebarResult = $state('')
   let openPdbLoading = $state(false)
