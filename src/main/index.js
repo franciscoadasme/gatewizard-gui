@@ -188,3 +188,31 @@ ipcMain.handle('dialog:openPdb', async () => {
   }
   return { canceled: false, filePath: result.filePaths[0] }
 })
+
+ipcMain.handle('dialog:openDirectory', async () => {
+  const win = BrowserWindow.getFocusedWindow()
+  const result = await dialog.showOpenDialog(win ?? undefined, {
+    title: 'Select Working Directory',
+    properties: ['openDirectory']
+  })
+  if (result.canceled || result.filePaths.length === 0) {
+    return { canceled: true }
+  }
+  return { canceled: false, dirPath: result.filePaths[0] }
+})
+
+ipcMain.handle('dialog:openLigandFile', async (_event, title, extensions) => {
+  const win = BrowserWindow.getFocusedWindow()
+  const result = await dialog.showOpenDialog(win ?? undefined, {
+    title: title || 'Open File',
+    filters: [
+      { name: 'Ligand files', extensions: extensions || ['frcmod', 'lib', 'mol2'] },
+      { name: 'All files', extensions: ['*'] }
+    ],
+    properties: ['openFile']
+  })
+  if (result.canceled || result.filePaths.length === 0) {
+    return { canceled: true }
+  }
+  return { canceled: false, filePath: result.filePaths[0] }
+})
