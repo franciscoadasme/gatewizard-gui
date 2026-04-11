@@ -6,6 +6,11 @@ export default defineConfig({
   main: {},
   preload: {},
   renderer: {
+    server: {
+      watch: {
+        usePolling: true
+      }
+    },
     plugins: [tailwindcss(), svelte()]
   }
 })
