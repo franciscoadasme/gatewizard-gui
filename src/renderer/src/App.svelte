@@ -31,6 +31,16 @@
   /** @type {import('svelte').Component | null} */
   let ActivePage = $state(null)
 
+  // ── Working directory (shared with pages) ──
+  let workingDir = $state('')
+
+  async function onBrowseDirectory() {
+    const result = await window.api.openDirectoryDialog()
+    if (!result.canceled) {
+      workingDir = result.dirPath
+    }
+  }
+
   function loadPage(id) {
     const stage = stages.find((s) => s.id === id)
     if (!stage) return
@@ -58,25 +68,20 @@
 </script>
 
 <div
-  class="flex min-h-screen flex-col divide-y dark:divide-neutral-800 dark:bg-neutral-950 dark:text-white"
+  class="flex h-screen flex-col divide-y overflow-hidden dark:divide-neutral-800 dark:bg-neutral-950 dark:text-white"
 >
   <header class="px-4 py-2 dark:bg-neutral-800">
-    <form class="flex items-center gap-2">
-      <label for="directory" class="text-sm font-medium dark:text-neutral-400"
-        >Working Directory:</label
-      >
-      <select
-        id="directory"
-        class="flex-1 rounded-md border border-neutral-300 p-2 disabled:bg-neutral-100 disabled:text-neutral-500 dark:border-neutral-700 dark:bg-neutral-800 dark:disabled:bg-neutral-900"
-        disabled
-      >
-        <option value="">Select a directory</option>
-        <option value="1">1</option>
-        <option value="2">2</option>
-        <option value="3">3</option>
-      </select>
-      <Button type="submit">Browse</Button>
-    </form>
+    <div class="flex items-center gap-2">
+      <span class="text-sm font-medium dark:text-neutral-400">Working Directory:</span>
+      <input
+        type="text"
+        readonly
+        placeholder="Select a directory..."
+        value={workingDir}
+        class="flex-1 rounded-md border border-neutral-300 p-2 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:placeholder-neutral-600"
+      />
+      <Button onclick={onBrowseDirectory}>Browse</Button>
+    </div>
   </header>
 
   <nav class="flex items-center gap-2 p-4 text-sm">
@@ -94,9 +99,9 @@
     </div>
   </nav>
 
-  <main class="flex flex-1 overflow-auto">
+  <main class="flex min-h-0 flex-1 overflow-hidden">
     {#if ActivePage}
-      <ActivePage />
+      <ActivePage {workingDir} />
     {/if}
   </main>
 
