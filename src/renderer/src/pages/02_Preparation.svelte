@@ -11,7 +11,7 @@
   let disulfideBonds = $state([])
   let maxDisulfideDistance = $state(2.5)
   let targetPh = $state(7.0)
-  let workingFile = $state('1EVE.pdb')
+  let workingFile = $state('')
   /** @type {{residue: string, res_id: number, chain: string, pka: number, atom: string, atom_type: string, model_pka: number}[]} */
   let residues = $state([])
   let runningPropKa = $state(false)
@@ -48,7 +48,7 @@
       <div>
         <p class="mb-1">Export Protonated File:</p>
         <p class="rounded-md border p-2 dark:border-neutral-800 dark:text-neutral-400">
-          {protonatedFile}
+          {protonatedFile ? protonatedFile : 'It will be auto-generated'}
         </p>
       </div>
     </div>
