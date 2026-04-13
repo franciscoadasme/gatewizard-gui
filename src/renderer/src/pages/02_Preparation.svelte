@@ -32,7 +32,7 @@
 </script>
 
 <div class="flex flex-1 divide-x divide-neutral-800 select-none">
-  <aside class="w-70 space-y-4 overflow-y-auto p-4 text-xs">
+  <aside class="w-70 space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs">
     <div class="space-y-2">
       {#if workingFile}
         <p class="mb-1">Working file:</p>
