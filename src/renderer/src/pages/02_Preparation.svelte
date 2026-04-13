@@ -97,7 +97,7 @@
     <div class="space-y-2">
       <Button className="w-full">Prepare</Button>
       <Button className="w-full" variant="outline">Export Results</Button>
-      <Button className="w-full" variant="outline">Reset</Button>
+      <Button className="w-full" variant="ghost">Reset</Button>
     </div>
     <pre class="rounded-md border p-2 dark:border-neutral-800">No output yet.</pre>
   </aside>
