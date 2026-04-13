@@ -36,7 +36,9 @@
     <div class="space-y-2">
       {#if workingFile}
         <p class="mb-1">Working file:</p>
-        <p class="rounded-md border p-2 dark:border-neutral-800 dark:text-neutral-400">
+        <p
+          class="w-full rounded-md border p-2 wrap-break-word dark:border-neutral-800 dark:text-neutral-400"
+        >
           {workingFile}
         </p>
       {:else}
@@ -47,7 +49,9 @@
       {/if}
       <div>
         <p class="mb-1">Export Protonated File:</p>
-        <p class="rounded-md border p-2 dark:border-neutral-800 dark:text-neutral-400">
+        <p
+          class="rounded-md border p-2 wrap-break-word dark:border-neutral-800 dark:text-neutral-400"
+        >
           {protonatedFile ? protonatedFile : 'It will be auto-generated'}
         </p>
       </div>
