@@ -32,7 +32,7 @@
 </script>
 
 <div class="flex flex-1 divide-x divide-neutral-800 select-none">
-  <aside class="w-70 space-y-4 p-4 text-xs">
+  <aside class="w-70 space-y-4 overflow-y-auto p-4 text-xs">
     <div class="space-y-2">
       {#if workingFile}
         <p class="mb-1">Working file:</p>
@@ -101,7 +101,7 @@
     </div>
     <pre class="rounded-md border p-2 dark:border-neutral-800">No output yet.</pre>
   </aside>
-  <div class="flex-1 p-4">
+  <div class="flex-1 overflow-y-auto p-4">
     <h1 class="text-xl font-semibold text-neutral-800">Preparation</h1>
     <p class="mt-2 text-neutral-600">Stage: preparation workflow.</p>
     <p class="rounded-md border p-2 text-sm dark:border-neutral-800">
