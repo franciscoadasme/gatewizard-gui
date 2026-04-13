@@ -29,23 +29,33 @@
       runningPropKa = false
     }
   }
+
+  async function onSelectWorkingFile() {
+    const { canceled, filePath } = await window.api.openPdbDialog()
+    if (canceled) {
+      return
+    }
+    workingFile = filePath
+  }
 </script>
 
 <div class="flex flex-1 divide-x divide-neutral-800 select-none">
   <aside class="w-70 space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs">
     <div class="space-y-2">
+      <p class="mb-1">Working file:</p>
       {#if workingFile}
-        <p class="mb-1">Working file:</p>
         <p
           class="w-full rounded-md border p-2 wrap-break-word dark:border-neutral-800 dark:text-neutral-400"
         >
           {workingFile}
         </p>
+        <Button variant="outline" className="w-full" onclick={onSelectWorkingFile}
+          >Select another file...</Button
+        >
       {:else}
-        <form>
-          <label for="search" class="mb-1 block">Working file:</label>
-          <Button variant="outline" className="w-full">Click to select a file...</Button>
-        </form>
+        <Button variant="outline" className="w-full" onclick={onSelectWorkingFile}
+          >Select a file...</Button
+        >
       {/if}
       <div>
         <p class="mb-1">Export Protonated File:</p>
