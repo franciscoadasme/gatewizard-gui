@@ -83,7 +83,12 @@
         <Checkbox name="protein-cap" bind:checked={capProtein} />
         <label for="protein-cap">Cap protein termini (ACE/NME)</label>
       </div>
-      <Button type="submit" className="w-full" onclick={onRunPropKa} disabled={runningPropKa}>
+      <Button
+        type="submit"
+        className="w-full"
+        onclick={onRunPropKa}
+        disabled={!workingFile || runningPropKa}
+      >
         {runningPropKa ? 'Running PropKa...' : 'Run PropKa'}
       </Button>
     </form>
