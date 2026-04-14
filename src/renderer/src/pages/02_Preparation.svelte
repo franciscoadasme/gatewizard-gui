@@ -2,12 +2,13 @@
   import Button from '../components/ui/Button.svelte'
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Divider from '../components/ui/Divider.svelte'
-  import { runPropKa } from '../lib/backendApi'
+  import { detectDisulfideBonds, runPropKa } from '../lib/backendApi'
 
   /** @type {{ workingDir?: string }} */
   let { workingDir = '' } = $props()
 
   let capProtein = $state(false)
+  /** @type {[[ [string, number], [string, number] ]]} */
   let disulfideBonds = $state([])
   let maxDisulfideDistance = $state(2.5)
   let targetPh = $state(7.0)
@@ -39,6 +40,15 @@
       return
     }
     workingFile = filePath
+  }
+
+  async function onDetectDisulfideBonds() {
+    try {
+      const data = await detectDisulfideBonds(workingFile, maxDisulfideDistance)
+      disulfideBonds = data.disulfide_bonds
+    } catch (error) {
+      alert(error instanceof Error ? error.message : String(error))
+    }
   }
 
   workingFile = '1EVE.pdb'
@@ -104,7 +114,13 @@
       </Button>
     </form>
     <Divider />
-    <form class="space-y-2">
+    <form
+      class="space-y-2"
+      onsubmit={(e) => {
+        e.preventDefault()
+        onDetectDisulfideBonds()
+      }}
+    >
       <h2 class="font-semibold">Disulfide Bonding</h2>
       <div class="flex items-center gap-1">
         <label for="max-ss-distance" class="flex-1">Max S-S distance (Å):</label>
@@ -117,12 +133,17 @@
         />
       </div>
       <Button type="submit" variant="outline" className="w-full">Detect bonds</Button>
+    </form>
+    {#if disulfideBonds.length > 0}
       <div class="space-y-2">
         <p>Detected S-S bonds:</p>
-        <pre class="rounded-md border p-2 dark:border-neutral-800">No disulfide bonds detected.
-        </pre>
+        <ol class="list-inside list-decimal rounded-md border border-neutral-800 p-2">
+          {#each disulfideBonds as bond}
+            <li>{bond[0][0]}{bond[0][1]} → {bond[1][0]}{bond[1][1]}</li>
+          {/each}
+        </ol>
       </div>
-    </form>
+    {/if}
     <Divider />
     <div class="space-y-2">
       <Button className="w-full">Prepare</Button>

@@ -137,6 +137,18 @@ export async function runPropKa(filePath, targetPh, capProtein) {
   return backendJson('/run-propka', { path: filePath, targetPh, capProtein })
 }
 
+/**
+ * @param {string} filePath
+ * @param {number} maxDisulfideDistance
+ * @returns {Promise<{ disulfide_bonds: [[ [string, number], [string, number] ]] }>}
+ */
+export async function detectDisulfideBonds(filePath, maxDisulfideDistance) {
+  return backendJson('/detect-disulfide-bonds', {
+    path: filePath,
+    maxDisulfideDistance
+  })
+}
+
 // Helper functions for the backend API.
 
 /**

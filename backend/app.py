@@ -485,6 +485,25 @@ def start_preparation(payload: StartPreparationRequest) -> dict:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
 
 
+class DetectDisulfideBondsRequest(BaseModel):
+    path: str = Field(..., description="Absolute path to a PDB/mmCIF file")
+    max_disulfide_distance: float = Field(
+        2.5, description="Maximum distance between disulfide bonds"
+    )
+
+
+@app.post("/detect-disulfide-bonds")
+def detect_disulfide_bonds(payload: DetectDisulfideBondsRequest) -> dict:
+    path = os.path.abspath(os.path.expanduser(payload.path))
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    manager = PreparationManager()
+    disulfide_bonds = manager.detect_disulfide_bonds(
+        path, payload.max_disulfide_distance
+    )
+    return {"disulfide_bonds": disulfide_bonds}
+
+
 if __name__ == "__main__":
     import uvicorn
 
