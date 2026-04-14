@@ -25,6 +25,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from gatewizard.utils.protein_capping import cap_protein
 from gatewizard.core.preparation import PreparationManager
 from gatewizard.core.builder import Builder
 from gatewizard.tools.force_fields import ForceFieldManager
@@ -59,6 +60,7 @@ class SelectRequest(BaseModel):
 class RunPropKaRequest(BaseModel):
     path: str = Field(..., description="Absolute path to a PDB/mmCIF file")
     targetPh: float = Field(..., description="Target pH")
+    capProtein: bool = Field(False, description="Cap the protein")
 
 
 class DetectLigandsRequest(BaseModel):
@@ -201,6 +203,14 @@ def run_propka(payload: RunPropKaRequest) -> dict:
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
     try:
+        residue_renumbering_table = {}
+        if payload.capProtein:
+            path, residue_renumbering_table = cap_protein(path)
+            residue_renumbering_table = {
+                "_".join(map(str, old)): new[2]  # (name, chain, id) -> new_id
+                for old, new in residue_renumbering_table.items()
+                if old != new
+            }
         manager = PreparationManager(propka_version="3")
         pka_file = manager.run_analysis(path)
         summary_file = manager.extract_summary(pka_file)
@@ -212,7 +222,11 @@ def run_propka(payload: RunPropKaRequest) -> dict:
                 manager.get_available_states(data["residue"]).values()
             )
         residues = [it for it in residues if len(it["all_states"]) > 1]
-        return dict(residues=residues)
+        return dict(
+            residues=residues,
+            residue_renumbering_table=residue_renumbering_table,
+        )
+
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
 

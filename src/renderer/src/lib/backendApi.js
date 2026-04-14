@@ -130,10 +130,11 @@ export async function selectAtoms(filePath, selection) {
 /**
  * @param {string} filePath
  * @param {float} targetPh
- * @returns {Promise<{ residues: {residue: string, res_id: number, chain: string, pka: number, atom: string, atom_type: string, model_pka: number, current_state: string, initial_state: string, all_states: string[]}[] }>}
+ * @param {boolean} capProtein
+ * @returns {Promise<{ residues: {residue: string, res_id: number, chain: string, pka: number, atom: string, atom_type: string, model_pka: number, current_state: string, initial_state: string, all_states: string[]}[], residue_renumbering_table: Record<string, number> }>}
  */
-export async function runPropKa(filePath, targetPh) {
-  return backendJson('/run-propka', { path: filePath, targetPh })
+export async function runPropKa(filePath, targetPh, capProtein) {
+  return backendJson('/run-propka', { path: filePath, targetPh, capProtein })
 }
 
 // Helper functions for the backend API.

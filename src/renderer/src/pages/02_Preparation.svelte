@@ -14,6 +14,8 @@
   let workingFile = $state('')
   /** @type {{residue: string, res_id: number, chain: string, pka: number, atom: string, atom_type: string, model_pka: number, current_state: string, initial_state: string, all_states: string[]}[]} */
   let protonationStates = $state([])
+  /** @type {Record<string, number>} */
+  let residueRenumberingTable = $state({})
   let runningPropKa = $state(false)
 
   let protonatedFile = $derived(workingFile.replace('.pdb', '_protonated.pdb'))
@@ -21,8 +23,9 @@
   async function onRunPropKa() {
     try {
       runningPropKa = true
-      const data = await runPropKa(workingFile, parseFloat(targetPh))
+      const data = await runPropKa(workingFile, parseFloat(targetPh), capProtein)
       protonationStates = data.residues
+      residueRenumberingTable = data.residue_renumbering_table
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
     } finally {
@@ -150,9 +153,13 @@
           </thead>
           <tbody class="divide-y divide-neutral-800">
             {#each protonationStates as info}
+              {@const key = `${info.residue}_${info.chain}_${info.res_id}`}
+              {@const newId = residueRenumberingTable[key]}
               <tr>
                 <td class="px-2 py-1 text-center">{info.residue}</td>
-                <td class="px-2 py-1 text-center">{info.res_id}</td>
+                <td class="px-2 py-1 text-center">
+                  {newId ? `${info.res_id}→${newId}` : info.res_id}
+                </td>
                 <td class="px-2 py-1 text-center">{info.chain}</td>
                 <td class="px-2 py-1 text-center">{info.pka.toFixed(2)}</td>
                 <td class="px-2 py-1 text-center">
