@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { spawn } from 'child_process'
+import { watch } from 'fs'
 import path, { join } from 'path'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -82,6 +83,31 @@ function stopBackend() {
   }
 }
 
+async function restartBackend() {
+  process.stdout.write('[backend] Restarting...\n')
+  stopBackend()
+  startBackend()
+  try {
+    await waitForBackendHealth()
+    process.stdout.write('[backend] Restarted successfully\n')
+  } catch (error) {
+    process.stderr.write(`[backend] Failed to restart: ${error.message}\n`)
+  }
+}
+
+function watchBackendFiles() {
+  const backendDir = join(app.getAppPath(), 'backend')
+  let debounceTimer = null
+  watch(backendDir, { recursive: true }, (_event, filename) => {
+    if (!filename?.endsWith('.py')) return
+    if (debounceTimer) clearTimeout(debounceTimer)
+    debounceTimer = setTimeout(() => {
+      process.stdout.write(`[backend] Detected change in ${filename}\n`)
+      restartBackend()
+    }, 500)
+  })
+}
+
 function createWindow() {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
@@ -147,6 +173,10 @@ app.whenReady().then(async () => {
     await waitForBackendHealth()
   } catch (error) {
     await dialog.showErrorBox('Backend failed to start', error.message)
+  }
+
+  if (is.dev) {
+    watchBackendFiles()
   }
 
   createWindow()
