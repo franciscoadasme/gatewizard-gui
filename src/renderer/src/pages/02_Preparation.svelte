@@ -13,7 +13,7 @@
   let targetPh = $state(7.0)
   let workingFile = $state('')
   /** @type {{residue: string, res_id: number, chain: string, pka: number, atom: string, atom_type: string, model_pka: number, current_state: string, initial_state: string, all_states: string[]}[]} */
-  let residues = $state([])
+  let protonationStates = $state([])
   let runningPropKa = $state(false)
 
   let protonatedFile = $derived(workingFile.replace('.pdb', '_protonated.pdb'))
@@ -22,7 +22,7 @@
     try {
       runningPropKa = true
       const data = await runPropKa(workingFile, parseFloat(targetPh))
-      residues = data.residues
+      protonationStates = data.residues
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
     } finally {
@@ -37,6 +37,9 @@
     }
     workingFile = filePath
   }
+
+  workingFile = '1EVE.pdb'
+  onRunPropKa()
 </script>
 
 <div class="flex flex-1 divide-x divide-neutral-800 select-none">
@@ -122,7 +125,7 @@
   </aside>
   <div class="relative flex flex-1 flex-col overflow-hidden p-4">
     <h1 class="mb-4 text-xl font-semibold">Protonation states</h1>
-    {#if residues.length > 0}
+    {#if protonationStates.length > 0}
       <div class="min-h-0 flex-1 overflow-y-auto rounded-lg border border-neutral-800">
         <table class="w-full">
           <thead class="sticky top-0 z-10 bg-neutral-950">
@@ -146,23 +149,23 @@
             </tr>
           </thead>
           <tbody class="divide-y divide-neutral-800">
-            {#each residues as residue}
+            {#each protonationStates as info}
               <tr>
-                <td class="px-2 py-1 text-center">{residue.residue}</td>
-                <td class="px-2 py-1 text-center">{residue.res_id}</td>
-                <td class="px-2 py-1 text-center">{residue.chain}</td>
-                <td class="px-2 py-1 text-center">{residue.pka.toFixed(2)}</td>
+                <td class="px-2 py-1 text-center">{info.residue}</td>
+                <td class="px-2 py-1 text-center">{info.res_id}</td>
+                <td class="px-2 py-1 text-center">{info.chain}</td>
+                <td class="px-2 py-1 text-center">{info.pka.toFixed(2)}</td>
                 <td class="px-2 py-1 text-center">
                   <select
                     class={[
                       'w-full rounded-md p-1 hover:bg-neutral-900 focus:bg-neutral-900 focus:outline-1 focus:outline-neutral-800',
-                      residue.current_state !== residue.initial_state
+                      info.current_state !== info.initial_state
                         ? 'outline-2 outline-white focus:outline-2 focus:outline-white'
                         : ''
                     ]}
-                    bind:value={residue.current_state}
+                    bind:value={info.current_state}
                   >
-                    {#each residue.all_states as state}
+                    {#each info.all_states as state}
                       <option value={state}>{state}</option>
                     {/each}
                   </select>
