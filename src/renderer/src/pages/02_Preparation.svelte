@@ -120,18 +120,57 @@
     </div>
     <pre class="rounded-md border p-2 dark:border-neutral-800">No output yet.</pre>
   </aside>
-  <div class="flex-1 overflow-y-auto p-4">
-    <h1 class="text-xl font-semibold text-neutral-800">Preparation</h1>
-    <p class="mt-2 text-neutral-600">Stage: preparation workflow.</p>
-    <p class="rounded-md border p-2 text-sm dark:border-neutral-800">
-      Target pH: {targetPh}<br />
-      Cap protein termini: {capProtein}<br />
-      Max S-S distance: {maxDisulfideDistance}<br />
-      Disulfide bonds: {disulfideBonds.length}<br />
-      Protonated file: {protonatedFile}<br />
-      Working file: {workingFile}
-    </p>
-    <pre class="rounded-md border p-2 dark:border-neutral-800">{JSON.stringify(residues, null, 2)}
-    </pre>
+  <div class="relative flex flex-1 flex-col overflow-hidden p-4">
+    <h1 class="mb-4 text-xl font-semibold">Protonation states</h1>
+    {#if residues.length > 0}
+      <div class="min-h-0 flex-1 overflow-y-auto rounded-lg border border-neutral-800">
+        <table class="w-full">
+          <thead class="sticky top-0 z-10 bg-neutral-950">
+            <tr>
+              <th class="px-0.5 py-1 pl-1"
+                ><button class="w-full rounded-md bg-neutral-900 px-2 py-1">Residue</button></th
+              >
+              <th class="px-0.5 py-1"
+                ><button class="w-full rounded-md bg-neutral-900 px-2 py-1">ID</button></th
+              >
+              <th class="px-0.5 py-1"
+                ><button class="w-full rounded-md bg-neutral-900 px-2 py-1">Chain</button></th
+              >
+              <th class="px-0.5 py-1"
+                ><button class="w-full rounded-md bg-neutral-900 px-2 py-1">pK<sub>a</sub></button
+                ></th
+              >
+              <th class="px-0.5 py-1 pr-1"
+                ><button class="w-full rounded-md bg-neutral-900 px-2 py-1">State</button></th
+              >
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-neutral-800">
+            {#each residues as residue}
+              <tr>
+                <td class="px-2 py-1 text-center">{residue.residue}</td>
+                <td class="px-2 py-1 text-center">{residue.res_id}</td>
+                <td class="px-2 py-1 text-center">{residue.chain}</td>
+                <td class="px-2 py-1 text-center">{residue.pka.toFixed(2)}</td>
+                <td class="px-2 py-1 text-center">
+                  <select
+                    class="w-full rounded-md p-1 hover:bg-neutral-900 focus:bg-neutral-900 focus:outline-1 focus:outline-neutral-800"
+                    bind:value={residue.residue}
+                  >
+                    <option value={residue.residue}>{residue.residue}</option>
+                  </select>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {:else}
+      <p
+        class="flex flex-1 items-center justify-center rounded-lg border border-dashed border-neutral-800 text-neutral-700"
+      >
+        Run PropKa to see the protonation states.
+      </p>
+    {/if}
   </div>
 </div>
