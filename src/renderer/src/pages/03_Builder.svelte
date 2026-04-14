@@ -174,8 +174,8 @@
   async function loadLigandImage(/** @type {number} */ index) {
     const lig = ligands[index]
     try {
-      /** @type {{ pdb_lines?: string[], mol2_path?: string }} */
-      const opts = lig.mol2 ? { mol2_path: lig.mol2 } : { pdb_lines: lig.pdb_lines }
+      /** @type {{ pdbLines?: string[], mol2Path?: string }} */
+      const opts = lig.mol2 ? { mol2Path: lig.mol2 } : { pdbLines: lig.pdb_lines }
       const { image } = await getLigandImage(opts)
       ligands[index] = { ...ligands[index], imageBase64: image }
     } catch {
@@ -291,24 +291,24 @@
     const lipidRatios = `${upperRatios}//${lowerRatios}`
     return {
       path: workingFile,
-      upper_lipids: upperLipids,
-      lower_lipids: lowerLipids,
-      lipid_ratios: lipidRatios,
-      water_model: waterModel,
-      protein_ff: proteinFf,
-      lipid_ff: lipidFf,
+      upperLipids,
+      lowerLipids,
+      lipidRatios,
+      waterModel,
+      proteinFf,
+      lipidFf,
       preoriented,
       parametrize,
-      salt_concentration: addSalt ? parseFloat(saltConcentration) : 0,
+      saltConcentration: addSalt ? parseFloat(saltConcentration) : 0,
       cation,
       anion,
-      dist_wat: parseFloat(distWat),
+      distWat: parseFloat(distWat),
       dims:
         boxSizingMode === 'explicit'
           ? [parseFloat(boxDimX), parseFloat(boxDimY), parseFloat(boxDimZ)]
           : null,
-      output_folder_name: outputFolderName || null,
-      ligand_params: ligands
+      outputFolderName: outputFolderName || null,
+      ligandParams: ligands
         .filter((l) => l.frcmod && l.lib && l.name)
         .map((l) => ({ name: l.name, frcmod: l.frcmod, lib: l.lib }))
     }

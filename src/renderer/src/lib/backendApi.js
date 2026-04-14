@@ -40,7 +40,7 @@ export function startPreparation(params) {
  * @returns {Promise<{ status: string, current_step: number, steps_completed: string[], error: string|null, start_time: string, end_time: string|null }>}
  */
 export function getJobStatus(jobDir) {
-  return backendJson('/job-status', { job_dir: jobDir })
+  return backendJson('/job-status', { jobDir })
 }
 
 /**
@@ -51,7 +51,7 @@ export function getJobStatus(jobDir) {
  * @returns {Promise<{ lines: string[], exists: boolean }>}
  */
 export function getJobLog(jobDir, logName = 'preparation.log', tail = 200) {
-  return backendJson('/job-log', { job_dir: jobDir, log_name: logName, tail })
+  return backendJson('/job-log', { jobDir, logName, tail })
 }
 
 /**
@@ -81,7 +81,7 @@ export function detectLigands(filePath) {
 export function parametrizeLigand(filePath, ligandName, charge = 0, multiplicity = 1) {
   return backendJson('/parametrize-ligand', {
     path: filePath,
-    ligand_name: ligandName,
+    ligandName,
     charge,
     multiplicity
   })
@@ -90,7 +90,7 @@ export function parametrizeLigand(filePath, ligandName, charge = 0, multiplicity
 /**
  * Get a base64-encoded 2D image of a ligand.
  * Provide either pdb_lines (initial) or mol2_path (final, after parametrization).
- * @param {{ pdb_lines?: string[], mol2_path?: string, width?: number, height?: number }} opts
+ * @param {{ pdbLines?: string[], mol2Path?: string, width?: number, height?: number }} opts
  * @returns {Promise<{ image: string }>}
  */
 export function getLigandImage(opts) {
@@ -105,8 +105,8 @@ export function getLigandImage(opts) {
  */
 export function checkLigandParametrization(pdbPath, ligandNames) {
   return backendJson('/check-ligand-parametrization', {
-    pdb_path: pdbPath,
-    ligand_names: ligandNames
+    pdbPath,
+    ligandNames
   })
 }
 
@@ -175,7 +175,7 @@ export async function backendJson(path, payload) {
   const init = { method: payload ? 'POST' : 'GET' }
   if (payload != null) {
     init.headers = { 'Content-Type': 'application/json' }
-    init.body = JSON.stringify(payload)
+    init.body = JSON.stringify(keysToSnakeCase(payload))
   }
 
   let response
@@ -196,4 +196,24 @@ export async function backendJson(path, payload) {
     throwFromFastApiBody(data, response)
   }
   return /** @type {T} */ (data)
+}
+
+/** @param {string} str */
+function toSnakeCase(str) {
+  return str.replace(/[A-Z]/g, (ch) => `_${ch.toLowerCase()}`)
+}
+
+/**
+ * Recursively convert all object keys from camelCase to snake_case.
+ * @param {unknown} obj
+ * @returns {unknown}
+ */
+function keysToSnakeCase(obj) {
+  if (Array.isArray(obj)) return obj.map(keysToSnakeCase)
+  if (obj !== null && typeof obj === 'object') {
+    return Object.fromEntries(
+      Object.entries(obj).map(([k, v]) => [toSnakeCase(k), keysToSnakeCase(v)])
+    )
+  }
+  return obj
 }

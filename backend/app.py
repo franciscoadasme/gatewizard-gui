@@ -59,8 +59,8 @@ class SelectRequest(BaseModel):
 
 class RunPropKaRequest(BaseModel):
     path: str = Field(..., description="Absolute path to a PDB/mmCIF file")
-    targetPh: float = Field(..., description="Target pH")
-    capProtein: bool = Field(False, description="Cap the protein")
+    target_ph: float = Field(..., description="Target pH")
+    cap_protein: bool = Field(False, description="Cap the protein")
 
 
 class DetectLigandsRequest(BaseModel):
@@ -204,7 +204,7 @@ def run_propka(payload: RunPropKaRequest) -> dict:
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
     try:
         residue_renumbering_table = {}
-        if payload.capProtein:
+        if payload.cap_protein:
             path, residue_renumbering_table = cap_protein(path)
             residue_renumbering_table = {
                 "_".join(map(str, old)): new[2]  # (name, chain, id) -> new_id
@@ -216,7 +216,7 @@ def run_propka(payload: RunPropKaRequest) -> dict:
         summary_file = manager.extract_summary(pka_file)
         residues = manager.parse_summary(summary_file)
         for data in residues:
-            state = manager.get_default_protonation_state(data, payload.targetPh)
+            state = manager.get_default_protonation_state(data, payload.target_ph)
             data["current_state"] = data["initial_state"] = state
             data["all_states"] = list(
                 manager.get_available_states(data["residue"]).values()
