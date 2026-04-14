@@ -82,7 +82,11 @@
           inputmode="decimal"
           name="target-ph"
           class="w-20 rounded-md border p-2 dark:border-neutral-700 dark:hover:bg-neutral-700"
-          bind:value={targetPh}
+          value={targetPh.toFixed(1)}
+          onchange={(e) => {
+            targetPh = parseFloat(e.target.value) || 0
+            e.target.value = targetPh.toFixed(1)
+          }}
         />
       </div>
       <div class="flex items-center gap-1">
