@@ -73,7 +73,13 @@
       </div>
     </div>
     <Divider />
-    <form class="space-y-2">
+    <form
+      class="space-y-2"
+      onsubmit={(e) => {
+        e.preventDefault()
+        onRunPropKa()
+      }}
+    >
       <h2 class="font-semibold">PropKa Analysis</h2>
       <div class="flex items-center gap-1">
         <label for="target-ph" class="flex-1">Target pH:</label>
@@ -93,12 +99,7 @@
         <Checkbox name="protein-cap" bind:checked={capProtein} />
         <label for="protein-cap">Cap protein termini (ACE/NME)</label>
       </div>
-      <Button
-        type="submit"
-        className="w-full"
-        onclick={onRunPropKa}
-        disabled={!workingFile || runningPropKa}
-      >
+      <Button type="submit" className="w-full" disabled={!workingFile || runningPropKa}>
         {runningPropKa ? 'Running PropKa...' : 'Run PropKa'}
       </Button>
     </form>
