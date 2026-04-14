@@ -12,7 +12,7 @@
   let maxDisulfideDistance = $state(2.5)
   let targetPh = $state(7.0)
   let workingFile = $state('')
-  /** @type {{residue: string, res_id: number, chain: string, pka: number, atom: string, atom_type: string, model_pka: number}[]} */
+  /** @type {{residue: string, res_id: number, chain: string, pka: number, atom: string, atom_type: string, model_pka: number, current_state: string, initial_state: string, all_states: string[]}[]} */
   let residues = $state([])
   let runningPropKa = $state(false)
 
@@ -154,10 +154,17 @@
                 <td class="px-2 py-1 text-center">{residue.pka.toFixed(2)}</td>
                 <td class="px-2 py-1 text-center">
                   <select
-                    class="w-full rounded-md p-1 hover:bg-neutral-900 focus:bg-neutral-900 focus:outline-1 focus:outline-neutral-800"
-                    bind:value={residue.residue}
+                    class={[
+                      'w-full rounded-md p-1 hover:bg-neutral-900 focus:bg-neutral-900 focus:outline-1 focus:outline-neutral-800',
+                      residue.current_state !== residue.initial_state
+                        ? 'outline-2 outline-white focus:outline-2 focus:outline-white'
+                        : ''
+                    ]}
+                    bind:value={residue.current_state}
                   >
-                    <option value={residue.residue}>{residue.residue}</option>
+                    {#each residue.all_states as state}
+                      <option value={state}>{state}</option>
+                    {/each}
                   </select>
                 </td>
               </tr>

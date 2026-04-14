@@ -205,6 +205,12 @@ def run_propka(payload: RunPropKaRequest) -> dict:
         pka_file = manager.run_analysis(path)
         summary_file = manager.extract_summary(pka_file)
         residues = manager.parse_summary(summary_file)
+        for data in residues:
+            state = manager.get_default_protonation_state(data, payload.targetPh)
+            data["current_state"] = data["initial_state"] = state
+            data["all_states"] = list(
+                manager.get_available_states(data["residue"]).values()
+            )
         return dict(residues=residues)
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
