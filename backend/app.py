@@ -211,6 +211,7 @@ def run_propka(payload: RunPropKaRequest) -> dict:
             data["all_states"] = list(
                 manager.get_available_states(data["residue"]).values()
             )
+        residues = [it for it in residues if len(it["all_states"]) > 1]
         return dict(residues=residues)
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
