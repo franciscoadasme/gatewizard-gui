@@ -2,7 +2,7 @@
   import Button from '../components/ui/Button.svelte'
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Divider from '../components/ui/Divider.svelte'
-  import { detectDisulfideBonds, runPropKa } from '../lib/backendApi'
+  import { detectDisulfideBonds, preparePDB, runPropKa } from '../lib/backendApi'
 
   /** @type {{ workingDir?: string }} */
   let { workingDir = '' } = $props()
@@ -17,9 +17,13 @@
   let protonationStates = $state([])
   /** @type {Record<string, number>} */
   let residueRenumberingTable = $state({})
+
+  let preparingPDB = $state(false)
   let runningPropKa = $state(false)
 
   let protonatedFile = $derived(workingFile.replace('.pdb', '_protonated.pdb'))
+
+  let preparationOutput = $state('')
 
   async function onRunPropKa() {
     try {
@@ -48,6 +52,24 @@
       disulfideBonds = data.disulfide_bonds
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function onPreparePDB() {
+    try {
+      preparingPDB = true
+      const data = await preparePDB({
+        path: capProtein ? workingFile.replace('.pdb', '_capped.pdb') : workingFile,
+        outputPath: protonatedFile,
+        protonationStates,
+        targetPh,
+        disulfideBonds
+      })
+      preparationOutput = data.output.trim()
+    } catch (error) {
+      alert(error instanceof Error ? error.message : String(error))
+    } finally {
+      preparingPDB = false
     }
   }
 
@@ -146,16 +168,17 @@
     {/if}
     <Divider />
     <div class="space-y-2">
-      <Button className="w-full">Prepare</Button>
+      <Button className="w-full" onclick={onPreparePDB} disabled={!workingFile || preparingPDB}
+        >{preparingPDB ? 'Preparing...' : 'Prepare'}</Button
+      >
       <Button className="w-full" variant="outline">Export Results</Button>
       <Button className="w-full" variant="ghost">Reset</Button>
     </div>
-    <pre class="rounded-md border p-2 dark:border-neutral-800">No output yet.</pre>
   </aside>
-  <div class="relative flex flex-1 flex-col overflow-hidden p-4">
-    <h1 class="mb-4 text-xl font-semibold">Protonation states</h1>
+  <div class="relative flex flex-1 flex-col overflow-hidden">
+    <h1 class="m-4 text-xl font-semibold">Protonation states</h1>
     {#if protonationStates.length > 0}
-      <div class="min-h-0 flex-1 overflow-y-auto rounded-lg border border-neutral-800">
+      <div class="mx-4 mb-4 min-h-0 flex-1 overflow-y-auto rounded-lg border border-neutral-800">
         <table class="w-full">
           <thead class="sticky top-0 z-10 bg-neutral-950">
             <tr>
@@ -210,10 +233,15 @@
       </div>
     {:else}
       <p
-        class="flex flex-1 items-center justify-center rounded-lg border border-dashed border-neutral-800 text-neutral-700"
+        class="mx-4 mb-4 flex flex-1 items-center justify-center rounded-lg border border-dashed border-neutral-800 text-neutral-700"
       >
         Run PropKa to see the protonation states.
       </p>
+    {/if}
+    {#if preparationOutput}
+      <div class="max-h-2/5 overflow-y-auto border-t p-4 text-xs dark:border-neutral-800">
+        <pre>{preparationOutput}</pre>
+      </div>
     {/if}
   </div>
 </div>

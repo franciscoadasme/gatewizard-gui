@@ -504,6 +504,55 @@ def detect_disulfide_bonds(payload: DetectDisulfideBondsRequest) -> dict:
     return {"disulfide_bonds": disulfide_bonds}
 
 
+class PreparePDBRequest(BaseModel):
+    path: str = Field(description="Absolute path to a PDB/mmCIF file")
+    output_path: str = Field(description="Absolute path to the output PDB/mmCIF file")
+    protonation_states: list[dict] = Field(description="Protonation states")
+    target_ph: float = Field(description="Target pH")
+    disulfide_bonds: list[tuple[tuple[str, int], tuple[str, int]]] = Field(
+        description="Disulfide bonds"
+    )
+
+
+@app.post("/prepare-pdb")
+def prepare_pdb(payload: PreparePDBRequest) -> None:
+    path = os.path.abspath(os.path.expanduser(payload.path))
+    output_path = os.path.abspath(os.path.expanduser(payload.output_path))
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+
+    def get_residue_id(info: dict) -> str:
+        resid = info["residue"] + str(info["res_id"])
+        if info["chain"]:
+            resid += "_" + info["chain"]
+        return resid
+
+    manager = PreparationManager()
+
+    with tempfile.NamedTemporaryFile(suffix=".pdb", delete=True) as tmp:
+        custom_states = {
+            get_residue_id(info): info["current_state"]
+            for info in payload.protonation_states
+            if info["current_state"] != info["initial_state"]
+        }
+        manager.apply_protonation_states(
+            path,
+            tmp.name,
+            payload.target_ph,
+            custom_states,
+            payload.protonation_states,
+        )
+
+        manager.apply_disulfide_bonds(tmp.name, tmp.name, payload.disulfide_bonds)
+
+        result = manager.run_pdb4amber_with_cap_fix(
+            input_pdb=tmp.name,
+            output_pdb=output_path,
+            fix_caps="capped" in path,
+        )
+        return dict(output=result["stdout"] + "\n" + result["stderr"])
+
+
 if __name__ == "__main__":
     import uvicorn
 

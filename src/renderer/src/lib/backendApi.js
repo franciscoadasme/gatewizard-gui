@@ -149,6 +149,14 @@ export async function detectDisulfideBonds(filePath, maxDisulfideDistance) {
   })
 }
 
+/**
+ * @param {{ path: string, outputPath: string, protonationStates: object, targetPh: number, disulfideBonds: [[ [string, number], [string, number] ]] }} props
+ * @returns {Promise<{ output: string }>}
+ */
+export async function preparePDB(props) {
+  return backendJson('/prepare-pdb', props)
+}
+
 // Helper functions for the backend API.
 
 /**
