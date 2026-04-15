@@ -60,7 +60,7 @@ function startBackend() {
   const pythonBin = getLaunchPythonPath()
   const backendScript = getBackendScriptPath()
 
-  backendProcess = spawn(pythonBin, [backendScript], {
+  backendProcess = spawn(pythonBin, ['-u', backendScript], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: getBackendEnv()
   })
