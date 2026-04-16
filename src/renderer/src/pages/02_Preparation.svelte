@@ -48,6 +48,7 @@
       return
     }
     workingFile = filePath
+    resetOutput()
   }
 
   async function onDetectDisulfideBonds() {
