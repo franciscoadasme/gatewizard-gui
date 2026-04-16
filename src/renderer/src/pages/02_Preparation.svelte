@@ -73,6 +73,27 @@
     }
   }
 
+  async function onReset() {
+    // reset form fields
+    capProtein = false
+    maxDisulfideDistance = 2.5
+    targetPh = 7.0
+    workingFile = ''
+
+    // reset state
+    preparingPDB = false
+    runningPropKa = false
+
+    resetOutput()
+  }
+
+  function resetOutput() {
+    disulfideBonds = []
+    preparationOutput = ''
+    protonationStates = []
+    residueRenumberingTable = {}
+  }
+
   workingFile = '1EVE.pdb'
   onRunPropKa()
 </script>
@@ -172,7 +193,7 @@
         >{preparingPDB ? 'Preparing...' : 'Prepare'}</Button
       >
       <Button className="w-full" variant="outline">Export Results</Button>
-      <Button className="w-full" variant="ghost">Reset</Button>
+      <Button className="w-full" variant="ghost" onclick={onReset}>Reset</Button>
     </div>
   </aside>
   <div class="relative flex flex-1 flex-col overflow-hidden">
