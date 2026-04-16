@@ -7,23 +7,27 @@
   /** @type {{ workingDir?: string }} */
   let { workingDir = '' } = $props()
 
+  // form fields
   let capProtein = $state(false)
-  /** @type {[[ [string, number], [string, number] ]]} */
-  let disulfideBonds = $state([])
   let maxDisulfideDistance = $state(2.5)
   let targetPh = $state(7.0)
   let workingFile = $state('')
+
+  // derived values
+  let protonatedFile = $derived(workingFile.replace('.pdb', '_protonated.pdb'))
+
+  // state
+  let preparingPDB = $state(false)
+  let runningPropKa = $state(false)
+
+  // output
+  /** @type {[[ [string, number], [string, number] ]]} */
+  let disulfideBonds = $state([])
+  let preparationOutput = $state('')
   /** @type {{residue: string, res_id: number, chain: string, pka: number, atom: string, atom_type: string, model_pka: number, current_state: string, initial_state: string, all_states: string[]}[]} */
   let protonationStates = $state([])
   /** @type {Record<string, number>} */
   let residueRenumberingTable = $state({})
-
-  let preparingPDB = $state(false)
-  let runningPropKa = $state(false)
-
-  let protonatedFile = $derived(workingFile.replace('.pdb', '_protonated.pdb'))
-
-  let preparationOutput = $state('')
 
   async function onRunPropKa() {
     try {
