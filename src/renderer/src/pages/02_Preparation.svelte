@@ -227,7 +227,6 @@
       <Button className="w-full" onclick={onPreparePDB} disabled={!workingFile || preparingPDB}
         >{preparingPDB ? 'Preparing...' : 'Prepare'}</Button
       >
-      <Button className="w-full" variant="outline">Export Results</Button>
       <Button className="w-full" variant="ghost" onclick={onReset}>Reset</Button>
     </div>
   </aside>
