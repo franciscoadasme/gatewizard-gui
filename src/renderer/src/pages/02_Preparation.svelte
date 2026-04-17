@@ -15,10 +15,33 @@
 
   // derived values
   let protonatedFile = $derived(workingFile.replace('.pdb', '_protonated.pdb'))
+  let sortedProtonationStates = $derived.by(() => {
+    const col = sortColumn
+    const dir = sortDirection === 'asc' ? 1 : -1
+    return [...protonationStates].sort((a, b) => {
+      const av = a[col]
+      const bv = b[col]
+      if (av < bv) return -1 * dir
+      if (av > bv) return 1 * dir
+      return 0
+    })
+  })
 
   // state
   let preparingPDB = $state(false)
   let runningPropKa = $state(false)
+  /** @type {'residue' | 'res_id' | 'chain' | 'pka' | 'current_state'} */
+  let sortColumn = $state('residue')
+  /** @type {'asc' | 'desc'} */
+  let sortDirection = $state('asc')
+  /** @type {{ key: typeof sortColumn, label: string }[]} */
+  const columns = [
+    { key: 'residue', label: 'Residue' },
+    { key: 'res_id', label: 'ID' },
+    { key: 'chain', label: 'Chain' },
+    { key: 'pka', label: 'pKa' },
+    { key: 'current_state', label: 'State' }
+  ]
 
   // output
   /** @type {[[ [string, number], [string, number] ]]} */
@@ -28,6 +51,16 @@
   let protonationStates = $state([])
   /** @type {Record<string, number>} */
   let residueRenumberingTable = $state({})
+
+  /** @param {typeof sortColumn} column */
+  function toggleSort(column) {
+    if (sortColumn === column) {
+      sortDirection = sortDirection === 'asc' ? 'desc' : 'asc'
+    } else {
+      sortColumn = column
+      sortDirection = 'asc'
+    }
+  }
 
   async function onRunPropKa() {
     try {
@@ -204,30 +237,30 @@
   <div class="relative flex flex-1 flex-col overflow-hidden">
     <h1 class="m-4 text-xl font-semibold">Protonation states</h1>
     {#if protonationStates.length > 0}
+      {@const sortIndicator = sortDirection === 'asc' ? '▲' : '▼'}
       <div class="mx-4 mb-4 min-h-0 flex-1 overflow-y-auto rounded-lg border border-neutral-800">
         <table class="w-full">
           <thead class="sticky top-0 z-10 bg-neutral-950">
             <tr>
-              <th class="px-0.5 py-1 pl-1"
-                ><button class="w-full rounded-md bg-neutral-900 px-2 py-1">Residue</button></th
-              >
-              <th class="px-0.5 py-1"
-                ><button class="w-full rounded-md bg-neutral-900 px-2 py-1">ID</button></th
-              >
-              <th class="px-0.5 py-1"
-                ><button class="w-full rounded-md bg-neutral-900 px-2 py-1">Chain</button></th
-              >
-              <th class="px-0.5 py-1"
-                ><button class="w-full rounded-md bg-neutral-900 px-2 py-1">pK<sub>a</sub></button
-                ></th
-              >
-              <th class="px-0.5 py-1 pr-1"
-                ><button class="w-full rounded-md bg-neutral-900 px-2 py-1">State</button></th
-              >
+              {#each columns as col, i}
+                <th class={['px-0.5 py-1', i === 0 && 'pl-1', i === columns.length - 1 && 'pr-1']}>
+                  <button
+                    class="flex w-full items-center justify-center gap-2 rounded-md bg-neutral-900 px-2 py-1 hover:bg-neutral-800"
+                    onclick={() => toggleSort(col.key)}
+                  >
+                    <span>
+                      {#if col.key === 'pka'}pK<sub>a</sub>{:else}{col.label}{/if}
+                    </span>
+                    {#if sortColumn === col.key}
+                      <span class="pb-0.5 text-xs">{sortIndicator}</span>
+                    {/if}
+                  </button>
+                </th>
+              {/each}
             </tr>
           </thead>
           <tbody class="divide-y divide-neutral-800">
-            {#each protonationStates as info}
+            {#each sortedProtonationStates as info}
               {@const key = `${info.residue}_${info.chain}_${info.res_id}`}
               {@const newId = residueRenumberingTable[key]}
               <tr>
