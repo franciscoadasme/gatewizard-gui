@@ -131,9 +131,6 @@
     protonationStates = []
     residueRenumberingTable = {}
   }
-
-  workingFile = '1EVE.pdb'
-  onRunPropKa()
 </script>
 
 <div class="flex flex-1 divide-x divide-neutral-800 select-none">
