@@ -8,7 +8,7 @@
   export let className = ''
 
   const baseClass =
-    'inline-flex items-center justify-center rounded-lg text-sm font-medium transition-colors active:translate-y-0.5 disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 dark:focus-visible:ring-neutral-600'
+    'inline-flex items-center justify-center rounded-lg font-medium transition-colors active:translate-y-0.5 disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 dark:focus-visible:ring-neutral-600'
 
   const variantClasses = {
     default:
@@ -19,9 +19,9 @@
   }
 
   const sizeClasses = {
-    sm: 'px-3',
-    default: 'px-4 py-2',
-    lg: 'px-8'
+    sm: 'px-3 py-1 text-xs',
+    default: 'px-4 py-2 text-sm',
+    lg: 'px-8 py-3 text-base'
   }
 
   $: classes = `${baseClass} ${variantClasses[variant] ?? variantClasses.default} ${
