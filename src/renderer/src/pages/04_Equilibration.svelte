@@ -15,6 +15,7 @@
   let inputDir = $state('')
   let outputDir = $state('equilibration')
   let ensemble = $state('nvt')
+  let stages = $state(protocols.base.stages)
 
   function onSelectInputDir() {
     const dir = window.api.showOpenDialog({
@@ -89,8 +90,8 @@
         <Button variant="outline">Save</Button>
       </div>
       <div class="flex min-h-0 w-full flex-1 items-start gap-4 overflow-auto pb-2">
-        {#each protocols.base.stages as stage}
-          <EquilibrationStage {stage} {ensemble} />
+        {#each stages as _, i (stages[i].name)}
+          <EquilibrationStage bind:stage={stages[i]} {ensemble} />
         {/each}
       </div>
     </div>
@@ -115,7 +116,7 @@
         <Button variant="outline" size="sm">Process Information</Button>
       </div>
       <div class="">
-        {#each protocols.base.stages as stage}
+        {#each stages as stage (stage.name)}
           <div class="flex items-center gap-2">
             <p class="text-xs">{stage.name}</p>
           </div>
