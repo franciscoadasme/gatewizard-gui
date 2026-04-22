@@ -219,17 +219,21 @@ ipcMain.handle('dialog:openPdb', async () => {
   return { canceled: false, filePath: result.filePaths[0] }
 })
 
-ipcMain.handle('dialog:openDirectory', async () => {
+ipcMain.handle(
+'dialog:openDirectory',
+async (_event, title = 'Select Directory', defaultPath = undefined) => {
   const win = BrowserWindow.getFocusedWindow()
   const result = await dialog.showOpenDialog(win ?? undefined, {
-    title: 'Select Working Directory',
+    title,
+      defaultPath,
     properties: ['openDirectory']
   })
   if (result.canceled || result.filePaths.length === 0) {
     return { canceled: true }
   }
   return { canceled: false, dirPath: result.filePaths[0] }
-})
+}
+)
 
 ipcMain.handle('dialog:openLigandFile', async (_event, title, extensions) => {
   const win = BrowserWindow.getFocusedWindow()

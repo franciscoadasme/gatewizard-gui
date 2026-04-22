@@ -4,7 +4,8 @@ import { electronAPI } from '@electron-toolkit/preload'
 // Custom APIs for renderer
 const api = {
   openPdbDialog: () => ipcRenderer.invoke('dialog:openPdb'),
-  openDirectoryDialog: () => ipcRenderer.invoke('dialog:openDirectory'),
+  openDirectoryDialog: (title = 'Select Directory', defaultPath = undefined) =>
+    ipcRenderer.invoke('dialog:openDirectory', title, defaultPath),
   openLigandFileDialog: (title, extensions) =>
     ipcRenderer.invoke('dialog:openLigandFile', title, extensions)
 }
