@@ -7,15 +7,29 @@
   import Input from '../components/ui/Input.svelte'
   import Select from '../components/ui/Select.svelte'
 
-  let engine = $state('namd')
+  /** @type {Record<string, { default: import('svelte').Component, label?: string }>} */
+  const engineModules = import.meta.glob('./equilibration/engines/*.svelte', { eager: true })
+  const engines = Object.entries(engineModules)
+    .map(([path, mod]) => {
+      const name = path.split('/').pop().replace('.svelte', '')
+      return {
+        id: name.toLowerCase(),
+        label: mod.label ?? name,
+        Component: mod.default
+      }
+    })
+    .sort((a, b) => a.label.localeCompare(b.label))
 
   /** @type {{ workingDir?: string }} */
   let { workingDir = '' } = $props()
 
+  let engine = $state('namd')
+  let ensemble = $state('nvt')
   let inputDir = $state('')
   let outputDir = $state('equilibration')
-  let ensemble = $state('nvt')
   let stages = $state(protocols.base.stages)
+
+  const CurrentEngine = $derived(engines.find((e) => e.id === engine)?.Component)
 
   async function selectInputDir() {
     const { canceled, dirPath } = await window.api.openDirectoryDialog(
@@ -59,15 +73,14 @@
       <div class="space-y-1">
         <p class="text-xs">Engine:</p>
         <Select className="w-full" bind:value={engine}>
-          <option value="ambermd">AmberMD</option>
-          <option value="gromacs">Gromacs</option>
-          <option value="namd">NAMD</option>
+          {#each engines as engine (engine.id)}
+            <option value={engine.id}>{engine.label}</option>
+          {/each}
         </Select>
       </div>
-      <div class="space-y-1">
-        <p class="text-xs">Executable:</p>
-        <Input type="text" value="namd3" className="w-full" />
-      </div>
+      {#if CurrentEngine}
+        <CurrentEngine />
+      {/if}
     </div>
     <Divider />
     <div class="space-y-2">
