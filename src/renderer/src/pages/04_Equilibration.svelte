@@ -77,17 +77,26 @@
   </aside>
   <div class="flex min-h-0 min-w-0 flex-1 flex-col">
     <div class="flex min-h-0 flex-1 flex-col space-y-4 p-4">
-      <h2 class="mb-2 text-lg font-bold">Equilibration Protocol</h2>
-      <div class="flex items-center gap-2">
-        <p class="text-xs">Equilibration Scheme:</p>
-        <Select bind:value={ensemble}>
-          <option value="npt">NPT</option>
-          <option value="nvt">NVT</option>
-          <option value="npat">NPAT</option>
-          <option value="npgt">NPgT</option>
-        </Select>
-        <Button variant="outline">Load</Button>
-        <Button variant="outline">Save</Button>
+      <div class="">
+        <h2 class="text-lg font-bold">Equilibration</h2>
+        <p class="text-sm text-neutral-500">
+          Setup and run an equilibration protocol for membrane protein systems
+        </p>
+      </div>
+      <Divider />
+      <div>
+        <h3 class="font-semibold">Protocol</h3>
+        <div class="flex items-center gap-2">
+          <p class="text-sm">Ensemble:</p>
+          <Select bind:value={ensemble}>
+            <option value="npt">NPT</option>
+            <option value="nvt">NVT</option>
+            <option value="npat">NPAT</option>
+            <option value="npgt">NPgT</option>
+          </Select>
+          <Button variant="outline">Load</Button>
+          <Button variant="outline">Save</Button>
+        </div>
       </div>
       <div class="flex min-h-0 w-full flex-1 items-start gap-4 overflow-auto pb-2">
         {#each stages as _, i (stages[i].name)}
