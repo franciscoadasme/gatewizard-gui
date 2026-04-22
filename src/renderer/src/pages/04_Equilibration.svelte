@@ -17,14 +17,15 @@
   let ensemble = $state('nvt')
   let stages = $state(protocols.base.stages)
 
-  function onSelectInputDir() {
-    const dir = window.api.showOpenDialog({
-      title: 'Select a input directory',
-      filters: [{ name: 'All Files', extensions: ['*'] }]
-    })
-    if (dir) {
-      inputDir = dir
+  async function selectInputDir() {
+    const { canceled, dirPath } = await window.api.openDirectoryDialog(
+      'Select Input Directory',
+      workingDir
+    )
+    if (canceled) {
+      return
     }
+    inputDir = dirPath
   }
 </script>
 
@@ -33,17 +34,16 @@
     <div class="space-y-2">
       <div class="space-y-1">
         <p class="text-xs">Input directory:</p>
+        <p class="text-xs text-neutral-500">
+          Must contain <code>.prmtop</code> and <code>.inpcrd</code> files.
+        </p>
         {#if inputDir}
-          <p
-            class="w-full rounded-md border p-2 wrap-break-word dark:border-neutral-800 dark:text-neutral-400"
-          >
-            {inputDir}
-          </p>
-          <Button variant="outline" className="w-full" onclick={onSelectInputDir}
+          <Input type="text" value={inputDir} className="w-full" disabled />
+          <Button variant="outline" className="w-full" onclick={selectInputDir}
             >Select another directory...</Button
           >
         {:else}
-          <Button variant="outline" className="w-full" onclick={onSelectInputDir}
+          <Button variant="outline" className="w-full" onclick={selectInputDir}
             >Select a directory...</Button
           >
         {/if}
