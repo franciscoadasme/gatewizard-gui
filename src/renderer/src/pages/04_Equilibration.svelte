@@ -49,6 +49,22 @@
     }
   }
 
+  async function saveProtocol() {
+    const { canceled, filePath } = await window.api.saveFileDialog(
+      'Save Protocol',
+      [{ name: 'JSON', extensions: ['json'] }],
+      workingDir
+    )
+    if (canceled) {
+      return
+    }
+    try {
+      await window.api.writeJson(filePath, $state.snapshot(protocol))
+    } catch (error) {
+      alert(error instanceof Error ? error.message : String(error))
+    }
+  }
+
   async function selectInputDir() {
     const { canceled, dirPath } = await window.api.openDirectoryDialog(
       'Select Input Directory',
@@ -122,7 +138,7 @@
             <option value="npgt">NPgT</option>
           </Select>
           <Button variant="outline" onclick={loadProtocol}>Load</Button>
-          <Button variant="outline">Save</Button>
+          <Button variant="outline" onclick={saveProtocol}>Save</Button>
         </div>
       </div>
       {#if isProtocolValid}
