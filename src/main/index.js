@@ -250,3 +250,22 @@ ipcMain.handle('dialog:openLigandFile', async (_event, title, extensions) => {
   }
   return { canceled: false, filePath: result.filePaths[0] }
 })
+
+ipcMain.handle('dialog:openFile', async (_event, title, filters, defaultPath = undefined) => {
+  filters = filters || []
+  if (!filters.some((filter) => filter.name.toLowerCase() === 'all files')) {
+    filters.push({ name: 'All files', extensions: ['*'] })
+  }
+
+  const win = BrowserWindow.getFocusedWindow()
+  const result = await dialog.showOpenDialog(win ?? undefined, {
+    title: title || 'Open File',
+    filters,
+    defaultPath,
+    properties: ['openFile']
+  })
+  if (result.canceled || result.filePaths.length === 0) {
+    return { canceled: true }
+  }
+  return { canceled: false, filePath: result.filePaths[0] }
+})
