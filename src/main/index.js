@@ -275,3 +275,22 @@ ipcMain.handle('fs:readJson', async (_event, filePath) => {
   const contents = await readFile(filePath, 'utf-8')
   return JSON.parse(contents)
 })
+
+ipcMain.handle('dialog:saveFile', async (_event, title, filters, defaultPath = undefined) => {
+  filters = filters || []
+  if (!filters.some((filter) => filter.name.toLowerCase() === 'all files')) {
+    filters.push({ name: 'All files', extensions: ['*'] })
+  }
+
+  const win = BrowserWindow.getFocusedWindow()
+  const result = await dialog.showSaveDialog(win ?? undefined, {
+    title: title || 'Save File',
+    filters: filters,
+    defaultPath: defaultPath || undefined,
+    properties: ['showOverwriteConfirmation', 'createDirectory']
+  })
+  if (result.canceled || !result.filePath) {
+    return { canceled: true }
+  }
+  return { canceled: false, filePath: result.filePath }
+})

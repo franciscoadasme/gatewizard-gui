@@ -10,7 +10,8 @@ const api = {
     ipcRenderer.invoke('dialog:openDirectory', title, defaultPath),
   openLigandFileDialog: (title, extensions) =>
     ipcRenderer.invoke('dialog:openLigandFile', title, extensions),
-  readJson: (filePath) => ipcRenderer.invoke('fs:readJson', filePath)
+  saveFileDialog: (title, filters, defaultPath = undefined) =>
+    ipcRenderer.invoke('dialog:saveFile', title, filters, defaultPath),
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to
