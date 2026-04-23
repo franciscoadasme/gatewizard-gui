@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { spawn } from 'child_process'
 import { watch } from 'fs'
-import { readFile } from 'fs/promises'
+import { readFile, writeFile } from 'fs/promises'
 import path, { join } from 'path'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -221,19 +221,19 @@ ipcMain.handle('dialog:openPdb', async () => {
 })
 
 ipcMain.handle(
-'dialog:openDirectory',
-async (_event, title = 'Select Directory', defaultPath = undefined) => {
-  const win = BrowserWindow.getFocusedWindow()
-  const result = await dialog.showOpenDialog(win ?? undefined, {
-    title,
+  'dialog:openDirectory',
+  async (_event, title = 'Select Directory', defaultPath = undefined) => {
+    const win = BrowserWindow.getFocusedWindow()
+    const result = await dialog.showOpenDialog(win ?? undefined, {
+      title,
       defaultPath,
-    properties: ['openDirectory']
-  })
-  if (result.canceled || result.filePaths.length === 0) {
-    return { canceled: true }
+      properties: ['openDirectory']
+    })
+    if (result.canceled || result.filePaths.length === 0) {
+      return { canceled: true }
+    }
+    return { canceled: false, dirPath: result.filePaths[0] }
   }
-  return { canceled: false, dirPath: result.filePaths[0] }
-}
 )
 
 ipcMain.handle('dialog:openLigandFile', async (_event, title, extensions) => {
@@ -293,4 +293,8 @@ ipcMain.handle('dialog:saveFile', async (_event, title, filters, defaultPath = u
     return { canceled: true }
   }
   return { canceled: false, filePath: result.filePath }
+})
+
+ipcMain.handle('fs:writeJson', async (_event, filePath, data) => {
+  await writeFile(filePath, JSON.stringify(data, null, 2))
 })
