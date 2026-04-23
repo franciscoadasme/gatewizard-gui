@@ -2,7 +2,7 @@
   import Button from '../components/ui/Button.svelte'
   import Divider from '../components/ui/Divider.svelte'
   import EquilibrationStage from '../components/EquilibrationStage.svelte'
-  import protocols from '../../../../resources/protocols.json'
+  import baseProtocol from '../../../../resources/protocols/base.json'
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Input from '../components/ui/Input.svelte'
   import Select from '../components/ui/Select.svelte'
@@ -27,7 +27,7 @@
   let ensemble = $state('nvt')
   let inputDir = $state('')
   let outputDir = $state('equilibration')
-  let stages = $state(protocols.base.stages)
+  let protocol = $state(baseProtocol)
 
   const CurrentEngine = $derived(engines.find((e) => e.id === engine)?.Component)
 
@@ -98,7 +98,8 @@
       </div>
       <Divider />
       <div>
-        <h3 class="font-semibold">Protocol</h3>
+        <h3 class="font-semibold">{protocol.name}</h3>
+        <p class="mb-2 text-sm text-neutral-500">{protocol.description}</p>
         <div class="flex items-center gap-2">
           <p class="text-sm">Ensemble:</p>
           <Select bind:value={ensemble}>
@@ -112,8 +113,8 @@
         </div>
       </div>
       <div class="flex min-h-0 w-full flex-1 items-start gap-4 overflow-auto pb-2">
-        {#each stages as _, i (stages[i].name)}
-          <EquilibrationStage bind:stage={stages[i]} {ensemble} />
+          {#each protocol.stages as _, i (protocol.stages[i].name)}
+            <EquilibrationStage bind:stage={protocol.stages[i]} {ensemble} />
         {/each}
       </div>
     </div>
@@ -138,7 +139,7 @@
         <Button variant="outline" size="sm">Process Information</Button>
       </div>
       <div class="">
-        {#each stages as stage (stage.name)}
+        {#each protocol.stages as stage (stage.name)}
           <div class="flex items-center gap-2">
             <p class="text-xs">{stage.name}</p>
           </div>
