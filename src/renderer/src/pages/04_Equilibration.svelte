@@ -1,6 +1,7 @@
 <script>
   import Button from '../components/ui/Button.svelte'
   import Divider from '../components/ui/Divider.svelte'
+  import Empty from '../components/ui/Empty.svelte'
   import EquilibrationStage from '../components/EquilibrationStage.svelte'
   import baseProtocol from '../../../../resources/protocols/base.json'
   import Checkbox from '../components/ui/Checkbox.svelte'
@@ -30,6 +31,23 @@
   let protocol = $state(baseProtocol)
 
   const CurrentEngine = $derived(engines.find((e) => e.id === engine)?.Component)
+  const isProtocolValid = $derived(Array.isArray(protocol.stages) && protocol.stages.length > 0)
+
+  async function loadProtocol() {
+    const { canceled, filePath } = await window.api.openFileDialog(
+      'Select Protocol File',
+      [{ name: 'JSON', extensions: ['json'] }],
+      workingDir
+    )
+    if (canceled) {
+      return
+    }
+    try {
+      protocol = await window.api.readJson(filePath)
+    } catch (error) {
+      alert(error instanceof Error ? error.message : String(error))
+    }
+  }
 
   async function selectInputDir() {
     const { canceled, dirPath } = await window.api.openDirectoryDialog(
@@ -90,16 +108,11 @@
   </aside>
   <div class="flex min-h-0 min-w-0 flex-1 flex-col">
     <div class="flex min-h-0 flex-1 flex-col space-y-4 p-4">
-      <div class="">
-        <h2 class="text-lg font-bold">Equilibration</h2>
-        <p class="text-sm text-neutral-500">
-          Setup and run an equilibration protocol for membrane protein systems
-        </p>
-      </div>
-      <Divider />
       <div>
-        <h3 class="font-semibold">{protocol.name}</h3>
-        <p class="mb-2 text-sm text-neutral-500">{protocol.description}</p>
+        <h3 class="font-semibold">{isProtocolValid ? protocol.name : 'Protocol'}</h3>
+        <p class="mb-2 text-sm text-neutral-500">
+          {isProtocolValid ? protocol.description : 'Load a protocol to get started'}
+        </p>
         <div class="flex items-center gap-2">
           <p class="text-sm">Ensemble:</p>
           <Select bind:value={ensemble}>
@@ -108,15 +121,19 @@
             <option value="npat">NPAT</option>
             <option value="npgt">NPgT</option>
           </Select>
-          <Button variant="outline">Load</Button>
+          <Button variant="outline" onclick={loadProtocol}>Load</Button>
           <Button variant="outline">Save</Button>
         </div>
       </div>
-      <div class="flex min-h-0 w-full flex-1 items-start gap-4 overflow-auto pb-2">
+      {#if isProtocolValid}
+        <div class="flex min-h-0 w-full flex-1 items-start gap-4 overflow-auto pb-2">
           {#each protocol.stages as _, i (protocol.stages[i].name)}
             <EquilibrationStage bind:stage={protocol.stages[i]} {ensemble} />
-        {/each}
-      </div>
+          {/each}
+        </div>
+      {:else}
+        <Empty message="No protocol loaded" />
+      {/if}
     </div>
     <div
       class="max-h-2/5 min-h-1/5 space-y-2 overflow-y-auto border-t p-4 text-xs dark:border-neutral-800"

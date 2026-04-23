@@ -9,7 +9,8 @@ const api = {
   openDirectoryDialog: (title = 'Select Directory', defaultPath = undefined) =>
     ipcRenderer.invoke('dialog:openDirectory', title, defaultPath),
   openLigandFileDialog: (title, extensions) =>
-    ipcRenderer.invoke('dialog:openLigandFile', title, extensions)
+    ipcRenderer.invoke('dialog:openLigandFile', title, extensions),
+  readJson: (filePath) => ipcRenderer.invoke('fs:readJson', filePath)
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to

@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { spawn } from 'child_process'
 import { watch } from 'fs'
+import { readFile } from 'fs/promises'
 import path, { join } from 'path'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -268,4 +269,9 @@ ipcMain.handle('dialog:openFile', async (_event, title, filters, defaultPath = u
     return { canceled: true }
   }
   return { canceled: false, filePath: result.filePaths[0] }
+})
+
+ipcMain.handle('fs:readJson', async (_event, filePath) => {
+  const contents = await readFile(filePath, 'utf-8')
+  return JSON.parse(contents)
 })
