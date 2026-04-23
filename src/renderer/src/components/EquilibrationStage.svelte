@@ -6,6 +6,7 @@
   /** @type {{ stage: { name: string, description: string, time_ns: number, steps: number, ensemble: string, temperature: number, pressure: number, constraints: Record<string, number>, timestep: number, dcd_freq: number, use_gpu: boolean, cpu_cores: number, gpu_id: number, num_gpus: number, minimize_steps?: number, margin?: number }, ensemble: string }} */
   let { stage = $bindable(), ensemble } = $props()
 
+  const uid = $props.id()
   const constraintKeys = $derived(Object.keys(stage.constraints))
 </script>
 
@@ -14,12 +15,12 @@
     <h3>{stage.name}</h3>
     <p class="text-xs text-neutral-500">{stage.description}</p>
   </div>
-  <div
+  <form
     class="grid grid-cols-[1fr_--spacing(20)_auto] items-center gap-x-2 gap-y-1 text-sm text-nowrap"
   >
-    <label for="time_ns">Time:</label>
+    <label for="{uid}-time_ns">Time:</label>
     <Input
-      id="time_ns"
+      id="{uid}-time_ns"
       size="sm"
       type="number"
       min="0"
@@ -29,9 +30,9 @@
     />
     <p class="text-xs text-neutral-500">ns</p>
 
-    <label for="steps">Steps:</label>
+    <label for="{uid}-steps">Steps:</label>
     <Input
-      id="steps"
+      id="{uid}-steps"
       size="sm"
       type="number"
       min="0"
@@ -42,9 +43,9 @@
     <p class="text-xs text-neutral-500">steps</p>
 
     {#if stage.minimize_steps != null}
-      <label for="minimize">Minimize:</label>
+      <label for="{uid}-minimize">Minimize:</label>
       <Input
-        id="minimize"
+        id="{uid}-minimize"
         size="sm"
         type="number"
         min="0"
@@ -55,13 +56,18 @@
       <p class="text-xs text-neutral-500">steps</p>
     {/if}
 
-    <label for="ensemble">Ensemble:</label>
-    <Input id="ensemble" size="sm" value={stage.ensemble ?? ensemble.toUpperCase()} disabled />
+    <label for="{uid}-ensemble">Ensemble:</label>
+    <Input
+      id="{uid}-ensemble"
+      size="sm"
+      value={stage.ensemble ?? ensemble.toUpperCase()}
+      disabled
+    />
     <p></p>
 
-    <label for="temperature">Temperature:</label>
+    <label for="{uid}-temperature">Temperature:</label>
     <Input
-      id="temperature"
+      id="{uid}-temperature"
       size="sm"
       type="number"
       min="0"
@@ -72,9 +78,9 @@
     <p class="text-xs text-neutral-500">K</p>
 
     {#if (stage.ensemble || ensemble).includes('P')}
-      <label for="pressure">Pressure:</label>
+      <label for="{uid}-pressure">Pressure:</label>
       <Input
-        id="pressure"
+        id="{uid}-pressure"
         size="sm"
         type="number"
         min="0"
@@ -85,9 +91,9 @@
       <p class="text-xs text-neutral-500">atm</p>
     {/if}
 
-    <label for="timestep">Timestep:</label>
+    <label for="{uid}-timestep">Timestep:</label>
     <Input
-      id="timestep"
+      id="{uid}-timestep"
       size="sm"
       type="number"
       min="1"
@@ -97,9 +103,9 @@
     />
     <p class="text-xs text-neutral-500">fs</p>
 
-    <label for="dcd_freq">DCD Frequency:</label>
+    <label for="{uid}-dcd_freq">DCD Frequency:</label>
     <Input
-      id="dcd_freq"
+      id="{uid}-dcd_freq"
       size="sm"
       type="number"
       min="1"
@@ -110,9 +116,9 @@
     <p class="text-xs text-neutral-500">steps</p>
 
     {#if stage.margin != null}
-      <label for="margin">Margin:</label>
+      <label for="{uid}-margin">Margin:</label>
       <Input
-        id="margin"
+        id="{uid}-margin"
         size="sm"
         type="number"
         min="1"
@@ -129,9 +135,9 @@
     <h4 class="col-span-3 mb-2 font-semibold">Positional Restraints</h4>
 
     {#each constraintKeys as key (key)}
-      <label for={`restraint_${key}`} class="capitalize">{key.replace(/_/g, ' ')}:</label>
+      <label for="{uid}-restraint_{key}" class="capitalize">{key.replace(/_/g, ' ')}:</label>
       <Input
-        id={`restraint_${key}`}
+        id="{uid}-restraint_{key}"
         size="sm"
         type="number"
         min="0.0"
@@ -147,21 +153,23 @@
     </div>
     <h4 class="col-span-3 mb-2 font-semibold">Computational Resources</h4>
 
-    <label for="cpu_cores">CPU Cores:</label>
-    <Input id="cpu_cores" size="sm" type="number" bind:value={stage.cpu_cores} />
+    <label for="{uid}-cpu_cores">CPU Cores:</label>
+    <Input id="{uid}-cpu_cores" size="sm" type="number" bind:value={stage.cpu_cores} />
     <p class="text-xs text-neutral-500">cores</p>
 
     <div class="col-span-3 mt-2 flex items-center gap-2">
-      <Checkbox id="use_gpu" bind:checked={stage.use_gpu} />
-      <label for="use_gpu">Enable GPU acceleration</label>
+      <Checkbox id="{uid}-use_gpu" bind:checked={stage.use_gpu} />
+      <label for="{uid}-use_gpu">Enable GPU acceleration</label>
     </div>
 
-    <label for="gpu_id">GPU ID:</label>
-    <Input id="gpu_id" size="sm" type="number" bind:value={stage.gpu_id} />
-    <p class="text-xs text-neutral-500">device ID</p>
+    {#if stage.use_gpu}
+      <label for="{uid}-gpu_id">GPU ID:</label>
+      <Input id="{uid}-gpu_id" size="sm" type="number" bind:value={stage.gpu_id} />
+      <p class="text-xs text-neutral-500">device ID</p>
 
-    <label for="num_gpus">Number of GPUs:</label>
-    <Input id="num_gpus" size="sm" type="number" bind:value={stage.num_gpus} />
-    <p class="text-xs text-neutral-500">devices</p>
-  </div>
+      <label for="{uid}-num_gpus">Number of GPUs:</label>
+      <Input id="{uid}-num_gpus" size="sm" type="number" bind:value={stage.num_gpus} />
+      <p class="text-xs text-neutral-500">devices</p>
+    {/if}
+  </form>
 </div>
