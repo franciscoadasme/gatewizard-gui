@@ -91,6 +91,20 @@
       <p class="text-xs text-neutral-500">atm</p>
     {/if}
 
+    {#if ['npat', 'npgt'].includes(stage.ensemble || ensemble)}
+      <label for="{uid}-surface-tension">Surface Tension:</label>
+      <Input
+        id="{uid}-surface-tension"
+        size="sm"
+        type="number"
+        min="0"
+        max="100"
+        step="1"
+        bind:value={stage.surface_tension}
+      />
+      <p class="text-xs text-neutral-500">dyn/cm</p>
+    {/if}
+
     <label for="{uid}-timestep">Timestep:</label>
     <Input
       id="{uid}-timestep"
