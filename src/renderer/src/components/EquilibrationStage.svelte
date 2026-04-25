@@ -1,12 +1,19 @@
 <script>
+  import ConstraintEditor from './ConstraintEditor.svelte'
   import Divider from './ui/Divider.svelte'
+  import Gear from './icons/Gear.svelte'
   import Input from './ui/Input.svelte'
   import Checkbox from './ui/Checkbox.svelte'
 
-  /** @type {{ stage: { name: string, description: string, time_ns: number, steps: number, ensemble: string, temperature: number, pressure: number, constraints: Array<{ id: string, name: string, force_constant: number, selection: string }>, timestep: number, dcd_freq: number, use_gpu: boolean, cpu_cores: number, gpu_id: number, num_gpus: number, minimize_steps?: number, margin?: number, surface_tension?: number }, ensemble: string }} */
+  /** @typedef {{ id: string, name: string, force_constant: number, selection: string }} Constraint */
+
+  /** @type {{ stage: { name: string, description: string, time_ns: number, steps: number, ensemble: string, temperature: number, pressure: number, constraints: Array<Constraint>, timestep: number, dcd_freq: number, use_gpu: boolean, cpu_cores: number, gpu_id: number, num_gpus: number, minimize_steps?: number, margin?: number, surface_tension?: number }, ensemble: string }} */
   let { stage = $bindable(), ensemble } = $props()
 
   const uid = $props.id()
+
+  /** @type {Constraint | null} */
+  let editingConstraint = $state(null)
 </script>
 
 <div class="rounded-md bg-neutral-900 p-4">
@@ -158,7 +165,16 @@
         step="0.1"
         bind:value={stage.constraints[i].force_constant}
       />
-      <p class="text-xs text-neutral-500">kcal/mol/Å²</p>
+      <div>
+        <button
+          type="button"
+          class="rounded p-1 text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-100 active:translate-y-0.5"
+          onclick={() => (editingConstraint = stage.constraints[i])}
+          aria-label="Edit {constraint.name}"
+        >
+          <Gear className="h-4 w-4" />
+        </button>
+      </div>
     {/each}
 
     <div class="col-span-3 my-4">
@@ -185,4 +201,6 @@
       <p class="text-xs text-neutral-500">devices</p>
     {/if}
   </form>
+
+  <ConstraintEditor constraint={editingConstraint} onClose={() => (editingConstraint = null)} />
 </div>
