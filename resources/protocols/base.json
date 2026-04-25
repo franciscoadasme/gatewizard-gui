@@ -11,15 +11,15 @@
       "temperature": 303.15,
       "pressure": 1.0,
       "minimize_steps": 10000,
-      "constraints": {
-        "protein_backbone": 10.0,
-        "protein_sidechain": 5.0,
-        "lipid_head": 2.5,
-        "lipid_tail": 2.5,
-        "water": 0.0,
-        "ions": 10.0,
-        "other": 0.0
-      },
+      "constraints": [
+        { "name": "Protein backbone", "force_constant": 10.0, "selection": "protein_backbone" },
+        { "name": "Protein sidechain", "force_constant": 5.0, "selection": "protein_sidechain" },
+        { "name": "Lipid head", "force_constant": 2.5, "selection": "lipid_head" },
+        { "name": "Lipid tail", "force_constant": 2.5, "selection": "lipid_tail" },
+        { "name": "Water", "force_constant": 0.0, "selection": "water" },
+        { "name": "Ions", "force_constant": 10.0, "selection": "ions" },
+        { "name": "Other", "force_constant": 0.0, "selection": "other" }
+      ],
       "timestep": 1.0,
       "dcd_freq": 5000,
       "use_gpu": true,
@@ -35,15 +35,15 @@
       "ensemble": "NVT",
       "temperature": 303.15,
       "pressure": 1.0,
-      "constraints": {
-        "protein_backbone": 5.0,
-        "protein_sidechain": 2.5,
-        "lipid_head": 2.5,
-        "lipid_tail": 2.5,
-        "water": 0.0,
-        "ions": 0.0,
-        "other": 0.0
-      },
+      "constraints": [
+        { "name": "Protein backbone", "force_constant": 5.0, "selection": "protein_backbone" },
+        { "name": "Protein sidechain", "force_constant": 2.5, "selection": "protein_sidechain" },
+        { "name": "Lipid head", "force_constant": 2.5, "selection": "lipid_head" },
+        { "name": "Lipid tail", "force_constant": 2.5, "selection": "lipid_tail" },
+        { "name": "Water", "force_constant": 0.0, "selection": "water" },
+        { "name": "Ions", "force_constant": 0.0, "selection": "ions" },
+        { "name": "Other", "force_constant": 0.0, "selection": "other" }
+      ],
       "timestep": 1.0,
       "dcd_freq": 5000,
       "use_gpu": true,
@@ -60,15 +60,15 @@
       "temperature": 303.15,
       "pressure": 1.0,
       "surface_tension": 0.0,
-      "constraints": {
-        "protein_backbone": 2.5,
-        "protein_sidechain": 1.0,
-        "lipid_head": 1.0,
-        "lipid_tail": 1.0,
-        "water": 0.0,
-        "ions": 0.0,
-        "other": 0.0
-      },
+      "constraints": [
+        { "name": "Protein backbone", "force_constant": 2.5, "selection": "protein_backbone" },
+        { "name": "Protein sidechain", "force_constant": 1.0, "selection": "protein_sidechain" },
+        { "name": "Lipid head", "force_constant": 1.0, "selection": "lipid_head" },
+        { "name": "Lipid tail", "force_constant": 1.0, "selection": "lipid_tail" },
+        { "name": "Water", "force_constant": 0.0, "selection": "water" },
+        { "name": "Ions", "force_constant": 0.0, "selection": "ions" },
+        { "name": "Other", "force_constant": 0.0, "selection": "other" }
+      ],
       "timestep": 1.0,
       "dcd_freq": 5000,
       "margin": 5.0,
@@ -86,15 +86,15 @@
       "temperature": 303.15,
       "pressure": 1.0,
       "surface_tension": 0.0,
-      "constraints": {
-        "protein_backbone": 1,
-        "protein_sidechain": 0.5,
-        "lipid_head": 0.5,
-        "lipid_tail": 0.5,
-        "water": 0.0,
-        "ions": 0.0,
-        "other": 0.0
-      },
+      "constraints": [
+        { "name": "Protein backbone", "force_constant": 1.0, "selection": "protein_backbone" },
+        { "name": "Protein sidechain", "force_constant": 0.5, "selection": "protein_sidechain" },
+        { "name": "Lipid head", "force_constant": 0.5, "selection": "lipid_head" },
+        { "name": "Lipid tail", "force_constant": 0.5, "selection": "lipid_tail" },
+        { "name": "Water", "force_constant": 0.0, "selection": "water" },
+        { "name": "Ions", "force_constant": 0.0, "selection": "ions" },
+        { "name": "Other", "force_constant": 0.0, "selection": "other" }
+      ],
       "timestep": 2.0,
       "dcd_freq": 5000,
       "margin": 5.0,
@@ -112,15 +112,15 @@
       "temperature": 303.15,
       "pressure": 1.0,
       "surface_tension": 0.0,
-      "constraints": {
-        "protein_backbone": 0.5,
-        "protein_sidechain": 0.1,
-        "lipid_head": 0.1,
-        "lipid_tail": 0.1,
-        "water": 0.0,
-        "ions": 0.0,
-        "other": 0.0
-      },
+      "constraints": [
+        { "name": "Protein backbone", "force_constant": 0.5, "selection": "protein_backbone" },
+        { "name": "Protein sidechain", "force_constant": 0.1, "selection": "protein_sidechain" },
+        { "name": "Lipid head", "force_constant": 0.1, "selection": "lipid_head" },
+        { "name": "Lipid tail", "force_constant": 0.1, "selection": "lipid_tail" },
+        { "name": "Water", "force_constant": 0.0, "selection": "water" },
+        { "name": "Ions", "force_constant": 0.0, "selection": "ions" },
+        { "name": "Other", "force_constant": 0.0, "selection": "other" }
+      ],
       "timestep": 2.0,
       "dcd_freq": 5000,
       "margin": 5.0,
@@ -138,15 +138,15 @@
       "temperature": 303.15,
       "pressure": 1.0,
       "surface_tension": 0.0,
-      "constraints": {
-        "protein_backbone": 0.1,
-        "protein_sidechain": 0.0,
-        "lipid_head": 0.0,
-        "lipid_tail": 0.0,
-        "water": 0.0,
-        "ions": 0.0,
-        "other": 0.0
-      },
+      "constraints": [
+        { "name": "Protein backbone", "force_constant": 0.1, "selection": "protein_backbone" },
+        { "name": "Protein sidechain", "force_constant": 0.0, "selection": "protein_sidechain" },
+        { "name": "Lipid head", "force_constant": 0.0, "selection": "lipid_head" },
+        { "name": "Lipid tail", "force_constant": 0.0, "selection": "lipid_tail" },
+        { "name": "Water", "force_constant": 0.0, "selection": "water" },
+        { "name": "Ions", "force_constant": 0.0, "selection": "ions" },
+        { "name": "Other", "force_constant": 0.0, "selection": "other" }
+      ],
       "timestep": 2.0,
       "dcd_freq": 5000,
       "margin": 5.0,
@@ -164,15 +164,15 @@
       "temperature": 303.15,
       "pressure": 1.0,
       "surface_tension": 0.0,
-      "constraints": {
-        "protein_backbone": 0.0,
-        "protein_sidechain": 0.0,
-        "lipid_head": 0.0,
-        "lipid_tail": 0.0,
-        "water": 0.0,
-        "ions": 0.0,
-        "other": 0.0
-      },
+      "constraints": [
+        { "name": "Protein backbone", "force_constant": 0.0, "selection": "protein_backbone" },
+        { "name": "Protein sidechain", "force_constant": 0.0, "selection": "protein_sidechain" },
+        { "name": "Lipid head", "force_constant": 0.0, "selection": "lipid_head" },
+        { "name": "Lipid tail", "force_constant": 0.0, "selection": "lipid_tail" },
+        { "name": "Water", "force_constant": 0.0, "selection": "water" },
+        { "name": "Ions", "force_constant": 0.0, "selection": "ions" },
+        { "name": "Other", "force_constant": 0.0, "selection": "other" }
+      ],
       "timestep": 2.0,
       "dcd_freq": 50000,
       "margin": 5.0,
@@ -181,5 +181,14 @@
       "gpu_id": 0,
       "num_gpus": 1
     }
-  ]
+  ],
+  "selections": {
+    "protein_backbone": "protein and backbone",
+    "protein_sidechain": "protein and not backbone",
+    "lipid_head": "(resname POPC POPE POPS DPPC DMPC DOPC DSPC PC PE PS PA PG PI SM OL LA MY ST AR OLE PAL STE LIN CHOL CHL CHOLEST PALM OLEO STEROL) and (name P O11 O12 O13 O14 O21 O22 O31 O32 O33 O34 O1P O2P O3P O4P OP1 OP2 OP3 OP4 N C11 C12 C13 C14 N31 C32 C33 C34 C35 C1 C2 C3 HN1 HN2 HN3 HO2 HO3 HS)",
+    "lipid_tail": "(resname POPC POPE POPS DPPC DMPC DOPC DSPC PC PE PS PA PG PI SM OL LA MY ST AR OLE PAL STE LIN CHOL CHL CHOLEST PALM OLEO STEROL) and not (name P O11 O12 O13 O14 O21 O22 O31 O32 O33 O34 O1P O2P O3P O4P OP1 OP2 OP3 OP4 N C11 C12 C13 C14 N31 C32 C33 C34 C35 C1 C2 C3 HN1 HN2 HN3 HO2 HO3 HS)",
+    "water": "resname TIP3 HOH WAT SOL TIP4 SPC T3P T4P",
+    "ions": "resname NA CL K CA MG ZN FE CU SOD CLA POT CAL MAG ZIN IRN COP Na+ Cl- K+ Ca2+ Mg2+ Zn2+ Fe2+ Fe3+ Cu2+ NA+ CL- LIT RUB CES BAR",
+    "other": "not (protein or (resname POPC POPE POPS DPPC DMPC DOPC DSPC PC PE PS PA PG PI SM OL LA MY ST AR OLE PAL STE LIN CHOL CHL CHOLEST PALM OLEO STEROL) or (resname TIP3 HOH WAT SOL TIP4 SPC T3P T4P) or (resname NA CL K CA MG ZN FE CU SOD CLA POT CAL MAG ZIN IRN COP Na+ Cl- K+ Ca2+ Mg2+ Zn2+ Fe2+ Fe3+ Cu2+ NA+ CL- LIT RUB CES BAR))"
+  }
 }

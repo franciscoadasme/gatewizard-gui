@@ -3,11 +3,10 @@
   import Input from './ui/Input.svelte'
   import Checkbox from './ui/Checkbox.svelte'
 
-  /** @type {{ stage: { name: string, description: string, time_ns: number, steps: number, ensemble: string, temperature: number, pressure: number, constraints: Record<string, number>, timestep: number, dcd_freq: number, use_gpu: boolean, cpu_cores: number, gpu_id: number, num_gpus: number, minimize_steps?: number, margin?: number }, ensemble: string }} */
+  /** @type {{ stage: { name: string, description: string, time_ns: number, steps: number, ensemble: string, temperature: number, pressure: number, constraints: Array<{ id: string, name: string, force_constant: number, selection: string }>, timestep: number, dcd_freq: number, use_gpu: boolean, cpu_cores: number, gpu_id: number, num_gpus: number, minimize_steps?: number, margin?: number, surface_tension?: number }, ensemble: string }} */
   let { stage = $bindable(), ensemble } = $props()
 
   const uid = $props.id()
-  const constraintKeys = $derived(Object.keys(stage.constraints))
 </script>
 
 <div class="rounded-md bg-neutral-900 p-4">
@@ -148,16 +147,16 @@
     </div>
     <h4 class="col-span-3 mb-2 font-semibold">Positional Restraints</h4>
 
-    {#each constraintKeys as key (key)}
-      <label for="{uid}-restraint_{key}" class="capitalize">{key.replace(/_/g, ' ')}:</label>
+    {#each stage.constraints as constraint, i (constraint.id)}
+      <label for="{uid}-restraint_{constraint.id}">{constraint.name}:</label>
       <Input
-        id="{uid}-restraint_{key}"
+        id="{uid}-restraint_{constraint.id}"
         size="sm"
         type="number"
         min="0.0"
         max="20.0"
         step="0.1"
-        bind:value={stage.constraints[key]}
+        bind:value={stage.constraints[i].force_constant}
       />
       <p class="text-xs text-neutral-500">kcal/mol/Å²</p>
     {/each}

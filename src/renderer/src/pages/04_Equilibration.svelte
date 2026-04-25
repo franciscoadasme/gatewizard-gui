@@ -28,7 +28,7 @@
   let ensemble = $state('nvt')
   let inputDir = $state('')
   let outputDir = $state('equilibration')
-  let protocol = $state(baseProtocol)
+  let protocol = $state(prepareProtocolForRendering(baseProtocol))
 
   const CurrentEngine = $derived(engines.find((e) => e.id === engine)?.Component)
   const isProtocolValid = $derived(Array.isArray(protocol.stages) && protocol.stages.length > 0)
@@ -43,10 +43,52 @@
       return
     }
     try {
-      protocol = await window.api.readJson(filePath)
+      protocol = prepareProtocolForRendering(await window.api.readJson(filePath))
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
     }
+  }
+
+  /**
+   * Prepare a freshly loaded protocol for use in the renderer:
+   * generate stable constraint `id`s and resolve any `selection` that is an
+   * alias (a key of the top-level `selections` record) to the underlying
+   * selection text. Mutates and returns the input.
+   * @template {{ stages?: Array<{ constraints?: Array<{ id?: string, selection?: string }> }>, selections?: Record<string, string> }} Protocol
+   * @param {Protocol} p
+   * @returns {Protocol}
+   */
+  function prepareProtocolForRendering(p) {
+    const selections = p?.selections ?? {}
+    for (const stage of p?.stages ?? []) {
+      for (const c of stage.constraints ?? []) {
+        if (!c.id) c.id = crypto.randomUUID()
+        if (c.selection != null && selections[c.selection] != null) {
+          c.selection = selections[c.selection]
+        }
+      }
+    }
+    return p
+  }
+
+  /**
+   * Inverse of {@link prepareProtocolForRendering}: return a snapshot ready to be
+   * persisted. Drops constraint `id`s and replaces each `selection` text with
+   * its alias whenever an entry in the top-level `selections` record matches.
+   */
+  function prepareProtocolForSerialization(snapshot) {
+    const aliasByText = new Map(
+      Object.entries(snapshot.selections ?? {}).map(([alias, text]) => [text, alias])
+    )
+    for (const stage of snapshot.stages ?? []) {
+      for (const c of stage.constraints ?? []) {
+        delete c.id
+        if (c.selection != null && aliasByText.has(c.selection)) {
+          c.selection = aliasByText.get(c.selection)
+        }
+      }
+    }
+    return snapshot
   }
 
   async function saveProtocol() {
@@ -59,7 +101,10 @@
       return
     }
     try {
-      await window.api.writeJson(filePath, $state.snapshot(protocol))
+      await window.api.writeJson(
+        filePath,
+        prepareProtocolForSerialization($state.snapshot(protocol))
+      )
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
     }
