@@ -5,8 +5,8 @@
 
   /** @typedef {{ id: string, name: string, force_constant: number, selection: string }} Constraint */
 
-  /** @type {{source: Constraint | null,onDismiss: () => void,onAccept: (draft: Constraint) => void}} */
-  let { source, onDismiss, onAccept } = $props()
+  /** @type {{ source: Constraint | null, onDismiss: () => void, onAccept: (draft: Constraint) => void, onDelete?: () => void }} */
+  let { source, onDismiss, onAccept, onDelete } = $props()
 
   const uid = $props.id()
 
@@ -63,7 +63,7 @@
       onSubmit()
     }}
   >
-    <h3 class="text-base font-semibold">{editing ? 'Add constraint' : 'Edit constraint'}</h3>
+    <h3 class="text-base font-semibold">{editing ? 'Edit constraint' : 'Add constraint'}</h3>
 
     <div class="space-y-1">
       <label for="{uid}-name" class="text-xs text-neutral-400">Name</label>
@@ -95,9 +95,13 @@
       <span class="text-xs text-neutral-500">kcal/mol/Å²</span>
     </div>
 
-    <div class="mt-2 flex justify-end gap-2">
+    <div class="mt-2 flex items-center justify-end gap-2">
+      {#if editing && onDelete}
+        <Button type="button" variant="danger" onclick={onDelete} className="me-auto">Delete</Button
+        >
+      {/if}
       <Button type="button" variant="outline" onclick={onDismiss}>Cancel</Button>
-      <Button type="submit">{editing ? 'Accept' : 'Save'}</Button>
+      <Button type="submit">{editing ? 'Save' : 'Accept'}</Button>
     </div>
   </form>
 </dialog>

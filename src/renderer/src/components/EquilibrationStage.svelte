@@ -28,6 +28,12 @@
     dismissEditor()
   }
 
+  function deleteConstraint() {
+    if (!editor || editor.index < 0) return
+    stage.constraints = stage.constraints.filter((_, i) => i !== editor.index)
+    dismissEditor()
+  }
+
   function dismissEditor() {
     editor = null
   }
@@ -242,6 +248,7 @@
       source={editor.source}
       onDismiss={dismissEditor}
       onAccept={acceptConstraint}
+      onDelete={deleteConstraint}
     />
   {/if}
 </div>
