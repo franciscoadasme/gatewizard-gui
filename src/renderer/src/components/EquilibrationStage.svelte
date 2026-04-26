@@ -1,4 +1,5 @@
 <script>
+  import Button from './ui/Button.svelte'
   import ConstraintEditor from './ConstraintEditor.svelte'
   import Divider from './ui/Divider.svelte'
   import Gear from './icons/Gear.svelte'
@@ -12,8 +13,33 @@
 
   const uid = $props.id()
 
-  /** @type {Constraint | null} */
-  let editingConstraint = $state(null)
+  /** @type {null | { index: number, source: Constraint | null }} */
+  let editor = $state(null)
+
+  function acceptConstraint(/** @type {Constraint} */ draft) {
+    if (!editor) return
+    if (editor.index < 0) {
+      stage.constraints = [...stage.constraints, { ...draft }]
+    } else {
+      const newConstraints = [...stage.constraints]
+      newConstraints[editor.index] = { ...draft }
+      stage.constraints = newConstraints
+    }
+    dismissEditor()
+  }
+
+  function dismissEditor() {
+    editor = null
+  }
+
+  function openAddConstraint() {
+    editor = { index: -1, source: null }
+  }
+
+  function openEditConstraint(/** @type {number} */ i) {
+    const constraint = stage.constraints[i]
+    editor = { index: i, source: { ...constraint } }
+  }
 </script>
 
 <div class="rounded-md bg-neutral-900 p-4">
@@ -169,13 +195,22 @@
         <button
           type="button"
           class="rounded p-1 text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-100 active:translate-y-0.5"
-          onclick={() => (editingConstraint = stage.constraints[i])}
+          onclick={() => openEditConstraint(i)}
           aria-label="Edit {constraint.name}"
         >
           <Gear className="h-4 w-4" />
         </button>
       </div>
     {/each}
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className="col-span-3"
+      onclick={openAddConstraint}
+    >
+      Add constraint
+    </Button>
 
     <div class="col-span-3 my-4">
       <Divider />
@@ -202,5 +237,11 @@
     {/if}
   </form>
 
-  <ConstraintEditor constraint={editingConstraint} onClose={() => (editingConstraint = null)} />
+  {#if editor}
+    <ConstraintEditor
+      source={editor.source}
+      onDismiss={dismissEditor}
+      onAccept={acceptConstraint}
+    />
+  {/if}
 </div>
