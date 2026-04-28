@@ -31,7 +31,7 @@ from gatewizard.core.builder import Builder
 from gatewizard.tools.force_fields import ForceFieldManager
 from gatewizard.tools.ligand_parametrization import (
     detect_ligands,
-    parametrize_ligand,
+    parametrize_ligand_from_system_pdb,
     get_ligand_2d_image,
     get_ligand_2d_image_from_pdb_lines,
 )
@@ -261,8 +261,8 @@ def parametrize_ligand_endpoint(payload: ParametrizeLigandRequest) -> dict:
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
     working_dir = os.path.dirname(path)
     try:
-        result = parametrize_ligand(
-            ligand_pdb=path,
+        result = parametrize_ligand_from_system_pdb(
+            pdb_file=path,
             ligand_name=payload.ligand_name,
             output_dir=working_dir,
             charge=payload.charge,
