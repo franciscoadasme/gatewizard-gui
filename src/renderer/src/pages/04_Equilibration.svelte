@@ -25,20 +25,25 @@
   /** @type {{ workingDir?: string }} */
   let { workingDir = '' } = $props()
 
+  // form fields
   let engine = $state('namd')
   let ensemble = $state('nvt')
   let inputDir = $state('')
-  let outputDir = $state('equilibration')
+  let outputName = $state('equilibration')
   let protocol = $state(prepareProtocolForRendering(baseProtocol))
 
+  // derived values
   const CurrentEngine = $derived(engines.find((e) => e.id === engine)?.Component)
   const isProtocolValid = $derived(Array.isArray(protocol.stages) && protocol.stages.length > 0)
+  const outputDir = $derived([workingDir, outputName].join('/'))
+
+  // state
 
   async function generateInput() {
     try {
       await generateEquilibration({
         inputDir,
-        outputDir: [workingDir, outputDir].join('/'),
+        outputDir,
         protocol,
         ensemble,
         programConfig: {
@@ -161,7 +166,7 @@
       </div>
       <div class="space-y-1">
         <p class="text-xs">Output directory:</p>
-        <Input type="text" value={outputDir} className="w-full" disabled />
+        <Input type="text" value={outputName} className="w-full" disabled />
       </div>
     </div>
     <Divider />
