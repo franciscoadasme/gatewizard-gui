@@ -3,6 +3,7 @@
 import base64
 import os
 import re
+import shutil
 import tempfile
 from importlib import metadata
 from pathlib import Path
@@ -28,6 +29,7 @@ from pydantic import BaseModel, Field
 from gatewizard.utils.protein_capping import cap_protein
 from gatewizard.core.preparation import PreparationManager
 from gatewizard.core.builder import Builder
+from gatewizard.tools.equilibration import NAMDEquilibrationManager
 from gatewizard.tools.force_fields import ForceFieldManager
 from gatewizard.tools.ligand_parametrization import (
     detect_ligands,
@@ -37,6 +39,22 @@ from gatewizard.tools.ligand_parametrization import (
 )
 
 app = FastAPI(title="GateWizard Backend")
+
+
+def sanitize_value(obj):
+    """Recursively convert numpy scalars/arrays to Python builtins."""
+    if isinstance(obj, dict):
+        return {sanitize_value(k): sanitize_value(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(sanitize_value(v) for v in obj)
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return obj
+
 
 # Renderer may load from Vite (e.g. http://localhost:5173) while the API is on
 # 127.0.0.1:8765 — browsers require CORS for that cross-origin fetch.
@@ -228,7 +246,10 @@ def run_propka(payload: RunPropKaRequest) -> dict:
         )
 
     except Exception as ex:
-        raise HTTPException(status_code=400, detail=str(ex)) from ex
+        import traceback
+
+        tb_str = "".join(traceback.format_exception(type(ex), ex, ex.__traceback__))
+        raise HTTPException(status_code=400, detail=str(ex) + "\n" + tb_str) from ex
 
 
 @app.post("/detect-ligands")
@@ -551,6 +572,155 @@ def prepare_pdb(payload: PreparePDBRequest) -> None:
             fix_caps="capped" in path,
         )
         return dict(output=result["stdout"] + "\n" + result["stderr"])
+
+
+class NAMDConfig(BaseModel):
+    executable: str = Field(description="Path to the NAMD executable")
+
+
+class Constraint(BaseModel):
+    name: str = Field(description="Constraint name")
+    force_constant: float = Field(
+        description="Constraint force constant (kcal/mol/A^2)"
+    )
+    selection: str = Field(description="MDAnalysis selection string")
+
+
+class Stage(BaseModel):
+    constraints: list[Constraint] = Field(description="List of constraints")
+    cpu_cores: int = Field(description="Number of CPU cores")
+    dcd_freq: int = Field(description="Frame output frequency")
+    description: str = Field(description="Stage description")
+    ensemble: str | None = Field(description="NVT, NPT, etc.")
+    gpu_id: int | None = Field(description="GPU ID to use")
+    margin: float | None = Field(description="Nonbonded margin parameter", default=None)
+    minimize_steps: int | None = Field(
+        description="Energy minimization steps", default=None
+    )
+    name: str = Field(description="Stage name")
+    num_gpus: int | None = Field(description="Number of GPUs to use")
+    pressure: float | None = Field(description="Pressure in bar")
+    steps: int = Field(description="Number of MD steps")
+    surface_tension: float | None = Field(
+        description="Surface tension in dyne/cm", default=None
+    )
+    temperature: float = Field(description="Temperature in Kelvin")
+    timestep: float = Field(description="Integration timestep (fs)")
+    use_gpu: bool = Field(description="Whether to use GPU")
+
+
+class Protocol(BaseModel):
+    name: str = Field(description="Protocol name")
+    stages: list[Stage] = Field(description="Protocol stages")
+    description: str = Field(description="Overall protocol description")
+
+
+class GenerateEquilibrationRequest(BaseModel):
+    input_dir: str = Field(description="Absolute path to the input directory")
+    output_dir: str = Field(description="Name of the output directory")
+    ensemble: str = Field(description="Simulation ensemble (NVT, NPT, etc.)")
+    program_config: NAMDConfig = Field(description="Program configuration")
+    protocol: Protocol = Field(description="Simulation protocol")
+
+
+@app.post("/generate-equilibration")
+def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
+    if not os.path.isdir(payload.input_dir):
+        raise HTTPException(
+            status_code=404, detail=f"Directory not found: {payload.input_dir}"
+        )
+
+    input_dir = Path(payload.input_dir)
+    output_dir = Path(payload.output_dir)
+    restraint_dir = output_dir / "restraints"
+
+    restraint_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy system files
+    topology_files = list(input_dir.glob("*.prmtop"))
+    topology_files += list(input_dir.glob("*.top"))
+    if not topology_files:
+        raise HTTPException(status_code=404, detail="No topology files found")
+    shutil.copy2(topology_files[0], output_dir / "system.prmtop")
+
+    crd_files = list(input_dir.glob("*.inpcrd"))
+    crd_files += list(input_dir.glob("*.rst"))
+    if not crd_files:
+        raise HTTPException(status_code=404, detail="No coordinates files found")
+    shutil.copy2(crd_files[0], output_dir / "system.inpcrd")
+
+    pdb_files = list(input_dir.glob("*.pdb"))
+    if pdb_files:
+        shutil.copy2(pdb_files[0], output_dir / "system.pdb")
+
+    bilayer_pdb_files = list(input_dir.glob("bilayer*_lipid.pdb"))
+    if bilayer_pdb_files:
+        shutil.copy2(bilayer_pdb_files[0], output_dir)
+
+    system_files = {
+        "prmtop": "system.prmtop",
+        "inpcrd": "system.inpcrd",
+        "pdb": "system.pdb",
+    }
+
+    # Generate NAMD input files
+    namd = NAMDEquilibrationManager(output_dir, payload.program_config.executable)
+    prev_stage_key = None
+    for i, stage in enumerate(payload.protocol.stages):
+        stem = namd._get_config_name(stage.name, i)
+        stem += "_equilibration" if stem != "step7_production" else ""
+
+        stage_dump = stage.model_dump()
+        stage_dump["constraints"] = {
+            it.name: it.force_constant for it in stage.constraints
+        }
+        contents = namd.generate_charmm_gui_config_file(
+            stage.name,
+            stage_dump,
+            i,
+            system_files,
+            payload.ensemble,
+            prev_stage_key,
+            {it.name: it.model_dump() for it in payload.protocol.stages},
+            force_scheme_type=True,
+        )
+        if not contents.strip():
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to generate NAMD input file for stage {stage.name}",
+            )
+        with open(output_dir / f"{stem}.conf", "w") as file:
+            file.write(contents)
+
+        restraints = [it for it in stage.constraints if it.force_constant > 0]
+        if restraints:
+            namd.generate_restraints_file_mda(
+                output_dir / system_files["pdb"],
+                {it.name: (it.selection, it.force_constant) for it in restraints},
+                restraint_dir / f"{stem}.restraints",
+                stage.name,
+            )
+
+        prev_stage_key = stage.name
+
+    namd.generate_restraints_file_mda(
+        output_dir / system_files["pdb"],
+        {
+            it.name: (it.selection, it.force_constant)
+            for it in payload.protocol.stages[0].constraints
+        },
+        restraint_dir / "restraints.pdb",
+        "General",
+    )
+
+    script_file = output_dir / "run_equilibration.sh"
+    with open(script_file, "w") as file:
+        contents = namd.generate_run_script(
+            {it.name: it.model_dump() for it in payload.protocol.stages},
+            payload.program_config.executable,
+        )
+        file.write(contents)
+    script_file.chmod(0o755)
 
 
 if __name__ == "__main__":

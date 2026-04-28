@@ -7,6 +7,7 @@
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Input from '../components/ui/Input.svelte'
   import Select from '../components/ui/Select.svelte'
+  import { generateEquilibration } from '../lib/backendApi'
 
   /** @type {Record<string, { default: import('svelte').Component, label?: string }>} */
   const engineModules = import.meta.glob('./equilibration/engines/*.svelte', { eager: true })
@@ -32,6 +33,23 @@
 
   const CurrentEngine = $derived(engines.find((e) => e.id === engine)?.Component)
   const isProtocolValid = $derived(Array.isArray(protocol.stages) && protocol.stages.length > 0)
+
+  async function generateInput() {
+    try {
+      await generateEquilibration({
+        inputDir,
+        outputDir: [workingDir, outputDir].join('/'),
+        protocol,
+        ensemble,
+        programConfig: {
+          engine: 'namd',
+          executable: 'namd3'
+        }
+      })
+    } catch (error) {
+      alert(error instanceof Error ? error.message : String(error))
+    }
+  }
 
   async function loadProtocol() {
     const { canceled, filePath } = await window.api.openFileDialog(
@@ -164,7 +182,13 @@
     <Divider />
     <div class="space-y-2">
       <Button className="w-full">Run Equilibration</Button>
-      <Button className="w-full" variant="outline">Generate Input Files</Button>
+      <Button
+        className="w-full"
+        variant="outline"
+        onclick={generateInput}
+        disabled={workingDir === '' || inputDir === '' || !isProtocolValid}
+        >Generate Input Files</Button
+      >
     </div>
   </aside>
   <div class="flex min-h-0 min-w-0 flex-1 flex-col">

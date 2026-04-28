@@ -157,6 +157,14 @@ export async function preparePDB(props) {
   return backendJson('/prepare-pdb', props)
 }
 
+/**
+ * @param {{ workingDir: string, outputName: string, ensemble: string, programConfig: object, protocol: object }} props
+ * @returns {Promise<void>}
+ */
+export async function generateEquilibration(props) {
+  return backendJson('/generate-equilibration', props)
+}
+
 // Helper functions for the backend API.
 
 /**
