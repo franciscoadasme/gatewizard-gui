@@ -726,11 +726,34 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
     script_file.chmod(0o755)
 
 
+def is_equilibration_process_running(workdir: Path) -> bool:
+    pid_file = workdir / "equilibration.pid"
+    if not pid_file.exists():
+        return False
+
+    with open(pid_file, "r") as file:
+        pid = int(file.read().strip())
+
+    try:
+        os.kill(pid, 0)  # Send signal 0 to check if process exists
+        return True
+    except OSError:
+        # Process doesn't exist, remove PID file
+        pid_file.unlink()
+        return False
 
 
 def wait_on_child_process(proc: subprocess.Popen) -> None:
     """Wait on the shell launcher child so exited processes do not stay zombies."""
     proc.wait()
+
+
+@app.post("/check-equilibration")
+def check_equilibration(payload: EquilibrationRequest) -> bool:
+    workdir = Path(os.path.abspath(os.path.expanduser(payload.working_dir)))
+    if not workdir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Directory not found: {workdir}")
+    return is_equilibration_process_running(workdir)
 
 
 @app.post("/run-equilibration")

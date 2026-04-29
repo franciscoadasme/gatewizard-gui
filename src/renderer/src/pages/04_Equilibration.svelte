@@ -7,9 +7,10 @@
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Input from '../components/ui/Input.svelte'
   import Select from '../components/ui/Select.svelte'
-  import { generateEquilibration } from '../lib/backendApi'
   import Spinner from '../components/ui/Spinner.svelte'
   import {
+    checkEquilibration,
+    generateEquilibration,
     runEquilibration
   } from '../lib/backendApi'
 
@@ -154,6 +155,12 @@
     try {
       // TODO: write protocol and compare existing protocol with new one so to enable run button, otherwise disable it
       // as it already run
+      const { running } = await checkEquilibration({ workingDir: outputDir, engine })
+      if (running) {
+        equilibrationRunning = true
+        alert('Equilibration is already running. Waiting for it to finish...')
+        return
+      }
       await runEquilibration({ workingDir: outputDir, engine })
       equilibrationRunning = true
     } catch (error) {
