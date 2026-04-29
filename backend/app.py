@@ -593,7 +593,7 @@ class Stage(BaseModel):
     description: str = Field(description="Stage description")
     ensemble: str | None = Field(description="NVT, NPT, etc.")
     gpu_id: int | None = Field(description="GPU ID to use")
-    margin: float | None = Field(description="Nonbonded margin parameter", default=None)
+    margin: float | None = Field(description="Nonbonded margin parameter", default=5)
     minimize_steps: int | None = Field(
         description="Energy minimization steps", default=None
     )
