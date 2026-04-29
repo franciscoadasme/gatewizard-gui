@@ -167,6 +167,14 @@ export async function generateEquilibration(props) {
 
 /**
  * @param {{ workingDir: string, engine: string }} props
+ * @returns {Promise<boolean>}
+ */
+export async function checkEquilibration(props) {
+  return backendJson('/check-equilibration', props)
+}
+
+/**
+ * @param {{ workingDir: string, engine: string }} props
  * @returns {Promise<void>}
  */
 export async function runEquilibration(props) {
