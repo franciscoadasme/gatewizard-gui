@@ -8,6 +8,7 @@
   import Input from '../components/ui/Input.svelte'
   import Select from '../components/ui/Select.svelte'
   import { generateEquilibration } from '../lib/backendApi'
+  import Spinner from '../components/ui/Spinner.svelte'
   import {
     runEquilibration
   } from '../lib/backendApi'
@@ -205,6 +206,7 @@
     <div class="space-y-2">
       <Button className="w-full" onclick={startEquilibration} disabled={equilibrationRunning}>
         {#if equilibrationRunning}
+          <Spinner className="mr-1" />
           Running...
         {:else}
           Run Equilibration
