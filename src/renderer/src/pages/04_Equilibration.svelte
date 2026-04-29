@@ -3,6 +3,7 @@
   import Divider from '../components/ui/Divider.svelte'
   import Empty from '../components/ui/Empty.svelte'
   import EquilibrationStage from '../components/EquilibrationStage.svelte'
+  import EquilibrationStageStatus from '../components/EquilibrationStageStatus.svelte'
   import baseProtocol from '../../../../resources/protocols/base.json'
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Input from '../components/ui/Input.svelte'
@@ -11,6 +12,7 @@
   import {
     checkEquilibration,
     generateEquilibration,
+    getEquilibrationStatus,
     runEquilibration
   } from '../lib/backendApi'
 
@@ -45,6 +47,8 @@
   // state
   /** @type {boolean} */
   let equilibrationRunning = $state(false)
+  /** @type {Array<{ name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, output: string }>} */
+  let stageStatuses = $state([])
 
   async function generateInput() {
     try {
@@ -168,6 +172,23 @@
       equilibrationRunning = false
     }
   }
+
+  async function updateProgress({ scheduleNext = true } = {}) {
+    try {
+      const payload = { workingDir: outputDir, engine }
+      const { status, stages, output } = await getEquilibrationStatus(payload)
+      if (status === 'not_started') {
+        equilibrationRunning = false
+        stageStatuses = []
+        return
+      }
+
+      equilibrationRunning = status === 'running'
+      stageStatuses = stages
+    } catch (error) {
+      alert(error instanceof Error ? error.message : String(error))
+    }
+  }
 </script>
 
 <div class="flex min-w-0 flex-1 divide-x divide-neutral-800 select-none">
@@ -278,11 +299,9 @@
         <Button variant="outline" size="sm">Refresh</Button>
         <Button variant="outline" size="sm">Process Information</Button>
       </div>
-      <div class="">
-        {#each protocol.stages as stage (stage.name)}
-          <div class="flex items-center gap-2">
-            <p class="text-xs">{stage.name}</p>
-          </div>
+      <div class="grid grid-cols-[auto_1fr] gap-2">
+        {#each stageStatuses as stage_info (stage_info.name)}
+          <EquilibrationStageStatus {stage_info} />
         {/each}
       </div>
     </div>

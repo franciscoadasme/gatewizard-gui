@@ -173,6 +173,14 @@ export async function runEquilibration(props) {
   return backendJson('/run-equilibration', props)
 }
 
+/**
+ * @param {{ workingDir: string, engine: string }} props
+ * @returns {Promise<{ status: 'running' | 'completed' | 'error' | 'not_started', stages: { name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, output: string }[], output: string }>}
+ */
+export async function getEquilibrationStatus(props) {
+  return backendJson('/get-equilibration-status', props)
+}
+
 // Helper functions for the backend API.
 
 /**

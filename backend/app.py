@@ -40,6 +40,7 @@ from gatewizard.tools.ligand_parametrization import (
     get_ligand_2d_image,
     get_ligand_2d_image_from_pdb_lines,
 )
+from gatewizard.utils import namd_analysis
 
 app = FastAPI(title="GateWizard Backend")
 
@@ -759,6 +760,61 @@ def check_equilibration(payload: EquilibrationRequest) -> bool:
     if not workdir.is_dir():
         raise HTTPException(status_code=404, detail=f"Directory not found: {workdir}")
     return is_equilibration_process_running(workdir)
+
+
+@app.post("/get-equilibration-status")
+def get_equilibration_status(payload: EquilibrationRequest) -> dict:
+    workdir = Path(os.path.abspath(os.path.expanduser(payload.working_dir)))
+    if not workdir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Directory not found: {workdir}")
+
+    match payload.engine:
+        case "namd":
+            stage_data = namd_analysis.get_equilibration_progress(workdir)
+        case _:
+            raise HTTPException(
+                status_code=400, detail=f"Unsupported engine: {payload.engine}"
+            )
+
+    stage_infos = []
+    for info in sorted(stage_data.values(), key=lambda it: it.stage_name):
+        # TODO: fix namd timing to ignore minimize in total steps
+        data = dict(
+            name=info.stage_name.replace("_", " ").title(),
+            output="",
+            performance=None,
+            simulated_time=None,
+            status=info.status,
+            total_simulation_time=None,
+        )
+
+        timing = info.timing
+        if timing:
+            data["performance"] = timing.ns_per_day
+            data["simulated_time"] = timing.steps_completed * timing.timestep_fs * 1e-6
+            data["total_simulation_time"] = (
+                timing.total_steps * timing.timestep_fs * 1e-6
+            )
+
+        if info.log_file:
+            with open(info.log_file, "r") as file:
+                data["output"] = "".join(deque(file, maxlen=15))
+
+        stage_infos.append(data)
+
+    if is_equilibration_process_running(workdir):
+        status = "running"
+    elif any(info["status"] == "error" for info in stage_infos):
+        status = "error"
+    elif all(info["status"] == "completed" for info in stage_infos):
+        status = "completed"
+    else:
+        status = "not_started"
+
+    return {
+        "status": status,
+        "stages": stage_infos,
+    }
 
 
 @app.post("/run-equilibration")
