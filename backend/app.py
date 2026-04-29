@@ -748,6 +748,11 @@ def wait_on_child_process(proc: subprocess.Popen) -> None:
     proc.wait()
 
 
+class EquilibrationRequest(BaseModel):
+    working_dir: Path = Field(description="Absolute path to the working directory")
+    engine: str = Field(description="Engine name")
+
+
 @app.post("/check-equilibration")
 def check_equilibration(payload: EquilibrationRequest) -> bool:
     workdir = Path(os.path.abspath(os.path.expanduser(payload.working_dir)))
