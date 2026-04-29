@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import tempfile
+from collections import deque
 from importlib import metadata
 from pathlib import Path
 from typing import List
@@ -768,6 +769,12 @@ def get_equilibration_status(payload: EquilibrationRequest) -> dict:
     if not workdir.is_dir():
         raise HTTPException(status_code=404, detail=f"Directory not found: {workdir}")
 
+    log_file = workdir / "equilibration_background.log"
+    output = ""
+    if log_file.exists():
+        with open(log_file, "r") as file:
+            output = file.read()
+
     match payload.engine:
         case "namd":
             stage_data = namd_analysis.get_equilibration_progress(workdir)
@@ -814,6 +821,7 @@ def get_equilibration_status(payload: EquilibrationRequest) -> dict:
     return {
         "status": status,
         "stages": stage_infos,
+        "output": output,
     }
 
 

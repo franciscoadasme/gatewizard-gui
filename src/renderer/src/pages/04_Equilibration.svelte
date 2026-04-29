@@ -50,6 +50,9 @@
   /** @type {Array<{ name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, output: string }>} */
   let stageStatuses = $state([])
 
+  // output
+  let equilibrationOutput = $state('')
+
   async function generateInput() {
     try {
       await generateEquilibration({
@@ -165,6 +168,7 @@
         alert('Equilibration is already running. Waiting for it to finish...')
         return
       }
+      equilibrationOutput = ''
       await runEquilibration({ workingDir: outputDir, engine })
       equilibrationRunning = true
     } catch (error) {
@@ -179,11 +183,15 @@
       const { status, stages, output } = await getEquilibrationStatus(payload)
       if (status === 'not_started') {
         equilibrationRunning = false
+        equilibrationOutput = ''
         stageStatuses = []
         return
       }
 
       equilibrationRunning = status === 'running'
+      if (status === 'error') {
+        equilibrationOutput = stages.find((stage) => stage.status === 'error')?.output ?? ''
+      }
       stageStatuses = stages
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
@@ -304,6 +312,9 @@
           <EquilibrationStageStatus {stage_info} />
         {/each}
       </div>
+      {#if equilibrationOutput}
+        <pre class="rounded-md border border-neutral-800 p-2 text-xs">{equilibrationOutput}</pre>
+      {/if}
     </div>
   </div>
 </div>
