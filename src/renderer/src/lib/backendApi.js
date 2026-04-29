@@ -165,6 +165,14 @@ export async function generateEquilibration(props) {
   return backendJson('/generate-equilibration', props)
 }
 
+/**
+ * @param {{ workingDir: string, engine: string }} props
+ * @returns {Promise<void>}
+ */
+export async function runEquilibration(props) {
+  return backendJson('/run-equilibration', props)
+}
+
 // Helper functions for the backend API.
 
 /**

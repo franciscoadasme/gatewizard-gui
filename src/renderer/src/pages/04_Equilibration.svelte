@@ -8,6 +8,9 @@
   import Input from '../components/ui/Input.svelte'
   import Select from '../components/ui/Select.svelte'
   import { generateEquilibration } from '../lib/backendApi'
+  import {
+    runEquilibration
+  } from '../lib/backendApi'
 
   /** @type {Record<string, { default: import('svelte').Component, label?: string }>} */
   const engineModules = import.meta.glob('./equilibration/engines/*.svelte', { eager: true })
@@ -38,6 +41,8 @@
   const outputDir = $derived([workingDir, outputName].join('/'))
 
   // state
+  /** @type {boolean} */
+  let equilibrationRunning = $state(false)
 
   async function generateInput() {
     try {
@@ -143,6 +148,18 @@
     }
     inputDir = dirPath
   }
+
+  async function startEquilibration() {
+    try {
+      // TODO: write protocol and compare existing protocol with new one so to enable run button, otherwise disable it
+      // as it already run
+      await runEquilibration({ workingDir: outputDir, engine })
+      equilibrationRunning = true
+    } catch (error) {
+      alert(error instanceof Error ? error.message : String(error))
+      equilibrationRunning = false
+    }
+  }
 </script>
 
 <div class="flex min-w-0 flex-1 divide-x divide-neutral-800 select-none">
@@ -186,7 +203,14 @@
     </div>
     <Divider />
     <div class="space-y-2">
-      <Button className="w-full">Run Equilibration</Button>
+      <Button className="w-full" onclick={startEquilibration} disabled={equilibrationRunning}>
+        {#if equilibrationRunning}
+          Running...
+        {:else}
+          Run Equilibration
+        {/if}
+      </Button>
+      <!-- TODO: add spinner while generating input files -->
       <Button
         className="w-full"
         variant="outline"

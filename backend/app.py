@@ -4,6 +4,8 @@ import base64
 import os
 import re
 import shutil
+import subprocess
+import threading
 import tempfile
 from importlib import metadata
 from pathlib import Path
@@ -721,6 +723,45 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
         )
         file.write(contents)
     script_file.chmod(0o755)
+
+
+
+
+def wait_on_child_process(proc: subprocess.Popen) -> None:
+    """Wait on the shell launcher child so exited processes do not stay zombies."""
+    proc.wait()
+
+
+@app.post("/run-equilibration")
+def run_equilibration(payload: EquilibrationRequest) -> None:
+    workdir = Path(os.path.abspath(os.path.expanduser(payload.working_dir)))
+    if not workdir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Directory not found: {workdir}")
+
+    script_file = workdir / "run_equilibration.sh"
+    if not script_file.exists():
+        raise HTTPException(status_code=404, detail="Script file not found")
+
+    if sys.platform == "win32":
+        raise HTTPException(status_code=500, detail="Windows is not supported")
+
+    log_file = workdir / "equilibration_background.log"
+    process = subprocess.Popen(
+        ["nohup", "bash", str(script_file)],
+        cwd=workdir,
+        stdout=open(log_file, "w"),
+        stderr=subprocess.STDOUT,
+        preexec_fn=os.setsid,  # Create new session to detach from parent
+    )
+    threading.Thread(
+        target=wait_on_child_process,
+        args=(process,),
+        daemon=True,
+    ).start()
+
+    pid_file = workdir / "equilibration.pid"
+    with open(pid_file, "w") as file:
+        file.write(str(process.pid))
 
 
 if __name__ == "__main__":
