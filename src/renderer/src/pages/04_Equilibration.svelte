@@ -1,4 +1,5 @@
 <script>
+  import { untrack } from 'svelte'
   import Button from '../components/ui/Button.svelte'
   import Divider from '../components/ui/Divider.svelte'
   import Empty from '../components/ui/Empty.svelte'
@@ -33,11 +34,13 @@
   let { workingDir = '' } = $props()
 
   // form fields
+  let autoMonitor = $state(true)
   let engine = $state('namd')
   let ensemble = $state('nvt')
   let inputDir = $state('')
   let outputName = $state('equilibration')
   let protocol = $state(prepareProtocolForRendering(baseProtocol))
+  let updateInterval = $state(5)
 
   // derived values
   const CurrentEngine = $derived(engines.find((e) => e.id === engine)?.Component)
@@ -52,6 +55,18 @@
 
   // output
   let equilibrationOutput = $state('')
+
+  $effect(() => {
+    if (!autoMonitor) {
+      return
+    }
+    const running = untrack(() => equilibrationRunning)
+    const ms = untrack(() => updateInterval) * 1000
+    if (!running) {
+      return
+    }
+    setTimeout(updateProgress, ms)
+  })
 
   async function generateInput() {
     try {
@@ -171,6 +186,7 @@
       equilibrationOutput = ''
       await runEquilibration({ workingDir: outputDir, engine })
       equilibrationRunning = true
+      setTimeout(updateProgress, 1000)
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
       equilibrationRunning = false
@@ -193,6 +209,10 @@
         equilibrationOutput = stages.find((stage) => stage.status === 'error')?.output ?? ''
       }
       stageStatuses = stages
+
+      if (scheduleNext && autoMonitor && equilibrationRunning) {
+        setTimeout(updateProgress, updateInterval * 1000)
+      }
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
     }
@@ -292,19 +312,22 @@
     >
       <h3 class="font-semibold uppercase">Progress</h3>
       <div class="flex items-center gap-2">
-        <Checkbox name="auto-monitor" size="sm" />
-        Update progress every
+        <Checkbox name="auto-monitor" size="sm" bind:checked={autoMonitor} />
+        <label for="auto-monitor">Update progress every</label>
         <Input
           type="number"
           name="update-interval"
           min="1"
           max="100"
           step="1"
-          value={5}
+          value={updateInterval}
           size="sm"
           className="w-16"
-        /> seconds
-        <Button variant="outline" size="sm">Refresh</Button>
+        />
+        <label for="update-interval">seconds</label>
+        <Button variant="outline" size="sm" onclick={() => updateProgress({ scheduleNext: false })}>
+          Refresh
+        </Button>
         <Button variant="outline" size="sm">Process Information</Button>
       </div>
       <div class="grid grid-cols-[auto_1fr] gap-2">
