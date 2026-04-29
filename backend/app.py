@@ -697,7 +697,7 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
             namd.generate_restraints_file_mda(
                 output_dir / system_files["pdb"],
                 {it.name: (it.selection, it.force_constant) for it in restraints},
-                restraint_dir / f"{stem}.restraints",
+                restraint_dir / f"{stem}_restraints.pdb",
                 stage.name,
             )
 
