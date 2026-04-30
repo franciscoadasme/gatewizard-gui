@@ -85,6 +85,13 @@
         alert('Equilibration is running. Wait for it to finish.')
         return
       }
+      if (
+        ['not_started', 'completed', 'error'].includes(equilibrationStatus) &&
+        !confirm('Overwrite existing equilibration?')
+      ) {
+        return
+      }
+
       generatingInputFiles = true
       await generateEquilibration({
         inputDir,
