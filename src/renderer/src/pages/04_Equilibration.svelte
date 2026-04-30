@@ -90,6 +90,9 @@
           executable: 'namd3'
         }
       })
+      if (equilibrationStatus === 'empty') {
+        equilibrationStatus = 'not_started'
+      }
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
     }
