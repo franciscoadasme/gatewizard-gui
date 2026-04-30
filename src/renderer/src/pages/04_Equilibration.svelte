@@ -52,20 +52,22 @@
   let equilibrationStatus = $state('not_started')
   /** @type {Array<{ name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, output: string }>} */
   let stageStatuses = $state([])
+  /** @type {number|undefined} */
+  let updateTimeoutId = undefined
 
   // output
   let equilibrationOutput = $state('')
 
   $effect(() => {
+    unscheduleUpdate()
     if (!autoMonitor) {
       return
     }
     const running = untrack(() => equilibrationRunning)
-    const ms = untrack(() => updateInterval) * 1000
     if (!running) {
       return
     }
-    setTimeout(updateProgress, ms)
+    updateProgress()
   })
 
   async function generateInput() {
@@ -199,6 +201,11 @@
       alert(error instanceof Error ? error.message : String(error))
       equilibrationStatus = 'not_started'
     }
+  }
+
+  function unscheduleUpdate() {
+    clearTimeout(updateTimeoutId)
+    updateTimeoutId = undefined
   }
 
   async function updateProgress({ scheduleNext = true } = {}) {
