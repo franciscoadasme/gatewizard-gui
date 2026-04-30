@@ -338,7 +338,7 @@
       {/if}
     </div>
     <div
-      class="max-h-2/5 min-h-1/5 space-y-2 overflow-y-auto border-t p-4 text-xs dark:border-neutral-800"
+      class="flex max-h-2/5 min-h-1/5 flex-col gap-2 overflow-y-auto border-t p-4 text-xs dark:border-neutral-800"
     >
       <h3 class="font-semibold uppercase">Progress</h3>
       <div class="flex items-center gap-2">
@@ -360,13 +360,19 @@
         </Button>
         <Button variant="outline" size="sm">Process Information</Button>
       </div>
-      <div class="grid grid-cols-[auto_1fr] gap-2">
-        {#each stageStatuses as stage_info (stage_info.name)}
-          <EquilibrationStageStatus {stage_info} />
-        {/each}
-      </div>
-      {#if equilibrationOutput}
-        <pre class="rounded-md border border-neutral-800 p-2 text-xs">{equilibrationOutput}</pre>
+      {#if ['running', 'completed', 'error'].includes(equilibrationStatus)}
+        <div class="grid grid-cols-[auto_1fr] gap-2">
+          {#each stageStatuses as stage_info (stage_info.name)}
+            <EquilibrationStageStatus {stage_info} />
+          {/each}
+        </div>
+        {#if equilibrationOutput}
+          <pre class="rounded-md border border-neutral-800 p-2 text-xs">{equilibrationOutput}</pre>
+        {/if}
+      {:else if equilibrationStatus === 'empty'}
+        <Empty message="No equilibration files found. Generate input files first." />
+      {:else}
+        <Empty message="Start an equilibration to see progress." />
       {/if}
     </div>
   </div>
