@@ -81,6 +81,10 @@
 
   async function generateInput() {
     try {
+      if (equilibrationRunning) {
+        alert('Equilibration is running. Wait for it to finish.')
+        return
+      }
       generatingInputFiles = true
       await generateEquilibration({
         inputDir,
