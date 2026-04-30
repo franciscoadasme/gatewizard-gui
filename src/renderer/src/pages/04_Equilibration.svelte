@@ -1,5 +1,5 @@
 <script>
-  import { untrack } from 'svelte'
+  import { onDestroy, untrack } from 'svelte'
   import Button from '../components/ui/Button.svelte'
   import Divider from '../components/ui/Divider.svelte'
   import Empty from '../components/ui/Empty.svelte'
@@ -75,6 +75,8 @@
     }
     updateProgress()
   })
+
+  onDestroy(unscheduleUpdate)
 
   async function generateInput() {
     try {
