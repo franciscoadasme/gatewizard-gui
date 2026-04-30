@@ -50,6 +50,7 @@
   // state
   /** @type {'not_started' | 'empty' | 'running' | 'completed' | 'error'} */
   let equilibrationStatus = $state('not_started')
+  let generatingInputFiles = $state(false)
   /** @type {Array<{ name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, output: string }>} */
   let stageStatuses = $state([])
   /** @type {number|undefined} */
@@ -80,6 +81,7 @@
 
   async function generateInput() {
     try {
+      generatingInputFiles = true
       await generateEquilibration({
         inputDir,
         outputDir,
@@ -95,6 +97,8 @@
       }
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
+    } finally {
+      generatingInputFiles = false
     }
   }
 
@@ -298,14 +302,19 @@
           Run Equilibration
         {/if}
       </Button>
-      <!-- TODO: add spinner while generating input files -->
       <Button
         className="w-full"
         variant="outline"
         onclick={generateInput}
-        disabled={workingDir === '' || inputDir === '' || !isProtocolValid}
-        >Generate Input Files</Button
+        disabled={workingDir === '' || inputDir === '' || !isProtocolValid || generatingInputFiles}
       >
+        {#if generatingInputFiles}
+          <Spinner className="mr-1" />
+          Generating...
+        {:else}
+          Generate Input Files
+        {/if}
+      </Button>
     </div>
   </aside>
   <div class="flex min-h-0 min-w-0 flex-1 flex-col">
