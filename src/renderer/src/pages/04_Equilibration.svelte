@@ -45,10 +45,11 @@
   const CurrentEngine = $derived(engines.find((e) => e.id === engine)?.Component)
   const isProtocolValid = $derived(Array.isArray(protocol.stages) && protocol.stages.length > 0)
   const outputDir = $derived([workingDir, outputName].join('/'))
+  const equilibrationRunning = $derived(equilibrationStatus === 'running')
 
   // state
-  /** @type {boolean} */
-  let equilibrationRunning = $state(false)
+  /** @type {'not_started' | 'empty' | 'running' | 'completed' | 'error'} */
+  let equilibrationStatus = $state('not_started')
   /** @type {Array<{ name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, output: string }>} */
   let stageStatuses = $state([])
 
@@ -178,42 +179,47 @@
       // as it already run
       const payload = { workingDir: outputDir, engine }
       const { status, ...rest } = await getEquilibrationStatus(payload)
+      equilibrationStatus = status
       if (status === 'running') {
         alert('Equilibration is already running. Wait for it to finish.')
         return
       }
       equilibrationOutput = ''
       await runEquilibration({ workingDir: outputDir, engine })
-      equilibrationRunning = true
+      equilibrationStatus = 'running'
       setTimeout(updateProgress, 1000)
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
-      equilibrationRunning = false
+      equilibrationStatus = 'not_started'
     }
   }
 
   async function updateProgress({ scheduleNext = true } = {}) {
+    let status = 'not_started'
+    let stages = []
+    let output = ''
     try {
       const payload = { workingDir: outputDir, engine }
-      const { status, stages, output } = await getEquilibrationStatus(payload)
-      if (status === 'not_started') {
-        equilibrationRunning = false
-        equilibrationOutput = ''
-        stageStatuses = []
-        return
-      }
-
-      equilibrationRunning = status === 'running'
-      if (status === 'error') {
-        equilibrationOutput = stages.find((stage) => stage.status === 'error')?.output ?? ''
-      }
-      stageStatuses = stages
-
-      if (scheduleNext && autoMonitor && equilibrationRunning) {
-        setTimeout(updateProgress, updateInterval * 1000)
-      }
+      ;({ status, stages, output } = await getEquilibrationStatus(payload))
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
+    }
+
+    equilibrationStatus = status
+    if (status in ['not_started', 'empty']) {
+      equilibrationOutput = ''
+      stageStatuses = []
+      return
+    }
+
+    if (status === 'error') {
+      equilibrationOutput = stages.find((stage) => stage.status === 'error')?.output ?? ''
+    }
+    stageStatuses = stages
+
+    if (scheduleNext && autoMonitor && equilibrationRunning) {
+      clearTimeout(updateTimeoutId)
+      updateTimeoutId = setTimeout(updateProgress, updateInterval * 1000)
     }
   }
 </script>
