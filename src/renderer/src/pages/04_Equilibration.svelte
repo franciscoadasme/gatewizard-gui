@@ -214,8 +214,10 @@
       } else if (status === 'empty') {
         alert('Generate input files first.')
         return
-      } else if (['completed', 'error'].includes(status)) {
-        alert('An existing equilibration has finished.')
+      } else if (
+        ['completed', 'error'].includes(status) &&
+        !confirm('An existing equilibration has finished. Overwrite it?')
+      ) {
         return
       }
 
