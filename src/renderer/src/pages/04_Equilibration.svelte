@@ -183,7 +183,14 @@
       if (status === 'running') {
         alert('Equilibration is already running. Wait for it to finish.')
         return
+      } else if (status === 'empty') {
+        alert('Generate input files first.')
+        return
+      } else if (status in ['completed', 'error']) {
+        alert('An existing equilibration has finished.')
+        return
       }
+
       equilibrationOutput = ''
       await runEquilibration({ workingDir: outputDir, engine })
       equilibrationStatus = 'running'
