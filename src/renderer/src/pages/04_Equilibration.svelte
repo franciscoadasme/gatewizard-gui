@@ -60,6 +60,12 @@
 
   $effect(() => {
     unscheduleUpdate()
+    if (workingDir === '') return
+    updateProgress()
+  })
+
+  $effect(() => {
+    unscheduleUpdate()
     if (!autoMonitor) {
       return
     }
