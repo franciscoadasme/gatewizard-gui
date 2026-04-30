@@ -167,14 +167,6 @@ export async function generateEquilibration(props) {
 
 /**
  * @param {{ workingDir: string, engine: string }} props
- * @returns {Promise<boolean>}
- */
-export async function checkEquilibration(props) {
-  return backendJson('/check-equilibration', props)
-}
-
-/**
- * @param {{ workingDir: string, engine: string }} props
  * @returns {Promise<void>}
  */
 export async function runEquilibration(props) {
@@ -183,7 +175,7 @@ export async function runEquilibration(props) {
 
 /**
  * @param {{ workingDir: string, engine: string }} props
- * @returns {Promise<{ status: 'running' | 'completed' | 'error' | 'not_started', stages: { name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, output: string }[], output: string }>}
+ * @returns {Promise<{ status: 'empty' | 'running' | 'completed' | 'error' | 'not_started', stages: { name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, output: string }[], output: string }>}
  */
 export async function getEquilibrationStatus(props) {
   return backendJson('/get-equilibration-status', props)
