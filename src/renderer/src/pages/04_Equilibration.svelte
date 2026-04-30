@@ -355,6 +355,9 @@
           className="w-16"
         />
         <label for="update-interval">seconds</label>
+        {#if equilibrationRunning && autoMonitor}
+          <Spinner className="mr-1" />
+        {/if}
         <Button variant="outline" size="sm" onclick={() => updateProgress({ scheduleNext: false })}>
           Refresh
         </Button>
