@@ -55,6 +55,9 @@
   let primaryStats = $state(null)
   let rawX = $state([])
   let rawY = $state([])
+  /** @type {Array<{baseName:string,unit:string,y:number[],key?:string}>} */
+  let rawSeries = $state([]) // Energetic series with base names + original units
+  let rawXTimeUnit = $state('ns') // Time unit rawX was returned in (energetic)
 
   // --- Plot settings (collapsible) ---
   let plotSettingsOpen = $state(false)
@@ -77,7 +80,13 @@
     aspectRatio: '2.5',
     transparentBg: false,
     dpi: '150',
-    fontFamily: 'sans-serif'
+    fontFamily: 'sans-serif',
+    extraLeftMargin: '0',
+    extraBottomMargin: '0',
+    legendPosition: 'bottom',
+    xTickCount: '5',
+    yTickCount: '5',
+    residueCodeFormat: 'three'
   }
   // Energetic plot settings defaults
   const energDefaults = {
@@ -96,14 +105,34 @@
     aspectRatio: '2.5',
     transparentBg: false,
     dpi: '150',
-    fontFamily: 'sans-serif'
+    fontFamily: 'sans-serif',
+    extraLeftMargin: '20',
+    extraBottomMargin: '0',
+    legendPosition: 'top-right',
+    xTickCount: '5',
+    yTickCount: '5',
+    residueCodeFormat: 'three'
   }
 
-  let sPlot = $state({ ...structDefaults })
+  // Per-type plot settings — each analysis type keeps its own independent copy
+  let sPlots = $state({
+    rmsd: { ...structDefaults },
+    rmsf: { ...structDefaults },
+    distance: { ...structDefaults },
+    radius_of_gyration: { ...structDefaults }
+  })
   let ePlot = $state({ ...energDefaults })
 
-  // Derived: active plot settings for current mode
-  const ps = $derived(mode === 'structural' ? sPlot : ePlot)
+  // Per-type stored structural results (null = not yet run for that type)
+  /** @type {Record<string,{rawX:number[],rawY:number[],xLabels:string[],seriesName:string,primaryStats:any,chartXLabel:string,chartYLabel:string,chartTitle:string,lastAnalysisHasTimeX:boolean}|null>} */
+  let structResults = $state({ rmsd: null, rmsf: null, distance: null, radius_of_gyration: null })
+
+  // Derived: active plot settings for current mode+type
+  const ps = $derived(mode === 'structural' ? sPlots[structuralType] : ePlot)
+  // Derived: active structural result for current type (null = not run yet)
+  const activeStructRes = $derived(
+    mode === 'structural' ? (structResults[structuralType] ?? null) : null
+  )
 
   // Unit conversion helpers
   function convertX(xs, fromUnit, toUnit) {
@@ -119,32 +148,146 @@
     return ys
   }
 
+  // --- Energetic unit conversion helpers ---
+  function getUnitType(unit) {
+    if (['kcal/mol', 'kJ/mol'].includes(unit)) return 'energy'
+    if (['atm', 'bar', 'kPa', 'MPa'].includes(unit)) return 'pressure'
+    if (['K', '°C', '°F'].includes(unit)) return 'temperature'
+    if (['Å³', 'nm³', 'mL', 'L'].includes(unit)) return 'volume'
+    return null
+  }
+
+  function getTargetUnit(srcUnit) {
+    const t = getUnitType(srcUnit)
+    if (t === 'energy') return energyUnits
+    if (t === 'pressure') return pressureUnits
+    if (t === 'temperature') return temperatureUnits
+    if (t === 'volume') return volumeUnits
+    return srcUnit
+  }
+
+  function convertEnergeticYArr(ys, fromUnit) {
+    if (!fromUnit || !ys?.length) return ys
+    const toUnit = getTargetUnit(fromUnit)
+    if (toUnit === fromUnit) return ys
+    const type = getUnitType(fromUnit)
+    if (type === 'energy') {
+      const f = fromUnit === 'kcal/mol' ? 4.184 : 1 / 4.184
+      return ys.map((v) => v * f)
+    }
+    if (type === 'pressure') {
+      // perAtm[u] = how many u per 1 atm
+      const perAtm = { atm: 1, bar: 1.01325, kPa: 101.325, MPa: 0.101325 }
+      const f = perAtm[toUnit] / perAtm[fromUnit]
+      return ys.map((v) => v * f)
+    }
+    if (type === 'temperature') {
+      const toK = (v, u) => (u === 'K' ? v : u === '°C' ? v + 273.15 : ((v + 459.67) * 5) / 9)
+      const fromK = (v, u) => (u === 'K' ? v : u === '°C' ? v - 273.15 : (v * 9) / 5 - 459.67)
+      return ys.map((v) => fromK(toK(v, fromUnit), toUnit))
+    }
+    if (type === 'volume') {
+      // perA3[u] = how many u per 1 Å³
+      const perA3 = { 'Å³': 1, 'nm³': 1e-3, mL: 1e-24, L: 1e-27 }
+      const f = perA3[toUnit] / perA3[fromUnit]
+      return ys.map((v) => v * f)
+    }
+    return ys
+  }
+
+  // Derived helpers — per active type
+  const activeXLabels = $derived(activeStructRes?.xLabels ?? [])
+  const residueOneLetter = {
+    ALA: 'A',
+    ARG: 'R',
+    ASN: 'N',
+    ASP: 'D',
+    CYS: 'C',
+    GLU: 'E',
+    GLN: 'Q',
+    GLY: 'G',
+    HIS: 'H',
+    ILE: 'I',
+    LEU: 'L',
+    LYS: 'K',
+    MET: 'M',
+    PHE: 'F',
+    PRO: 'P',
+    SER: 'S',
+    THR: 'T',
+    TRP: 'W',
+    TYR: 'Y',
+    VAL: 'V',
+    ASX: 'B',
+    GLX: 'Z',
+    SEC: 'U',
+    PYL: 'O'
+  }
+  function toOneLetterResidueLabel(label) {
+    const m = String(label || '').match(/^([A-Za-z]{3})([-+]?\d+)$/)
+    if (!m) return String(label || '')
+    const one = residueOneLetter[m[1].toUpperCase()] || m[1][0].toUpperCase()
+    return `${one}${m[2]}`
+  }
+  const displayXTickLabels = $derived.by(() => {
+    if (mode !== 'structural') return []
+    if (structuralType !== 'rmsf') return activeXLabels
+    if (rmsfXaxisType !== 'residue_type_number') return activeXLabels
+    if (ps.residueCodeFormat !== 'one') return activeXLabels
+    return activeXLabels.map(toOneLetterResidueLabel)
+  })
+  const activePrimaryStats = $derived(
+    mode === 'structural' ? (activeStructRes?.primaryStats ?? null) : primaryStats
+  )
+
   // Build displayed chart series applying unit conversions
   const displaySeries = $derived.by(() => {
-    if (chartSeries.length === 0) return []
     if (mode === 'structural') {
-      const xs = convertX(rawX, 'ns', sPlot.xUnit)
-      const ys = convertStructY(rawY, sPlot.yUnit)
-      return [{ ...chartSeries[0], x: xs, y: ys, color: sPlot.lineColor }]
+      if (!activeStructRes) return []
+      const sp = sPlots[structuralType]
+      const xs = activeStructRes.lastAnalysisHasTimeX
+        ? convertX(activeStructRes.rawX, 'ns', sp.xUnit)
+        : activeStructRes.rawX
+      const ys = convertStructY(activeStructRes.rawY, sp.yUnit)
+      return [{ name: activeStructRes.seriesName, x: xs, y: ys, color: sp.lineColor }]
     }
-    // Energetic: only convert X
-    const xs = convertX(rawX, 'ns', ePlot.xUnit)
-    return chartSeries.map((s) => ({ ...s, x: xs }))
+    // Energetic: filter by selectedProperties, full reactive unit conversion
+    if (rawSeries.length === 0) return []
+    const xs = convertX(rawX, rawXTimeUnit, timeUnits)
+    const visible = rawSeries.filter((s) => selectedProperties.includes(s.baseName))
+    return visible.map((s) => {
+      const convertedY = convertEnergeticYArr(s.y, s.unit)
+      const tUnit = getTargetUnit(s.unit)
+      const displayName = tUnit ? `${s.baseName} (${tUnit})` : s.baseName
+      return { name: displayName, x: xs, y: convertedY }
+    })
   })
 
-  const displayXLabel = $derived(
-    ps.xLabel ||
-      (chartXLabel.includes('(')
-        ? chartXLabel.replace(/\(.*\)/, `(${ps.xUnit})`).trim()
-        : `${chartXLabel} (${ps.xUnit})`)
+  const displayXLabel = $derived.by(() => {
+    if (ps.xLabel) return ps.xLabel
+    if (mode === 'energetic') return `${chartXLabel.replace(/\s*\(.*\)$/, '')} (${timeUnits})`
+    if (!activeStructRes) return 'X'
+    if (!activeStructRes.lastAnalysisHasTimeX) return activeStructRes.chartXLabel
+    const sp = sPlots[structuralType]
+    return activeStructRes.chartXLabel.includes('(')
+      ? activeStructRes.chartXLabel.replace(/\(.*\)/, `(${sp.xUnit})`).trim()
+      : `${activeStructRes.chartXLabel} (${sp.xUnit})`
+  })
+  const displayYLabel = $derived.by(() => {
+    if (ps.yLabel) return ps.yLabel
+    if (mode === 'energetic') {
+      if (displaySeries.length === 1) return displaySeries[0].name
+      return 'Value'
+    }
+    if (!activeStructRes) return 'Y'
+    const sp = sPlots[structuralType]
+    return sp.yUnit !== 'Å'
+      ? activeStructRes.chartYLabel.replace(/\(Å\)/, `(${sp.yUnit})`)
+      : activeStructRes.chartYLabel
+  })
+  const displayTitle = $derived(
+    ps.title || (mode === 'structural' ? (activeStructRes?.chartTitle ?? '') : chartTitle)
   )
-  const displayYLabel = $derived(
-    ps.yLabel ||
-      (mode === 'structural' && sPlot.yUnit !== 'Å'
-        ? chartYLabel.replace(/\(Å\)/, `(${sPlot.yUnit})`)
-        : chartYLabel)
-  )
-  const displayTitle = $derived(ps.title || chartTitle)
 
   // Axis overrides
   const xMinO = $derived(
@@ -172,6 +315,15 @@
   // ---- Helpers ----
   function basename(path) {
     return path.split(/[\\/]/).pop() || path
+  }
+
+  function sortByName(files) {
+    return [...files].sort((a, b) =>
+      basename(a.path).localeCompare(basename(b.path), undefined, {
+        numeric: true,
+        sensitivity: 'base'
+      })
+    )
   }
 
   function makeFileTimes(items) {
@@ -207,10 +359,18 @@
       ...trajectoryFiles,
       ...result.filePaths.filter((p) => !existing.has(p)).map((p) => ({ path: p, timeNs: '' }))
     ]
+    trajectoryFiles = sortByName(trajectoryFiles)
   }
 
   function removeTrajectory(index) {
     trajectoryFiles = trajectoryFiles.filter((_, i) => i !== index)
+  }
+
+  function onStructuralTypeChange(nextType) {
+    structuralType = nextType
+    if (nextType === 'rmsf' && (!selection || selection === 'protein and backbone')) {
+      selection = 'protein and name CA'
+    }
   }
 
   async function addLogFile() {
@@ -225,10 +385,59 @@
       ...logFiles,
       ...result.filePaths.filter((p) => !existing.has(p)).map((p) => ({ path: p, timeNs: '' }))
     ]
+    logFiles = sortByName(logFiles)
   }
 
   function removeLog(index) {
     logFiles = logFiles.filter((_, i) => i !== index)
+  }
+
+  // ---- Drag-to-reorder state ----
+  let dragIdx = $state(-1)
+  let dragOverIdx = $state(-1)
+
+  function onDragStart(index) {
+    dragIdx = index
+  }
+
+  function onDragOver(e, index) {
+    e.preventDefault()
+    dragOverIdx = index
+  }
+
+  function onDragEnd() {
+    dragIdx = -1
+    dragOverIdx = -1
+  }
+
+  function onDropTrajectory(e, index) {
+    e.preventDefault()
+    if (dragIdx === -1 || dragIdx === index) {
+      onDragEnd()
+      return
+    }
+    const arr = [...trajectoryFiles]
+    const [moved] = arr.splice(dragIdx, 1)
+    arr.splice(index, 0, moved)
+    trajectoryFiles = arr
+    onDragEnd()
+    // Clear all structural results — order changed, must re-run
+    structResults = { rmsd: null, rmsf: null, distance: null, radius_of_gyration: null }
+  }
+
+  function onDropLog(e, index) {
+    e.preventDefault()
+    if (dragIdx === -1 || dragIdx === index) {
+      onDragEnd()
+      return
+    }
+    const arr = [...logFiles]
+    const [moved] = arr.splice(dragIdx, 1)
+    arr.splice(index, 0, moved)
+    logFiles = arr
+    onDragEnd()
+    // Re-run energetic analysis automatically if data already exists
+    if (rawSeries.length > 0) runAnalysis()
   }
 
   // ---- Topology analysis ----
@@ -283,10 +492,15 @@
     try {
       running = true
       lastError = ''
-      chartSeries = []
-      primaryStats = null
-      rawX = []
-      rawY = []
+      if (mode === 'structural') {
+        structResults[structuralType] = null // clear to show loading state
+      } else {
+        chartSeries = []
+        rawSeries = []
+        primaryStats = null
+        rawX = []
+        rawY = []
+      }
 
       if (mode === 'structural') {
         if (!topologyPath) throw new Error('Select a topology file.')
@@ -306,13 +520,18 @@
           rmsfXaxisType: rmsfXaxisType
         })
 
-        rawX = result.x || []
-        rawY = result.y || []
-        chartSeries = [{ name: result.series_name, x: rawX, y: rawY }]
-        chartTitle = `${(result.analysis_type || structuralType).toUpperCase()} Analysis`
-        chartXLabel = result.x_label || 'X'
-        chartYLabel = result.y_label || 'Y'
-        primaryStats = result.stats || null
+        const xLabelsResult = result.x_labels || []
+        structResults[structuralType] = {
+          rawX: result.x || [],
+          rawY: result.y || [],
+          xLabels: xLabelsResult,
+          seriesName: result.series_name,
+          primaryStats: result.stats || null,
+          chartXLabel: result.x_label || 'X',
+          chartYLabel: result.y_label || 'Y',
+          chartTitle: `${(result.analysis_type || structuralType).toUpperCase()} Analysis`,
+          lastAnalysisHasTimeX: xLabelsResult.length === 0
+        }
       } else {
         if (logFiles.length === 0) throw new Error('Add at least one NAMD log file.')
         if (selectedProperties.length === 0) throw new Error('Select at least one property.')
@@ -330,10 +549,18 @@
 
         rawX = result.x || []
         rawY = result.series?.[0]?.y || []
-        chartSeries = (result.series || []).map((s) => ({
-          name: `${s.name} (${s.unit || ''})`.replace(/ \(\)$/, ''),
+        rawXTimeUnit = timeUnits // remember what unit the backend returned X in
+        rawSeries = (result.series || []).map((s) => ({
+          baseName: s.name,
+          unit: s.unit || '',
+          y: s.y || [],
+          key: s.key
+        }))
+        // chartSeries kept in sync (used by empty check + CSV export headers)
+        chartSeries = rawSeries.map((s) => ({
+          name: s.unit ? `${s.baseName} (${s.unit})` : s.baseName,
           x: rawX,
-          y: s.y || []
+          y: s.y
         }))
         chartTitle = 'NAMD Energetic Analysis'
         chartXLabel = result.x_label || 'Time'
@@ -637,9 +864,21 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           {:else}
             <div class="space-y-0.5">
               {#each trajectoryFiles as file, i (file.path)}
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
-                  class="flex items-center gap-1 rounded border px-1.5 py-1 dark:border-neutral-800"
+                  draggable="true"
+                  ondragstart={() => onDragStart(i)}
+                  ondragover={(e) => onDragOver(e, i)}
+                  ondrop={(e) => onDropTrajectory(e, i)}
+                  ondragend={onDragEnd}
+                  class="flex items-center gap-1 rounded border px-1.5 py-1 transition-opacity dark:border-neutral-800
+                    {dragIdx === i ? 'opacity-40' : ''}
+                    {dragOverIdx === i && dragIdx !== i ? 'border-amber-500 bg-amber-500/10' : ''}"
                 >
+                  <span
+                    class="shrink-0 cursor-grab text-neutral-600 select-none"
+                    title="Drag to reorder">⠿</span
+                  >
                   <span class="min-w-0 flex-1 truncate text-neutral-300" title={file.path}
                     >{basename(file.path)}</span
                   >
@@ -670,7 +909,11 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
       <!-- Structural Options -->
       <div class="space-y-2">
         <h2 class="font-semibold">Structural Options</h2>
-        <Select className="w-full" bind:value={structuralType}>
+        <Select
+          className="w-full"
+          bind:value={structuralType}
+          onchange={(e) => onStructuralTypeChange(e.currentTarget.value)}
+        >
           <option value="rmsd">RMSD</option>
           <option value="rmsf">RMSF</option>
           <option value="distance">Distance</option>
@@ -731,9 +974,21 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
         {:else}
           <div class="space-y-0.5">
             {#each logFiles as file, i (file.path)}
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
               <div
-                class="flex items-center gap-1 rounded border px-1.5 py-1 dark:border-neutral-800"
+                draggable="true"
+                ondragstart={() => onDragStart(i)}
+                ondragover={(e) => onDragOver(e, i)}
+                ondrop={(e) => onDropLog(e, i)}
+                ondragend={onDragEnd}
+                class="flex items-center gap-1 rounded border px-1.5 py-1 transition-opacity dark:border-neutral-800
+                  {dragIdx === i ? 'opacity-40' : ''}
+                  {dragOverIdx === i && dragIdx !== i ? 'border-amber-500 bg-amber-500/10' : ''}"
               >
+                <span
+                  class="shrink-0 cursor-grab text-neutral-600 select-none"
+                  title="Drag to reorder">⠿</span
+                >
                 <span class="min-w-0 flex-1 truncate text-neutral-300" title={file.path}
                   >{basename(file.path)}</span
                 >
@@ -772,34 +1027,49 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
       <!-- Energetic Options -->
       <div class="space-y-2">
         <h2 class="font-semibold">Energetic Options</h2>
-        <div class="grid grid-cols-2 gap-1">
-          <Select bind:value={timeUnits}>
-            <option value="ns">Time: ns</option>
-            <option value="ps">Time: ps</option>
-            <option value="µs">Time: µs</option>
-          </Select>
-          <Select bind:value={energyUnits}>
-            <option value="kcal/mol">Energy: kcal/mol</option>
-            <option value="kJ/mol">Energy: kJ/mol</option>
-          </Select>
-          <Select bind:value={pressureUnits}>
-            <option value="atm">Pressure: atm</option>
-            <option value="bar">Pressure: bar</option>
-            <option value="kPa">Pressure: kPa</option>
-            <option value="MPa">Pressure: MPa</option>
-          </Select>
-          <Select bind:value={temperatureUnits}>
-            <option value="K">Temp: K</option>
-            <option value="°C">Temp: °C</option>
-            <option value="°F">Temp: °F</option>
-          </Select>
+        <div class="grid grid-cols-2 gap-x-2 gap-y-1.5">
+          <div>
+            <p class="mb-0.5 text-neutral-500">Time</p>
+            <Select bind:value={timeUnits} className="w-full">
+              <option value="ns">ns</option>
+              <option value="ps">ps</option>
+              <option value="µs">µs</option>
+            </Select>
+          </div>
+          <div>
+            <p class="mb-0.5 text-neutral-500">Energy</p>
+            <Select bind:value={energyUnits} className="w-full">
+              <option value="kcal/mol">kcal/mol</option>
+              <option value="kJ/mol">kJ/mol</option>
+            </Select>
+          </div>
+          <div>
+            <p class="mb-0.5 text-neutral-500">Pressure</p>
+            <Select bind:value={pressureUnits} className="w-full">
+              <option value="atm">atm</option>
+              <option value="bar">bar</option>
+              <option value="kPa">kPa</option>
+              <option value="MPa">MPa</option>
+            </Select>
+          </div>
+          <div>
+            <p class="mb-0.5 text-neutral-500">Temperature</p>
+            <Select bind:value={temperatureUnits} className="w-full">
+              <option value="K">K</option>
+              <option value="°C">°C</option>
+              <option value="°F">°F</option>
+            </Select>
+          </div>
+          <div class="col-span-2">
+            <p class="mb-0.5 text-neutral-500">Volume</p>
+            <Select bind:value={volumeUnits} className="w-full">
+              <option value="Å³">Å³</option>
+              <option value="nm³">nm³</option>
+              <option value="mL">mL</option>
+              <option value="L">L</option>
+            </Select>
+          </div>
         </div>
-        <Select bind:value={volumeUnits}>
-          <option value="Å³">Volume: Å³</option>
-          <option value="nm³">Volume: nm³</option>
-          <option value="mL">Volume: mL</option>
-          <option value="L">Volume: L</option>
-        </Select>
 
         <div class="space-y-1 rounded-md border p-2 dark:border-neutral-800">
           <p class="font-medium">Properties</p>
@@ -836,46 +1106,21 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
       {#if plotSettingsOpen}
         <div class="space-y-2 rounded-md border p-2 dark:border-neutral-800">
-          <!-- Title -->
-          <div>
-            <p class="mb-0.5 text-neutral-500">Title</p>
-            <Input bind:value={ps.title} placeholder={chartTitle || 'Auto'} className="w-full" />
-          </div>
-
-          <!-- X / Y labels -->
           <div class="grid grid-cols-2 gap-1">
-            <div>
-              <p class="mb-0.5 text-neutral-500">X label</p>
-              <Input
-                bind:value={ps.xLabel}
-                placeholder={chartXLabel || 'Auto'}
-                className="w-full"
-              />
-            </div>
-            <div>
-              <p class="mb-0.5 text-neutral-500">Y label</p>
-              <Input
-                bind:value={ps.yLabel}
-                placeholder={chartYLabel || 'Auto'}
-                className="w-full"
-              />
-            </div>
-          </div>
-
-          <!-- Units -->
-          <div class="grid grid-cols-2 gap-1">
-            <div>
-              <p class="mb-0.5 text-neutral-500">X units</p>
-              <Select bind:value={ps.xUnit} className="w-full">
-                <option value="ns">ns</option>
-                <option value="ps">ps</option>
-                <option value="µs">µs</option>
-              </Select>
-            </div>
+            {#if mode === 'structural' && (activeStructRes?.lastAnalysisHasTimeX ?? false)}
+              <div>
+                <p class="mb-0.5 text-neutral-500">X units</p>
+                <Select bind:value={ps.xUnit} className="w-full">
+                  <option value="ns">ns</option>
+                  <option value="ps">ps</option>
+                  <option value="µs">µs</option>
+                </Select>
+              </div>
+            {/if}
             {#if mode === 'structural'}
               <div>
                 <p class="mb-0.5 text-neutral-500">Y units</p>
-                <Select bind:value={sPlot.yUnit} className="w-full">
+                <Select bind:value={ps.yUnit} className="w-full">
                   <option value="Å">Å</option>
                   <option value="nm">nm</option>
                 </Select>
@@ -883,19 +1128,54 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             {/if}
           </div>
 
+          {#if mode === 'structural' && structuralType === 'rmsf' && rmsfXaxisType === 'residue_type_number'}
+            <div>
+              <p class="mb-0.5 text-neutral-500">Residue code format</p>
+              <Select bind:value={ps.residueCodeFormat} className="w-full">
+                <option value="three">Three-letter (ALA123)</option>
+                <option value="one">One-letter (A123)</option>
+              </Select>
+            </div>
+          {/if}
+
           <!-- Axis limits -->
           <div>
             <p class="mb-0.5 text-neutral-500">X min / max</p>
             <div class="flex gap-1">
-              <Input type="number" bind:value={ps.xMin} placeholder="auto" className="w-full" />
-              <Input type="number" bind:value={ps.xMax} placeholder="auto" className="w-full" />
+              <Input bind:value={ps.xMin} placeholder="auto" className="w-full" />
+              <Input bind:value={ps.xMax} placeholder="auto" className="w-full" />
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-1">
+            <div>
+              <p class="mb-0.5 text-neutral-500">X tick labels</p>
+              <Input
+                type="number"
+                min="2"
+                max="20"
+                step="1"
+                bind:value={ps.xTickCount}
+                className="w-full"
+              />
+            </div>
+            <div>
+              <p class="mb-0.5 text-neutral-500">Y tick labels</p>
+              <Input
+                type="number"
+                min="2"
+                max="20"
+                step="1"
+                bind:value={ps.yTickCount}
+                className="w-full"
+              />
             </div>
           </div>
           <div>
             <p class="mb-0.5 text-neutral-500">Y min / max</p>
             <div class="flex gap-1">
-              <Input type="number" bind:value={ps.yMin} placeholder="auto" className="w-full" />
-              <Input type="number" bind:value={ps.yMax} placeholder="auto" className="w-full" />
+              <Input bind:value={ps.yMin} placeholder="auto" className="w-full" />
+              <Input bind:value={ps.yMax} placeholder="auto" className="w-full" />
             </div>
           </div>
 
@@ -986,6 +1266,47 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             </div>
           </div>
 
+          <!-- Legend position -->
+          <div>
+            <p class="mb-0.5 text-neutral-500">Legend position</p>
+            <Select bind:value={ps.legendPosition} className="w-full">
+              <option value="bottom">Below chart</option>
+              <option value="top-left">Inside — top left</option>
+              <option value="top-right">Inside — top right</option>
+              <option value="bottom-left">Inside — bottom left</option>
+              <option value="bottom-right">Inside — bottom right</option>
+              <option value="none">Hidden</option>
+            </Select>
+          </div>
+
+          <!-- Margin extra (for long tick labels) -->
+          <div class="grid grid-cols-2 gap-1">
+            <div>
+              <p class="mb-0.5 text-neutral-500">Extra left margin</p>
+              <Input
+                type="number"
+                min="0"
+                max="120"
+                step="5"
+                bind:value={ps.extraLeftMargin}
+                className="w-full"
+                placeholder="0"
+              />
+            </div>
+            <div>
+              <p class="mb-0.5 text-neutral-500">Extra bottom margin</p>
+              <Input
+                type="number"
+                min="0"
+                max="80"
+                step="5"
+                bind:value={ps.extraBottomMargin}
+                className="w-full"
+                placeholder="0"
+              />
+            </div>
+          </div>
+
           <!-- Actions -->
           <div class="flex gap-1 pt-1">
             <Button
@@ -994,7 +1315,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               className="flex-1"
               onclick={() => {
                 mode === 'structural'
-                  ? (sPlot = { ...structDefaults })
+                  ? (sPlots[structuralType] = { ...structDefaults })
                   : (ePlot = { ...energDefaults })
               }}>Reset</Button
             >
@@ -1072,6 +1393,12 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           transparentBg={ps.transparentBg}
           fontFamily={ps.fontFamily || 'sans-serif'}
           chartTitle={displayTitle}
+          xTickLabels={displayXTickLabels}
+          xTicks={Number(ps.xTickCount) || 5}
+          yTicks={Number(ps.yTickCount) || 5}
+          extraLeftMargin={Number(ps.extraLeftMargin) || 0}
+          extraBottomMargin={Number(ps.extraBottomMargin) || 0}
+          legendPosition={ps.legendPosition || 'bottom'}
           xMinOverride={xMinO}
           xMaxOverride={xMaxO}
           yMinOverride={yMinO}
@@ -1079,23 +1406,23 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           bind:svgEl
         />
 
-        {#if primaryStats}
+        {#if activePrimaryStats}
           <div class="grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
             <div class="rounded-md border p-2 dark:border-neutral-800">
               <p class="text-neutral-500">Mean</p>
-              <p class="font-semibold">{Number(primaryStats.mean).toFixed(4)}</p>
+              <p class="font-semibold">{Number(activePrimaryStats.mean).toFixed(4)}</p>
             </div>
             <div class="rounded-md border p-2 dark:border-neutral-800">
               <p class="text-neutral-500">Std</p>
-              <p class="font-semibold">{Number(primaryStats.std).toFixed(4)}</p>
+              <p class="font-semibold">{Number(activePrimaryStats.std).toFixed(4)}</p>
             </div>
             <div class="rounded-md border p-2 dark:border-neutral-800">
               <p class="text-neutral-500">Min</p>
-              <p class="font-semibold">{Number(primaryStats.min).toFixed(4)}</p>
+              <p class="font-semibold">{Number(activePrimaryStats.min).toFixed(4)}</p>
             </div>
             <div class="rounded-md border p-2 dark:border-neutral-800">
               <p class="text-neutral-500">Max</p>
-              <p class="font-semibold">{Number(primaryStats.max).toFixed(4)}</p>
+              <p class="font-semibold">{Number(activePrimaryStats.max).toFixed(4)}</p>
             </div>
           </div>
         {/if}
