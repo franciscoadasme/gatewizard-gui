@@ -5,6 +5,8 @@ import { electronAPI } from '@electron-toolkit/preload'
 const api = {
   openFileDialog: (title, filters, defaultPath = undefined) =>
     ipcRenderer.invoke('dialog:openFile', title, filters, defaultPath),
+  openFilesDialog: (title, filters, defaultPath = undefined) =>
+    ipcRenderer.invoke('dialog:openFiles', title, filters, defaultPath),
   openPdbDialog: () => ipcRenderer.invoke('dialog:openPdb'),
   openDirectoryDialog: (title = 'Select Directory', defaultPath = undefined) =>
     ipcRenderer.invoke('dialog:openDirectory', title, defaultPath),
