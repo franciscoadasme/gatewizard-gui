@@ -26,14 +26,29 @@
     // Font family for all text in the chart
     fontFamily = 'sans-serif',
     // Optional chart title rendered inside the SVG
-    chartTitle = ''
+    chartTitle = '',
+    // Custom string labels for x-axis ticks (e.g. residue names for RMSF)
+    xTickLabels = [],
+    // Extra pixels added to left/bottom margin to fit long tick labels
+    extraLeftMargin = 0,
+    extraBottomMargin = 0,
+    // Where to show the legend: 'bottom'|'top-left'|'top-right'|'bottom-left'|'bottom-right'|'none'
+    legendPosition = 'bottom',
+    // Number of major ticks shown on each axis
+    xTicks = 5,
+    yTicks = 5
   } = $props()
 
   const palette = ['#f59e0b', '#22c55e', '#38bdf8', '#f87171', '#a78bfa', '#f472b6']
 
   const width = 900
   const height = $derived(Math.round(width / aspectRatio))
-  const margin = { top: 36, right: 16, bottom: 42, left: 56 }
+  const margin = $derived({
+    top: 36,
+    right: 16,
+    bottom: 42 + (Number(extraBottomMargin) || 0),
+    left: 56 + (Number(extraLeftMargin) || 0)
+  })
   const plotWidth = $derived(width - margin.left - margin.right)
   const plotHeight = $derived(height - margin.top - margin.bottom)
 
@@ -179,6 +194,50 @@
   const plotTransform = $derived(
     `translate(${margin.left},${margin.top}) translate(${tx},${ty}) scale(${scale}) translate(${-margin.left},${-margin.top})`
   )
+
+  function normalizeTickCount(v) {
+    const n = Math.round(Number(v) || 5)
+    return Math.max(2, Math.min(20, n))
+  }
+
+  const xTickFractions = $derived.by(() => {
+    const n = normalizeTickCount(xTicks)
+    const ticks = []
+    for (let i = 0; i < n; i++) ticks.push(i / (n - 1))
+    return ticks
+  })
+
+  const yTickFractions = $derived.by(() => {
+    const n = normalizeTickCount(yTicks)
+    const ticks = []
+    for (let i = 0; i < n; i++) ticks.push(i / (n - 1))
+    return ticks
+  })
+
+  // X tick label strings — uses xTickLabels array when provided (e.g. RMSF residue names)
+  const xTickData = $derived.by(() => {
+    const ticks = xTickFractions
+    if (xTickLabels.length === 0) {
+      return ticks.map((t) => ({
+        t,
+        label: fmt(extents.xMin + (extents.xMax - extents.xMin) * t)
+      }))
+    }
+    const xs = series[0]?.x ?? []
+    return ticks.map((t) => {
+      const xVal = extents.xMin + (extents.xMax - extents.xMin) * t
+      let best = 0,
+        bestDist = Infinity
+      for (let i = 0; i < xs.length; i++) {
+        const d = Math.abs(xs[i] - xVal)
+        if (d < bestDist) {
+          bestDist = d
+          best = i
+        }
+      }
+      return { t, label: xTickLabels[best] ?? fmt(xVal) }
+    })
+  })
 </script>
 
 <div class={`space-y-2 ${className}`}>
@@ -251,7 +310,7 @@
         />
 
         <!-- static grid + tick labels -->
-        {#each [0, 0.25, 0.5, 0.75, 1] as t (t)}
+        {#each yTickFractions as t (t)}
           {#if showGrid}
             <line
               x1={margin.left}
@@ -272,15 +331,14 @@
             fill={tickColor}>{fmt(yVal)}</text
           >
         {/each}
-        {#each [0, 0.25, 0.5, 0.75, 1] as t (t)}
-          {@const xVal = extents.xMin + (extents.xMax - extents.xMin) * t}
+        {#each xTickData as tick (tick.t)}
           <text
-            x={margin.left + plotWidth * t}
+            x={margin.left + plotWidth * tick.t}
             y={margin.top + plotHeight + 18}
             text-anchor="middle"
             font-size="11"
             font-family={fontFamily}
-            fill={tickColor}>{fmt(xVal)}</text
+            fill={tickColor}>{tick.label}</text
           >
         {/each}
 
@@ -318,19 +376,58 @@
           fill={labelColor}
           transform={`rotate(-90, 14, ${margin.top + plotHeight / 2})`}>{yLabel}</text
         >
+
+        <!-- SVG legend (when legendPosition targets inside the plot) -->
+        {#if legendPosition !== 'bottom' && legendPosition !== 'none' && series.length > 0}
+          {@const itemH = 16}
+          {@const maxLen = Math.max(...series.map((s) => s.name.length), 5)}
+          {@const lw = Math.min(maxLen * 7 + 24, plotWidth - 16)}
+          {@const lh = series.length * itemH + 10}
+          {@const lx = legendPosition.includes('right')
+            ? margin.left + plotWidth - lw - 8
+            : margin.left + 8}
+          {@const ly = legendPosition.includes('bottom')
+            ? margin.top + plotHeight - lh - 8
+            : margin.top + 8}
+          <rect
+            x={lx}
+            y={ly}
+            width={lw}
+            height={lh}
+            rx="3"
+            fill={plotBg}
+            fill-opacity="0.85"
+            stroke={axisColor}
+            stroke-width="0.5"
+          />
+          {#each series as s, i (s.name + i)}
+            {@const iy = ly + 5 + itemH * i + itemH / 2}
+            <circle cx={lx + 8} cy={iy} r="4" fill={s.color || palette[i % palette.length]} />
+            <text
+              x={lx + 18}
+              y={iy + 4}
+              text-anchor="start"
+              font-size="10"
+              font-family={fontFamily}
+              fill={labelColor}>{s.name}</text
+            >
+          {/each}
+        {/if}
       </svg>
     </div>
   </div>
 
-  <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
-    {#each series as s, i (s.name + i)}
-      <div class="flex items-center gap-1">
-        <span
-          class="inline-block h-2.5 w-2.5 rounded-full"
-          style={`background:${s.color || palette[i % palette.length]}`}
-        ></span>
-        <span class="text-neutral-300">{s.name}</span>
-      </div>
-    {/each}
-  </div>
+  {#if legendPosition === 'bottom' && series.length > 0}
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+      {#each series as s, i (s.name + i)}
+        <div class="flex items-center gap-1">
+          <span
+            class="inline-block h-2.5 w-2.5 rounded-full"
+            style={`background:${s.color || palette[i % palette.length]}`}
+          ></span>
+          <span class="text-neutral-300">{s.name}</span>
+        </div>
+      {/each}
+    </div>
+  {/if}
 </div>
