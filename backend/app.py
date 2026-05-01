@@ -755,6 +755,45 @@ class EquilibrationRequest(BaseModel):
     engine: str = Field(description="Engine name")
 
 
+class StructuralAnalysisRequest(BaseModel):
+    topology_path: str = Field(..., description="Absolute path to topology file")
+    trajectory_paths: list[str] = Field(
+        ..., description="Absolute paths to trajectory files"
+    )
+    analysis_type: str = Field(
+        ..., description="rmsd, rmsf, distance, radius_of_gyration"
+    )
+    selection: str = Field("protein and backbone", description="MDAnalysis selection")
+    selection2: str = Field("", description="Second selection for distance analysis")
+    reference_frame: int = Field(0, description="Reference frame for RMSD")
+    align: bool = Field(True, description="Align structures before RMSD")
+    file_times: dict[str, float] | None = Field(
+        None, description="Optional per-file durations in ns"
+    )
+
+
+class EnergeticColumnsRequest(BaseModel):
+    log_paths: list[str] = Field(..., description="Absolute paths to NAMD log files")
+    file_times: dict[str, float] | None = Field(
+        None, description="Optional per-file durations in ns"
+    )
+
+
+class EnergeticAnalysisRequest(BaseModel):
+    log_paths: list[str] = Field(..., description="Absolute paths to NAMD log files")
+    properties: list[str] | None = Field(
+        None, description="Properties to analyze (e.g., Total Energy, Temperature)"
+    )
+    file_times: dict[str, float] | None = Field(
+        None, description="Optional per-file durations in ns"
+    )
+    time_units: str = Field("ns", description="ns, ps, or µs")
+    energy_units: str = Field("kcal/mol", description="kcal/mol or kJ/mol")
+    pressure_units: str = Field("atm", description="Pressure units")
+    temperature_units: str = Field("K", description="Temperature units")
+    volume_units: str = Field("Å³", description="Volume units")
+
+
 @app.post("/get-equilibration-status")
 def get_equilibration_status(payload: EquilibrationRequest) -> dict:
     workdir = Path(os.path.abspath(os.path.expanduser(payload.working_dir)))
@@ -845,6 +884,88 @@ def run_equilibration(payload: EquilibrationRequest) -> None:
     pid_file = workdir / "equilibration.pid"
     with open(pid_file, "w") as file:
         file.write(str(process.pid))
+
+
+@app.post("/analysis-structural")
+def run_structural_analysis(payload: StructuralAnalysisRequest) -> dict:
+    top = Path(os.path.abspath(os.path.expanduser(payload.topology_path)))
+    if not top.is_file():
+        raise HTTPException(status_code=404, detail=f"Topology file not found: {top}")
+
+    trajs = [
+        Path(os.path.abspath(os.path.expanduser(p))) for p in payload.trajectory_paths
+    ]
+    if not trajs:
+        raise HTTPException(status_code=400, detail="No trajectory files provided")
+    missing = [str(p) for p in trajs if not p.is_file()]
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Trajectory file(s) not found: {', '.join(missing)}",
+        )
+
+    try:
+        result = namd_analysis.run_structural_analysis(
+            topology_file=str(top),
+            trajectory_files=[str(p) for p in trajs],
+            analysis_type=payload.analysis_type,
+            selection=payload.selection,
+            selection2=payload.selection2,
+            reference_frame=payload.reference_frame,
+            align=payload.align,
+            file_times=payload.file_times,
+        )
+        return sanitize_value(result)
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+@app.post("/analysis-energetic-properties")
+def list_energetic_properties(payload: EnergeticColumnsRequest) -> dict:
+    logs = [Path(os.path.abspath(os.path.expanduser(p))) for p in payload.log_paths]
+    if not logs:
+        raise HTTPException(status_code=400, detail="No log files provided")
+    missing = [str(p) for p in logs if not p.is_file()]
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Log file(s) not found: {', '.join(missing)}",
+        )
+    try:
+        props = namd_analysis.list_namd_energy_properties(
+            [str(p) for p in logs], file_times=payload.file_times
+        )
+        return {"properties": props}
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+@app.post("/analysis-energetic")
+def run_energetic_analysis(payload: EnergeticAnalysisRequest) -> dict:
+    logs = [Path(os.path.abspath(os.path.expanduser(p))) for p in payload.log_paths]
+    if not logs:
+        raise HTTPException(status_code=400, detail="No log files provided")
+    missing = [str(p) for p in logs if not p.is_file()]
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Log file(s) not found: {', '.join(missing)}",
+        )
+
+    try:
+        result = namd_analysis.run_energetic_analysis(
+            log_files=[str(p) for p in logs],
+            properties=payload.properties,
+            file_times=payload.file_times,
+            time_units=payload.time_units,
+            energy_units=payload.energy_units,
+            pressure_units=payload.pressure_units,
+            temperature_units=payload.temperature_units,
+            volume_units=payload.volume_units,
+        )
+        return sanitize_value(result)
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
 
 
 if __name__ == "__main__":
