@@ -4,14 +4,36 @@
     series = [],
     xLabel = 'X',
     yLabel = 'Y',
-    className = ''
+    className = '',
+    // Styling overrides
+    plotBg = '#0a0a0a',
+    axisColor = '#525252',
+    gridColor = '#262626',
+    tickColor = '#a3a3a3',
+    labelColor = '#d4d4d4',
+    showGrid = true,
+    // Axis range overrides (null = auto)
+    xMinOverride = null,
+    xMaxOverride = null,
+    yMinOverride = null,
+    yMaxOverride = null,
+    // Expose SVG element for export
+    svgEl = $bindable(null),
+    // Aspect ratio (width/height). Default 2.5 ≈ 900×360
+    aspectRatio = 2.5,
+    // Transparent background (skip fill rect)
+    transparentBg = false,
+    // Font family for all text in the chart
+    fontFamily = 'sans-serif',
+    // Optional chart title rendered inside the SVG
+    chartTitle = ''
   } = $props()
 
   const palette = ['#f59e0b', '#22c55e', '#38bdf8', '#f87171', '#a78bfa', '#f472b6']
 
   const width = 900
-  const height = 360
-  const margin = { top: 20, right: 16, bottom: 42, left: 56 }
+  const height = $derived(Math.round(width / aspectRatio))
+  const margin = { top: 36, right: 16, bottom: 42, left: 56 }
   const plotWidth = $derived(width - margin.left - margin.right)
   const plotHeight = $derived(height - margin.top - margin.bottom)
 
@@ -52,7 +74,14 @@
     if (xMin === xMax) xMax = xMin + 1
     if (yMin === yMax) yMax = yMin + 1
     const yPad = (yMax - yMin) * 0.05
-    return { xMin, xMax, yMin: yMin - yPad, yMax: yMax + yPad }
+    const baseYMin = yMin - yPad
+    const baseYMax = yMax + yPad
+    return {
+      xMin: xMinOverride !== null && Number.isFinite(xMinOverride) ? xMinOverride : xMin,
+      xMax: xMaxOverride !== null && Number.isFinite(xMaxOverride) ? xMaxOverride : xMax,
+      yMin: yMinOverride !== null && Number.isFinite(yMinOverride) ? yMinOverride : baseYMin,
+      yMax: yMaxOverride !== null && Number.isFinite(yMaxOverride) ? yMaxOverride : baseYMax
+    }
   })
 
   function sx(x) {
@@ -165,10 +194,10 @@
 
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
-      class="relative h-[360px] w-full"
+      class="relative w-full"
+      style={`aspect-ratio: ${aspectRatio}; max-height: 100%; cursor: ${dragging ? 'grabbing' : 'crosshair'}`}
       role="application"
       aria-label="Interactive line chart"
-      style={dragging ? 'cursor:grabbing' : 'cursor:crosshair'}
       onwheel={onWheel}
       onmousedown={onMouseDown}
       onmousemove={onMouseMove}
@@ -176,10 +205,12 @@
       onmouseleave={onMouseLeave}
     >
       <svg
+        bind:this={svgEl}
         role="img"
         aria-label="Line chart"
         viewBox={`0 0 ${width} ${height}`}
         class="h-full w-full rounded-md border dark:border-neutral-800"
+        font-family={fontFamily}
       >
         <defs>
           <clipPath id="plot-area">
@@ -187,7 +218,19 @@
           </clipPath>
         </defs>
 
-        <rect x="0" y="0" {width} {height} fill="#0a0a0a" />
+        {#if !transparentBg}<rect x="0" y="0" {width} {height} fill={plotBg} />{/if}
+
+        {#if chartTitle}
+          <text
+            x={margin.left + plotWidth / 2}
+            y="20"
+            text-anchor="middle"
+            font-size="13"
+            font-weight="600"
+            font-family={fontFamily}
+            fill={labelColor}>{chartTitle}</text
+          >
+        {/if}
 
         <!-- static axes -->
         <line
@@ -195,7 +238,7 @@
           y1={margin.top + plotHeight}
           x2={margin.left + plotWidth}
           y2={margin.top + plotHeight}
-          stroke="#525252"
+          stroke={axisColor}
           stroke-width="1"
         />
         <line
@@ -203,27 +246,30 @@
           y1={margin.top}
           x2={margin.left}
           y2={margin.top + plotHeight}
-          stroke="#525252"
+          stroke={axisColor}
           stroke-width="1"
         />
 
         <!-- static grid + tick labels -->
         {#each [0, 0.25, 0.5, 0.75, 1] as t (t)}
-          <line
-            x1={margin.left}
-            y1={margin.top + plotHeight * t}
-            x2={margin.left + plotWidth}
-            y2={margin.top + plotHeight * t}
-            stroke="#262626"
-            stroke-width="1"
-          />
+          {#if showGrid}
+            <line
+              x1={margin.left}
+              y1={margin.top + plotHeight * t}
+              x2={margin.left + plotWidth}
+              y2={margin.top + plotHeight * t}
+              stroke={gridColor}
+              stroke-width="1"
+            />
+          {/if}
           {@const yVal = extents.yMax - (extents.yMax - extents.yMin) * t}
           <text
             x={margin.left - 8}
             y={margin.top + plotHeight * t + 4}
             text-anchor="end"
             font-size="11"
-            fill="#a3a3a3">{fmt(yVal)}</text
+            font-family={fontFamily}
+            fill={tickColor}>{fmt(yVal)}</text
           >
         {/each}
         {#each [0, 0.25, 0.5, 0.75, 1] as t (t)}
@@ -233,7 +279,8 @@
             y={margin.top + plotHeight + 18}
             text-anchor="middle"
             font-size="11"
-            fill="#a3a3a3">{fmt(xVal)}</text
+            font-family={fontFamily}
+            fill={tickColor}>{fmt(xVal)}</text
           >
         {/each}
 
@@ -259,14 +306,16 @@
           y={height - 8}
           text-anchor="middle"
           font-size="12"
-          fill="#d4d4d4">{xLabel}</text
+          font-family={fontFamily}
+          fill={labelColor}>{xLabel}</text
         >
         <text
           x="14"
           y={margin.top + plotHeight / 2}
           text-anchor="middle"
           font-size="12"
-          fill="#d4d4d4"
+          font-family={fontFamily}
+          fill={labelColor}
           transform={`rotate(-90, 14, ${margin.top + plotHeight / 2})`}>{yLabel}</text
         >
       </svg>
