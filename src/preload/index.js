@@ -16,7 +16,9 @@ const api = {
     ipcRenderer.invoke('dialog:saveFile', title, filters, defaultPath),
 
   readJson: (filePath) => ipcRenderer.invoke('fs:readJson', filePath),
-  writeJson: (filePath, data) => ipcRenderer.invoke('fs:writeJson', filePath, data)
+  writeJson: (filePath, data) => ipcRenderer.invoke('fs:writeJson', filePath, data),
+  writeText: (filePath, text) => ipcRenderer.invoke('fs:writeText', filePath, text),
+  writeBinary: (filePath, base64) => ipcRenderer.invoke('fs:writeBinary', filePath, base64)
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to
