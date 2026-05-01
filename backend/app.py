@@ -770,6 +770,210 @@ class StructuralAnalysisRequest(BaseModel):
     file_times: dict[str, float] | None = Field(
         None, description="Optional per-file durations in ns"
     )
+    rmsf_xaxis_type: str = Field(
+        "residue_number",
+        description="residue_number, residue_type_number, or atom_index",
+    )
+
+
+class AnalyzeTopologyRequest(BaseModel):
+    topology_path: str = Field(..., description="Absolute path to topology file")
+
+
+_PROTEIN_RESIDUES = {
+    "ALA",
+    "ARG",
+    "ASN",
+    "ASP",
+    "CYS",
+    "GLN",
+    "GLU",
+    "GLY",
+    "HIS",
+    "ILE",
+    "LEU",
+    "LYS",
+    "MET",
+    "PHE",
+    "PRO",
+    "SER",
+    "THR",
+    "TRP",
+    "TYR",
+    "VAL",
+    "HIE",
+    "HID",
+    "HIP",
+    "CYX",
+    "HSD",
+    "HSE",
+    "HSP",
+    "ACE",
+    "NME",
+}
+_NUCLEIC_RESIDUES = {
+    "A",
+    "T",
+    "G",
+    "C",
+    "U",
+    "DA",
+    "DT",
+    "DG",
+    "DC",
+    "ADE",
+    "THY",
+    "GUA",
+    "CYT",
+    "URA",
+    "RA",
+    "RU",
+    "RG",
+    "RC",
+}
+_WATER_RESIDUES = {"WAT", "HOH", "TIP3", "TIP4", "TIP5", "SPC", "SOL", "H2O"}
+_ION_RESIDUES = {
+    "NA",
+    "NA+",
+    "CL",
+    "CL-",
+    "K",
+    "K+",
+    "MG",
+    "MG2+",
+    "CA",
+    "CA2+",
+    "ZN",
+    "ZN2+",
+    "FE",
+    "FE2+",
+    "FE3+",
+    "CU",
+    "CU2+",
+    "MN",
+    "MN2+",
+    "CS",
+    "CS+",
+    "RB",
+    "RB+",
+    "LI",
+    "LI+",
+    "BR",
+    "BR-",
+    "F",
+    "F-",
+    "IOD",
+    "I",
+    "BA",
+    "BA2+",
+    "SR",
+    "SR2+",
+}
+_LIPID_NAMES = {
+    "POPC",
+    "POPE",
+    "DPPC",
+    "DLPC",
+    "DMPC",
+    "DSPC",
+    "DOPC",
+    "DOPE",
+    "DPPS",
+    "DOPS",
+    "POPS",
+    "CHOL",
+    "CHL1",
+    "POPA",
+    "POPE",
+    "POPG",
+    "DPPG",
+    "DLPE",
+    "DLPS",
+    "DLPG",
+    "PSM",
+    "DPCE",
+    "DPSM",
+    "BNSM",
+    "PNSM",
+    "SSM",
+}
+
+
+@app.post("/analyze-topology")
+def analyze_topology(payload: AnalyzeTopologyRequest) -> dict:
+    top = Path(os.path.abspath(os.path.expanduser(payload.topology_path)))
+    if not top.is_file():
+        raise HTTPException(status_code=404, detail=f"Topology file not found: {top}")
+    try:
+        u = mda.Universe(str(top))
+
+        # Per-segment summary
+        segments = []
+        for seg in u.segments:
+            segments.append(
+                {
+                    "segid": str(seg.segid),
+                    "n_residues": len(seg.residues),
+                    "n_atoms": len(seg.atoms),
+                }
+            )
+
+        # Residue classification
+        categories: dict[str, list] = {
+            "Protein": [],
+            "Nucleic": [],
+            "Water": [],
+            "Ions": [],
+            "Lipids": [],
+            "Other": [],
+        }
+        for residue in u.residues:
+            rn = str(residue.resname).upper()
+            info = {
+                "name": residue.resname,
+                "resid": int(residue.resid),
+                "chain": str(residue.segid),
+                "n_atoms": len(residue.atoms),
+            }
+            if rn in _PROTEIN_RESIDUES:
+                categories["Protein"].append(info)
+            elif rn in _WATER_RESIDUES:
+                categories["Water"].append(info)
+            elif rn in _ION_RESIDUES:
+                categories["Ions"].append(info)
+            elif rn in _LIPID_NAMES or "LIP" in rn:
+                categories["Lipids"].append(info)
+            elif rn in _NUCLEIC_RESIDUES:
+                categories["Nucleic"].append(info)
+            else:
+                categories["Other"].append(info)
+
+        # Per-category counts grouped by residue name
+        category_summary = {}
+        for cat, residues in categories.items():
+            if not residues:
+                continue
+            by_name: dict[str, int] = {}
+            for r in residues:
+                by_name[r["name"]] = by_name.get(r["name"], 0) + 1
+            category_summary[cat] = {
+                "total_residues": len(residues),
+                "total_atoms": sum(r["n_atoms"] for r in residues),
+                "by_name": by_name,
+            }
+
+        residue_types = sorted(set(str(r) for r in u.residues.resnames))
+
+        return {
+            "n_atoms": len(u.atoms),
+            "n_residues": len(u.residues),
+            "n_segments": len(u.segments),
+            "segments": segments,
+            "residue_types": residue_types,
+            "categories": category_summary,
+        }
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
 
 
 class EnergeticColumnsRequest(BaseModel):
@@ -914,6 +1118,7 @@ def run_structural_analysis(payload: StructuralAnalysisRequest) -> dict:
             reference_frame=payload.reference_frame,
             align=payload.align,
             file_times=payload.file_times,
+            rmsf_xaxis_type=payload.rmsf_xaxis_type,
         )
         return sanitize_value(result)
     except Exception as ex:

@@ -138,6 +138,15 @@ export function runEnergeticAnalysis(payload) {
 }
 
 /**
+ * Analyze a topology file and return structural summary.
+ * @param {{ topologyPath: string }} payload
+ * @returns {Promise<{ n_atoms: number, n_residues: number, n_segments: number, segments: Array<{ segid: string, n_residues: number, n_atoms: number }>, residue_types: string[] }>}
+ */
+export function analyzeTopology(payload) {
+  return backendJson('/analyze-topology', payload)
+}
+
+/**
  * @param {string} filePath
  * @returns {Promise<{ n_atoms: number, positions: number[], elements: string[] }>}
  */
