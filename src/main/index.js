@@ -271,6 +271,25 @@ ipcMain.handle('dialog:openFile', async (_event, title, filters, defaultPath = u
   return { canceled: false, filePath: result.filePaths[0] }
 })
 
+ipcMain.handle('dialog:openFiles', async (_event, title, filters, defaultPath = undefined) => {
+  filters = filters || []
+  if (!filters.some((filter) => filter.name.toLowerCase() === 'all files')) {
+    filters.push({ name: 'All files', extensions: ['*'] })
+  }
+
+  const win = BrowserWindow.getFocusedWindow()
+  const result = await dialog.showOpenDialog(win ?? undefined, {
+    title: title || 'Open Files',
+    filters,
+    defaultPath,
+    properties: ['openFile', 'multiSelections']
+  })
+  if (result.canceled || result.filePaths.length === 0) {
+    return { canceled: true, filePaths: [] }
+  }
+  return { canceled: false, filePaths: result.filePaths }
+})
+
 ipcMain.handle('fs:readJson', async (_event, filePath) => {
   const contents = await readFile(filePath, 'utf-8')
   return JSON.parse(contents)
@@ -292,9 +311,24 @@ ipcMain.handle('dialog:saveFile', async (_event, title, filters, defaultPath = u
   if (result.canceled || !result.filePath) {
     return { canceled: true }
   }
-  return { canceled: false, filePath: result.filePath }
+  // Auto-append extension if the chosen file path has no extension
+  // and the first (non-wildcard) filter specifies one
+  let filePath = result.filePath
+  const primaryExt = filters[0]?.extensions?.find((e) => e !== '*')
+  if (primaryExt && !filePath.toLowerCase().endsWith(`.${primaryExt.toLowerCase()}`)) {
+    filePath = `${filePath}.${primaryExt}`
+  }
+  return { canceled: false, filePath }
 })
 
 ipcMain.handle('fs:writeJson', async (_event, filePath, data) => {
   await writeFile(filePath, JSON.stringify(data, null, 2))
+})
+
+ipcMain.handle('fs:writeText', async (_event, filePath, text) => {
+  await writeFile(filePath, text, 'utf-8')
+})
+
+ipcMain.handle('fs:writeBinary', async (_event, filePath, base64) => {
+  await writeFile(filePath, Buffer.from(base64, 'base64'))
 })

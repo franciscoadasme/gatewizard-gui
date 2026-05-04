@@ -111,6 +111,42 @@ export function checkLigandParametrization(pdbPath, ligandNames) {
 }
 
 /**
+ * Run structural trajectory analysis (RMSD/RMSF/Distance/Rg).
+ * @param {{ topologyPath: string, trajectoryPaths: string[], analysisType: string, selection?: string, selection2?: string, referenceFrame?: number, align?: boolean, fileTimes?: Record<string, number> }} payload
+ * @returns {Promise<{ analysis_type: string, x: number[], y: number[], x_label: string, y_label: string, series_name: string, x_labels?: string[], stats?: Record<string, number> }>}
+ */
+export function runStructuralAnalysis(payload) {
+  return backendJson('/analysis-structural', payload)
+}
+
+/**
+ * Detect available energetic properties from NAMD log files.
+ * @param {{ logPaths: string[], fileTimes?: Record<string, number> }} payload
+ * @returns {Promise<{ properties: string[] }>}
+ */
+export function getEnergeticProperties(payload) {
+  return backendJson('/analysis-energetic-properties', payload)
+}
+
+/**
+ * Run energetic analysis from NAMD logs.
+ * @param {{ logPaths: string[], properties?: string[], fileTimes?: Record<string, number>, timeUnits?: string, energyUnits?: string, pressureUnits?: string, temperatureUnits?: string, volumeUnits?: string }} payload
+ * @returns {Promise<{ x: number[], x_label: string, series: Array<{ name: string, key: string, unit: string, y: number[] }>, statistics: Record<string, Record<string, number>> }>}
+ */
+export function runEnergeticAnalysis(payload) {
+  return backendJson('/analysis-energetic', payload)
+}
+
+/**
+ * Analyze a topology file and return structural summary.
+ * @param {{ topologyPath: string }} payload
+ * @returns {Promise<{ n_atoms: number, n_residues: number, n_segments: number, segments: Array<{ segid: string, n_residues: number, n_atoms: number }>, residue_types: string[] }>}
+ */
+export function analyzeTopology(payload) {
+  return backendJson('/analyze-topology', payload)
+}
+
+/**
  * @param {string} filePath
  * @returns {Promise<{ n_atoms: number, positions: number[], elements: string[] }>}
  */

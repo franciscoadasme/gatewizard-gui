@@ -756,6 +756,249 @@ class EquilibrationRequest(BaseModel):
     engine: str = Field(description="Engine name")
 
 
+class StructuralAnalysisRequest(BaseModel):
+    topology_path: str = Field(..., description="Absolute path to topology file")
+    trajectory_paths: list[str] = Field(
+        ..., description="Absolute paths to trajectory files"
+    )
+    analysis_type: str = Field(
+        ..., description="rmsd, rmsf, distance, radius_of_gyration"
+    )
+    selection: str = Field("protein and backbone", description="MDAnalysis selection")
+    selection2: str = Field("", description="Second selection for distance analysis")
+    reference_frame: int = Field(0, description="Reference frame for RMSD")
+    align: bool = Field(True, description="Align structures before RMSD")
+    file_times: dict[str, float] | None = Field(
+        None, description="Optional per-file durations in ns"
+    )
+    rmsf_xaxis_type: str = Field(
+        "residue_number",
+        description="residue_number, residue_type_number, or atom_index",
+    )
+
+
+class AnalyzeTopologyRequest(BaseModel):
+    topology_path: str = Field(..., description="Absolute path to topology file")
+
+
+_PROTEIN_RESIDUES = {
+    "ALA",
+    "ARG",
+    "ASN",
+    "ASP",
+    "CYS",
+    "GLN",
+    "GLU",
+    "GLY",
+    "HIS",
+    "ILE",
+    "LEU",
+    "LYS",
+    "MET",
+    "PHE",
+    "PRO",
+    "SER",
+    "THR",
+    "TRP",
+    "TYR",
+    "VAL",
+    "HIE",
+    "HID",
+    "HIP",
+    "CYX",
+    "HSD",
+    "HSE",
+    "HSP",
+    "ACE",
+    "NME",
+}
+_NUCLEIC_RESIDUES = {
+    "A",
+    "T",
+    "G",
+    "C",
+    "U",
+    "DA",
+    "DT",
+    "DG",
+    "DC",
+    "ADE",
+    "THY",
+    "GUA",
+    "CYT",
+    "URA",
+    "RA",
+    "RU",
+    "RG",
+    "RC",
+}
+_WATER_RESIDUES = {"WAT", "HOH", "TIP3", "TIP4", "TIP5", "SPC", "SOL", "H2O"}
+_ION_RESIDUES = {
+    "NA",
+    "NA+",
+    "CL",
+    "CL-",
+    "K",
+    "K+",
+    "MG",
+    "MG2+",
+    "CA",
+    "CA2+",
+    "ZN",
+    "ZN2+",
+    "FE",
+    "FE2+",
+    "FE3+",
+    "CU",
+    "CU2+",
+    "MN",
+    "MN2+",
+    "CS",
+    "CS+",
+    "RB",
+    "RB+",
+    "LI",
+    "LI+",
+    "BR",
+    "BR-",
+    "F",
+    "F-",
+    "IOD",
+    "I",
+    "BA",
+    "BA2+",
+    "SR",
+    "SR2+",
+}
+_LIPID_NAMES = {
+    "POPC",
+    "POPE",
+    "DPPC",
+    "DLPC",
+    "DMPC",
+    "DSPC",
+    "DOPC",
+    "DOPE",
+    "DPPS",
+    "DOPS",
+    "POPS",
+    "CHOL",
+    "CHL1",
+    "POPA",
+    "POPE",
+    "POPG",
+    "DPPG",
+    "DLPE",
+    "DLPS",
+    "DLPG",
+    "PSM",
+    "DPCE",
+    "DPSM",
+    "BNSM",
+    "PNSM",
+    "SSM",
+}
+
+
+@app.post("/analyze-topology")
+def analyze_topology(payload: AnalyzeTopologyRequest) -> dict:
+    top = Path(os.path.abspath(os.path.expanduser(payload.topology_path)))
+    if not top.is_file():
+        raise HTTPException(status_code=404, detail=f"Topology file not found: {top}")
+    try:
+        u = mda.Universe(str(top))
+
+        # Per-segment summary
+        segments = []
+        for seg in u.segments:
+            segments.append(
+                {
+                    "segid": str(seg.segid),
+                    "n_residues": len(seg.residues),
+                    "n_atoms": len(seg.atoms),
+                }
+            )
+
+        # Residue classification
+        categories: dict[str, list] = {
+            "Protein": [],
+            "Nucleic": [],
+            "Water": [],
+            "Ions": [],
+            "Lipids": [],
+            "Other": [],
+        }
+        for residue in u.residues:
+            rn = str(residue.resname).upper()
+            info = {
+                "name": residue.resname,
+                "resid": int(residue.resid),
+                "chain": str(residue.segid),
+                "n_atoms": len(residue.atoms),
+            }
+            if rn in _PROTEIN_RESIDUES:
+                categories["Protein"].append(info)
+            elif rn in _WATER_RESIDUES:
+                categories["Water"].append(info)
+            elif rn in _ION_RESIDUES:
+                categories["Ions"].append(info)
+            elif rn in _LIPID_NAMES or "LIP" in rn:
+                categories["Lipids"].append(info)
+            elif rn in _NUCLEIC_RESIDUES:
+                categories["Nucleic"].append(info)
+            else:
+                categories["Other"].append(info)
+
+        # Per-category counts grouped by residue name
+        category_summary = {}
+        for cat, residues in categories.items():
+            if not residues:
+                continue
+            by_name: dict[str, int] = {}
+            for r in residues:
+                by_name[r["name"]] = by_name.get(r["name"], 0) + 1
+            category_summary[cat] = {
+                "total_residues": len(residues),
+                "total_atoms": sum(r["n_atoms"] for r in residues),
+                "by_name": by_name,
+            }
+
+        residue_types = sorted(set(str(r) for r in u.residues.resnames))
+
+        return {
+            "n_atoms": len(u.atoms),
+            "n_residues": len(u.residues),
+            "n_segments": len(u.segments),
+            "segments": segments,
+            "residue_types": residue_types,
+            "categories": category_summary,
+        }
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+class EnergeticColumnsRequest(BaseModel):
+    log_paths: list[str] = Field(..., description="Absolute paths to NAMD log files")
+    file_times: dict[str, float] | None = Field(
+        None, description="Optional per-file durations in ns"
+    )
+
+
+class EnergeticAnalysisRequest(BaseModel):
+    log_paths: list[str] = Field(..., description="Absolute paths to NAMD log files")
+    properties: list[str] | None = Field(
+        None, description="Properties to analyze (e.g., Total Energy, Temperature)"
+    )
+    file_times: dict[str, float] | None = Field(
+        None, description="Optional per-file durations in ns"
+    )
+    time_units: str = Field("ns", description="ns, ps, or µs")
+    energy_units: str = Field("kcal/mol", description="kcal/mol or kJ/mol")
+    pressure_units: str = Field("atm", description="Pressure units")
+    temperature_units: str = Field("K", description="Temperature units")
+    volume_units: str = Field("Å³", description="Volume units")
+
+
 @app.post("/get-equilibration-status")
 def get_equilibration_status(payload: EquilibrationRequest) -> dict:
     workdir = Path(os.path.abspath(os.path.expanduser(payload.working_dir)))
@@ -846,6 +1089,89 @@ def run_equilibration(payload: EquilibrationRequest) -> None:
     pid_file = workdir / "equilibration.pid"
     with open(pid_file, "w") as file:
         file.write(str(process.pid))
+
+
+@app.post("/analysis-structural")
+def run_structural_analysis(payload: StructuralAnalysisRequest) -> dict:
+    top = Path(os.path.abspath(os.path.expanduser(payload.topology_path)))
+    if not top.is_file():
+        raise HTTPException(status_code=404, detail=f"Topology file not found: {top}")
+
+    trajs = [
+        Path(os.path.abspath(os.path.expanduser(p))) for p in payload.trajectory_paths
+    ]
+    if not trajs:
+        raise HTTPException(status_code=400, detail="No trajectory files provided")
+    missing = [str(p) for p in trajs if not p.is_file()]
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Trajectory file(s) not found: {', '.join(missing)}",
+        )
+
+    try:
+        result = namd_analysis.run_structural_analysis(
+            topology_file=str(top),
+            trajectory_files=[str(p) for p in trajs],
+            analysis_type=payload.analysis_type,
+            selection=payload.selection,
+            selection2=payload.selection2,
+            reference_frame=payload.reference_frame,
+            align=payload.align,
+            file_times=payload.file_times,
+            rmsf_xaxis_type=payload.rmsf_xaxis_type,
+        )
+        return sanitize_value(result)
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+@app.post("/analysis-energetic-properties")
+def list_energetic_properties(payload: EnergeticColumnsRequest) -> dict:
+    logs = [Path(os.path.abspath(os.path.expanduser(p))) for p in payload.log_paths]
+    if not logs:
+        raise HTTPException(status_code=400, detail="No log files provided")
+    missing = [str(p) for p in logs if not p.is_file()]
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Log file(s) not found: {', '.join(missing)}",
+        )
+    try:
+        props = namd_analysis.list_namd_energy_properties(
+            [str(p) for p in logs], file_times=payload.file_times
+        )
+        return {"properties": props}
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+@app.post("/analysis-energetic")
+def run_energetic_analysis(payload: EnergeticAnalysisRequest) -> dict:
+    logs = [Path(os.path.abspath(os.path.expanduser(p))) for p in payload.log_paths]
+    if not logs:
+        raise HTTPException(status_code=400, detail="No log files provided")
+    missing = [str(p) for p in logs if not p.is_file()]
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Log file(s) not found: {', '.join(missing)}",
+        )
+
+    try:
+        result = namd_analysis.run_energetic_analysis(
+            log_files=[str(p) for p in logs],
+            properties=payload.properties,
+            file_times=payload.file_times,
+            time_units=payload.time_units,
+            energy_units=payload.energy_units,
+            pressure_units=payload.pressure_units,
+            temperature_units=payload.temperature_units,
+            volume_units=payload.volume_units,
+        )
+        return sanitize_value(result)
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
 
 
 if __name__ == "__main__":
