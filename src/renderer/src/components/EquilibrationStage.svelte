@@ -211,7 +211,7 @@
       type="button"
       variant="outline"
       size="sm"
-      className="col-span-3"
+      className="col-span-3 mt-2"
       onclick={openAddConstraint}
     >
       Add constraint
