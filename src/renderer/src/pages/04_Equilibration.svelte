@@ -40,7 +40,7 @@
   let inputDir = $state('')
   let outputName = $state('equilibration')
   let protocol = $state(prepareProtocolForRendering(baseProtocol))
-  let totalCpus = $state(1)
+  let totalCpus = $state(4)
   let totalGpus = $state(1)
   let updateInterval = $state(5)
   let useGpu = $state(true)
