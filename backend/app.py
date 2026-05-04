@@ -9,6 +9,7 @@ import sys
 import threading
 import tempfile
 from collections import deque
+from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
 from typing import List
@@ -42,6 +43,34 @@ from gatewizard.tools.ligand_parametrization import (
     get_ligand_2d_image_from_pdb_lines,
 )
 from gatewizard.utils import namd_analysis
+
+
+@dataclass
+class FileCacheEntry:
+    mtime: int
+    size: int
+    universe: mda.Universe
+
+
+FILE_CACHE: dict[str, FileCacheEntry] = {}
+FILE_CACHE_LOCK = threading.Lock()
+
+
+def load_structure(path: Path | str) -> mda.Universe:
+    """Return an MDAnalysis Universe for path, reusing a cache while mtime/size match."""
+    path = Path(path).resolve()
+    stat = path.stat()
+    mtime = stat.st_mtime
+    file_size = stat.st_size
+    with FILE_CACHE_LOCK:
+        key = str(path)
+        entry = FILE_CACHE.get(key)
+        if entry is not None and entry.mtime == mtime and entry.size == file_size:
+            return entry.universe
+        u = mda.Universe(path)
+        FILE_CACHE[key] = FileCacheEntry(mtime, file_size, u)
+        return u
+
 
 app = FastAPI(title="GateWizard Backend")
 
@@ -161,7 +190,7 @@ def load_pdb(payload: LoadPdbRequest) -> dict:
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
     try:
-        u = mda.Universe(path)
+        u = load_structure(path)
     except Exception as ex:
         raise HTTPException(
             status_code=400, detail=f"Could not read structure: {ex}"
@@ -197,6 +226,7 @@ def select(payload: SelectRequest) -> dict:
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
     try:
         u = mda.Universe(path)
+        u = load_structure(path)
         atoms = u.select_atoms(payload.selection)
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
@@ -906,7 +936,7 @@ def analyze_topology(payload: AnalyzeTopologyRequest) -> dict:
     if not top.is_file():
         raise HTTPException(status_code=404, detail=f"Topology file not found: {top}")
     try:
-        u = mda.Universe(str(top))
+        u = load_structure(str(top))
 
         # Per-segment summary
         segments = []
