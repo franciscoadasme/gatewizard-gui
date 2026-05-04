@@ -47,6 +47,7 @@
 
   // derived values
   const CurrentEngine = $derived(engines.find((e) => e.id === engine)?.Component)
+  const isEngineSupported = $derived(['namd'].includes(engine))
   const isProtocolValid = $derived(Array.isArray(protocol.stages) && protocol.stages.length > 0)
   const outputDir = $derived([workingDir, outputName].join('/'))
   const equilibrationRunning = $derived(equilibrationStatus === 'running')
@@ -344,7 +345,11 @@
     <Divider />
 
     <div class="space-y-2">
-      <Button className="w-full" onclick={startEquilibration} disabled={equilibrationRunning}>
+      <Button
+        className="w-full"
+        onclick={startEquilibration}
+        disabled={equilibrationRunning || !isEngineSupported}
+      >
         {#if equilibrationRunning}
           <Spinner className="mr-1" />
           Running...
@@ -356,7 +361,11 @@
         className="w-full"
         variant="outline"
         onclick={generateInput}
-        disabled={workingDir === '' || inputDir === '' || !isProtocolValid || generatingInputFiles}
+        disabled={workingDir === '' ||
+          inputDir === '' ||
+          !isProtocolValid ||
+          generatingInputFiles ||
+          !isEngineSupported}
       >
         {#if generatingInputFiles}
           <Spinner className="mr-1" />
