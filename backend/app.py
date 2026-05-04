@@ -610,6 +610,7 @@ class Stage(BaseModel):
         description="Surface tension in dyne/cm", default=None
     )
     temperature: float = Field(description="Temperature in Kelvin")
+    time_ns: float = Field(description="Stage time in nanoseconds")
     timestep: float = Field(description="Integration timestep (fs)")
     use_gpu: bool = Field(description="Whether to use GPU")
 
