@@ -46,6 +46,19 @@
   let useGpu = $state(true)
 
   // derived values
+  const canGenerateInput = $derived(
+    workingDir !== '' &&
+      inputDir !== '' &&
+      isProtocolValid &&
+      isEngineSupported &&
+      !generatingInputFiles
+  )
+  const canStartEquilibration = $derived(
+    workingDir !== '' &&
+      equilibrationStatus !== 'empty' &&
+      isEngineSupported &&
+      !equilibrationRunning
+  )
   const CurrentEngine = $derived(engines.find((e) => e.id === engine)?.Component)
   const isEngineSupported = $derived(['namd'].includes(engine))
   const isProtocolValid = $derived(Array.isArray(protocol.stages) && protocol.stages.length > 0)
@@ -345,11 +358,7 @@
     <Divider />
 
     <div class="space-y-2">
-      <Button
-        className="w-full"
-        onclick={startEquilibration}
-        disabled={equilibrationRunning || !isEngineSupported}
-      >
+      <Button className="w-full" onclick={startEquilibration} disabled={!canStartEquilibration}>
         {#if equilibrationRunning}
           <Spinner className="mr-1" />
           Running...
@@ -361,11 +370,7 @@
         className="w-full"
         variant="outline"
         onclick={generateInput}
-        disabled={workingDir === '' ||
-          inputDir === '' ||
-          !isProtocolValid ||
-          generatingInputFiles ||
-          !isEngineSupported}
+        disabled={!canGenerateInput}
       >
         {#if generatingInputFiles}
           <Spinner className="mr-1" />
