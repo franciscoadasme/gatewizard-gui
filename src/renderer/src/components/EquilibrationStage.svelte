@@ -4,7 +4,6 @@
   import Divider from './ui/Divider.svelte'
   import Gear from './icons/Gear.svelte'
   import Input from './ui/Input.svelte'
-  import Checkbox from './ui/Checkbox.svelte'
 
   /** @typedef {{ id: string, name: string, force_constant: number, selection: string }} Constraint */
 
@@ -217,30 +216,6 @@
     >
       Add constraint
     </Button>
-
-    <div class="col-span-3 my-4">
-      <Divider />
-    </div>
-    <h4 class="col-span-3 mb-2 font-semibold">Computational Resources</h4>
-
-    <label for="{uid}-cpu_cores">CPU Cores:</label>
-    <Input id="{uid}-cpu_cores" size="sm" type="number" bind:value={stage.cpu_cores} />
-    <p class="text-xs text-neutral-500">cores</p>
-
-    <div class="col-span-3 mt-2 flex items-center gap-2">
-      <Checkbox id="{uid}-use_gpu" bind:checked={stage.use_gpu} />
-      <label for="{uid}-use_gpu">Enable GPU acceleration</label>
-    </div>
-
-    {#if stage.use_gpu}
-      <label for="{uid}-gpu_id">GPU ID:</label>
-      <Input id="{uid}-gpu_id" size="sm" type="number" bind:value={stage.gpu_id} />
-      <p class="text-xs text-neutral-500">device ID</p>
-
-      <label for="{uid}-num_gpus">Number of GPUs:</label>
-      <Input id="{uid}-num_gpus" size="sm" type="number" bind:value={stage.num_gpus} />
-      <p class="text-xs text-neutral-500">devices</p>
-    {/if}
   </form>
 
   {#if editor}

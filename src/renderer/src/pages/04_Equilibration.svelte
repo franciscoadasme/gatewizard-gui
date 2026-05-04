@@ -36,16 +36,26 @@
   let autoMonitor = $state(true)
   let engine = $state('namd')
   let ensemble = $state('nvt')
+  let gpuDevice = $state(0)
   let inputDir = $state('')
   let outputName = $state('equilibration')
   let protocol = $state(prepareProtocolForRendering(baseProtocol))
+  let totalCpus = $state(1)
+  let totalGpus = $state(1)
   let updateInterval = $state(5)
+  let useGpu = $state(true)
 
   // derived values
   const CurrentEngine = $derived(engines.find((e) => e.id === engine)?.Component)
   const isProtocolValid = $derived(Array.isArray(protocol.stages) && protocol.stages.length > 0)
   const outputDir = $derived([workingDir, outputName].join('/'))
   const equilibrationRunning = $derived(equilibrationStatus === 'running')
+  const resources = $derived({
+    cpu_cores: totalCpus,
+    gpu_id: gpuDevice,
+    num_gpus: totalGpus,
+    use_gpu: useGpu
+  })
 
   // state
   /** @type {'not_started' | 'empty' | 'running' | 'completed' | 'error'} */
@@ -93,10 +103,12 @@
       }
 
       generatingInputFiles = true
+      let currentProtocol = $state.snapshot(protocol)
+      currentProtocol.stages = currentProtocol.stages.map((stage) => ({ ...resources, ...stage }))
       await generateEquilibration({
         inputDir,
         outputDir,
-        protocol,
+        protocol: currentProtocol,
         ensemble,
         programConfig: {
           engine: 'namd',
@@ -181,6 +193,8 @@
       return
     }
     try {
+      let currentProtocol = $state.snapshot(protocol)
+      currentProtocol.stages = currentProtocol.stages.map((stage) => ({ ...resources, ...stage }))
       await window.api.writeJson(
         filePath,
         prepareProtocolForSerialization($state.snapshot(protocol))
@@ -305,7 +319,30 @@
         <CurrentEngine />
       {/if}
     </div>
+
     <Divider />
+
+    <div class="grid grid-cols-[1fr_--spacing(15)] items-center gap-2">
+      <h2 class="col-span-2 font-semibold">Computational Resources</h2>
+      <label for="cpu-cores" class="flex-1">CPU Cores:</label>
+      <Input id="cpu-cores" type="number" size="sm" bind:value={totalCpus} />
+
+      <div class="col-span-2 flex items-center gap-2">
+        <Checkbox id="use-gpu" bind:checked={useGpu} />
+        <label for="use-gpu">Enable GPU acceleration</label>
+      </div>
+
+      {#if useGpu}
+        <label for="gpu_id">GPU ID:</label>
+        <Input id="gpu-id" type="number" size="sm" bind:value={gpuDevice} />
+
+        <label for="num-gpus">Number of GPUs:</label>
+        <Input id="num-gpus" type="number" size="sm" bind:value={totalGpus} />
+      {/if}
+    </div>
+
+    <Divider />
+
     <div class="space-y-2">
       <Button className="w-full" onclick={startEquilibration} disabled={equilibrationRunning}>
         {#if equilibrationRunning}
