@@ -13,7 +13,8 @@
   import {
     generateEquilibration,
     getEquilibrationStatus,
-    runEquilibration
+    runEquilibration,
+    selectAtoms
   } from '../lib/backendApi'
 
   /** @type {Record<string, { default: import('svelte').Component, label?: string }>} */
@@ -40,6 +41,8 @@
   let inputDir = $state('')
   let outputName = $state('equilibration')
   let protocol = $state(prepareProtocolForRendering(baseProtocol))
+  /** @type {number | null} */
+  let systemSize = $state(null)
   let totalCpus = $state(4)
   let totalGpus = $state(1)
   let updateInterval = $state(5)
@@ -99,6 +102,23 @@
       return
     }
     updateProgress()
+  })
+
+  $effect(() => {
+    const dir = inputDir
+    if (!dir) {
+      systemSize = null
+      return
+    }
+    systemSize = null
+    const payload = {
+      path: `${dir}/system.inpcrd`,
+      selection: 'all',
+      topology: `${dir}/system.prmtop`
+    }
+    selectAtoms(payload).then(({ atoms }) => {
+      systemSize = atoms.length
+    })
   })
 
   onDestroy(unscheduleUpdate)
@@ -304,6 +324,9 @@
         </p>
         {#if inputDir}
           <Input type="text" value={inputDir} className="w-full" disabled />
+          {#if systemSize !== null}
+            <p class="mb-2 text-xs">System size: {systemSize.toLocaleString()} atoms</p>
+          {/if}
           <Button variant="outline" className="w-full" onclick={selectInputDir}
             >Select another directory...</Button
           >
