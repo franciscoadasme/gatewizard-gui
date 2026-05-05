@@ -155,12 +155,11 @@ export function loadPdb(filePath) {
 }
 
 /**
- * @param {string} filePath
- * @param {string} selection
+ * @param {{ path: string, selection: string, topology: string|null }} props
  * @returns {Promise<{ n_atoms: number, positions: number[], elements: string[] }>}
  */
-export async function selectAtoms(filePath, selection) {
-  return backendJson('/select', { path: filePath, selection })
+export async function selectAtoms(props) {
+  return backendJson('/select', props)
 }
 
 /**

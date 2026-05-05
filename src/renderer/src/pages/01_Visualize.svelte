@@ -14,7 +14,7 @@
   let selectionError = $state(null)
 
   /** Passed to Threlte viewer (positions + elements from backend). */
-  /** @type {null | { n_atoms: number, positions: number[], elements: string[] }} */
+  /** @type {null | { atoms: { x: number, y: number, z: number, element: string }[], bonds: [number, number][] }} */
   let structure = $state(null)
 
   async function onOpenPdb() {
@@ -29,7 +29,7 @@
 
       structure = await loadPdb(dlg.filePath)
       const base = dlg.filePath.split(/[/\\]/).pop() ?? dlg.filePath
-      const n = structure?.n_atoms
+      const n = structure?.atoms?.length
       sidebarResult = typeof n === 'number' ? `${n} atoms — ${base}` : JSON.stringify(structure)
     } catch (err) {
       sidebarResult = err instanceof Error ? err.message : String(err)
@@ -41,7 +41,7 @@
 
   async function onSelect() {
     try {
-      structure = await selectAtoms(filePath, selection)
+      structure = await selectAtoms({ path: filePath, selection })
       selectionError = null
     } catch (ex) {
       selectionError = ex instanceof Error ? ex.message : String(ex)

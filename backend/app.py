@@ -231,23 +231,11 @@ def select(payload: SelectRequest) -> dict:
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
 
-    coords = np.asarray(atoms.positions, dtype=np.float64)
-    # TODO: remove centering (leave it to the camera rig)
-    try:
-        com = atoms.center_of_mass()
-    except Exception:
-        com = np.mean(coords, axis=0)
-    coords = coords - com
-
-    positions: List[float] = coords.reshape(-1).tolist()
-    elements: List[str] = atoms.elements.tolist()
-
-    return {
-        "n_atoms": len(atoms),
-        "path": path,
-        "positions": positions,
-        "elements": elements,
-    }
+    atoms = [
+        dict(x=float(pos[0]), y=float(pos[1]), z=float(pos[2]), element=elem)
+        for pos, elem in zip(atoms.positions, atoms.elements)
+    ]
+    return {"atoms": atoms}
 
 
 @app.post("/run-propka")
