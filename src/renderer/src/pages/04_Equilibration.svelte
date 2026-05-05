@@ -1,6 +1,7 @@
 <script>
   import { onDestroy, untrack } from 'svelte'
   import Button from '../components/ui/Button.svelte'
+  import ConstraintEditor from '../components/ConstraintEditor.svelte'
   import Divider from '../components/ui/Divider.svelte'
   import Empty from '../components/ui/Empty.svelte'
   import EquilibrationStage from '../components/EquilibrationStage.svelte'
@@ -16,6 +17,8 @@
     runEquilibration,
     selectAtoms
   } from '../lib/backendApi'
+
+  /** @typedef {{ id: string, name: string, force_constant: number, selection: string }} Constraint */
 
   /** @type {Record<string, { default: import('svelte').Component, label?: string }>} */
   const engineModules = import.meta.glob('./equilibration/engines/*.svelte', { eager: true })
@@ -75,6 +78,8 @@
   })
 
   // state
+  /** @type {null | { stageIndex: number, constraintIndex: number, source: Constraint | null }} */
+  let constraintEditor = $state(null)
   /** @type {'not_started' | 'empty' | 'running' | 'completed' | 'error'} */
   let equilibrationStatus = $state('not_started')
   let generatingInputFiles = $state(false)
@@ -312,6 +317,50 @@
       updateTimeoutId = setTimeout(updateProgress, updateInterval * 1000)
     }
   }
+
+  function acceptConstraint(/** @type {Constraint} */ draft) {
+    if (!constraintEditor) return
+    const { stageIndex, constraintIndex } = constraintEditor
+    const stage = protocol.stages[stageIndex]
+    if (constraintIndex < 0) {
+      stage.constraints = [...stage.constraints, { ...draft }]
+    } else {
+      const next = [...stage.constraints]
+      next[constraintIndex] = { ...draft }
+      stage.constraints = next
+    }
+    dismissConstraintEditor()
+  }
+
+  function deleteConstraintFromEditor() {
+    if (!constraintEditor || constraintEditor.constraintIndex < 0) return
+    const { stageIndex, constraintIndex } = constraintEditor
+    const stage = protocol.stages[stageIndex]
+    stage.constraints = stage.constraints.filter((_, i) => i !== constraintIndex)
+    dismissConstraintEditor()
+  }
+
+  function dismissConstraintEditor() {
+    constraintEditor = null
+  }
+
+  /**
+   * Open the constraint editor for adding a new constraint.
+   * @param {number} stageIndex - The index of the stage to add the constraint to.
+   */
+  function openConstraintEditorForAdd(stageIndex) {
+    constraintEditor = { stageIndex, constraintIndex: -1, source: null }
+  }
+
+  /**
+   * Open the constraint editor for editing a specific constraint.
+   * @param {number} stageIndex - The index of the stage to edit.
+   * @param {number} constraintIndex - The index of the constraint to edit.
+   */
+  function openConstraintEditorForEdit(stageIndex, constraintIndex) {
+    const c = protocol.stages[stageIndex].constraints[constraintIndex]
+    constraintEditor = { stageIndex, constraintIndex, source: { ...c } }
+  }
 </script>
 
 <div class="flex min-w-0 flex-1 divide-x divide-neutral-800 select-none">
@@ -428,7 +477,12 @@
       {#if isProtocolValid}
         <div class="flex min-h-0 w-full flex-1 items-start gap-4 overflow-auto pb-2">
           {#each protocol.stages as _, i (protocol.stages[i].name)}
-            <EquilibrationStage bind:stage={protocol.stages[i]} {ensemble} />
+            <EquilibrationStage
+              bind:stage={protocol.stages[i]}
+              {ensemble}
+              onAddConstraint={() => openConstraintEditorForAdd(i)}
+              onEditConstraint={(ci) => openConstraintEditorForEdit(i, ci)}
+            />
           {/each}
         </div>
       {:else}
@@ -477,4 +531,15 @@
       {/if}
     </div>
   </div>
+
+  {#if constraintEditor}
+    {#key `${constraintEditor.stageIndex}-${constraintEditor.constraintIndex}-${constraintEditor.source?.id ?? 'new'}`}
+      <ConstraintEditor
+        source={constraintEditor.source}
+        onDismiss={dismissConstraintEditor}
+        onAccept={acceptConstraint}
+        onDelete={constraintEditor.constraintIndex >= 0 ? deleteConstraintFromEditor : undefined}
+      />
+    {/key}
+  {/if}
 </div>

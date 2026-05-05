@@ -1,50 +1,15 @@
 <script>
   import Button from './ui/Button.svelte'
-  import ConstraintEditor from './ConstraintEditor.svelte'
   import Divider from './ui/Divider.svelte'
   import Gear from './icons/Gear.svelte'
   import Input from './ui/Input.svelte'
 
   /** @typedef {{ id: string, name: string, force_constant: number, selection: string }} Constraint */
 
-  /** @type {{ stage: { name: string, description: string, time_ns: number, steps: number, ensemble: string, temperature: number, pressure: number, constraints: Array<Constraint>, timestep: number, dcd_freq: number, use_gpu: boolean, cpu_cores: number, gpu_id: number, num_gpus: number, minimize_steps?: number, margin?: number, surface_tension?: number }, ensemble: string }} */
-  let { stage = $bindable(), ensemble } = $props()
+  /** @type {{ stage: { name: string, description: string, time_ns: number, steps: number, ensemble: string, temperature: number, pressure: number, constraints: Array<Constraint>, timestep: number, dcd_freq: number, use_gpu: boolean, cpu_cores: number, gpu_id: number, num_gpus: number, minimize_steps?: number, margin?: number, surface_tension?: number }, ensemble: string, onOpenAddConstraint: () => void, onOpenEditConstraint: (constraintIndex: number) => void }} */
+  let { stage = $bindable(), ensemble, onAddConstraint, onEditConstraint } = $props()
 
   const uid = $props.id()
-
-  /** @type {null | { index: number, source: Constraint | null }} */
-  let editor = $state(null)
-
-  function acceptConstraint(/** @type {Constraint} */ draft) {
-    if (!editor) return
-    if (editor.index < 0) {
-      stage.constraints = [...stage.constraints, { ...draft }]
-    } else {
-      const newConstraints = [...stage.constraints]
-      newConstraints[editor.index] = { ...draft }
-      stage.constraints = newConstraints
-    }
-    dismissEditor()
-  }
-
-  function deleteConstraint() {
-    if (!editor || editor.index < 0) return
-    stage.constraints = stage.constraints.filter((_, i) => i !== editor.index)
-    dismissEditor()
-  }
-
-  function dismissEditor() {
-    editor = null
-  }
-
-  function openAddConstraint() {
-    editor = { index: -1, source: null }
-  }
-
-  function openEditConstraint(/** @type {number} */ i) {
-    const constraint = stage.constraints[i]
-    editor = { index: i, source: { ...constraint } }
-  }
 </script>
 
 <div class="rounded-md bg-neutral-900 p-4">
@@ -200,7 +165,7 @@
         <button
           type="button"
           class="rounded p-1 text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-100 active:translate-y-0.5"
-          onclick={() => openEditConstraint(i)}
+          onclick={() => onEditConstraint(i)}
           aria-label="Edit {constraint.name}"
         >
           <Gear className="h-4 w-4" />
@@ -212,18 +177,9 @@
       variant="outline"
       size="sm"
       className="col-span-3 mt-2"
-      onclick={openAddConstraint}
+      onclick={onAddConstraint}
     >
       Add constraint
     </Button>
   </form>
-
-  {#if editor}
-    <ConstraintEditor
-      source={editor.source}
-      onDismiss={dismissEditor}
-      onAccept={acceptConstraint}
-      onDelete={deleteConstraint}
-    />
-  {/if}
 </div>
