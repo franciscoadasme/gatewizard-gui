@@ -56,7 +56,7 @@ FILE_CACHE: dict[str, FileCacheEntry] = {}
 FILE_CACHE_LOCK = threading.Lock()
 
 
-def load_structure(path: Path | str) -> mda.Universe:
+def load_structure(path: Path | str, topology: str | None = None) -> mda.Universe:
     """Return an MDAnalysis Universe for path, reusing a cache while mtime/size match."""
     path = Path(path).resolve()
     stat = path.stat()
@@ -67,7 +67,7 @@ def load_structure(path: Path | str) -> mda.Universe:
         entry = FILE_CACHE.get(key)
         if entry is not None and entry.mtime == mtime and entry.size == file_size:
             return entry.universe
-        u = mda.Universe(path)
+        u = mda.Universe(topology or path, path)
         FILE_CACHE[key] = FileCacheEntry(mtime, file_size, u)
         return u
 
@@ -225,8 +225,7 @@ def select(payload: SelectRequest) -> dict:
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
     try:
-        u = mda.Universe(path)
-        u = load_structure(path)
+        u = load_structure(path, payload.topology)
         atoms = u.select_atoms(payload.selection)
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
