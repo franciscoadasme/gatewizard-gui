@@ -323,7 +323,9 @@
           Must contain <code>.prmtop</code> and <code>.inpcrd</code> files.
         </p>
         {#if inputDir}
-          <Input type="text" value={inputDir} className="w-full" disabled />
+          <div class="w-full rounded-md border border-neutral-800 p-2 font-mono wrap-anywhere">
+            {inputDir}
+          </div>
           {#if systemSize !== null}
             <p class="mb-2 text-xs">System size: {systemSize.toLocaleString()} atoms</p>
           {/if}
