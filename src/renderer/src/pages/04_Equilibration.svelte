@@ -110,23 +110,35 @@
   })
 
   $effect(() => {
-    const dir = inputDir
-    if (!dir) {
-      systemSize = null
-      return
-    }
-    systemSize = null
-    const payload = {
-      path: `${dir}/system.inpcrd`,
-      selection: 'all',
-      topology: `${dir}/system.prmtop`
-    }
-    selectAtoms(payload).then(({ atoms }) => {
-      systemSize = atoms.length
+    countMatchingAtoms('all').then((n) => {
+      systemSize = n
     })
   })
 
   onDestroy(unscheduleUpdate)
+
+  /**
+   * Count the number of atoms in the system.inpcrd file.
+   * @param {string} selection - The selection to select atoms from.
+   * @returns {Promise<number|null>} The number of selected atoms.
+   */
+  async function countMatchingAtoms(selection) {
+    if (!inputDir) {
+      return null
+    }
+    const payload = {
+      path: `${inputDir}/system.inpcrd`,
+      selection,
+      topology: `${inputDir}/system.prmtop`
+    }
+    try {
+      const { atoms } = await selectAtoms(payload)
+      return atoms.length
+    } catch (error) {
+      // alert(error instanceof Error ? error.message : String(error))
+      return null
+    }
+  }
 
   async function generateInput() {
     try {
@@ -539,6 +551,7 @@
         onDismiss={dismissConstraintEditor}
         onAccept={acceptConstraint}
         onDelete={constraintEditor.constraintIndex >= 0 ? deleteConstraintFromEditor : undefined}
+        onSelect={countMatchingAtoms}
       />
     {/key}
   {/if}

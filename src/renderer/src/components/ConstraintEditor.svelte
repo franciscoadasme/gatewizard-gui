@@ -5,8 +5,8 @@
 
   /** @typedef {{ id: string, name: string, force_constant: number, selection: string }} Constraint */
 
-  /** @type {{ source: Constraint | null, onDismiss: () => void, onAccept: (draft: Constraint) => void, onDelete?: () => void }} */
-  let { source, onDismiss, onAccept, onDelete } = $props()
+  /** @type {{ source: Constraint | null, onDismiss: () => void, onAccept: (draft: Constraint) => void, onDelete?: () => void, onSelect: (selection: string) => Promise<number|null> }} */
+  let { source, onDismiss, onAccept, onDelete, onSelect } = $props()
 
   const uid = $props.id()
 
@@ -15,10 +15,23 @@
   /** @type {Constraint} */
   let draft = $state(newConstraint())
 
+  let debouncedSelection = $state('all')
+
   const editing = $derived(source != null)
+  const selectedAtoms = $derived(onSelect(debouncedSelection))
+
+  $effect(() => {
+    const sel = draft.selection
+    if (sel === debouncedSelection) return
+    const tid = window.setTimeout(() => {
+      debouncedSelection = sel
+    }, 300)
+    return () => window.clearTimeout(tid)
+  })
 
   onMount(async () => {
     draft = source ? { ...source } : newConstraint()
+    debouncedSelection = draft.selection
     await tick()
     dialog?.showModal()
   })
@@ -79,6 +92,15 @@
         class="w-full rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 font-mono text-sm text-neutral-50 transition-colors placeholder:text-neutral-500 hover:border-neutral-700 focus-visible:ring-2 focus-visible:ring-neutral-600 focus-visible:outline-none"
         bind:value={draft.selection}
       ></textarea>
+      {#await selectedAtoms}
+        <p class="text-xs text-neutral-500">Evaluating selection...</p>
+      {:then n}
+        {#if n === null}
+          <p class="text-xs text-red-500">Invalid selection</p>
+        {:else}
+          <p class="text-xs text-neutral-500">{n.toLocaleString()} atoms selected</p>
+        {/if}
+      {/await}
     </div>
 
     <div class="flex items-center gap-1">
