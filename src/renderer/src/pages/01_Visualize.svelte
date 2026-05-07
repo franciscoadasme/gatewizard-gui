@@ -1,5 +1,5 @@
 <script>
-  import MoleculeCanvas from '../components/MoleculeCanvas.svelte'
+  import { Canvas } from '../components/viewer'
   import Button from '../components/ui/Button.svelte'
   import { loadPdb, selectAtoms } from '../lib/backendApi.js'
 
@@ -87,7 +87,7 @@
     {/if}
   </div>
 
-  <MoleculeCanvas {structure} />
+  <Canvas {structure} />
 
   <div class="w-60 p-2">
     <h2>Representations</h2>
