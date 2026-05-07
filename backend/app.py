@@ -201,6 +201,8 @@ def load_pdb(payload: LoadPdbRequest) -> dict:
     if n_atoms == 0:
         raise HTTPException(status_code=400, detail="Structure contains no atoms")
 
+    u.atoms.guess_bonds()  # TODO: improve performance
+
     coords = np.asarray(u.atoms.positions, dtype=np.float64)
     # TODO: remove centering (leave it to the camera rig)
     try:
@@ -215,7 +217,7 @@ def load_pdb(payload: LoadPdbRequest) -> dict:
         for pos, elem in zip(coords, elements)
     ]
 
-    return {"atoms": atoms}
+    return {"atoms": atoms, "bonds": u.bonds.indices.tolist()}
 
 
 @app.post("/select")

@@ -1,5 +1,5 @@
 <script>
-  import { CameraRig, Canvas, VdwSpheres } from '../components/viewer'
+  import { BallStick, CameraRig, Canvas, VdwSpheres } from '../components/viewer'
   import Button from '../components/ui/Button.svelte'
   import { loadPdb, selectAtoms } from '../lib/backendApi.js'
 
@@ -146,7 +146,8 @@
     {#if structure}
       <Canvas>
         <CameraRig center={camera.center} extent={camera.extent} />
-        <VdwSpheres atoms={structure.atoms} />
+        <!-- <VdwSpheres atoms={structure.atoms} /> -->
+        <BallStick atoms={structure.atoms} bonds={structure.bonds} />
       </Canvas>
     {/if}
   </div>
