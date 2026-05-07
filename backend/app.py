@@ -106,6 +106,7 @@ class LoadPdbRequest(BaseModel):
 
 class SelectRequest(BaseModel):
     path: str = Field(..., description="Absolute path to a PDB/mmCIF file")
+    topology: str | None = Field(description="Topology file name", default=None)
     selection: str = Field(..., description="MDAnalysis selection string")
 
 
