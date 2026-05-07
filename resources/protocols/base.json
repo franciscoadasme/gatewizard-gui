@@ -21,11 +21,7 @@
         { "name": "Other", "force_constant": 0.0, "selection": "other" }
       ],
       "timestep": 1.0,
-      "dcd_freq": 5000,
-      "use_gpu": true,
-      "cpu_cores": 1,
-      "gpu_id": 0,
-      "num_gpus": 1
+      "dcd_freq": 5000
     },
     {
       "name": "Equilibration 2",
@@ -45,11 +41,7 @@
         { "name": "Other", "force_constant": 0.0, "selection": "other" }
       ],
       "timestep": 1.0,
-      "dcd_freq": 5000,
-      "use_gpu": true,
-      "cpu_cores": 1,
-      "gpu_id": 0,
-      "num_gpus": 1
+      "dcd_freq": 5000
     },
     {
       "name": "Equilibration 3",
@@ -71,11 +63,7 @@
       ],
       "timestep": 1.0,
       "dcd_freq": 5000,
-      "margin": 5.0,
-      "use_gpu": true,
-      "cpu_cores": 1,
-      "gpu_id": 0,
-      "num_gpus": 1
+      "margin": 5.0
     },
     {
       "name": "Equilibration 4",
@@ -97,11 +85,7 @@
       ],
       "timestep": 2.0,
       "dcd_freq": 5000,
-      "margin": 5.0,
-      "use_gpu": true,
-      "cpu_cores": 1,
-      "gpu_id": 0,
-      "num_gpus": 1
+      "margin": 5.0
     },
     {
       "name": "Equilibration 5",
@@ -123,11 +107,7 @@
       ],
       "timestep": 2.0,
       "dcd_freq": 5000,
-      "margin": 5.0,
-      "use_gpu": true,
-      "cpu_cores": 1,
-      "gpu_id": 0,
-      "num_gpus": 1
+      "margin": 5.0
     },
     {
       "name": "Equilibration 6",
@@ -149,11 +129,7 @@
       ],
       "timestep": 2.0,
       "dcd_freq": 5000,
-      "margin": 5.0,
-      "use_gpu": true,
-      "cpu_cores": 1,
-      "gpu_id": 0,
-      "num_gpus": 1
+      "margin": 5.0
     },
     {
       "name": "Production",
@@ -175,11 +151,7 @@
       ],
       "timestep": 2.0,
       "dcd_freq": 50000,
-      "margin": 5.0,
-      "use_gpu": true,
-      "cpu_cores": 1,
-      "gpu_id": 0,
-      "num_gpus": 1
+      "margin": 5.0
     }
   ],
   "selections": {

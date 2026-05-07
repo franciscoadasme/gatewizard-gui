@@ -6,7 +6,7 @@
 
   /** @typedef {{ id: string, name: string, force_constant: number, selection: string }} Constraint */
 
-  /** @type {{ stage: { name: string, description: string, time_ns: number, steps: number, ensemble: string, temperature: number, pressure: number, constraints: Array<Constraint>, timestep: number, dcd_freq: number, use_gpu: boolean, cpu_cores: number, gpu_id: number, num_gpus: number, minimize_steps?: number, margin?: number, surface_tension?: number }, ensemble: string, onOpenAddConstraint: () => void, onOpenEditConstraint: (constraintIndex: number) => void }} */
+  /** @type {{ stage: { name: string, description: string, time_ns: number, steps: number, ensemble: string, temperature: number, pressure: number, constraints: Array<Constraint>, timestep: number, dcd_freq: number, minimize_steps?: number, margin?: number, surface_tension?: number }, ensemble: string, onOpenAddConstraint: () => void, onOpenEditConstraint: (constraintIndex: number) => void }} */
   let { stage = $bindable(), ensemble, onAddConstraint, onEditConstraint } = $props()
 
   const uid = $props.id()
