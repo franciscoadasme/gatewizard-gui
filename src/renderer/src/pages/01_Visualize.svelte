@@ -27,7 +27,7 @@
    * @returns {{ center: { x: number, y: number, z: number }, extent: number } | null}
    */
   function getCameraForAtoms(atoms) {
-    if (!atoms) {
+    if (!atoms?.length) {
       return null
     }
 
