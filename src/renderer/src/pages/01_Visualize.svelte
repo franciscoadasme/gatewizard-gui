@@ -1,5 +1,5 @@
 <script>
-  import { Canvas } from '../components/viewer'
+  import { CameraRig, Canvas, VdwSpheres } from '../components/viewer'
   import Button from '../components/ui/Button.svelte'
   import { loadPdb, selectAtoms } from '../lib/backendApi.js'
 
@@ -87,7 +87,9 @@
     {/if}
   </div>
 
-  <Canvas {structure} />
+  <Canvas>
+    <VdwSpheres atoms={structure?.atoms ?? []} />
+  </Canvas>
 
   <div class="w-60 p-2">
     <h2>Representations</h2>
