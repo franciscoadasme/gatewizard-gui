@@ -3,6 +3,8 @@
   import Button from '../components/ui/Button.svelte'
   import { loadPdb, selectAtoms } from '../lib/backendApi.js'
 
+  const R_SHELL = 2.3 // radius of the shell around the atoms
+
   /** @type {{ workingDir?: string }} */
   let { workingDir = '' } = $props()
 
@@ -16,6 +18,59 @@
   /** Passed to Threlte viewer (positions + elements from backend). */
   /** @type {null | { atoms: { x: number, y: number, z: number, element: string }[], bonds: [number, number][] }} */
   let structure = $state(null)
+
+  // derived state
+  const camera = $derived.by(() => getCameraForAtoms(structure?.atoms))
+
+  /**
+   * @param {{ x: number, y: number, z: number }[]|undefined|null} atoms
+   * @returns {{ center: { x: number, y: number, z: number }, extent: number } | null}
+   */
+  function getCameraForAtoms(atoms) {
+    if (!atoms) {
+      return null
+    }
+
+    const centroid = getCentroid(atoms)
+    const extent = getExtent(atoms, centroid)
+    return { center: centroid, extent }
+  }
+
+  /**
+   * @param {{ x: number, y: number, z: number }[]} atoms
+   * @returns {{ x: number, y: number, z: number }}
+   */
+  function getCentroid(atoms) {
+    let cx = 0
+    let cy = 0
+    let cz = 0
+    for (const a of atoms) {
+      cx += a.x
+      cy += a.y
+      cz += a.z
+    }
+    const n = atoms.length
+    cx /= n
+    cy /= n
+    cz /= n
+
+    return { x: cx, y: cy, z: cz }
+  }
+
+  /**
+   * @param {{ x: number, y: number, z: number }[]} atoms
+   * @param {{ x: number, y: number, z: number }} centroid
+   * @returns {number}
+   */
+  function getExtent(atoms, centroid) {
+    /** Max distance from centroid to any atom (+ shell); floor keeps tiny sets sane before dist clamp in CameraRig. */
+    let extent = 8
+    for (const a of atoms) {
+      const reach = Math.hypot(a.x - centroid.x, a.y - centroid.y, a.z - centroid.z) + R_SHELL
+      if (reach > extent) extent = reach
+    }
+    return extent
+  }
 
   async function onOpenPdb() {
     openPdbLoading = true
@@ -87,9 +142,14 @@
     {/if}
   </div>
 
-  <Canvas>
-    <VdwSpheres atoms={structure?.atoms ?? []} />
-  </Canvas>
+  <div class="relative min-h-[420px] min-w-0 flex-1 bg-black">
+    {#if structure}
+      <Canvas>
+        <CameraRig center={camera.center} extent={camera.extent} />
+        <VdwSpheres atoms={structure.atoms} />
+      </Canvas>
+    {/if}
+  </div>
 
   <div class="w-60 p-2">
     <h2>Representations</h2>
