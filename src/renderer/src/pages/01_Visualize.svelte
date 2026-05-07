@@ -143,8 +143,8 @@
   </div>
 
   <div class="relative min-h-[420px] min-w-0 flex-1 bg-black">
-    {#if structure}
-      <Canvas>
+    {#if structure && camera}
+      <Canvas orbitTarget={camera.center}>
         <CameraRig center={camera.center} extent={camera.extent} />
         <!-- <VdwSpheres atoms={structure.atoms} /> -->
         <BallStick atoms={structure.atoms} bonds={structure.bonds} />

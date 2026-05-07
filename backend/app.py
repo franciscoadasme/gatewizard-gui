@@ -203,18 +203,9 @@ def load_pdb(payload: LoadPdbRequest) -> dict:
 
     u.atoms.guess_bonds()  # TODO: improve performance
 
-    coords = np.asarray(u.atoms.positions, dtype=np.float64)
-    # TODO: remove centering (leave it to the camera rig)
-    try:
-        com = u.atoms.center_of_mass()
-    except Exception:
-        com = np.mean(coords, axis=0)
-    coords = coords - com
-
-    elements: List[str] = u.atoms.elements.tolist()
     atoms = [
-        dict(x=pos[0], y=pos[1], z=pos[2], element=elem)
-        for pos, elem in zip(coords, elements)
+        dict(x=float(pos[0]), y=float(pos[1]), z=float(pos[2]), element=elem)
+        for pos, elem in zip(u.atoms.positions, u.atoms.elements)
     ]
 
     return {"atoms": atoms, "bonds": u.bonds.indices.tolist()}
