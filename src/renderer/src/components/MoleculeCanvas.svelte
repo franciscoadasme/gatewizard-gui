@@ -4,15 +4,10 @@
   import MoleculeCameraRig from './MoleculeCameraRig.svelte'
   import MoleculeVdwSpheres from './MoleculeVdwSpheres.svelte'
 
-  /** @type {{ structure: { n_atoms: number, positions: number[], elements: string[] } | null }} */
+  /** @type {{ structure: { atoms: { x: number, y: number, z: number, element: string }[], bonds: [number, number][] } | null }} */
   let { structure = null } = $props()
 
-  const hasStructure = $derived(
-    !!structure &&
-      structure.n_atoms > 0 &&
-      structure.positions?.length >= 3 &&
-      structure.elements?.length
-  )
+  const hasStructure = $derived(!!structure && structure.atoms?.length > 0)
 </script>
 
 <div class="relative min-h-[420px] min-w-0 flex-1">

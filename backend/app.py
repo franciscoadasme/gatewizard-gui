@@ -208,15 +208,13 @@ def load_pdb(payload: LoadPdbRequest) -> dict:
         com = np.mean(coords, axis=0)
     coords = coords - com
 
-    positions: List[float] = coords.reshape(-1).tolist()
     elements: List[str] = u.atoms.elements.tolist()
+    atoms = [
+        dict(x=pos[0], y=pos[1], z=pos[2], element=elem)
+        for pos, elem in zip(coords, elements)
+    ]
 
-    return {
-        "n_atoms": n_atoms,
-        "path": path,
-        "positions": positions,
-        "elements": elements,
-    }
+    return {"atoms": atoms}
 
 
 @app.post("/select")

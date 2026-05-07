@@ -83,12 +83,12 @@
     return DEFAULT_CPK
   }
 
-  /** Flat xyz (Å), one element label per atom (same order as backend). */
-  let { positions = [], elements = [] } = $props()
+  /** @type {{ x: number, y: number, z: number, element: string }[]} */
+  let { atoms = [] } = $props()
 
   const { invalidate } = useThrelte()
 
-  const count = $derived(Math.min(Math.floor(positions.length / 3), elements.length))
+  const count = $derived(atoms.length)
 
   let meshRef = $state(/** @type {InstancedMesh | null} */ (null))
 
@@ -113,17 +113,16 @@
     const pos = new Vector3()
     const color = new Color()
 
-    for (let i = 0; i < n; i++) {
-      const ix = i * 3
-      pos.set(positions[ix], positions[ix + 1], positions[ix + 2])
-      const r = vdwRadius(elements[i])
+    atoms.forEach((atom, index) => {
+      pos.set(atom.x, atom.y, atom.z)
+      const r = vdwRadius(atom.element)
       scale.set(r, r, r)
       matrix.compose(pos, quat, scale)
-      mesh.setMatrixAt(i, matrix)
-      const [cr, cg, cb] = cpkRgb(elements[i])
+      mesh.setMatrixAt(index, matrix)
+      const [cr, cg, cb] = cpkRgb(atom.element)
       color.setRGB(cr, cg, cb)
-      mesh.setColorAt(i, color)
-    }
+      mesh.setColorAt(index, color)
+    })
     mesh.instanceMatrix.needsUpdate = true
     mesh.instanceColor.needsUpdate = true
 
