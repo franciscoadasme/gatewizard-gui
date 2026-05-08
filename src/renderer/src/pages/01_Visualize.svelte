@@ -2,8 +2,7 @@
   import { BallStick, CameraRig, Canvas, VdwSpheres } from '../components/viewer'
   import Button from '../components/ui/Button.svelte'
   import { loadPdb, selectAtoms } from '../lib/backendApi.js'
-
-  const R_SHELL = 2.3 // radius of the shell around the atoms
+  import { getCameraForAtoms } from '../lib/viewer/base.js'
 
   /** @type {{ workingDir?: string }} */
   let { workingDir = '' } = $props()
@@ -21,56 +20,6 @@
 
   // derived state
   const camera = $derived.by(() => getCameraForAtoms(structure?.atoms))
-
-  /**
-   * @param {{ x: number, y: number, z: number }[]|undefined|null} atoms
-   * @returns {{ center: { x: number, y: number, z: number }, extent: number } | null}
-   */
-  function getCameraForAtoms(atoms) {
-    if (!atoms?.length) {
-      return null
-    }
-
-    const centroid = getCentroid(atoms)
-    const extent = getExtent(atoms, centroid)
-    return { center: centroid, extent }
-  }
-
-  /**
-   * @param {{ x: number, y: number, z: number }[]} atoms
-   * @returns {{ x: number, y: number, z: number }}
-   */
-  function getCentroid(atoms) {
-    let cx = 0
-    let cy = 0
-    let cz = 0
-    for (const a of atoms) {
-      cx += a.x
-      cy += a.y
-      cz += a.z
-    }
-    const n = atoms.length
-    cx /= n
-    cy /= n
-    cz /= n
-
-    return { x: cx, y: cy, z: cz }
-  }
-
-  /**
-   * @param {{ x: number, y: number, z: number }[]} atoms
-   * @param {{ x: number, y: number, z: number }} centroid
-   * @returns {number}
-   */
-  function getExtent(atoms, centroid) {
-    /** Max distance from centroid to any atom (+ shell); floor keeps tiny sets sane before dist clamp in CameraRig. */
-    let extent = 8
-    for (const a of atoms) {
-      const reach = Math.hypot(a.x - centroid.x, a.y - centroid.y, a.z - centroid.z) + R_SHELL
-      if (reach > extent) extent = reach
-    }
-    return extent
-  }
 
   async function onOpenPdb() {
     openPdbLoading = true
