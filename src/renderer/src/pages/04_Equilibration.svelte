@@ -15,7 +15,7 @@
     generateEquilibration,
     getEquilibrationStatus,
     runEquilibration,
-    selectAtoms
+    getStructure
   } from '../lib/backendApi'
 
   /** @typedef {{ id: string, name: string, force_constant: number, selection: string }} Constraint */
@@ -132,7 +132,7 @@
       topology: `${inputDir}/system.prmtop`
     }
     try {
-      const { atoms } = await selectAtoms(payload)
+      const { atoms } = await getStructure(payload)
       return atoms.length
     } catch (error) {
       // alert(error instanceof Error ? error.message : String(error))
@@ -318,6 +318,7 @@
       stageStatuses = []
       return
     }
+    // TODO: what to do with partial progress? it is not shown in the UI
 
     if (status === 'error') {
       equilibrationOutput = stages.find((stage) => stage.status === 'error')?.output ?? ''

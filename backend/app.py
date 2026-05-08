@@ -108,16 +108,6 @@ app.add_middleware(
 )
 
 
-class LoadPdbRequest(BaseModel):
-    path: str = Field(..., description="Absolute path to a PDB/mmCIF file")
-
-
-class SelectRequest(BaseModel):
-    path: str = Field(..., description="Absolute path to a PDB/mmCIF file")
-    topology: str | None = Field(description="Topology file name", default=None)
-    selection: str = Field(..., description="MDAnalysis selection string")
-
-
 class RunPropKaRequest(BaseModel):
     path: str = Field(..., description="Absolute path to a PDB/mmCIF file")
     target_ph: float = Field(..., description="Target pH")
@@ -191,83 +181,6 @@ def ping() -> dict:
     except metadata.PackageNotFoundError:
         gw_version = None
     return {"message": "pong", "gatewizard_version": gw_version}
-
-
-@app.post("/load-pdb")
-def load_pdb(payload: LoadPdbRequest) -> dict:
-    path = os.path.abspath(os.path.expanduser(payload.path))
-    if not os.path.isfile(path):
-        raise HTTPException(status_code=404, detail=f"File not found: {path}")
-    try:
-        u = load_structure(path)
-    except Exception as ex:
-        raise HTTPException(
-            status_code=400, detail=f"Could not read structure: {ex}"
-        ) from ex
-
-    n_atoms = int(u.atoms.n_atoms)
-    if n_atoms == 0:
-        raise HTTPException(status_code=400, detail="Structure contains no atoms")
-
-    u.atoms.guess_bonds()  # TODO: improve performance
-
-    atoms = [
-        dict(
-            x=float(it.position[0]),
-            y=float(it.position[1]),
-            z=float(it.position[2]),
-            element=str(it.element),
-            name=str(it.name).strip(),
-        )
-        for it in u.atoms
-    ]
-    bonds = u.bonds.indices.tolist()
-
-    try:
-        sec_segments = get_secondary_structure(u)
-    except Exception:
-        sec_segments = []
-
-    residue_sec_table: dict[tuple[str, int, str | None], str] = {}
-    for sec in sec_segments:
-        for resid in range(sec.start.number, sec.end.number + 1):
-            # FIXME: Handle insertion codes
-            residue_sec_table[(sec.start.chain, resid, None)] = sec.kind.value
-
-    residues: list[dict] = []
-    for res in u.residues:
-        chain = str(res.segid).strip()
-        ca_atoms = res.atoms.select_atoms("name CA")
-        residues.append(
-            dict(
-                chain=chain,
-                resname=str(res.resname).strip(),
-                number=int(res.resid),
-                atom_indices=sorted(int(i) for i in res.atoms.indices.tolist()),
-                sec=residue_sec_table.get((chain, res.resid, None)),
-                ca_index=int(ca_atoms.indices[0]) if ca_atoms.n_atoms == 1 else None,
-            )
-        )
-
-    return {"atoms": atoms, "bonds": bonds, "residues": residues}
-
-
-@app.post("/select")
-def select(payload: SelectRequest) -> dict:
-    path = os.path.abspath(os.path.expanduser(payload.path))
-    if not os.path.isfile(path):
-        raise HTTPException(status_code=404, detail=f"File not found: {path}")
-    try:
-        u = load_structure(path, payload.topology)
-        atoms = u.select_atoms(payload.selection)
-    except Exception as ex:
-        raise HTTPException(status_code=400, detail=str(ex)) from ex
-
-    atoms = [
-        dict(x=float(pos[0]), y=float(pos[1]), z=float(pos[2]), element=elem)
-        for pos, elem in zip(atoms.positions, atoms.elements)
-    ]
-    return {"atoms": atoms}
 
 
 @app.post("/run-propka")
@@ -1222,6 +1135,87 @@ def run_energetic_analysis(payload: EnergeticAnalysisRequest) -> dict:
         return sanitize_value(result)
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+class StructureRequest(BaseModel):
+    path: str = Field(..., description="Absolute path to a PDB/mmCIF file")
+    topology: str | None = Field(description="Topology file name", default=None)
+    selection: str | None = Field(
+        description="MDAnalysis selection string", default=None
+    )
+    needs_bonds: bool = Field(False, description="Whether to guess bonds")
+    needs_secondary_structure: bool = Field(
+        False, description="Whether to get secondary structure"
+    )
+
+
+@app.post("/get-structure")
+def get_structure(payload: StructureRequest) -> dict:
+    print(payload)
+    if not os.path.isfile(payload.path):
+        raise HTTPException(status_code=404, detail=f"File not found: {payload.path}")
+
+    try:
+        u = load_structure(payload.path, payload.topology)
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=f"Could not read structure: {ex}")
+
+    n_atoms = int(u.atoms.n_atoms)
+    if n_atoms == 0:
+        raise HTTPException(status_code=400, detail="Empty structure")
+
+    if payload.selection:
+        atoms = u.select_atoms(payload.selection)
+    else:
+        atoms = u.atoms
+
+    data = {}
+    data["atoms"] = [
+        dict(
+            x=float(it.position[0]),
+            y=float(it.position[1]),
+            z=float(it.position[2]),
+            element=str(it.element),
+            name=str(it.name).strip(),
+            index=int(it.index),
+        )
+        for it in atoms
+    ]
+
+    if payload.needs_bonds and len(u.atoms.bonds) < len(u.atoms):
+        u.atoms.guess_bonds()  # TODO: improve performance
+    data["bonds"] = atoms.bonds.indices.tolist()
+
+    if payload.needs_secondary_structure:
+        data["residues"] = []
+        try:
+            sec_segments = get_secondary_structure(u)
+        except Exception:
+            sec_segments = []
+
+        residue_sec_table: dict[tuple[str, int, str | None], str] = {}
+        for sec in sec_segments:
+            for resid in range(sec.start.number, sec.end.number + 1):
+                # FIXME: Handle insertion codes
+                residue_sec_table[(sec.start.chain, resid, None)] = sec.kind.value
+
+        for res in u.residues:
+            chain = str(res.segid).strip()
+            ca_atoms = res.atoms.select_atoms("name CA")
+            data["residues"].append(
+                dict(
+                    chain=chain,
+                    resname=str(res.resname).strip(),
+                    number=int(res.resid),
+                    atom_indices=sorted(int(i) for i in res.atoms.indices.tolist()),
+                    sec=residue_sec_table.get((chain, res.resid, None)),
+                    ca_index=(
+                        int(ca_atoms.indices[0]) if ca_atoms.n_atoms == 1 else None
+                    ),
+                )
+            )
+
+    return data
 
 
 if __name__ == "__main__":

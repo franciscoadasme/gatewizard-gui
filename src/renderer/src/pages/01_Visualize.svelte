@@ -1,7 +1,7 @@
 <script>
   import { BallStick, CameraRig, Canvas, VdwSpheres } from '../components/viewer'
   import Button from '../components/ui/Button.svelte'
-  import { loadPdb, selectAtoms } from '../lib/backendApi.js'
+  import { getStructure } from '../lib/backendApi.js'
   import { getCameraForAtoms } from '../lib/viewer/base.js'
 
   /** @type {{ workingDir?: string }} */
@@ -31,7 +31,12 @@
       }
       filePath = dlg.filePath
 
-      structure = await loadPdb(dlg.filePath)
+      structure = await getStructure({
+        path: dlg.filePath,
+        needs_bonds: true,
+        needs_secondary_structure: true
+      })
+      console.log($state.snapshot(structure))
       const base = dlg.filePath.split(/[/\\]/).pop() ?? dlg.filePath
       const n = structure?.atoms?.length
       sidebarResult = typeof n === 'number' ? `${n} atoms — ${base}` : JSON.stringify(structure)
@@ -45,7 +50,7 @@
 
   async function onSelect() {
     try {
-      structure = await selectAtoms({ path: filePath, selection })
+      structure = await getStructure({ path: filePath, selection })
       selectionError = null
     } catch (ex) {
       selectionError = ex instanceof Error ? ex.message : String(ex)

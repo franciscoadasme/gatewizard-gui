@@ -147,30 +147,14 @@ export function analyzeTopology(payload) {
 }
 
 /**
- * @param {string} filePath
+ * @param {{ path: string, topology: string|null, selection: string|null, needs_bonds: boolean, needs_secondary_structure: boolean }} payload
  * @returns {Promise<{
  *   atoms: { x: number, y: number, z: number, element: string, name: string }[],
  *   bonds: [number, number][],
- *   residues: Array<{
- *     chain: string,
- *     resname: string,
- *     number: number,
- *     atom_indices: number[],
- *     ca_index?: number,
- *     sec?: string
- *   }>
- * }>}
+ *   residues: Array<{ chain: string, resname: string, number: number, atom_indices: number[], ca_index?: number, sec?: string }> }>}
  */
-export function loadPdb(filePath) {
-  return backendJson('/load-pdb', { path: filePath })
-}
-
-/**
- * @param {{ path: string, selection: string, topology: string|null }} props
- * @returns {Promise<{ n_atoms: number, positions: number[], elements: string[] }>}
- */
-export async function selectAtoms(props) {
-  return backendJson('/select', props)
+export function getStructure(payload) {
+  return backendJson('/get-structure', payload)
 }
 
 /**
