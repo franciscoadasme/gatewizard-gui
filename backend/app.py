@@ -27,6 +27,7 @@ if _conda_prefix:
 
 import numpy as np
 import MDAnalysis as mda
+import psique
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -54,6 +55,13 @@ class FileCacheEntry:
 
 FILE_CACHE: dict[str, FileCacheEntry] = {}
 FILE_CACHE_LOCK = threading.Lock()
+
+
+def get_secondary_structure(u: mda.Universe) -> list[psique.SecondaryStructure]:
+    """Return the secondary structure of the universe."""
+    with tempfile.NamedTemporaryFile("w", suffix=".pdb") as file:
+        u.atoms.write(file.name)
+        return psique.assign(file.name)
 
 
 def load_structure(path: Path | str, topology: str | None = None) -> mda.Universe:
@@ -204,11 +212,44 @@ def load_pdb(payload: LoadPdbRequest) -> dict:
     u.atoms.guess_bonds()  # TODO: improve performance
 
     atoms = [
-        dict(x=float(pos[0]), y=float(pos[1]), z=float(pos[2]), element=elem)
-        for pos, elem in zip(u.atoms.positions, u.atoms.elements)
+        dict(
+            x=float(it.position[0]),
+            y=float(it.position[1]),
+            z=float(it.position[2]),
+            element=str(it.element),
+            name=str(it.name).strip(),
+        )
+        for it in u.atoms
     ]
+    bonds = u.bonds.indices.tolist()
 
-    return {"atoms": atoms, "bonds": u.bonds.indices.tolist()}
+    try:
+        sec_segments = get_secondary_structure(u)
+    except Exception:
+        sec_segments = []
+
+    residue_sec_table: dict[tuple[str, int, str | None], str] = {}
+    for sec in sec_segments:
+        for resid in range(sec.start.number, sec.end.number + 1):
+            # FIXME: Handle insertion codes
+            residue_sec_table[(sec.start.chain, resid, None)] = sec.kind.value
+
+    residues: list[dict] = []
+    for res in u.residues:
+        chain = str(res.segid).strip()
+        ca_atoms = res.atoms.select_atoms("name CA")
+        residues.append(
+            dict(
+                chain=chain,
+                resname=str(res.resname).strip(),
+                number=int(res.resid),
+                atom_indices=sorted(int(i) for i in res.atoms.indices.tolist()),
+                sec=residue_sec_table.get((chain, res.resid, None)),
+                ca_index=int(ca_atoms.indices[0]) if ca_atoms.n_atoms == 1 else None,
+            )
+        )
+
+    return {"atoms": atoms, "bonds": bonds, "residues": residues}
 
 
 @app.post("/select")

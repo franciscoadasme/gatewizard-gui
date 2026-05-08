@@ -148,7 +148,18 @@ export function analyzeTopology(payload) {
 
 /**
  * @param {string} filePath
- * @returns {Promise<{ atoms: { x: number, y: number, z: number, element: string }[] }>}
+ * @returns {Promise<{
+ *   atoms: { x: number, y: number, z: number, element: string, name: string }[],
+ *   bonds: [number, number][],
+ *   residues: Array<{
+ *     chain: string,
+ *     resname: string,
+ *     number: number,
+ *     atom_indices: number[],
+ *     ca_index?: number,
+ *     sec?: string
+ *   }>
+ * }>}
  */
 export function loadPdb(filePath) {
   return backendJson('/load-pdb', { path: filePath })
