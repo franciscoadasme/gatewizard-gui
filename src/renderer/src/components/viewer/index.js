@@ -1,4 +1,5 @@
 export { default as Canvas } from './Canvas.svelte'
 export { default as CameraRig } from './CameraRig.svelte'
+export { default as Cartoon } from './representations/Cartoon.svelte'
 export { default as BallStick } from './representations/BallStick.svelte'
 export { default as VdwSpheres } from './representations/VdwSpheres.svelte'
