@@ -166,14 +166,20 @@
     const pb = new Vector3()
     const yAxis = new Vector3(0, 1, 0)
 
+    const atom_by_index = new Map(atoms.map((atom) => [atom.index, atom]))
     for (let b = 0; b < m; b++) {
       const [i, j] = bonds[b]
-      pa.set(atoms[i].x, atoms[i].y, atoms[i].z)
-      pb.set(atoms[j].x, atoms[j].y, atoms[j].z)
+      const ai = atom_by_index.get(i)
+      const aj = atom_by_index.get(j)
+      if (!ai || !aj) {
+        continue
+      }
+      pa.set(ai.x, ai.y, ai.z)
+      pb.set(aj.x, aj.y, aj.z)
 
       /** Shorten cylinders so spheres sit visibly on ends (Å). */
-      const ri = atomBallRadius(atoms[i].element)
-      const rj = atomBallRadius(atoms[j].element)
+      const ri = atomBallRadius(ai.element)
+      const rj = atomBallRadius(aj.element)
 
       dir.copy(pb).sub(pa)
       const effLen = dir.length() - ri - rj
