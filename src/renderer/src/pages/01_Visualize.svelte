@@ -4,6 +4,7 @@
   import { getStructure } from '../lib/backendApi.js'
   import Button from '../components/ui/Button.svelte'
   import Empty from '../components/ui/Empty.svelte'
+  import Spinner from '../components/ui/Spinner.svelte'
   import ViewItem from '../components/ViewItem.svelte'
 
   /** @typedef {{ x: number, y: number, z: number, element: string, name: string }} Atom */
@@ -92,14 +93,35 @@
 </script>
 
 <div class="flex flex-1 divide-x divide-neutral-800">
-  <div class="flex w-60 flex-col gap-2 p-2">
-    <Button
-      className="w-full"
-      variant="outline"
-      type="button"
-      disabled={openPdbLoading}
-      onclick={onOpenPdb}>{openPdbLoading ? '...' : 'Open PDB...'}</Button
-    >
+  <div class="flex w-70 flex-col gap-2 p-4">
+    <div class="space-y-2">
+      <p class="mb-1 text-xs">Structure file:</p>
+      {#if filePath && !openPdbLoading}
+        <div
+          class="w-full rounded-md border border-neutral-800 p-2 font-mono text-xs wrap-anywhere"
+        >
+          {filePath}
+        </div>
+        <Button variant="outline" className="w-full" onclick={onOpenPdb}
+          >Select another file...</Button
+        >
+      {:else}
+        <Button
+          variant="outline"
+          className="w-full flex items-center gap-1"
+          onclick={onOpenPdb}
+          disabled={openPdbLoading}
+        >
+          {#if openPdbLoading}
+            <Spinner />
+            Loading...
+          {:else}
+            Select a file...
+          {/if}
+        </Button>
+      {/if}
+    </div>
+
     <form class="flex flex-col gap-1">
       <input
         type="text"
