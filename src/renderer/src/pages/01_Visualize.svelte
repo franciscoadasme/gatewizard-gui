@@ -133,9 +133,9 @@
       {/if}
     </div>
 
-    <Divider message="or" />
-
     {#if !loadingPDB}
+      <Divider message="or" />
+
       <form class="flex gap-2" onsubmit={onFetchPDB}>
         <Input
           placeholder="1crn"
