@@ -17,10 +17,13 @@
   /** @type {{ workingDir?: string }} */
   let { workingDir = '' } = $props()
 
-  let openPdbLoading = $state(false)
+  // form fields
+  // TODO: do we need filepath? structure.path may be enough
   let filePath = $state(null)
   let pdbId = $state('')
 
+  // state
+  let loadingPDB = $state(false)
   /** @type {null | Awaited<ReturnType<typeof getStructure>>} */
   let structure = $state(null)
   /** @type {View[]} */
@@ -77,7 +80,7 @@
   /** @param {string} path */
   async function loadStructure(path) {
     try {
-      openPdbLoading = true
+      loadingPDB = true
       structure = await getStructure({
         path,
         needs_bonds: false,
@@ -90,7 +93,7 @@
       structure = null
       alert(ex instanceof Error ? ex.message : String(ex))
     } finally {
-      openPdbLoading = false
+      loadingPDB = false
     }
   }
 
@@ -104,7 +107,7 @@
   <div class="flex w-70 flex-col gap-2 p-4">
     <div class="space-y-2">
       <p class="mb-1 text-xs">Structure file:</p>
-      {#if filePath && !openPdbLoading}
+      {#if filePath && !loadingPDB}
         <div
           class="w-full rounded-md border border-neutral-800 p-2 font-mono text-xs wrap-anywhere"
         >
@@ -118,9 +121,9 @@
           variant="outline"
           className="w-full flex items-center gap-1"
           onclick={onOpenPdb}
-          disabled={openPdbLoading}
+          disabled={loadingPDB}
         >
-          {#if openPdbLoading}
+          {#if loadingPDB}
             <Spinner />
             Loading...
           {:else}
@@ -132,7 +135,7 @@
 
     <Divider message="or" />
 
-    {#if !openPdbLoading}
+    {#if !loadingPDB}
       <form class="flex gap-2" onsubmit={onFetchPDB}>
         <Input
           placeholder="1crn"
@@ -146,7 +149,7 @@
           className="w-full"
           variant="outline"
           type="submit"
-          disabled={openPdbLoading || !isPdbIdValid}>Download PDB</Button
+          disabled={loadingPDB || !isPdbIdValid}>Download PDB</Button
         >
       </form>
     {/if}
