@@ -31,7 +31,6 @@
   const camera = $derived.by(() => getCameraForAtoms(structure?.atoms))
 
   async function onOpenPdb() {
-    openPdbLoading = true
     sidebarResult = ''
     try {
       const dlg = await window.api.openPdbDialog()
@@ -40,23 +39,13 @@
       }
       filePath = dlg.filePath
 
-      structure = await getStructure({
-        path: dlg.filePath,
-        needs_bonds: true,
-        needs_secondary_structure: true
-      })
-
-      views.length = 0
-      addView('All', 'all', { type: 'vdw' })
+      loadStructure(filePath)
 
       const base = dlg.filePath.split(/[/\\]/).pop() ?? dlg.filePath
       const n = structure?.atoms?.length
       sidebarResult = typeof n === 'number' ? `${n} atoms — ${base}` : JSON.stringify(structure)
     } catch (err) {
       sidebarResult = err instanceof Error ? err.message : String(err)
-      structure = null
-    } finally {
-      openPdbLoading = false
     }
   }
 
@@ -84,6 +73,26 @@
       residues: structure?.residues,
       visible: true
     })
+  }
+
+  /** @param {string} path */
+  async function loadStructure(path) {
+    try {
+      openPdbLoading = true
+      structure = await getStructure({
+        path,
+        needs_bonds: false,
+        needs_secondary_structure: false
+      })
+      filePath = structure.path
+      views.length = 0
+      addView('All', 'all', { type: 'vdw' })
+    } catch (ex) {
+      structure = null
+      alert(ex instanceof Error ? ex.message : String(ex))
+    } finally {
+      openPdbLoading = false
+    }
   }
 
   /** @param {string} id */
