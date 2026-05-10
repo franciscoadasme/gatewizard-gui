@@ -1154,15 +1154,16 @@ class StructureRequest(BaseModel):
 def get_structure(payload: StructureRequest) -> dict:
     if len(payload.path) == 4:  # PDB ID
         try:
-            url = f"https://files.rcsb.org/download/{payload.path}.pdb"
+            pdbid = payload.path
+            url = f"https://files.rcsb.org/download/{pdbid}.pdb"
             resp = requests.get(url, timeout=15)
             resp.raise_for_status()
 
-            path = Path(f"{payload.path.lower()}.pdb").resolve()
+            path = Path(f"{pdbid.lower()}.pdb").resolve()
             path.write_text(resp.text)
             payload.path = str(path)
         except requests.HTTPError as ex:
-            raise HTTPException(400, f"Failed to download PDB file: {ex}")
+            raise HTTPException(400, f"Failed to fetch PDB: {pdbid}")
     elif not os.path.isfile(payload.path):
         raise HTTPException(status_code=404, detail=f"File not found: {payload.path}")
 
