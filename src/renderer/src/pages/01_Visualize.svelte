@@ -17,13 +17,9 @@
   /** @type {{ workingDir?: string }} */
   let { workingDir = '' } = $props()
 
-  /** Shown under the buttons: PDB info or ping output. */
-  let sidebarResult = $state('')
   let openPdbLoading = $state(false)
   let filePath = $state(null)
   let pdbId = $state('')
-  let selection = $state(null)
-  let selectionError = $state(null)
 
   /** @type {null | Awaited<ReturnType<typeof getStructure>>} */
   let structure = $state(null)
@@ -58,15 +54,6 @@
       sidebarResult = typeof n === 'number' ? `${n} atoms — ${base}` : JSON.stringify(structure)
     } catch (err) {
       sidebarResult = err instanceof Error ? err.message : String(err)
-    }
-  }
-
-  async function onSelect() {
-    try {
-      structure = await getStructure({ path: filePath, selection })
-      selectionError = null
-    } catch (ex) {
-      selectionError = ex instanceof Error ? ex.message : String(ex)
     }
   }
 
@@ -162,24 +149,6 @@
           disabled={openPdbLoading || !isPdbIdValid}>Download PDB</Button
         >
       </form>
-    {/if}
-
-    <input
-      type="text"
-      class="w-full rounded-md border p-2 dark:border-neutral-700 dark:hover:bg-neutral-700"
-      placeholder="Selection (e.g. protein)"
-      bind:value={selection}
-      onchange={onSelect}
-    />
-    {#if selectionError}
-      <p class="text-xs font-semibold text-red-500">{selectionError}</p>
-    {/if}
-    {#if sidebarResult}
-      <p
-        class="rounded-md border border-neutral-700 bg-neutral-900/50 p-2 font-mono text-sm text-neutral-200"
-      >
-        {sidebarResult}
-      </p>
     {/if}
   </div>
 
