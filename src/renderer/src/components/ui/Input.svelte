@@ -49,5 +49,6 @@
   id={id ?? name}
   {name}
   {placeholder}
+  spellcheck="false"
   {...restProps}
 />

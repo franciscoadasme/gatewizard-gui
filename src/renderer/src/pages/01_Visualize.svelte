@@ -4,6 +4,7 @@
   import { getStructure } from '../lib/backendApi.js'
   import Button from '../components/ui/Button.svelte'
   import Empty from '../components/ui/Empty.svelte'
+  import Input from '../components/ui/Input.svelte'
   import Spinner from '../components/ui/Spinner.svelte'
   import ViewItem from '../components/ViewItem.svelte'
 
@@ -19,6 +20,7 @@
   let sidebarResult = $state('')
   let openPdbLoading = $state(false)
   let filePath = $state(null)
+  let pdbId = $state('')
   let selection = $state(null)
   let selectionError = $state(null)
 
@@ -29,6 +31,15 @@
 
   // derived state
   const camera = $derived.by(() => getCameraForAtoms(structure?.atoms))
+  const isPdbIdValid = $derived.by(() => pdbId.trim().length === 4)
+
+  async function onFetchPDB() {
+    if (!isPdbIdValid) return
+    await loadStructure(pdbId)
+    if (structure) {
+      pdbId = ''
+    }
+  }
 
   async function onOpenPdb() {
     sidebarResult = ''
@@ -131,16 +142,25 @@
       {/if}
     </div>
 
-    <form class="flex flex-col gap-1">
-      <input
-        type="text"
-        class="w-full rounded-md border p-2 dark:border-neutral-700 dark:hover:bg-neutral-700"
-        placeholder="PDB ID (e.g. 1crn)"
-      />
-      <Button className="w-full" variant="outline" type="submit" disabled={openPdbLoading}
-        >Download PDB</Button
-      >
-    </form>
+    {#if !openPdbLoading}
+      <form class="flex gap-2" onsubmit={onFetchPDB}>
+        <Input
+          placeholder="1crn"
+          className="w-[calc(4ch+--spacing(3.5)*2)] font-mono"
+          bind:value={pdbId}
+          oninput={(e) => {
+            if (e.target.value.length > 4) e.target.value = e.target.value.slice(0, 4)
+          }}
+        />
+        <Button
+          className="w-full"
+          variant="outline"
+          type="submit"
+          disabled={openPdbLoading || !isPdbIdValid}>Download PDB</Button
+        >
+      </form>
+    {/if}
+
     <input
       type="text"
       class="w-full rounded-md border p-2 dark:border-neutral-700 dark:hover:bg-neutral-700"

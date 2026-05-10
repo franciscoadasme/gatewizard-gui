@@ -3,6 +3,7 @@
 import base64
 import os
 import re
+import requests
 import shutil
 import subprocess
 import sys
@@ -1151,8 +1152,18 @@ class StructureRequest(BaseModel):
 
 @app.post("/get-structure")
 def get_structure(payload: StructureRequest) -> dict:
-    print(payload)
-    if not os.path.isfile(payload.path):
+    if len(payload.path) == 4:  # PDB ID
+        try:
+            url = f"https://files.rcsb.org/download/{payload.path}.pdb"
+            resp = requests.get(url, timeout=15)
+            resp.raise_for_status()
+
+            path = Path(f"{payload.path.lower()}.pdb").resolve()
+            path.write_text(resp.text)
+            payload.path = str(path)
+        except requests.HTTPError as ex:
+            raise HTTPException(400, f"Failed to download PDB file: {ex}")
+    elif not os.path.isfile(payload.path):
         raise HTTPException(status_code=404, detail=f"File not found: {payload.path}")
 
     try:
@@ -1169,7 +1180,7 @@ def get_structure(payload: StructureRequest) -> dict:
     else:
         atoms = u.atoms
 
-    data = {}
+    data = dict(path=payload.path)
     data["atoms"] = [
         dict(
             x=float(it.position[0]),
