@@ -3,6 +3,7 @@
   import { getCameraForAtoms } from '../lib/viewer/base.js'
   import { getStructure } from '../lib/backendApi.js'
   import Button from '../components/ui/Button.svelte'
+  import Divider from '../components/ui/Divider.svelte'
   import Empty from '../components/ui/Empty.svelte'
   import Input from '../components/ui/Input.svelte'
   import Spinner from '../components/ui/Spinner.svelte'
@@ -141,6 +142,8 @@
         </Button>
       {/if}
     </div>
+
+    <Divider message="or" />
 
     {#if !openPdbLoading}
       <form class="flex gap-2" onsubmit={onFetchPDB}>
