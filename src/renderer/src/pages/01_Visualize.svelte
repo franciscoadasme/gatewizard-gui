@@ -1,8 +1,15 @@
 <script>
-  import { BallStick, CameraRig, Canvas, VdwSpheres } from '../components/viewer'
-  import Button from '../components/ui/Button.svelte'
-  import { getStructure } from '../lib/backendApi.js'
+  import { BallStick, CameraRig, Canvas, Cartoon, VdwSpheres } from '../components/viewer'
   import { getCameraForAtoms } from '../lib/viewer/base.js'
+  import { getStructure } from '../lib/backendApi.js'
+  import Button from '../components/ui/Button.svelte'
+  import Empty from '../components/ui/Empty.svelte'
+  import ViewItem from '../components/ViewItem.svelte'
+
+  /** @typedef {{ x: number, y: number, z: number, element: string, name: string }} Atom */
+  /** @typedef {{ chain: string, resname: string, number: number, atom_indices: number[], ca_index?: number, sec?: string }} Residue */
+  /** @typedef {{ type: 'cartoon' | 'ball-stick' | 'vdw' }} Representation */
+  /** @typedef {{ id: string, name: string, selection: string, representation: Representation, atoms: Atom[], bonds?: [number, number][], residues?: Residue[], visible: boolean }} View */
 
   /** @type {{ workingDir?: string }} */
   let { workingDir = '' } = $props()
@@ -14,9 +21,10 @@
   let selection = $state(null)
   let selectionError = $state(null)
 
-  /** Passed to Threlte viewer (positions + elements from backend). */
-  /** @type {null | { atoms: { x: number, y: number, z: number, element: string }[], bonds: [number, number][] }} */
+  /** @type {null | Awaited<ReturnType<typeof getStructure>>} */
   let structure = $state(null)
+  /** @type {View[]} */
+  let views = $state([])
 
   // derived state
   const camera = $derived.by(() => getCameraForAtoms(structure?.atoms))
@@ -36,7 +44,10 @@
         needs_bonds: true,
         needs_secondary_structure: true
       })
-      console.log($state.snapshot(structure))
+
+      views.length = 0
+      addView('All', 'all', { type: 'vdw' })
+
       const base = dlg.filePath.split(/[/\\]/).pop() ?? dlg.filePath
       const n = structure?.atoms?.length
       sidebarResult = typeof n === 'number' ? `${n} atoms — ${base}` : JSON.stringify(structure)
@@ -55,6 +66,28 @@
     } catch (ex) {
       selectionError = ex instanceof Error ? ex.message : String(ex)
     }
+  }
+
+  /** @param {string} name */
+  /** @param {string} selection */
+  /** @param {Representation} representation */
+  function addView(name = 'New', selection = 'all', representation = { type: 'vdw' }) {
+    views.push({
+      id: crypto.randomUUID(),
+      name,
+      selection,
+      representation,
+      path: filePath,
+      atoms: structure?.atoms,
+      bonds: structure?.bonds,
+      residues: structure?.residues,
+      visible: true
+    })
+  }
+
+  /** @param {string} id */
+  function removeView(id) {
+    views = views.filter((it) => it.id !== id)
   }
 </script>
 
@@ -100,13 +133,38 @@
     {#if structure && camera}
       <Canvas>
         <CameraRig center={camera.center} extent={camera.extent} />
-        <!-- <VdwSpheres atoms={structure.atoms} /> -->
-        <BallStick atoms={structure.atoms} bonds={structure.bonds} />
+        {#each views.filter((v) => v.visible) as view}
+          {#if view.representation.type === 'ball-stick'}
+            <BallStick atoms={view.atoms} bonds={view.bonds} />
+          {:else if view.representation.type === 'cartoon'}
+            <Cartoon atoms={view.atoms} residues={view.residues} />
+          {:else if view.representation.type === 'vdw'}
+            <VdwSpheres atoms={view.atoms} />
+          {/if}
+        {/each}
       </Canvas>
     {/if}
   </div>
 
-  <div class="w-60 p-2">
-    <h2>Representations</h2>
+  <div class="flex w-60 flex-col">
+    <h2 class="border-b border-neutral-800 p-2 text-xs font-semibold">Representations</h2>
+    {#if views.length > 0}
+      {#each views as view, i (view.id)}
+        <ViewItem bind:view={views[i]} onremove={() => removeView(view.id)} />
+      {/each}
+      <div class="p-2">
+        <Button
+          className="w-full"
+          variant="outline"
+          type="button"
+          size="sm"
+          onclick={() => addView()}>Add View</Button
+        >
+      </div>
+    {:else}
+      <div class="flex-1 p-2">
+        <Empty message="Load a PDB file to get started" className="text-sm h-full" />
+      </div>
+    {/if}
   </div>
 </div>
