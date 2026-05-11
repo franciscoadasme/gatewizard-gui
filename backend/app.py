@@ -148,6 +148,7 @@ class FileCacheEntry:
     mtime: int
     size: int
     universe: mda.Universe
+    bond_guessed: bool = False
 
 
 FILE_CACHE: dict[str, FileCacheEntry] = {}
@@ -161,7 +162,9 @@ def get_secondary_structure(u: mda.Universe) -> list[psique.SecondaryStructure]:
         return psique.assign(file.name)
 
 
-def load_structure(path: Path | str, topology: str | None = None) -> mda.Universe:
+def load_structure(
+    path: Path | str, topology: str | None = None, needs_bonds: bool = False
+) -> mda.Universe:
     """Return an MDAnalysis Universe for path, reusing a cache while mtime/size match."""
     path = Path(path).resolve()
     stat = path.stat()
@@ -170,10 +173,15 @@ def load_structure(path: Path | str, topology: str | None = None) -> mda.Univers
     with FILE_CACHE_LOCK:
         key = str(path)
         entry = FILE_CACHE.get(key)
-        if entry is not None and entry.mtime == mtime and entry.size == file_size:
-            return entry.universe
-        u = mda.Universe(topology or path, path)
-        FILE_CACHE[key] = FileCacheEntry(mtime, file_size, u)
+        if entry is None or entry.mtime != mtime or entry.size != file_size:
+            u = mda.Universe(topology or path, path)
+            FILE_CACHE[key] = FileCacheEntry(mtime, file_size, u)
+        else:
+            u = entry.universe
+        if needs_bonds and not entry.bond_guessed:
+            print(f"INFO:     /get-structure guessing bonds for {path}")
+            u.atoms.guess_bonds()  # TODO: improve performance
+            entry.bond_guessed = True
         return u
 
 
@@ -1264,7 +1272,7 @@ def get_structure(payload: StructureRequest) -> dict:
         raise HTTPException(status_code=404, detail=f"File not found: {payload.path}")
 
     try:
-        u = load_structure(payload.path, payload.topology)
+        u = load_structure(payload.path, payload.topology, payload.needs_bonds)
     except Exception as ex:
         raise HTTPException(status_code=400, detail=f"Could not read structure: {ex}")
 
@@ -1291,8 +1299,6 @@ def get_structure(payload: StructureRequest) -> dict:
         for it in atoms
     ]
 
-    if payload.needs_bonds and len(u.atoms.bonds) < len(u.atoms):
-        u.atoms.guess_bonds()  # TODO: improve performance
     data["bonds"] = atoms.bonds.indices.tolist()
 
     if payload.needs_secondary_structure:

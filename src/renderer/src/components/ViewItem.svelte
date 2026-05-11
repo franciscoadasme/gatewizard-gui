@@ -51,7 +51,10 @@
   $effect(() => {
     const repr = view.representation.type
     const needsFetch = untrack(
-      () => (repr === 'ball-stick' && !view.bonds) || (repr === 'cartoon' && !view.residues)
+      () =>
+        // This is a heuristic to avoid fetching bonds if they are already present
+        (repr === 'ball-stick' && (view.bonds?.length || 0) < view.atoms.length / 2) ||
+        (repr === 'cartoon' && !view.residues)
     )
     if (!needsFetch) return
     const tid = setTimeout(updateStructure, 300)
