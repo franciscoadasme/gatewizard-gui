@@ -1,5 +1,6 @@
 <script>
   import { BallStick, CameraRig, Canvas, Cartoon, VdwSpheres } from '../components/viewer'
+  import { defaultColorScheme } from '../lib/colorSchemes.js'
   import { getCameraForAtoms } from '../lib/viewer/base.js'
   import { getStructure } from '../lib/backendApi.js'
   import Button from '../components/ui/Button.svelte'
@@ -12,7 +13,8 @@
   /** @typedef {{ x: number, y: number, z: number, element: string, name: string }} Atom */
   /** @typedef {{ chain: string, resname: string, number: number, atom_indices: number[], ca_index?: number, sec?: string }} Residue */
   /** @typedef {{ type: 'cartoon' | 'ball-stick' | 'vdw' }} Representation */
-  /** @typedef {{ id: string, selection: string, representation: Representation, atoms: Atom[], bonds?: [number, number][], residues?: Residue[], visible: boolean }} View */
+  /** @typedef {(atom: Atom) => import('three').Color} ColorScheme */
+  /** @typedef {{ id: string, selection: string, representation: Representation, atoms: Atom[], bonds?: [number, number][], residues?: Residue[], visible: boolean, colorScheme: ColorScheme }} View */
 
   /** @type {{ workingDir?: string }} */
   let { workingDir = '' } = $props()
@@ -60,7 +62,8 @@
       atoms: structure?.atoms,
       bonds: structure?.bonds,
       residues: structure?.residues,
-      visible: true
+      visible: true,
+      colorScheme: defaultColorScheme
     })
   }
 
@@ -146,13 +149,13 @@
     {#if structure && camera}
       <Canvas>
         <CameraRig center={camera.center} extent={camera.extent} />
-        {#each views.filter((v) => v.visible) as view}
+        {#each views.filter((v) => v.visible) as view (view.id)}
           {#if view.representation.type === 'ball-stick'}
-            <BallStick atoms={view.atoms} bonds={view.bonds} />
+            <BallStick atoms={view.atoms} bonds={view.bonds} getColor={view.colorScheme} />
           {:else if view.representation.type === 'cartoon'}
             <Cartoon atoms={view.atoms} residues={view.residues} />
           {:else if view.representation.type === 'vdw'}
-            <VdwSpheres atoms={view.atoms} />
+            <VdwSpheres atoms={view.atoms} getColor={view.colorScheme} />
           {/if}
         {/each}
       </Canvas>

@@ -11,6 +11,11 @@
     SphereGeometry,
     Vector3
   } from 'three'
+  import { defaultColorScheme } from '../../../lib/colorSchemes.js'
+  import { untrack } from 'svelte'
+
+  /** @typedef {{ x: number, y: number, z: number, element: string, name: string }} Atom */
+  /** @typedef {(atom: Atom) => import('three').Color} ColorScheme */
 
   /** Covalent radii (Å); scaled for visible atom spheres. */
   const COVALENT = {
@@ -36,28 +41,6 @@
 
   /** Visual scale applied to covalent radii (Å → scene). */
   const BALL_STICK_ATOM_SCALE = 0.5
-
-  /** CPK RGB (0–1). */
-  const CPK = {
-    H: [1, 1, 1],
-    C: [0.56, 0.56, 0.56],
-    N: [0.19, 0.31, 0.97],
-    O: [1, 0.05, 0.05],
-    S: [0.98, 0.98, 0.2],
-    P: [1, 0.5, 0],
-    F: [0.56, 0.88, 0.31],
-    CL: [0.12, 0.94, 0.12],
-    BR: [0.65, 0.16, 0.16],
-    I: [0.58, 0, 0.58],
-    FE: [0.88, 0.4, 0.2],
-    ZN: [0.49, 0.5, 0.69],
-    NA: [0.67, 0.36, 0.94],
-    MG: [0.54, 0.6, 0.78],
-    CA: [0.67, 0.36, 0.94],
-    K: [0.56, 0.25, 0.83],
-    SE: [0.8, 0.6, 0.2]
-  }
-  const DEFAULT_CPK = [0.5, 0.5, 0.5]
 
   const BOND_RADIUS = 0.1
   const STICK_GRAY = /** @type {[number, number, number]} */ ([0.72, 0.72, 0.74])
@@ -86,27 +69,16 @@
 
   /**
    * @param {string} el
-   * @returns {[number, number, number]}
-   */
-  function cpkRgb(el) {
-    const k = elemKey(el)
-    if (CPK[k]) return /** @type {[number, number, number]} */ (CPK[k])
-    if (k.length >= 1 && CPK[k[0]]) return /** @type {[number, number, number]} */ (CPK[k[0]])
-    return DEFAULT_CPK
-  }
-
-  /**
-   * @param {string} el
    * @returns {number} Radius (Å) for spheres and bond endpoint inset.
    */
   function atomBallRadius(el) {
     return Math.max(covalRadius(el) * BALL_STICK_ATOM_SCALE, 0.12)
   }
 
-  // Reactive state
-
-  /** @type {{ atoms: { x: number, y: number, z: number, element: string }[], bonds: [number, number][] }} */
-  let { atoms = [], bonds = [] } = $props()
+  /**
+   * @type {{atoms: Atom[], bonds: [number, number][], getColor?: ColorScheme}}
+   */
+  let { atoms = [], bonds = [], getColor = defaultColorScheme } = $props()
 
   let sphereMeshRef = $state(/** @type {InstancedMesh | null} */ (null))
   let bondMeshRef = $state(/** @type {InstancedMesh | null} */ (null))
@@ -133,17 +105,15 @@
     const sphereQuat = new Quaternion()
     const sphereScale = new Vector3()
     const spherePos = new Vector3()
-    const sphereColor = new Color()
 
     atoms.forEach((atom, index) => {
       const ri = atomBallRadius(atom.element)
+      const color = untrack(() => getColor(atom))
       spherePos.set(atom.x, atom.y, atom.z)
       sphereScale.set(ri, ri, ri)
       sphereMatrix.compose(spherePos, sphereQuat, sphereScale)
       sphereMesh.setMatrixAt(index, sphereMatrix)
-      const [cr, cg, cb] = cpkRgb(atom.element)
-      sphereColor.setRGB(cr, cg, cb)
-      sphereMesh.setColorAt(index, sphereColor)
+      sphereMesh.setColorAt(index, color)
     })
     sphereMesh.instanceMatrix.needsUpdate = true
     sphereMesh.instanceColor.needsUpdate = true
@@ -203,6 +173,22 @@
       sphereMeshRef = null
       bondMeshRef = null
     }
+  })
+
+  // Update colors when `getColor` changes (atoms is not tracked).
+  $effect(() => {
+    const mesh = untrack(() => sphereMeshRef)
+    if (!mesh) return
+
+    const arr = untrack(() => atoms)
+    const n = arr.length
+    for (let index = 0; index < n; index++) {
+      const atom = arr[index]
+      const color = getColor(atom)
+      mesh.setColorAt(index, color)
+    }
+    mesh.instanceColor.needsUpdate = true
+    invalidate()
   })
 </script>
 

@@ -1,10 +1,12 @@
 <script>
+  import { constantScheme, cpkScheme, defaultColorScheme } from '../lib/colorSchemes.js'
   import { getStructure } from '../lib/backendApi'
   import { untrack } from 'svelte'
+  import Button from './ui/Button.svelte'
+  import ColorInput from './ui/ColorInput.svelte'
+  import Gear from './icons/Gear.svelte'
   import Input from './ui/Input.svelte'
   import Select from './ui/Select.svelte'
-  import Gear from './icons/Gear.svelte'
-  import Button from './ui/Button.svelte'
 
   const NAMED_SELECTIONS = [
     'all',
@@ -21,12 +23,15 @@
   /** @typedef {{ x: number, y: number, z: number, element: string, name: string }} Atom */
   /** @typedef {{ chain: string, resname: string, number: number, atom_indices: number[], ca_index?: number, sec?: string }} Residue */
   /** @typedef {{ type: 'cartoon' | 'ball-stick' | 'vdw' }} Representation */
-  /** @typedef {{ id: string, selection: string, representation: Representation, atoms: Atom[], bonds?: [number, number][], residues?: Residue[], visible: boolean }} View */
+  /** @typedef {(atom: Atom) => import('three').Color} ColorScheme */
+  /** @typedef {{ id: string, selection: string, representation: Representation, atoms: Atom[], bonds?: [number, number][], residues?: Residue[], visible: boolean, colorScheme: ColorScheme }} View */
 
   /** @type {{ view: View, onremove: () => void }} */
   let { view = $bindable(), onremove } = $props()
 
   let collapsed = $state(true)
+  let colorSchemeName = $state('cpk')
+  let constantColorHex = $state('#00aaff')
   let invalidSelection = $state(false)
   let namedSelection = $state(NAMED_SELECTIONS.includes(view.selection) ? view.selection : 'other')
 
@@ -59,6 +64,16 @@
     if (!needsFetch) return
     const tid = setTimeout(updateStructure, 300)
     return () => clearTimeout(tid)
+  })
+
+  $effect(() => {
+    if (colorSchemeName === 'constant') {
+      view.colorScheme = constantScheme(constantColorHex)
+    } else if (colorSchemeName === 'cpk') {
+      view.colorScheme = cpkScheme()
+    } else {
+      view.colorScheme = defaultColorScheme
+    }
   })
 
   function updateStructure() {
@@ -158,7 +173,6 @@
       <div class="space-y-1">
         <label for="representation" class="flex text-xs">Representation:</label>
         <Select
-          type="text"
           size="sm"
           className="w-full"
           bind:value={
@@ -172,6 +186,29 @@
           <option value="cartoon">Cartoon</option>
           <option value="vdw">vdW</option>
         </Select>
+      </div>
+      <div class="space-y-1">
+        <label for="color-scheme" class="flex text-xs">Color scheme:</label>
+        <Select size="sm" className="w-full" bind:value={colorSchemeName}>
+          <option value="cpk">CPK (by element)</option>
+          <option value="constant">Constant color</option>
+        </Select>
+        {#if colorSchemeName === 'constant'}
+          <div class="flex items-center gap-1">
+            <ColorInput size="sm" bind:value={constantColorHex} />
+            <Input
+              type="text"
+              size="sm"
+              className="flex-1"
+              bind:value={constantColorHex}
+              oninput={(e) => {
+                if (e.target.value.length > 7) {
+                  constantColorHex = e.target.value.slice(0, 7)
+                }
+              }}
+            />
+          </div>
+        {/if}
       </div>
       <Button
         variant="danger"
