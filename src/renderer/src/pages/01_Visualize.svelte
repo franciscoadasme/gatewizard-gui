@@ -42,22 +42,11 @@
   }
 
   async function onOpenPdb() {
-    sidebarResult = ''
-    try {
-      const dlg = await window.api.openPdbDialog()
-      if (dlg.canceled) {
-        return
-      }
-      filePath = dlg.filePath
-
-      loadStructure(filePath)
-
-      const base = dlg.filePath.split(/[/\\]/).pop() ?? dlg.filePath
-      const n = structure?.atoms?.length
-      sidebarResult = typeof n === 'number' ? `${n} atoms — ${base}` : JSON.stringify(structure)
-    } catch (err) {
-      sidebarResult = err instanceof Error ? err.message : String(err)
+    const dlg = await window.api.openPdbDialog()
+    if (dlg.canceled) {
+      return
     }
+    await loadStructure(dlg.filePath)
   }
 
   /** @param {string} name */
