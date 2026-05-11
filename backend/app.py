@@ -46,6 +46,102 @@ from gatewizard.tools.ligand_parametrization import (
 )
 from gatewizard.utils import namd_analysis
 
+ION_NAMES = [
+    "NA",
+    "CL",
+    "K",
+    "MG",
+    "ZN",
+    "CA",
+    "MN",
+    "FE",
+    "FE2",
+    "FE3",
+    "CU",
+    "CU1",
+    "CU2",
+    "NI",
+    "CD",
+    "HG",
+    "CS",
+    "RB",
+    "SR",
+    "BA",
+    "I",
+    "BR",
+    "F",
+    "LI",
+    "AL",
+    "CR",
+    "AG",
+    "AU",
+    "PB",
+    "SOD",
+    "POT",
+    "CLA",
+    "CAL",
+    "CES",
+    "BAR",
+    "LIT",
+    "RUB",
+    "ZN2",
+    "NH4",
+]
+ION_SELECTION = "resname " + " ".join(ION_NAMES)
+LIPID_NAMES = [
+    "DPPC",
+    "DMPC",
+    "DLPC",
+    "DOPC",
+    "POPC",
+    "DSPC",
+    "PLPC",
+    "PLPE",
+    "PLPA",
+    "DOPE",
+    "POPE",
+    "PIPE",
+    "DLPE",
+    "DPPE",
+    "DOPS",
+    "POPS",
+    "POPG",
+    "DOPG",
+    "POPA",
+    "DOPA",
+    "POPI",
+    "PIPC",
+    "PSPC",
+    "PGPC",
+    "PGPE",
+    "LPC",
+    "LPE",
+    "LPG",
+    "CDL2",
+    "CARD",
+    "CLP1",
+    "CHL1",
+    "CHOL",
+    "CLOL",
+    "ERG",
+    "SAPI",
+    "SM",
+    "BSM",
+    "SPM",
+    "CHLM",
+]
+LIPID_SELECTION = "resname " + " ".join(LIPID_NAMES)
+NAMED_SELECTIONS = {
+    "all": "all",
+    "protein": "protein",
+    "backbone": "backbone",
+    "sidechain": "protein and not backbone",
+    "water": "water",
+    "lipid": LIPID_SELECTION,
+    "ion": ION_SELECTION,
+    "ligand": f"not (protein or nucleic or water or ({ION_SELECTION}) or ({LIPID_SELECTION}))",
+}
+
 
 @dataclass
 class FileCacheEntry:
@@ -1177,7 +1273,8 @@ def get_structure(payload: StructureRequest) -> dict:
         raise HTTPException(status_code=400, detail="Empty structure")
 
     if payload.selection:
-        atoms = u.select_atoms(payload.selection)
+        sel = NAMED_SELECTIONS.get(payload.selection, payload.selection)
+        atoms = u.select_atoms(sel)
     else:
         atoms = u.atoms
 

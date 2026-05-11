@@ -6,6 +6,18 @@
   import Gear from './icons/Gear.svelte'
   import Button from './ui/Button.svelte'
 
+  const NAMED_SELECTIONS = [
+    'all',
+    'protein',
+    'backbone',
+    'sidechain',
+    'water',
+    'lipid',
+    'ion',
+    'ligand',
+    'other'
+  ]
+
   /** @typedef {{ x: number, y: number, z: number, element: string, name: string }} Atom */
   /** @typedef {{ chain: string, resname: string, number: number, atom_indices: number[], ca_index?: number, sec?: string }} Residue */
   /** @typedef {{ type: 'cartoon' | 'ball-stick' | 'vdw' }} Representation */
@@ -16,11 +28,24 @@
 
   let collapsed = $state(true)
   let invalidSelection = $state(false)
+  let namedSelection = $state(NAMED_SELECTIONS.includes(view.selection) ? view.selection : 'other')
 
   $effect(() => {
     const sel = view.selection
+    if (sel === '') return
     const tid = setTimeout(updateStructure, 300)
     return () => clearTimeout(tid)
+  })
+
+  $effect(() => {
+    const sel = namedSelection
+    untrack(() => {
+      if (sel !== 'other') {
+        view.selection = ''
+        updateStructure()
+      }
+      // else updateStructure will be called by the effect on view.selection
+    })
   })
 
   $effect(() => {
@@ -36,7 +61,7 @@
   function updateStructure() {
     getStructure({
       path: view.path,
-      selection: view.selection,
+      selection: namedSelection === 'other' ? view.selection : namedSelection,
       needs_bonds: view.representation.type === 'ball-stick',
       needs_secondary_structure: view.representation.type === 'cartoon'
     })
@@ -110,12 +135,20 @@
           <label for="selection" class="text-xs">Selection:</label>
           <span class="text-xs text-neutral-500">{view.atoms.length} atoms</span>
         </div>
-        <Input
-          type="text"
-          size="sm"
-          className="w-full {invalidSelection ? 'border-red-500!' : ''} "
-          bind:value={view.selection}
-        />
+        <Select size="sm" className="w-full capitalize" bind:value={namedSelection}>
+          {#each NAMED_SELECTIONS as sel}
+            <option value={sel} class="capitalize">{sel}</option>
+          {/each}
+        </Select>
+        {#if namedSelection === 'other'}
+          <Input
+            type="text"
+            size="sm"
+            className="w-full {invalidSelection ? 'border-red-500!' : ''} "
+            placeholder="Enter selection ('chain A' or 'resid 1:20')"
+            bind:value={view.selection}
+          />
+        {/if}
       </div>
       <div class="space-y-1">
         <label for="representation" class="flex text-xs">Representation:</label>
