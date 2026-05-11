@@ -100,44 +100,48 @@
     ? 'white bg-neutral-900'
     : 'text-neutral-400'}"
 >
-  <div class="flex items-center justify-between gap-2">
-    <div class="flex items-center gap-2">
-      <div class="relative size-3 shrink-0">
-        <input
-          type="checkbox"
-          class="peer absolute inset-0 z-10 cursor-pointer opacity-0"
-          checked={view.visible}
-          aria-label={`Show ${view.name} in viewer`}
-          onchange={() => {
-            view.visible = !view.visible
-          }}
-        />
-        <div
-          class="pointer-events-none h-full w-full rounded-full border-2 border-neutral-500 bg-transparent transition-[background-color,border-color] peer-checked:border-neutral-100 peer-checked:bg-neutral-100 peer-focus-visible:ring-2 peer-focus-visible:ring-neutral-400 peer-focus-visible:ring-offset-2 dark:peer-focus-visible:ring-offset-neutral-950"
-          aria-hidden="true"
-        ></div>
-      </div>
-      <div class="flex items-baseline gap-1">
-        <span
-          class="text-xs {namedSelection === 'other' && view.selection
-            ? 'font-mono'
-            : 'capitalize'}"
-        >
-          {namedSelection === 'other' && view.selection ? view.selection : namedSelection}
-        </span>
-        {#if collapsed}
-          <span class="text-xs text-neutral-500">
-            {#if view.representation.type === 'ball-stick'}
-              Ball & Stick
-            {:else if view.representation.type === 'cartoon'}
-              Cartoon
-            {:else if view.representation.type === 'vdw'}
-              vdW
-            {/if}
-          </span>
-        {/if}
-      </div>
+  <div class="flex items-center gap-2">
+    <div class="relative size-3 shrink-0">
+      <input
+        type="checkbox"
+        class="peer absolute inset-0 z-10 cursor-pointer opacity-0"
+        checked={view.visible}
+        aria-label={`Show ${view.name} in viewer`}
+        onchange={() => {
+          view.visible = !view.visible
+        }}
+      />
+      <div
+        class="pointer-events-none h-full w-full rounded-full border-2 border-neutral-500 bg-transparent transition-[background-color,border-color] peer-checked:border-neutral-100 peer-checked:bg-neutral-100 peer-focus-visible:ring-2 peer-focus-visible:ring-neutral-400 peer-focus-visible:ring-offset-2 dark:peer-focus-visible:ring-offset-neutral-950"
+        aria-hidden="true"
+      ></div>
     </div>
+    <div
+      class="flex-1 text-xs {namedSelection === 'other' && view.selection
+        ? 'font-mono'
+        : 'capitalize'}"
+    >
+      {namedSelection === 'other' && view.selection ? view.selection : namedSelection}
+    </div>
+    {#if collapsed}
+      <span class="text-xs text-neutral-500">
+        {#if view.representation.type === 'ball-stick'}
+          Ball & Stick
+        {:else if view.representation.type === 'cartoon'}
+          Cartoon
+        {:else if view.representation.type === 'vdw'}
+          vdW
+        {/if}
+      </span>
+      <div class="flex h-4 items-stretch divide-x divide-neutral-900">
+        {#each ['C', 'H', 'O', 'N'] as element}
+          <div
+            class="w-1.5"
+            style="background-color: #{view.colorScheme({ element }).getHexString()};"
+          ></div>
+        {/each}
+      </div>
+    {/if}
     <button
       type="button"
       onclick={() => {
