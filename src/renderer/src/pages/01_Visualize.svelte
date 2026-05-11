@@ -12,7 +12,7 @@
   /** @typedef {{ x: number, y: number, z: number, element: string, name: string }} Atom */
   /** @typedef {{ chain: string, resname: string, number: number, atom_indices: number[], ca_index?: number, sec?: string }} Residue */
   /** @typedef {{ type: 'cartoon' | 'ball-stick' | 'vdw' }} Representation */
-  /** @typedef {{ id: string, name: string, selection: string, representation: Representation, atoms: Atom[], bonds?: [number, number][], residues?: Residue[], visible: boolean }} View */
+  /** @typedef {{ id: string, selection: string, representation: Representation, atoms: Atom[], bonds?: [number, number][], residues?: Residue[], visible: boolean }} View */
 
   /** @type {{ workingDir?: string }} */
   let { workingDir = '' } = $props()
@@ -49,13 +49,11 @@
     await loadStructure(dlg.filePath)
   }
 
-  /** @param {string} name */
   /** @param {string} selection */
   /** @param {Representation} representation */
-  function addView(name = 'New', selection = 'all', representation = { type: 'vdw' }) {
+  function addView(selection = 'all', representation = { type: 'vdw' }) {
     views.push({
       id: crypto.randomUUID(),
-      name,
       selection,
       representation,
       path: filePath,
@@ -77,7 +75,7 @@
       })
       filePath = structure.path
       views.length = 0
-      addView('All', 'all', { type: 'vdw' })
+      addView('all', { type: 'vdw' })
     } catch (ex) {
       structure = null
       alert(ex instanceof Error ? ex.message : String(ex))

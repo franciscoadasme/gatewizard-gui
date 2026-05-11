@@ -21,7 +21,7 @@
   /** @typedef {{ x: number, y: number, z: number, element: string, name: string }} Atom */
   /** @typedef {{ chain: string, resname: string, number: number, atom_indices: number[], ca_index?: number, sec?: string }} Residue */
   /** @typedef {{ type: 'cartoon' | 'ball-stick' | 'vdw' }} Representation */
-  /** @typedef {{ id: string, name: string, selection: string, representation: Representation, atoms: Atom[], bonds?: [number, number][], residues?: Residue[], visible: boolean }} View */
+  /** @typedef {{ id: string, selection: string, representation: Representation, atoms: Atom[], bonds?: [number, number][], residues?: Residue[], visible: boolean }} View */
 
   /** @type {{ view: View, onremove: () => void }} */
   let { view = $bindable(), onremove } = $props()
@@ -103,7 +103,13 @@
         ></div>
       </div>
       <div class="flex items-baseline gap-1">
-        <span class="text-sm">{view.name}</span>
+        <span
+          class="text-xs {namedSelection === 'other' && view.selection
+            ? 'font-mono'
+            : 'capitalize'}"
+        >
+          {namedSelection === 'other' && view.selection ? view.selection : namedSelection}
+        </span>
         {#if collapsed}
           <span class="text-xs text-neutral-500">
             {#if view.representation.type === 'ball-stick'}
@@ -129,10 +135,6 @@
   </div>
   {#if !collapsed}
     <div class="mt-2 flex flex-col gap-2">
-      <div class="space-y-1">
-        <label for="name" class="text-xs">Name:</label>
-        <Input type="text" size="sm" className="w-full" bind:value={view.name} />
-      </div>
       <div class="space-y-1">
         <div class="flex justify-between">
           <label for="selection" class="text-xs">Selection:</label>
