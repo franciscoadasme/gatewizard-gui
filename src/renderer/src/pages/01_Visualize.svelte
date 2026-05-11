@@ -170,8 +170,12 @@
     {/if}
     {#if views.length > 0 || filePath}
       <div class="p-2">
-        <Button className="w-full" variant="outline" type="button" size="sm" onclick={addView}
-          >Add View</Button
+        <Button
+          className="w-full"
+          variant="outline"
+          type="button"
+          size="sm"
+          onclick={() => addView()}>Add View</Button
         >
       </div>
     {:else}
