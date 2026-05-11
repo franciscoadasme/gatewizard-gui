@@ -10,8 +10,8 @@
   const controlsNamespace = useThrelteUserContext('threlte-controls')
 
   /**
-   * After moving the camera, sync OrbitControls' target + `update()` so the orbit pivot matches
-   * the structure center (THREE only updates internal spherical offset from controls, not `lookAt`).
+   * After moving the camera, sync controls target + `update()` so pivot matches structure center.
+   * Prefers TrackballControls (Canvas) when present, else OrbitControls.
    */
   $effect(() => {
     const cx = center.x
@@ -29,12 +29,13 @@
       cam.position.set(cx + dist * 0.85, cy + dist * 0.55, cz + dist * 0.95)
 
       const ctx = controlsNamespace ? get(controlsNamespace) : undefined
-      const ocWritable = ctx?.orbitControls
-      /** @type {import('three/examples/jsm/controls/OrbitControls.js').OrbitControls | undefined} */
-      const oc = ocWritable ? get(ocWritable) : undefined
-      if (oc) {
-        oc.target.set(cx, cy, cz)
-        oc.update()
+      const tb = ctx?.trackballControls ? get(ctx.trackballControls) : undefined
+      const oc = ctx?.orbitControls ? get(ctx.orbitControls) : undefined
+      /** @type {{ target: import('three').Vector3, update: () => void } | undefined} */
+      const ctrl = tb ?? oc
+      if (ctrl) {
+        ctrl.target.set(cx, cy, cz)
+        ctrl.update()
       } else {
         cam.lookAt(cx, cy, cz)
       }

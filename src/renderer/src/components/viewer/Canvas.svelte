@@ -1,6 +1,6 @@
 <script>
   import { Canvas as ThrelteCanvas, T } from '@threlte/core'
-  import { OrbitControls } from '@threlte/extras'
+  import { TrackballControls } from '@threlte/extras'
 
   /** @type {{ children?: import('svelte').Snippet }} */
   let { children } = $props()
@@ -9,7 +9,7 @@
 <ThrelteCanvas>
   <T.Color attach="background" args={[0x000000]} />
   <T.PerspectiveCamera makeDefault fov={45} near={0.05} far={500000} />
-  <OrbitControls enableDamping={false} />
+  <TrackballControls staticMoving={true} />
   <T.AmbientLight intensity={0.45} />
   <T.DirectionalLight position={[5, 8, 4]} intensity={1.1} />
   {@render children?.()}
