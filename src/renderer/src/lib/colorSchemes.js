@@ -5,13 +5,14 @@ import { Color } from 'three'
  */
 
 /**
+ * @param {{carbonColor?: Color}} options
  * @returns {(atom: AtomLike) => Color}
  */
-export function cpkScheme() {
+export function cpkScheme({ carbonColor = undefined } = {}) {
   /** CPK-style colors (hex sRGB). */
   const colors = /** @type {Record<string, Color>} */ ({
     H: new Color(0xffffff),
-    C: new Color(0x8f8f8f),
+    C: carbonColor ?? new Color(0x8f8f8f),
     N: new Color(0x304ff7),
     O: new Color(0xff0d0d),
     S: new Color(0xfafa33),

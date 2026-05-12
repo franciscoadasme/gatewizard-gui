@@ -1,4 +1,5 @@
 <script>
+  import { Color } from 'three'
   import { constantScheme, cpkScheme, defaultColorScheme } from '../lib/colorSchemes.js'
   import { getStructure } from '../lib/backendApi'
   import { untrack } from 'svelte'
@@ -71,6 +72,8 @@
       view.colorScheme = constantScheme(constantColorHex)
     } else if (colorSchemeName === 'cpk') {
       view.colorScheme = cpkScheme()
+    } else if (colorSchemeName === 'cpk-carbon') {
+      view.colorScheme = cpkScheme({ carbonColor: new Color(constantColorHex) })
     } else {
       view.colorScheme = defaultColorScheme
     }
@@ -195,9 +198,10 @@
         <label for="color-scheme" class="flex text-xs">Color scheme:</label>
         <Select size="sm" className="w-full" bind:value={colorSchemeName}>
           <option value="cpk">CPK (by element)</option>
+          <option value="cpk-carbon">CPK (custom carbon)</option>
           <option value="constant">Constant color</option>
         </Select>
-        {#if colorSchemeName === 'constant'}
+        {#if ['constant', 'cpk-carbon'].includes(colorSchemeName)}
           <div class="flex items-center gap-1">
             <ColorInput size="sm" bind:value={constantColorHex} />
             <Input
