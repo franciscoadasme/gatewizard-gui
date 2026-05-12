@@ -25,6 +25,8 @@
   let pdbId = $state('')
 
   // state
+  /** @type {ReturnType<typeof getCameraForAtoms>} */
+  let camera = $state(null)
   let loadingPDB = $state(false)
   /** @type {null | Awaited<ReturnType<typeof getStructure>>} */
   let structure = $state(null)
@@ -32,8 +34,11 @@
   let views = $state([])
 
   // derived state
-  const camera = $derived.by(() => getCameraForAtoms(structure?.atoms))
   const isPdbIdValid = $derived.by(() => pdbId.trim().length === 4)
+
+  $effect(() => {
+    camera = getCameraForAtoms(structure?.atoms)
+  })
 
   async function onFetchPDB() {
     if (!isPdbIdValid) return
@@ -65,6 +70,14 @@
       visible: true,
       colorScheme: defaultColorScheme
     })
+  }
+
+  /** @param {Atom[] | undefined | null} atoms */
+  function centerCameraOnAtoms(atoms) {
+    const nextCamera = getCameraForAtoms(atoms)
+    if (nextCamera) {
+      camera = nextCamera
+    }
   }
 
   /** @param {string} path */
@@ -166,7 +179,11 @@
     <h2 class="border-b border-neutral-800 p-2 text-xs font-semibold">Representations</h2>
     {#if views.length > 0}
       {#each views as view, i (view.id)}
-        <ViewItem bind:view={views[i]} onremove={() => removeView(view.id)} />
+        <ViewItem
+          bind:view={views[i]}
+          onremove={() => removeView(view.id)}
+          oncenter={() => centerCameraOnAtoms(view.atoms)}
+        />
       {/each}
     {/if}
     {#if views.length > 0 || filePath}

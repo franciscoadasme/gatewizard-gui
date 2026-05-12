@@ -5,6 +5,7 @@
   import { untrack } from 'svelte'
   import Button from './ui/Button.svelte'
   import ColorInput from './ui/ColorInput.svelte'
+  import Focus from './icons/Focus.svelte'
   import Gear from './icons/Gear.svelte'
   import Input from './ui/Input.svelte'
   import Select from './ui/Select.svelte'
@@ -56,8 +57,8 @@
   /** @typedef {(atom: Atom) => import('three').Color} ColorScheme */
   /** @typedef {{ id: string, selection: string, representation: Representation, atoms: Atom[], bonds?: [number, number][], residues?: Residue[], visible: boolean, colorScheme: ColorScheme }} View */
 
-  /** @type {{ view: View, onremove: () => void }} */
-  let { view = $bindable(), onremove } = $props()
+  /** @type {{ view: View, onremove: () => void, oncenter?: () => void }} */
+  let { view = $bindable(), onremove, oncenter } = $props()
 
   let collapsed = $state(true)
   let colorSchemeName = $state('cpk')
@@ -174,15 +175,29 @@
         {/each}
       </div>
     {/if}
-    <button
-      type="button"
-      onclick={() => {
-        collapsed = !collapsed
-      }}
-      class="focus-visible:outline-none active:translate-y-0.5"
-    >
-      <Gear className="size-4" />
-    </button>
+    <div class="flex items-center gap-1">
+      <button
+        type="button"
+        onclick={() => oncenter?.()}
+        class="focus-visible:outline-none active:translate-y-0.5 disabled:opacity-50"
+        title="Center on this view"
+        aria-label="Center on this view"
+        disabled={!view.atoms?.length}
+      >
+        <Focus className="size-4" />
+      </button>
+      <button
+        type="button"
+        onclick={() => {
+          collapsed = !collapsed
+        }}
+        class="focus-visible:outline-none active:translate-y-0.5"
+        title="View settings"
+        aria-label="View settings"
+      >
+        <Gear className="size-4" />
+      </button>
+    </div>
   </div>
   {#if !collapsed}
     <div class="mt-2 flex flex-col gap-2">
