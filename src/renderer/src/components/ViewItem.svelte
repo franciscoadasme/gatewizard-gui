@@ -9,6 +9,35 @@
   import Input from './ui/Input.svelte'
   import Select from './ui/Select.svelte'
 
+  const COLOR_PALETTE = [
+    // lighter colors
+    new Color().setRGB(1.0, 0.6, 0.6), // salmon
+    new Color().setRGB(1.0, 0.87, 0.37), // yellow orange
+    new Color().setRGB(1.0, 0.65, 0.85), // pink
+    new Color().setRGB(0.75, 1.0, 0.25), // limon
+    new Color().setRGB(0.75, 0.75, 1.0), // light blue
+    new Color().setRGB(0.5, 1.0, 1.0), // aquamarine
+    new Color().setRGB(1.0, 0.7, 0.2), // bright orange
+    new Color().setRGB(0.9, 0.9, 0.9), // light gray
+    // darker colors
+    new Color().setRGB(0.698, 0.13, 0.13), // firebrick
+    new Color().setRGB(0.65, 0.32, 0.17), // brown
+    new Color().setRGB(0.55, 0.25, 0.6), // violet purple
+    new Color().setRGB(0.2, 0.6, 0.2), // forest
+    new Color().setRGB(0.25, 0.25, 0.65), // deep blue
+    new Color().setRGB(0.1, 0.6, 0.6), // deep teal
+    new Color().setRGB(1.0, 0.55, 0.15), // tv orange
+    new Color().setRGB(0.3, 0.3, 0.3), // dark gray
+    // intense colors
+    new Color().setRGB(1.0, 0.05, 0.05), // red
+    new Color().setRGB(1.0, 1.0, 0.05), // yellow
+    new Color().setRGB(1.0, 0.2, 0.8), // magenta
+    new Color().setRGB(0.05, 1.0, 0.05), // green
+    new Color().setRGB(0.05, 0.05, 1.0), // blue
+    new Color().setRGB(0.05, 1.0, 1.0), // cyan
+    new Color().setRGB(1.0, 0.5, 0.05), // orange
+    new Color().setRGB(0.6, 0.6, 0.6) // light gray
+  ]
   const NAMED_SELECTIONS = [
     'all',
     'protein',
@@ -215,6 +244,20 @@
                 }
               }}
             />
+          </div>
+          <div class="grid grid-cols-8 gap-1">
+            {#each COLOR_PALETTE as color}
+              <button
+                class="aspect-square w-full rounded-sm border border-neutral-800 bg-neutral-950 p-1 transition-colors hover:border-neutral-700 active:translate-y-0.5"
+                onclick={() => (constantColorHex = `#${color.getHexString()}`)}
+                title={color.getHexString()}
+              >
+                <div
+                  class="size-full rounded-sm"
+                  style="background-color: #{color.getHexString()};"
+                ></div>
+              </button>
+            {/each}
           </div>
         {/if}
       </div>
