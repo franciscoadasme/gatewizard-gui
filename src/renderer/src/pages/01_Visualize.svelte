@@ -178,7 +178,7 @@
   <div class="flex w-60 flex-col">
     <h2 class="border-b border-neutral-800 p-2 text-xs font-semibold">Representations</h2>
     {#if views.length > 0 || filePath}
-      <div class="flex-1">
+      <div class="min-h-0 flex-1 overflow-y-auto">
         {#each views as view, i (view.id)}
           <ViewItem
             bind:view={views[i]}
