@@ -184,11 +184,13 @@
             <VdwSpheres atoms={view.atoms} getColor={view.colorScheme} />
           {/if}
         {/each}
-        <AxesGizmo visible={axesVisible} />
         {#if axesLinesVisible}
           <AxesLines length={camera.extent * 2} />
         {/if}
       </Canvas>
+      {#if axesVisible}
+        <AxesGizmo />
+      {/if}
     {/if}
   </div>
 

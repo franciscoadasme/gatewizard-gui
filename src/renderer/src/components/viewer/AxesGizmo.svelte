@@ -1,5 +1,5 @@
 <script>
-  import { useRenderer, useTask, useThrelte } from '@threlte/core'
+  import { Canvas as ThrelteCanvas, T } from '@threlte/core'
   import {
     CanvasTexture,
     ConeGeometry,
@@ -12,9 +12,7 @@
     SpriteMaterial,
     Vector3
   } from 'three'
-
-  /** @type {{ visible?: boolean }} */
-  let { visible = false } = $props()
+  import AxesGizmoScene from './AxesGizmoScene.svelte'
 
   const SHAFT_LENGTH = 0.5
   const SHAFT_RADIUS = 0.05
@@ -28,24 +26,12 @@
     { label: 'Z', color: '#0000ff', direction: [0, 0, 1] }
   ]
 
-  /** Distance along −Z (camera space) to the HUD plane. */
-  const HUD_DEPTH = 1.12
-  /** How far toward the lower-left edge of that plane (0 = center, 1 = edge). */
-  const CORNER_FRAC = 0.8
-  /** Arrow size relative to half-height of the view at `HUD_DEPTH`. */
-  const SCALE_VS_HALF_HEIGHT = 0.3
-
-  const { camera } = useThrelte()
-  const { autoRenderTask } = useRenderer()
-  const direction = new Vector3()
-  const axisAlign = new Quaternion()
-  const camWorldQuat = new Quaternion()
-
-  let root = $state(/** @type {Group | null} */ (null))
+  let gizmoRoot = $state(/** @type {Group | null} */ (null))
 
   $effect(() => {
     const group = new Group()
     group.renderOrder = 1000
+    group.frustumCulled = false
 
     const shaftGeometry = new CylinderGeometry(SHAFT_RADIUS, SHAFT_RADIUS, SHAFT_LENGTH, 18)
     const tipGeometry = new ConeGeometry(TIP_RADIUS, TIP_LENGTH, 18)
@@ -53,6 +39,8 @@
     const materials = []
     /** @type {import('three').Texture[]} */
     const textures = []
+    const direction = new Vector3()
+    const axisAlign = new Quaternion()
 
     for (const axis of AXES) {
       direction.fromArray(axis.direction)
@@ -62,7 +50,9 @@
         color: axis.color,
         metalness: 0.4,
         roughness: 0.6,
-        envMapIntensity: 1
+        envMapIntensity: 1,
+        depthTest: true,
+        depthWrite: true
       }
       const shaftMaterial = new MeshStandardMaterial(metalOpts)
       const tipMaterial = new MeshStandardMaterial(metalOpts)
@@ -102,7 +92,9 @@
 
       const labelMaterial = new SpriteMaterial({
         map: labelTexture,
-        transparent: true
+        transparent: true,
+        depthTest: true,
+        depthWrite: false
       })
       materials.push(labelMaterial)
 
@@ -113,14 +105,18 @@
       group.add(label)
     }
 
-    root = group
+    group.traverse((o) => {
+      o.frustumCulled = false
+    })
+
+    gizmoRoot = group
 
     return () => {
       if (group.parent) {
         group.parent.remove(group)
       }
       group.clear()
-      root = null
+      gizmoRoot = null
       shaftGeometry.dispose()
       tipGeometry.dispose()
       for (const m of materials) {
@@ -131,42 +127,14 @@
       }
     }
   })
-
-  useTask(
-    () => {
-      const cam = camera.current
-      const gizmo = root
-      if (!gizmo || !cam) {
-        return
-      }
-
-      if (gizmo.parent !== cam) {
-        cam.add(gizmo)
-      }
-      gizmo.visible = visible
-      if (!visible) {
-        return
-      }
-
-      cam.updateMatrixWorld(true)
-
-      cam.getWorldQuaternion(camWorldQuat)
-      gizmo.quaternion.copy(camWorldQuat).invert()
-
-      if ('fov' in cam && cam.aspect !== undefined) {
-        const tanHalfFov = Math.tan((cam.fov * Math.PI) / 360)
-        const halfH = tanHalfFov * HUD_DEPTH
-        const halfW = halfH * cam.aspect
-        gizmo.position.set(-halfW * CORNER_FRAC, -halfH * CORNER_FRAC, -HUD_DEPTH)
-        gizmo.scale.setScalar(Math.max(halfH * SCALE_VS_HALF_HEIGHT, 0.006))
-      } else {
-        gizmo.position.set(-0.42, -0.34, -1.1)
-        gizmo.scale.setScalar(0.12)
-      }
-    },
-    {
-      running: () => !!root,
-      before: autoRenderTask
-    }
-  )
 </script>
+
+{#if gizmoRoot}
+  <div class="pointer-events-none absolute bottom-3 left-3 z-20 h-32 w-32 overflow-hidden">
+    <ThrelteCanvas class="block h-full w-full">
+      <!-- <T.Color attach="background" args={[0x0c0c0c]} /> -->
+      <T.PerspectiveCamera makeDefault position={[0, 0, 4]} fov={38} near={0.08} far={80} />
+      <AxesGizmoScene gizmo={gizmoRoot} />
+    </ThrelteCanvas>
+  </div>
+{/if}
