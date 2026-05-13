@@ -132,8 +132,16 @@
 {#if gizmoRoot}
   <div class="pointer-events-none absolute bottom-3 left-3 z-20 h-32 w-32 overflow-hidden">
     <ThrelteCanvas class="block h-full w-full">
-      <!-- <T.Color attach="background" args={[0x0c0c0c]} /> -->
-      <T.PerspectiveCamera makeDefault position={[0, 0, 4]} fov={38} near={0.08} far={80} />
+      <T.OrthographicCamera
+        makeDefault
+        manual
+        left={-1.25}
+        right={1.25}
+        top={1.25}
+        bottom={-1.25}
+        near={0.05}
+        far={50}
+      />
       <AxesGizmoScene gizmo={gizmoRoot} />
     </ThrelteCanvas>
   </div>
