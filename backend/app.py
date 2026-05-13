@@ -1344,6 +1344,45 @@ def get_structure(payload: StructureRequest) -> dict:
     return data
 
 
+class DetectMoleculesRequest(BaseModel):
+    path: str = Field(..., description="Absolute path to a PDB/mmCIF file")
+
+
+@app.post("/detect-molecules")
+def detect_molecules(payload: DetectMoleculesRequest) -> list[dict]:
+    u = load_structure(payload.path)
+
+    datalist = []
+
+    idxs = []
+    for name in ["protein", "water", "lipid", "ion"]:
+        atoms = u.select_atoms(NAMED_SELECTIONS[name])
+        if len(atoms) == 0:
+            continue
+        data = dict(
+            selection=name,
+            atoms=get_atoms(atoms),
+        )
+        if name == "protein":
+            data["residues"] = get_residues(atoms, needs_secondary_structure=True)
+        datalist.append(data)
+        idxs.extend(atoms.indices)
+
+    atoms = u.atoms.select_atoms(f"not (index {' '.join(map(str, idxs))})")
+    for resname in set(res.resname for res in atoms.residues):
+        residues = atoms.select_atoms(f"resname {resname}")
+        if len(residues) == 0:
+            continue
+        datalist.append(
+            dict(
+                selection=f"resname {resname}",
+                atoms=get_atoms(residues),
+            )
+        )
+
+    return datalist
+
+
 if __name__ == "__main__":
     import uvicorn
 

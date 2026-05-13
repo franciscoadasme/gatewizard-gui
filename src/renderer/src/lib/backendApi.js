@@ -212,6 +212,14 @@ export async function getEquilibrationStatus(props) {
   return backendJson('/get-equilibration-status', props)
 }
 
+/**
+ * @param {string} filePath
+ * @returns {Promise<{ selection: string, atoms: { x: number, y: number, z: number, element: string, name: string }[], residues?: Array<{ chain: string, resname: string, number: number, atom_indices: number[], ca_index?: number, sec?: string }> }[]>}
+ */
+export async function detectMolecules(filePath) {
+  return backendJson('/detect-molecules', { path: filePath })
+}
+
 // Helper functions for the backend API.
 
 /**

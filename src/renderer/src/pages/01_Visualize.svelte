@@ -8,12 +8,14 @@
     Cartoon,
     VdwSpheres
   } from '../components/viewer'
+  import { Color } from 'three'
   import Axes from '../components/icons/Axes.svelte'
   import AxesLinesIcon from '../components/icons/AxesLines.svelte'
   import { cpkScheme, defaultColorScheme } from '../lib/colorSchemes.js'
   import { getCameraForAtoms } from '../lib/viewer/base.js'
-  import { getStructure } from '../lib/backendApi.js'
+  import { getStructure, detectMolecules } from '../lib/backendApi.js'
   import Button from '../components/ui/Button.svelte'
+  import DetectIcon from '../components/icons/Detect.svelte'
   import Divider from '../components/ui/Divider.svelte'
   import Empty from '../components/ui/Empty.svelte'
   import Input from '../components/ui/Input.svelte'
@@ -55,6 +57,30 @@
     const base = getCameraForAtoms(structure?.atoms)
     camera = base ? { ...base, framingZoom: 1, framingGeneration: 0, poseResetGeneration: 0 } : null
   })
+
+  async function onAutoGenerateViews() {
+    const data = await detectMolecules(filePath)
+    views.length = 0
+    for (const struc of data) {
+      const representation = struc.selection === 'protein' ? { type: 'cartoon' } : { type: 'vdw' }
+      const color = new Color().setHex(Math.floor(Math.random() * 16777215)).getHexString()
+      views.push({
+        id: crypto.randomUUID(),
+        selection: struc.selection,
+        representation,
+        path: filePath,
+        atoms: struc.atoms,
+        bonds: struc.bonds,
+        residues: struc.residues,
+        visible: struc.selection !== 'water',
+        colorScheme: {
+          name: 'cpk-carbon',
+          color: color,
+          resolver: cpkScheme({ carbonColor: color })
+        }
+      })
+    }
+  }
 
   async function onFetchPDB() {
     if (!isPdbIdValid) return
@@ -241,6 +267,16 @@
           onclick={() => addView()}
         >
           <Plus className="size-3 fill-white" />
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="p-1.5!"
+          onclick={onAutoGenerateViews}
+          aria-label="Auto-generate representations"
+          title="Auto-generate representations"
+        >
+          <DetectIcon className="size-4 stroke-2 stroke-white" />
         </Button>
         <Button
           variant="outline"
