@@ -258,58 +258,38 @@
         {/each}
       </div>
       <div class="flex gap-1 border-t border-neutral-800 p-2">
-        <Button
-          variant="outline"
-          size="sm"
-          className="p-1.5!"
-          aria-label="Add view"
-          title="Add view"
-          onclick={() => addView()}
-        >
-          <Plus className="size-3 fill-white" />
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          className="p-1.5!"
-          onclick={onAutoGenerateViews}
-          aria-label="Auto-generate representations"
-          title="Auto-generate representations"
-        >
-          <DetectIcon className="size-4 stroke-2 stroke-white" />
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          className="p-1!"
-          onclick={() => (axesVisible = !axesVisible)}
-          aria-label={axesVisible ? 'Hide axes gizmo' : 'Show axes gizmo'}
-          title={axesVisible ? 'Hide axes gizmo' : 'Show axes gizmo'}
-        >
-          <Axes className="size-4 {axesVisible ? 'fill-white' : 'fill-neutral-500'}" />
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          className="p-1!"
-          onclick={() => (axesLinesVisible = !axesLinesVisible)}
-          aria-label={axesLinesVisible ? 'Hide axes lines' : 'Show axes lines'}
-          title={axesLinesVisible ? 'Hide axes lines' : 'Show axes lines'}
-        >
-          <AxesLinesIcon
-            className="size-4 stroke-2 {axesLinesVisible ? 'opacity-100' : 'opacity-45'}"
-          />
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          className="p-1.5!"
-          onclick={() => resetCamera()}
-          aria-label="Reset camera"
-          title="Reset camera"
-        >
-          <ResetIcon className="size-3 fill-white" />
-        </Button>
+        {#snippet toolbarBtn(title, onclick, Icon, className)}
+          <button
+            type="button"
+            class="flex size-7 items-center justify-center rounded-lg border border-neutral-800 bg-neutral-900 transition-colors hover:border-neutral-700 hover:bg-neutral-800 active:translate-y-0.5"
+            aria-label={title}
+            {title}
+            {onclick}
+          >
+            <Icon {className} />
+          </button>
+        {/snippet}
+
+        {@render toolbarBtn('Add view', () => addView(), Plus, 'size-3 fill-white')}
+        {@render toolbarBtn(
+          'Auto-generate representations',
+          onAutoGenerateViews,
+          DetectIcon,
+          'size-4 stroke-2 stroke-white'
+        )}
+        {@render toolbarBtn(
+          axesVisible ? 'Hide axes gizmo' : 'Show axes gizmo',
+          () => (axesVisible = !axesVisible),
+          Axes,
+          `size-4 ${axesVisible ? 'fill-white' : 'fill-neutral-500'}`
+        )}
+        {@render toolbarBtn(
+          axesLinesVisible ? 'Hide axes lines' : 'Show axes lines',
+          () => (axesLinesVisible = !axesLinesVisible),
+          AxesLinesIcon,
+          `size-4 stroke-2 ${axesLinesVisible ? 'opacity-100' : 'opacity-45'}`
+        )}
+        {@render toolbarBtn('Reset camera', resetCamera, ResetIcon, 'size-3 fill-white')}
       </div>
     {:else}
       <div class="flex-1 p-2">
