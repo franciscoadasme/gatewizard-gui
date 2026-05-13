@@ -155,6 +155,39 @@ FILE_CACHE: dict[str, FileCacheEntry] = {}
 FILE_CACHE_LOCK = threading.Lock()
 
 
+def get_residues(
+    u: mda.Universe, needs_secondary_structure: bool = False
+) -> list[dict]:
+    sec_segments = []
+    if needs_secondary_structure:
+        try:
+            sec_segments = get_secondary_structure(u)
+        except Exception:
+            pass
+
+    residue_sec_table: dict[tuple[str, int, str | None], str] = {}
+    for sec in sec_segments:
+        for resid in range(sec.start.number, sec.end.number + 1):
+            # FIXME: Handle insertion codes
+            residue_sec_table[(sec.start.chain, resid, None)] = sec.kind.value
+
+    residues = []
+    for res in u.residues:
+        chain = str(res.segid).strip()
+        ca_atoms = res.atoms.select_atoms("name CA")
+        residues.append(
+            dict(
+                chain=chain,
+                resname=str(res.resname).strip(),
+                number=int(res.resid),
+                atom_indices=sorted(int(i) for i in res.atoms.indices.tolist()),
+                sec=residue_sec_table.get((chain, res.resid, None)),
+                ca_index=(int(ca_atoms.indices[0]) if ca_atoms.n_atoms == 1 else None),
+            )
+        )
+    return residues
+
+
 def get_secondary_structure(u: mda.Universe) -> list[psique.SecondaryStructure]:
     """Return the secondary structure of the universe."""
     with tempfile.NamedTemporaryFile("w", suffix=".pdb") as file:
@@ -1302,33 +1335,7 @@ def get_structure(payload: StructureRequest) -> dict:
     data["bonds"] = atoms.bonds.indices.tolist()
 
     if payload.needs_secondary_structure:
-        data["residues"] = []
-        try:
-            sec_segments = get_secondary_structure(u)
-        except Exception:
-            sec_segments = []
-
-        residue_sec_table: dict[tuple[str, int, str | None], str] = {}
-        for sec in sec_segments:
-            for resid in range(sec.start.number, sec.end.number + 1):
-                # FIXME: Handle insertion codes
-                residue_sec_table[(sec.start.chain, resid, None)] = sec.kind.value
-
-        for res in u.residues:
-            chain = str(res.segid).strip()
-            ca_atoms = res.atoms.select_atoms("name CA")
-            data["residues"].append(
-                dict(
-                    chain=chain,
-                    resname=str(res.resname).strip(),
-                    number=int(res.resid),
-                    atom_indices=sorted(int(i) for i in res.atoms.indices.tolist()),
-                    sec=residue_sec_table.get((chain, res.resid, None)),
-                    ca_index=(
-                        int(ca_atoms.indices[0]) if ca_atoms.n_atoms == 1 else None
-                    ),
-                )
-            )
+        data["residues"] = get_residues(u, needs_secondary_structure=True)
 
     return data
 
