@@ -18,6 +18,7 @@
   import Empty from '../components/ui/Empty.svelte'
   import Input from '../components/ui/Input.svelte'
   import Plus from '../components/icons/Plus.svelte'
+  import ResetIcon from '../components/icons/Reset.svelte'
   import Spinner from '../components/ui/Spinner.svelte'
   import ViewItem from '../components/ViewItem.svelte'
 
@@ -26,7 +27,7 @@
   /** @typedef {{ type: 'cartoon' | 'ball-stick' | 'vdw' }} Representation */
   /** @typedef {(atom: Atom) => import('three').Color} ColorScheme */
   /** @typedef {{ id: string, selection: string, representation: Representation, atoms: Atom[], bonds?: [number, number][], residues?: Residue[], visible: boolean, colorScheme: ColorScheme }} View */
-  /** @typedef {ReturnType<typeof getCameraForAtoms> & { framingZoom: number, framingGeneration: number }} ViewerFraming */
+  /** @typedef {ReturnType<typeof getCameraForAtoms> & { framingZoom: number, framingGeneration: number, poseResetGeneration: number }} ViewerFraming */
 
   /** @type {{ workingDir?: string }} */
   let { workingDir = '' } = $props()
@@ -52,7 +53,7 @@
 
   $effect(() => {
     const base = getCameraForAtoms(structure?.atoms)
-    camera = base ? { ...base, framingZoom: 1, framingGeneration: 0 } : null
+    camera = base ? { ...base, framingZoom: 1, framingGeneration: 0, poseResetGeneration: 0 } : null
   })
 
   async function onFetchPDB() {
@@ -96,7 +97,8 @@
     camera = {
       ...next,
       framingZoom: 1,
-      framingGeneration: (camera?.framingGeneration ?? 0) + 1
+      framingGeneration: (camera?.framingGeneration ?? 0) + 1,
+      poseResetGeneration: camera?.poseResetGeneration ?? 0
     }
   }
 
@@ -123,6 +125,19 @@
   /** @param {string} id */
   function removeView(id) {
     views = views.filter((it) => it.id !== id)
+  }
+
+  function resetCamera() {
+    const base = getCameraForAtoms(structure?.atoms)
+    if (!base) {
+      return
+    }
+    camera = {
+      ...base,
+      framingZoom: 1,
+      framingGeneration: (camera?.framingGeneration ?? 0) + 1,
+      poseResetGeneration: (camera?.poseResetGeneration ?? 0) + 1
+    }
   }
 </script>
 
@@ -245,6 +260,16 @@
           <AxesLinesIcon
             className="size-4 stroke-2 {axesLinesVisible ? 'opacity-100' : 'opacity-45'}"
           />
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="p-1.5!"
+          onclick={() => resetCamera()}
+          aria-label="Reset camera"
+          title="Reset camera"
+        >
+          <ResetIcon className="size-3 fill-white" />
         </Button>
       </div>
     {:else}

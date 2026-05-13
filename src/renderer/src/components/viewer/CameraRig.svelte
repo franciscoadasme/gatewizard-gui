@@ -6,7 +6,7 @@
 <script>
   import { onDestroy } from 'svelte'
   import { get } from 'svelte/store'
-  import { OrthographicCamera } from 'three'
+  import { OrthographicCamera, Vector3 } from 'three'
   import { useTask, useThrelte, useThrelteUserContext } from '@threlte/core'
 
   /**
@@ -16,6 +16,7 @@
    *     extent: number
    *     framingZoom: number
    *     framingGeneration: number
+   *     poseResetGeneration?: number
    *   }
    * }}
    */
@@ -80,6 +81,7 @@
   /** @type {number | null} */
   let lastExtent = null
   let lastFramingGeneration = 0
+  let lastPoseResetGeneration = 0
 
   /**
    * @param {OrthographicCamera} cam
@@ -97,6 +99,29 @@
     }
   }
 
+  const _eye = new Vector3()
+  const _target = new Vector3()
+
+  /**
+   * Eye on +world Z, up +world Y, look at target → +Z points from structure toward the camera.
+   * Screen: +X is to the viewer’s right (Three default); −X is to the left on screen.
+   * @param {import('three').Camera} cam
+   * @param {{ target: import('three').Vector3 }} ctrl
+   * @param {number} cx
+   * @param {number} cy
+   * @param {number} cz
+   * @param {number} ext
+   */
+  function applyCanonicalView(cam, ctrl, cx, cy, cz, ext) {
+    const dist = Math.max(18, ext * 2.8)
+    _target.set(cx, cy, cz)
+    ctrl.target.copy(_target)
+    _eye.set(cx, cy, cz + dist)
+    cam.up.set(0, 1, 0)
+    cam.position.copy(_eye)
+    cam.lookAt(_target)
+  }
+
   /** Initial placement + target moves: preserve orbit orientation; apply framing zoom when reframing. */
   useTask(
     () => {
@@ -109,7 +134,6 @@
       const cy = framing.center.y
       const cz = framing.center.z
       const ext = framing.extent
-      const dist = Math.max(18, ext * 2.8)
 
       const ctx = controlsNamespace ? get(controlsNamespace) : undefined
       const tb = ctx?.trackballControls ? get(ctx.trackballControls) : undefined
@@ -121,16 +145,32 @@
         return
       }
 
+      const poseGen = framing.poseResetGeneration ?? 0
+
       if (!placed) {
-        cam.position.set(cx + dist * 0.85, cy + dist * 0.55, cz + dist * 0.95)
-        ctrl.target.set(cx, cy, cz)
+        applyCanonicalView(cam, ctrl, cx, cy, cz, ext)
         lastCx = cx
         lastCy = cy
         lastCz = cz
         lastExtent = ext
         lastFramingGeneration = framing.framingGeneration
+        lastPoseResetGeneration = poseGen
         applyFramingZoom(cam, ext, framing.framingZoom)
         placed = true
+        ctrl.update()
+        invalidate()
+        return
+      }
+
+      if (poseGen !== lastPoseResetGeneration) {
+        lastPoseResetGeneration = poseGen
+        lastFramingGeneration = framing.framingGeneration
+        applyCanonicalView(cam, ctrl, cx, cy, cz, ext)
+        lastCx = cx
+        lastCy = cy
+        lastCz = cz
+        lastExtent = ext
+        applyFramingZoom(cam, ext, framing.framingZoom)
         ctrl.update()
         invalidate()
         return
