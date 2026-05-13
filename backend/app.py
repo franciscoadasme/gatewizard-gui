@@ -155,6 +155,22 @@ FILE_CACHE: dict[str, FileCacheEntry] = {}
 FILE_CACHE_LOCK = threading.Lock()
 
 
+def get_atoms(atoms: mda.AtomGroup | mda.Universe) -> list[dict]:
+    if isinstance(atoms, mda.Universe):
+        atoms = atoms.atoms
+    return [
+        dict(
+            x=float(it.position[0]),
+            y=float(it.position[1]),
+            z=float(it.position[2]),
+            element=str(it.element),
+            name=str(it.name).strip(),
+            index=int(it.index),
+        )
+        for it in atoms
+    ]
+
+
 def get_residues(
     u: mda.Universe, needs_secondary_structure: bool = False
 ) -> list[dict]:
@@ -1320,20 +1336,8 @@ def get_structure(payload: StructureRequest) -> dict:
         atoms = u.atoms
 
     data = dict(path=payload.path)
-    data["atoms"] = [
-        dict(
-            x=float(it.position[0]),
-            y=float(it.position[1]),
-            z=float(it.position[2]),
-            element=str(it.element),
-            name=str(it.name).strip(),
-            index=int(it.index),
-        )
-        for it in atoms
-    ]
-
+    data["atoms"] = get_atoms(atoms)
     data["bonds"] = atoms.bonds.indices.tolist()
-
     if payload.needs_secondary_structure:
         data["residues"] = get_residues(u, needs_secondary_structure=True)
 
