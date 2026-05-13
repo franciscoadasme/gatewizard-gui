@@ -119,7 +119,7 @@
   }
 </script>
 
-<div class="flex flex-1 divide-x divide-neutral-800">
+<div class="flex min-w-0 flex-1 divide-x divide-neutral-800">
   <div class="flex w-70 flex-col gap-2 p-4">
     <div class="space-y-2">
       <p class="mb-1 text-xs">Structure file:</p>
@@ -171,7 +171,7 @@
     {/if}
   </div>
 
-  <div class="relative min-h-[420px] min-w-0 flex-1 bg-black">
+  <div class="relative min-h-100 min-w-100 flex-1 bg-black">
     {#if structure && camera}
       <Canvas>
         <CameraRig center={camera.center} extent={camera.extent} />
