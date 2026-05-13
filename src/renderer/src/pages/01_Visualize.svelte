@@ -1,6 +1,7 @@
 <script>
   import {
     AxesGizmo,
+    AxesLines,
     BallStick,
     CameraRig,
     Canvas,
@@ -8,6 +9,7 @@
     VdwSpheres
   } from '../components/viewer'
   import Axes from '../components/icons/Axes.svelte'
+  import AxesLinesIcon from '../components/icons/AxesLines.svelte'
   import { defaultColorScheme } from '../lib/colorSchemes.js'
   import { getCameraForAtoms } from '../lib/viewer/base.js'
   import { getStructure } from '../lib/backendApi.js'
@@ -34,9 +36,10 @@
   let pdbId = $state('')
 
   // state
+  let axesLinesVisible = $state(false)
+  let axesVisible = $state(false)
   /** @type {ReturnType<typeof getCameraForAtoms>} */
   let camera = $state(null)
-  let axesVisible = $state(false)
   let loadingPDB = $state(false)
   /** @type {null | Awaited<ReturnType<typeof getStructure>>} */
   let structure = $state(null)
@@ -182,6 +185,9 @@
           {/if}
         {/each}
         <AxesGizmo visible={axesVisible} />
+        {#if axesLinesVisible}
+          <AxesLines length={camera.extent * 2} />
+        {/if}
       </Canvas>
     {/if}
   </div>
@@ -218,6 +224,18 @@
           title={axesVisible ? 'Hide axes gizmo' : 'Show axes gizmo'}
         >
           <Axes className="size-4 {axesVisible ? 'fill-white' : 'fill-neutral-500'}" />
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="p-1!"
+          onclick={() => (axesLinesVisible = !axesLinesVisible)}
+          aria-label={axesLinesVisible ? 'Hide axes lines' : 'Show axes lines'}
+          title={axesLinesVisible ? 'Hide axes lines' : 'Show axes lines'}
+        >
+          <AxesLinesIcon
+            className="size-4 stroke-2 {axesLinesVisible ? 'opacity-100' : 'opacity-45'}"
+          />
         </Button>
       </div>
     {:else}
