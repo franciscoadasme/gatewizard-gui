@@ -1,5 +1,13 @@
 <script>
-  import { BallStick, CameraRig, Canvas, Cartoon, VdwSpheres } from '../components/viewer'
+  import {
+    AxesGizmo,
+    BallStick,
+    CameraRig,
+    Canvas,
+    Cartoon,
+    VdwSpheres
+  } from '../components/viewer'
+  import Axes from '../components/icons/Axes.svelte'
   import { defaultColorScheme } from '../lib/colorSchemes.js'
   import { getCameraForAtoms } from '../lib/viewer/base.js'
   import { getStructure } from '../lib/backendApi.js'
@@ -27,6 +35,7 @@
   // state
   /** @type {ReturnType<typeof getCameraForAtoms>} */
   let camera = $state(null)
+  let axesVisible = $state(false)
   let loadingPDB = $state(false)
   /** @type {null | Awaited<ReturnType<typeof getStructure>>} */
   let structure = $state(null)
@@ -171,6 +180,7 @@
             <VdwSpheres atoms={view.atoms} getColor={view.colorScheme} />
           {/if}
         {/each}
+        <AxesGizmo visible={axesVisible} />
       </Canvas>
     {/if}
   </div>
@@ -195,6 +205,18 @@
           size="sm"
           onclick={() => addView()}>Add View</Button
         >
+      </div>
+      <div class="flex gap-1 border-t border-neutral-800 p-2">
+        <Button
+          variant="outline"
+          size="sm"
+          className="p-1!"
+          onclick={() => (axesVisible = !axesVisible)}
+          aria-label={axesVisible ? 'Hide axes gizmo' : 'Show axes gizmo'}
+          title={axesVisible ? 'Hide axes gizmo' : 'Show axes gizmo'}
+        >
+          <Axes className="size-4 {axesVisible ? 'fill-white' : 'fill-neutral-500'}" />
+        </Button>
       </div>
     {:else}
       <div class="flex-1 p-2">
