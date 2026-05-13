@@ -26,6 +26,7 @@
   /** @typedef {{ type: 'cartoon' | 'ball-stick' | 'vdw' }} Representation */
   /** @typedef {(atom: Atom) => import('three').Color} ColorScheme */
   /** @typedef {{ id: string, selection: string, representation: Representation, atoms: Atom[], bonds?: [number, number][], residues?: Residue[], visible: boolean, colorScheme: ColorScheme }} View */
+  /** @typedef {ReturnType<typeof getCameraForAtoms> & { framingZoom: number, framingGeneration: number }} ViewerFraming */
 
   /** @type {{ workingDir?: string }} */
   let { workingDir = '' } = $props()
@@ -38,7 +39,7 @@
   // state
   let axesLinesVisible = $state(false)
   let axesVisible = $state(false)
-  /** @type {ReturnType<typeof getCameraForAtoms>} */
+  /** @type {ViewerFraming | null} */
   let camera = $state(null)
   let loadingPDB = $state(false)
   /** @type {null | Awaited<ReturnType<typeof getStructure>>} */
@@ -50,7 +51,8 @@
   const isPdbIdValid = $derived.by(() => pdbId.trim().length === 4)
 
   $effect(() => {
-    camera = getCameraForAtoms(structure?.atoms)
+    const base = getCameraForAtoms(structure?.atoms)
+    camera = base ? { ...base, framingZoom: 1, framingGeneration: 0 } : null
   })
 
   async function onFetchPDB() {
@@ -87,9 +89,14 @@
 
   /** @param {Atom[] | undefined | null} atoms */
   function centerCameraOnAtoms(atoms) {
-    const nextCamera = getCameraForAtoms(atoms)
-    if (nextCamera) {
-      camera = nextCamera
+    const next = getCameraForAtoms(atoms)
+    if (!next) {
+      return
+    }
+    camera = {
+      ...next,
+      framingZoom: 1,
+      framingGeneration: (camera?.framingGeneration ?? 0) + 1
     }
   }
 
@@ -174,7 +181,7 @@
   <div class="relative min-h-100 min-w-100 flex-1 bg-black">
     {#if structure && camera}
       <Canvas>
-        <CameraRig center={camera.center} extent={camera.extent} />
+        <CameraRig framing={camera} />
         {#each views.filter((v) => v.visible) as view (view.id)}
           {#if view.representation.type === 'ball-stick'}
             <BallStick atoms={view.atoms} bonds={view.bonds} getColor={view.colorScheme} />
