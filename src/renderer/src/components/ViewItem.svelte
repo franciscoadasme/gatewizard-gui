@@ -54,15 +54,15 @@
   /** @typedef {{ x: number, y: number, z: number, element: string, name: string }} Atom */
   /** @typedef {{ chain: string, resname: string, number: number, atom_indices: number[], ca_index?: number, sec?: string }} Residue */
   /** @typedef {{ type: 'cartoon' | 'ball-stick' | 'vdw' }} Representation */
-  /** @typedef {(atom: Atom) => import('three').Color} ColorScheme */
+  /** @typedef {{ name: string, color?: string, resolver: (atom: Atom) => import('three').Color }} ColorScheme */
   /** @typedef {{ id: string, selection: string, representation: Representation, atoms: Atom[], bonds?: [number, number][], residues?: Residue[], visible: boolean, colorScheme: ColorScheme }} View */
 
   /** @type {{ view: View, onremove: () => void, oncenter?: () => void }} */
   let { view = $bindable(), onremove, oncenter } = $props()
 
   let collapsed = $state(true)
-  let colorSchemeName = $state('cpk')
-  let constantColorHex = $state('#00aaff')
+  let colorSchemeName = $state(view.colorScheme.name)
+  let constantColorHex = $state(view.colorScheme.color || '#00aaff')
   let invalidSelection = $state(false)
   let namedSelection = $state(NAMED_SELECTIONS.includes(view.selection) ? view.selection : 'other')
 
@@ -98,15 +98,20 @@
   })
 
   $effect(() => {
+    let colorScheme = { name: colorSchemeName }
     if (colorSchemeName === 'constant') {
-      view.colorScheme = constantScheme(constantColorHex)
+      colorScheme.color = constantColorHex
+      colorScheme.resolver = constantScheme(constantColorHex)
     } else if (colorSchemeName === 'cpk') {
-      view.colorScheme = cpkScheme()
+      colorScheme.resolver = cpkScheme()
     } else if (colorSchemeName === 'cpk-carbon') {
-      view.colorScheme = cpkScheme({ carbonColor: new Color(constantColorHex) })
+      colorScheme.color = constantColorHex
+      colorScheme.resolver = cpkScheme({ carbonColor: constantColorHex })
     } else {
-      view.colorScheme = defaultColorScheme
+      colorScheme.name = 'default'
+      colorScheme.resolver = defaultColorScheme
     }
+    untrack(() => (view.colorScheme = colorScheme))
   })
 
   function updateStructure() {
@@ -170,7 +175,7 @@
         {#each ['C', 'H', 'O', 'N'] as element (element)}
           <div
             class="w-1.5"
-            style="background-color: #{view.colorScheme({ element }).getHexString()};"
+            style="background-color: #{view.colorScheme.resolver({ element }).getHexString()};"
           ></div>
         {/each}
       </div>

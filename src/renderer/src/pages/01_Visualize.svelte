@@ -10,7 +10,7 @@
   } from '../components/viewer'
   import Axes from '../components/icons/Axes.svelte'
   import AxesLinesIcon from '../components/icons/AxesLines.svelte'
-  import { defaultColorScheme } from '../lib/colorSchemes.js'
+  import { cpkScheme, defaultColorScheme } from '../lib/colorSchemes.js'
   import { getCameraForAtoms } from '../lib/viewer/base.js'
   import { getStructure } from '../lib/backendApi.js'
   import Button from '../components/ui/Button.svelte'
@@ -25,7 +25,7 @@
   /** @typedef {{ x: number, y: number, z: number, element: string, name: string }} Atom */
   /** @typedef {{ chain: string, resname: string, number: number, atom_indices: number[], ca_index?: number, sec?: string }} Residue */
   /** @typedef {{ type: 'cartoon' | 'ball-stick' | 'vdw' }} Representation */
-  /** @typedef {(atom: Atom) => import('three').Color} ColorScheme */
+  /** @typedef {{ name: string, color?: string, resolver: (atom: Atom) => import('three').Color }} ColorScheme */
   /** @typedef {{ id: string, selection: string, representation: Representation, atoms: Atom[], bonds?: [number, number][], residues?: Residue[], visible: boolean, colorScheme: ColorScheme }} View */
   /** @typedef {ReturnType<typeof getCameraForAtoms> & { framingZoom: number, framingGeneration: number, poseResetGeneration: number }} ViewerFraming */
 
@@ -84,7 +84,10 @@
       bonds: structure?.bonds,
       residues: structure?.residues,
       visible: true,
-      colorScheme: defaultColorScheme
+      colorScheme: {
+        name: 'cpk',
+        resolver: cpkScheme()
+      }
     })
   }
 
@@ -199,11 +202,11 @@
         <CameraRig framing={camera} />
         {#each views.filter((v) => v.visible) as view (view.id)}
           {#if view.representation.type === 'ball-stick'}
-            <BallStick atoms={view.atoms} bonds={view.bonds} getColor={view.colorScheme} />
+            <BallStick atoms={view.atoms} bonds={view.bonds} getColor={view.colorScheme.resolver} />
           {:else if view.representation.type === 'cartoon'}
             <Cartoon atoms={view.atoms} residues={view.residues} />
           {:else if view.representation.type === 'vdw'}
-            <VdwSpheres atoms={view.atoms} getColor={view.colorScheme} />
+            <VdwSpheres atoms={view.atoms} getColor={view.colorScheme.resolver} />
           {/if}
         {/each}
         {#if axesLinesVisible}

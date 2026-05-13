@@ -5,10 +5,13 @@ import { Color } from 'three'
  */
 
 /**
- * @param {{carbonColor?: Color}} options
+ * @param {{carbonColor?: string | number |Color}} options
  * @returns {(atom: AtomLike) => Color}
  */
 export function cpkScheme({ carbonColor = undefined } = {}) {
+  if (carbonColor) {
+    carbonColor = parseColor(carbonColor)
+  }
   /** CPK-style colors (hex sRGB). */
   const colors = /** @type {Record<string, Color>} */ ({
     H: new Color(0xffffff),
@@ -50,8 +53,24 @@ export function cpkScheme({ carbonColor = undefined } = {}) {
  * @returns {(atom: AtomLike) => Color}
  */
 export function constantScheme(hexColor) {
-  const color = new Color(hexColor)
+  const color = parseColor(hexColor)
   return () => color
+}
+
+/**
+ * @param {Color | string | number} color
+ * @returns {Color}
+ */
+function parseColor(color) {
+  if (typeof color === 'string') {
+    if (!color.startsWith('#')) {
+      color = `#${color}`
+    }
+    return new Color(color)
+  } else if (typeof color === 'number') {
+    return new Color().setHex(color)
+  }
+  return color
 }
 
 /** Shared resolver for the default CPK scheme (one cache for the whole app). */
