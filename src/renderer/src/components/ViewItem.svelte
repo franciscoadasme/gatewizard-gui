@@ -167,7 +167,7 @@
         {/if}
       </span>
       <div class="flex h-4 items-stretch divide-x divide-neutral-900">
-        {#each ['C', 'H', 'O', 'N'] as element}
+        {#each ['C', 'H', 'O', 'N'] as element (element)}
           <div
             class="w-1.5"
             style="background-color: #{view.colorScheme({ element }).getHexString()};"
@@ -207,7 +207,7 @@
           <span class="text-xs text-neutral-500">{view.atoms.length} atoms</span>
         </div>
         <Select size="sm" className="w-full capitalize" bind:value={namedSelection}>
-          {#each NAMED_SELECTIONS as sel}
+          {#each NAMED_SELECTIONS as sel (sel)}
             <option value={sel} class="capitalize">{sel}</option>
           {/each}
         </Select>
@@ -261,7 +261,7 @@
             />
           </div>
           <div class="grid grid-cols-8 gap-1">
-            {#each COLOR_PALETTE as color}
+            {#each COLOR_PALETTE as color (color.getHexString())}
               <button
                 class="aspect-square w-full rounded-sm border border-neutral-800 bg-neutral-950 p-1 transition-colors hover:border-neutral-700 active:translate-y-0.5"
                 onclick={() => (constantColorHex = `#${color.getHexString()}`)}
