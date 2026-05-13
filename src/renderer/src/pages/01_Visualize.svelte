@@ -15,6 +15,7 @@
   import Divider from '../components/ui/Divider.svelte'
   import Empty from '../components/ui/Empty.svelte'
   import Input from '../components/ui/Input.svelte'
+  import Plus from '../components/icons/Plus.svelte'
   import Spinner from '../components/ui/Spinner.svelte'
   import ViewItem from '../components/ViewItem.svelte'
 
@@ -197,16 +198,17 @@
           />
         {/each}
       </div>
-      <div class="p-2">
-        <Button
-          className="w-full"
-          variant="outline"
-          type="button"
-          size="sm"
-          onclick={() => addView()}>Add View</Button
-        >
-      </div>
       <div class="flex gap-1 border-t border-neutral-800 p-2">
+        <Button
+          variant="outline"
+          size="sm"
+          className="p-1.5!"
+          aria-label="Add view"
+          title="Add view"
+          onclick={() => addView()}
+        >
+          <Plus className="size-3 fill-white" />
+        </Button>
         <Button
           variant="outline"
           size="sm"
