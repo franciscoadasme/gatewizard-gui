@@ -8,10 +8,9 @@
     Cartoon,
     VdwSpheres
   } from '../components/viewer'
-  import { Color } from 'three'
   import Axes from '../components/icons/Axes.svelte'
   import AxesLinesIcon from '../components/icons/AxesLines.svelte'
-  import { cpkScheme, defaultColorScheme } from '../lib/colorSchemes.js'
+  import { COLOR_PALETTE, cpkScheme, defaultColorScheme } from '../lib/colorSchemes.js'
   import { getCameraForAtoms } from '../lib/viewer/base.js'
   import { getStructure, detectMolecules } from '../lib/backendApi.js'
   import Button from '../components/ui/Button.svelte'
@@ -61,10 +60,17 @@
   async function onAutoGenerateViews() {
     const data = await detectMolecules(filePath)
     views.length = 0
-    for (const struc of data) {
+    for (const [i, struc] of data.entries()) {
       const representation = struc.selection === 'protein' ? { type: 'cartoon' } : { type: 'vdw' }
-      let color = new Color().setHex(Math.floor(Math.random() * 16777215)).getHexString()
-      color = `#${color}`
+      let colorScheme = { name: 'cpk', resolver: cpkScheme() }
+      if (struc.selection.startsWith('resname')) {
+        const color = `#${COLOR_PALETTE[i % COLOR_PALETTE.length].getHexString()}`
+        colorScheme = {
+          name: 'cpk-carbon',
+          color,
+          resolver: cpkScheme({ carbonColor: color })
+        }
+      }
       views.push({
         id: crypto.randomUUID(),
         selection: struc.selection,
@@ -74,11 +80,7 @@
         bonds: struc.bonds,
         residues: struc.residues,
         visible: struc.selection !== 'water',
-        colorScheme: {
-          name: 'cpk-carbon',
-          color: color,
-          resolver: cpkScheme({ carbonColor: color })
-        }
+        colorScheme
       })
     }
   }
