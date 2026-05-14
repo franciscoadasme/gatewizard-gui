@@ -63,7 +63,8 @@
     views.length = 0
     for (const struc of data) {
       const representation = struc.selection === 'protein' ? { type: 'cartoon' } : { type: 'vdw' }
-      const color = new Color().setHex(Math.floor(Math.random() * 16777215)).getHexString()
+      let color = new Color().setHex(Math.floor(Math.random() * 16777215)).getHexString()
+      color = `#${color}`
       views.push({
         id: crypto.randomUUID(),
         selection: struc.selection,
