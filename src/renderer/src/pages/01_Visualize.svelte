@@ -73,6 +73,24 @@
   let measExpanded = $state(true)
   let labelsExpanded = $state(true)
 
+  // Left panel resize
+  let leftW = $state(280)
+  let _rsX = 0,
+    _rsW = 0
+  function _startResize(e) {
+    _rsX = e.clientX
+    _rsW = leftW
+    window.addEventListener('pointermove', _doResize)
+    window.addEventListener('pointerup', _stopResize)
+  }
+  function _doResize(e) {
+    leftW = Math.max(180, Math.min(480, _rsW + e.clientX - _rsX))
+  }
+  function _stopResize() {
+    window.removeEventListener('pointermove', _doResize)
+    window.removeEventListener('pointerup', _stopResize)
+  }
+
   // derived state
   const isPdbIdValid = $derived.by(() => pdbId.trim().length === 4)
 
@@ -329,8 +347,11 @@
   }
 </script>
 
-<div class="flex min-w-0 flex-1 divide-x divide-neutral-800">
-  <div class="flex w-70 flex-col gap-2 p-4">
+<div class="flex min-w-0 flex-1">
+  <div
+    class="flex shrink-0 flex-col gap-2 overflow-y-auto border-r border-neutral-800 p-4"
+    style="width:{leftW}px"
+  >
     <div class="space-y-2">
       <p class="mb-1 text-xs">Structure file:</p>
       {#if filePath && !loadingPDB}
@@ -381,6 +402,15 @@
     {/if}
   </div>
 
+  <!-- Left-panel resize handle -->
+  <div
+    class="w-1 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-yellow-500/50"
+    role="separator"
+    aria-orientation="vertical"
+    title="Drag to resize panel"
+    onpointerdown={_startResize}
+  ></div>
+
   <div
     class="relative min-h-100 min-w-100 flex-1 bg-black"
     bind:clientWidth={canvasWidth}
@@ -423,7 +453,7 @@
     {/if}
   </div>
 
-  <div class="flex w-60 flex-col">
+  <div class="flex w-60 flex-col border-l border-neutral-800">
     <h2 class="border-b border-neutral-800 p-2 text-xs font-semibold">Representations</h2>
     {#if views.length > 0 || filePath}
       <div class="min-h-0 flex-1 overflow-y-auto">
@@ -497,25 +527,25 @@
                 <circle cx="13.5" cy="4" r="2.5" />
               </svg>
             {:else if mode === 'angle'}
-              <!-- Three dots with two lines at an angle -->
+              <!-- 45-degree angle: vertex at left, horizontal arm, diagonal arm -->
               <svg viewBox="0 0 16 14" class="size-4" fill="currentColor" aria-hidden="true">
                 <circle cx="2" cy="12" r="2" />
-                <circle cx="8" cy="2" r="2" />
                 <circle cx="14" cy="12" r="2" />
+                <circle cx="11" cy="3" r="2" />
                 <line
-                  x1="3.8"
-                  y1="10.5"
-                  x2="7"
-                  y2="3.7"
+                  x1="4"
+                  y1="12"
+                  x2="12"
+                  y2="12"
                   stroke="currentColor"
                   stroke-width="1.5"
                   stroke-linecap="round"
                 />
                 <line
-                  x1="9"
-                  y1="3.7"
-                  x2="12.2"
-                  y2="10.5"
+                  x1="3.4"
+                  y1="10.6"
+                  x2="9.6"
+                  y2="4.4"
                   stroke="currentColor"
                   stroke-width="1.5"
                   stroke-linecap="round"
@@ -565,9 +595,72 @@
             <div class="max-h-40 space-y-0.5 overflow-y-auto px-1.5 pb-1.5">
               {#each measurements as m (m.id)}
                 <div class="flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-neutral-800/60">
-                  <span class="w-3 shrink-0 text-xs text-neutral-500"
-                    >{m.type === 'distance' ? 'd' : m.type === 'angle' ? '∠' : '⊿'}</span
-                  >
+                  <span class="shrink-0 text-neutral-500">
+                    {#if m.type === 'distance'}
+                      <svg viewBox="0 0 16 8" class="size-3" fill="currentColor" aria-hidden="true">
+                        <circle cx="2.5" cy="4" r="2.5" />
+                        <line
+                          x1="5"
+                          y1="4"
+                          x2="11"
+                          y2="4"
+                          stroke="currentColor"
+                          stroke-width="1.5"
+                          stroke-linecap="round"
+                        />
+                        <circle cx="13.5" cy="4" r="2.5" />
+                      </svg>
+                    {:else if m.type === 'angle'}
+                      <svg
+                        viewBox="0 0 16 14"
+                        class="size-3"
+                        fill="currentColor"
+                        aria-hidden="true"
+                      >
+                        <circle cx="2" cy="12" r="2" />
+                        <circle cx="14" cy="12" r="2" />
+                        <circle cx="11" cy="3" r="2" />
+                        <line
+                          x1="4"
+                          y1="12"
+                          x2="12"
+                          y2="12"
+                          stroke="currentColor"
+                          stroke-width="1.5"
+                          stroke-linecap="round"
+                        />
+                        <line
+                          x1="3.4"
+                          y1="10.6"
+                          x2="9.6"
+                          y2="4.4"
+                          stroke="currentColor"
+                          stroke-width="1.5"
+                          stroke-linecap="round"
+                        />
+                      </svg>
+                    {:else}
+                      <svg
+                        viewBox="0 0 16 12"
+                        class="size-3"
+                        fill="currentColor"
+                        aria-hidden="true"
+                      >
+                        <circle cx="2" cy="3" r="2" />
+                        <circle cx="6.5" cy="9" r="2" />
+                        <circle cx="9.5" cy="3" r="2" />
+                        <circle cx="14" cy="9" r="2" />
+                        <polyline
+                          points="2,3 6.5,9 9.5,3 14,9"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.5"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        />
+                      </svg>
+                    {/if}
+                  </span>
                   <span class="flex-1 font-mono text-xs text-yellow-400">{measurementLabel(m)}</span
                   >
                   <button

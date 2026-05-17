@@ -166,6 +166,9 @@ def get_atoms(atoms: mda.AtomGroup | mda.Universe) -> list[dict]:
             element=str(it.element),
             name=str(it.name).strip(),
             index=int(it.index),
+            res_name=str(it.resname).strip(),
+            res_id=int(it.resid),
+            chain_id=str(it.segid).strip(),
         )
         for it in atoms
     ]
