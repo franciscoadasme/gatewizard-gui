@@ -1,5 +1,7 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
-gatewizard>=1.0.33
+# DEV: install from main branch instead of a fixed release
+gatewizard @ git+https://github.com/maurobedoya/gatewizard.git@main
+# gatewizard>=1.0.34
 mempro @ git+https://github.com/pstansfeld/MemPrO.git
 MDAnalysis>=2.0.0
