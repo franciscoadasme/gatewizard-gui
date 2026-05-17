@@ -1340,7 +1340,10 @@ def get_structure(payload: StructureRequest) -> dict:
 
     data = dict(path=payload.path)
     data["atoms"] = get_atoms(atoms)
-    data["bonds"] = atoms.bonds.indices.tolist()
+    try:
+        data["bonds"] = atoms.bonds.indices.tolist()
+    except mda.exceptions.NoDataError:
+        data["bonds"] = []
     if payload.needs_secondary_structure:
         data["residues"] = get_residues(u, needs_secondary_structure=True)
 
