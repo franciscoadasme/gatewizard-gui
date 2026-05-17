@@ -463,7 +463,7 @@
           {/if}
         {/each}
         {#if axesLinesVisible}
-          <AxesLines length={camera.extent * 2} />
+          <AxesLines length={camera.extent * 2} center={camera.center} />
         {/if}
       </Canvas>
       {#if axesVisible}
