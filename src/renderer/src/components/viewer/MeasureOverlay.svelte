@@ -35,7 +35,16 @@
         const pts = m.atoms.map((a) => worldToScreen(a, cam, w, h))
         const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length
         const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length
-        return { id: m.id, pts, cx, cy, valueStr: _valueStr(m) }
+        return {
+          id: m.id,
+          pts,
+          cx,
+          cy,
+          valueStr: _valueStr(m),
+          color: m.color ?? '#facc15',
+          size: m.size ?? 11,
+          lineWidth: m.lineWidth ?? 1.5
+        }
       })
     }
   }
@@ -81,25 +90,32 @@
           y1={m.pts[i].y}
           x2={pt.x}
           y2={pt.y}
-          stroke="#facc15"
-          stroke-width="1.5"
+          stroke={m.color}
+          stroke-width={m.lineWidth}
           stroke-dasharray="5 3"
           opacity="0.9"
         />
       {/each}
       <!-- Dots at each picked atom -->
       {#each m.pts as p}
-        <circle cx={p.x} cy={p.y} r="4" fill="#facc15" opacity="0.8" />
+        <circle cx={p.x} cy={p.y} r="4" fill={m.color} opacity="0.8" />
       {/each}
       <!-- Value label with dark background -->
-      {@const lw = m.valueStr.length * 7 + 10}
-      <rect x={m.cx - lw / 2} y={m.cy - 10} width={lw} height="18" rx="3" fill="rgba(0,0,0,0.72)" />
+      {@const lw = Math.round(m.valueStr.length * m.size * 0.64 + 10)}
+      <rect
+        x={m.cx - lw / 2}
+        y={m.cy - Math.round(m.size * 0.9)}
+        width={lw}
+        height={m.size + 6}
+        rx="3"
+        fill="rgba(0,0,0,0.72)"
+      />
       <text
         x={m.cx}
-        y={m.cy + 4}
+        y={m.cy + Math.round(m.size * 0.36)}
         text-anchor="middle"
-        fill="#facc15"
-        font-size="11"
+        fill={m.color}
+        font-size={m.size}
         font-family="monospace">{m.valueStr}</text
       >
     {/each}

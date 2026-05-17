@@ -58,7 +58,7 @@
   let measureMode = $state(null)
   /** @type {Atom[]} */
   let measurePicks = $state([])
-  /** @type {Array<{ id:string, type:'distance'|'angle'|'dihedral', atoms:Atom[] }>} */
+  /** @type {Array<{ id:string, type:'distance'|'angle'|'dihedral', atoms:Atom[], color:string, size:number, lineWidth:number }>} */
   let measurements = $state([])
   /** @type {Array<{ id:string, atom:Atom, text:string, size:number, color:string }>} */
   let atomLabels = $state([])
@@ -89,6 +89,31 @@
   function _stopResize() {
     window.removeEventListener('pointermove', _doResize)
     window.removeEventListener('pointerup', _stopResize)
+  }
+
+  // Right panel resize
+  let rightW = $state(240)
+  let _rrX = 0,
+    _rrW = 0
+  function _startRightResize(e) {
+    _rrX = e.clientX
+    _rrW = rightW
+    window.addEventListener('pointermove', _doRightResize)
+    window.addEventListener('pointerup', _stopRightResize)
+  }
+  function _doRightResize(e) {
+    rightW = Math.max(160, Math.min(480, _rrW - (e.clientX - _rrX)))
+  }
+  function _stopRightResize() {
+    window.removeEventListener('pointermove', _doRightResize)
+    window.removeEventListener('pointerup', _stopRightResize)
+  }
+
+  // Gear panel open state
+  /** @type {{ kind: 'meas'|'label', id: string } | null} */
+  let gearOpen = $state(null)
+  function toggleGear(kind, id) {
+    gearOpen = gearOpen?.kind === kind && gearOpen.id === id ? null : { kind, id }
   }
 
   // derived state
@@ -275,7 +300,14 @@
     if (next.length >= need) {
       measurements = [
         ...measurements,
-        { id: crypto.randomUUID(), type: measureMode, atoms: next.slice(0, need) }
+        {
+          id: crypto.randomUUID(),
+          type: measureMode,
+          atoms: next.slice(0, need),
+          color: '#facc15',
+          size: 11,
+          lineWidth: 1.5
+        }
       ]
       measurePicks = []
     } else {
@@ -316,10 +348,12 @@
   function clearAllMeasurements() {
     measurements = []
     measurePicks = []
+    gearOpen = null
   }
 
   function clearAllLabels() {
     atomLabels = []
+    gearOpen = null
   }
 
   function measurementLabel(m) {
@@ -453,7 +487,16 @@
     {/if}
   </div>
 
-  <div class="flex w-60 flex-col border-l border-neutral-800">
+  <!-- Right-panel resize handle -->
+  <div
+    class="w-1 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-yellow-500/50"
+    role="separator"
+    aria-orientation="vertical"
+    title="Drag to resize panel"
+    onpointerdown={_startRightResize}
+  ></div>
+
+  <div class="flex shrink-0 flex-col border-l border-neutral-800" style="width:{rightW}px">
     <h2 class="border-b border-neutral-800 p-2 text-xs font-semibold">Representations</h2>
     {#if views.length > 0 || filePath}
       <div class="min-h-0 flex-1 overflow-y-auto">
@@ -594,79 +637,132 @@
           {#if measExpanded}
             <div class="max-h-40 space-y-0.5 overflow-y-auto px-1.5 pb-1.5">
               {#each measurements as m (m.id)}
-                <div class="flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-neutral-800/60">
-                  <span class="shrink-0 text-neutral-500">
-                    {#if m.type === 'distance'}
-                      <svg viewBox="0 0 16 8" class="size-3" fill="currentColor" aria-hidden="true">
-                        <circle cx="2.5" cy="4" r="2.5" />
-                        <line
-                          x1="5"
-                          y1="4"
-                          x2="11"
-                          y2="4"
-                          stroke="currentColor"
-                          stroke-width="1.5"
-                          stroke-linecap="round"
+                <div class="flex flex-col rounded hover:bg-neutral-800/40">
+                  <div class="flex items-center gap-1.5 px-1 py-0.5">
+                    <span class="shrink-0" style="color:{m.color ?? '#facc15'}">
+                      {#if m.type === 'distance'}
+                        <svg
+                          viewBox="0 0 16 8"
+                          class="size-3"
+                          fill="currentColor"
+                          aria-hidden="true"
+                        >
+                          <circle cx="2.5" cy="4" r="2.5" />
+                          <line
+                            x1="5"
+                            y1="4"
+                            x2="11"
+                            y2="4"
+                            stroke="currentColor"
+                            stroke-width="1.5"
+                            stroke-linecap="round"
+                          />
+                          <circle cx="13.5" cy="4" r="2.5" />
+                        </svg>
+                      {:else if m.type === 'angle'}
+                        <svg
+                          viewBox="0 0 16 14"
+                          class="size-3"
+                          fill="currentColor"
+                          aria-hidden="true"
+                        >
+                          <circle cx="2" cy="12" r="2" />
+                          <circle cx="14" cy="12" r="2" />
+                          <circle cx="11" cy="3" r="2" />
+                          <line
+                            x1="4"
+                            y1="12"
+                            x2="12"
+                            y2="12"
+                            stroke="currentColor"
+                            stroke-width="1.5"
+                            stroke-linecap="round"
+                          />
+                          <line
+                            x1="3.4"
+                            y1="10.6"
+                            x2="9.6"
+                            y2="4.4"
+                            stroke="currentColor"
+                            stroke-width="1.5"
+                            stroke-linecap="round"
+                          />
+                        </svg>
+                      {:else}
+                        <svg
+                          viewBox="0 0 16 12"
+                          class="size-3"
+                          fill="currentColor"
+                          aria-hidden="true"
+                        >
+                          <circle cx="2" cy="3" r="2" />
+                          <circle cx="6.5" cy="9" r="2" />
+                          <circle cx="9.5" cy="3" r="2" />
+                          <circle cx="14" cy="9" r="2" />
+                          <polyline
+                            points="2,3 6.5,9 9.5,3 14,9"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.5"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          />
+                        </svg>
+                      {/if}
+                    </span>
+                    <span class="flex-1 font-mono text-xs" style="color:{m.color ?? '#facc15'}"
+                      >{measurementLabel(m)}</span
+                    >
+                    <button
+                      onclick={() => toggleGear('meas', m.id)}
+                      class="shrink-0 text-xs text-neutral-600 hover:text-neutral-300"
+                      title="Settings">&#x2699;</button
+                    >
+                    <button
+                      onclick={() => removeMeasurement(m.id)}
+                      class="shrink-0 text-xs text-neutral-600 hover:text-red-400">&#x2715;</button
+                    >
+                  </div>
+                  {#if gearOpen?.kind === 'meas' && gearOpen.id === m.id}
+                    <div class="space-y-1 border-t border-neutral-800/60 px-2 py-1">
+                      <div class="flex items-center gap-1.5">
+                        <span class="text-xs text-neutral-500">Color</span>
+                        <input
+                          type="color"
+                          bind:value={m.color}
+                          class="size-5 cursor-pointer rounded border-0 bg-transparent p-0"
                         />
-                        <circle cx="13.5" cy="4" r="2.5" />
-                      </svg>
-                    {:else if m.type === 'angle'}
-                      <svg
-                        viewBox="0 0 16 14"
-                        class="size-3"
-                        fill="currentColor"
-                        aria-hidden="true"
-                      >
-                        <circle cx="2" cy="12" r="2" />
-                        <circle cx="14" cy="12" r="2" />
-                        <circle cx="11" cy="3" r="2" />
-                        <line
-                          x1="4"
-                          y1="12"
-                          x2="12"
-                          y2="12"
-                          stroke="currentColor"
-                          stroke-width="1.5"
-                          stroke-linecap="round"
+                      </div>
+                      <div class="flex items-center gap-1.5">
+                        <span class="text-xs text-neutral-500">Size</span>
+                        <input
+                          type="range"
+                          min="8"
+                          max="24"
+                          step="1"
+                          bind:value={m.size}
+                          class="h-1 flex-1 accent-yellow-400"
                         />
-                        <line
-                          x1="3.4"
-                          y1="10.6"
-                          x2="9.6"
-                          y2="4.4"
-                          stroke="currentColor"
-                          stroke-width="1.5"
-                          stroke-linecap="round"
+                        <span class="w-5 text-right text-xs text-neutral-400 tabular-nums"
+                          >{m.size}</span
+                        >
+                      </div>
+                      <div class="flex items-center gap-1.5">
+                        <span class="text-xs text-neutral-500">Line</span>
+                        <input
+                          type="range"
+                          min="0.5"
+                          max="4"
+                          step="0.5"
+                          bind:value={m.lineWidth}
+                          class="h-1 flex-1 accent-yellow-400"
                         />
-                      </svg>
-                    {:else}
-                      <svg
-                        viewBox="0 0 16 12"
-                        class="size-3"
-                        fill="currentColor"
-                        aria-hidden="true"
-                      >
-                        <circle cx="2" cy="3" r="2" />
-                        <circle cx="6.5" cy="9" r="2" />
-                        <circle cx="9.5" cy="3" r="2" />
-                        <circle cx="14" cy="9" r="2" />
-                        <polyline
-                          points="2,3 6.5,9 9.5,3 14,9"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="1.5"
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                        />
-                      </svg>
-                    {/if}
-                  </span>
-                  <span class="flex-1 font-mono text-xs text-yellow-400">{measurementLabel(m)}</span
-                  >
-                  <button
-                    onclick={() => removeMeasurement(m.id)}
-                    class="shrink-0 text-xs text-neutral-600 hover:text-red-400">&#x2715;</button
-                  >
+                        <span class="w-5 text-right text-xs text-neutral-400 tabular-nums"
+                          >{m.lineWidth}</span
+                        >
+                      </div>
+                    </div>
+                  {/if}
                 </div>
               {/each}
             </div>
@@ -700,33 +796,76 @@
               min="8"
               max="24"
               step="1"
-              bind:value={labelSize}
+              value={labelSize}
+              oninput={(e) => {
+                labelSize = +e.target.value
+                for (const l of atomLabels) l.size = labelSize
+              }}
               class="h-1 flex-1 accent-yellow-400"
             />
             <span class="w-5 text-right text-xs text-neutral-400 tabular-nums">{labelSize}</span>
             <span class="ml-1 text-xs text-neutral-500">Color</span>
             <input
               type="color"
-              bind:value={labelColor}
+              value={labelColor}
+              oninput={(e) => {
+                labelColor = e.target.value
+                for (const l of atomLabels) l.color = labelColor
+              }}
               class="size-5 cursor-pointer rounded border-0 bg-transparent p-0"
             />
           </div>
           {#if atomLabels.length > 0}
             <div class="max-h-32 space-y-0.5 overflow-y-auto px-1.5 pb-1.5">
               {#each atomLabels as l (l.id)}
-                <div class="flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-neutral-800/60">
-                  <span
-                    class="inline-block size-2 shrink-0 rounded-full"
-                    style="background:{l.color}"
-                  ></span>
-                  <span
-                    class="flex-1 truncate font-mono text-neutral-300"
-                    style="font-size:{l.size}px">{l.text}</span
-                  >
-                  <button
-                    onclick={() => removeAtomLabel(l.id)}
-                    class="shrink-0 text-xs text-neutral-600 hover:text-red-400">&#x2715;</button
-                  >
+                <div class="flex flex-col rounded hover:bg-neutral-800/40">
+                  <div class="flex items-center gap-1.5 px-1 py-0.5">
+                    <span
+                      class="inline-block size-2 shrink-0 rounded-full"
+                      style="background:{l.color}"
+                    ></span>
+                    <span
+                      class="flex-1 truncate font-mono text-neutral-300"
+                      style="font-size:{l.size}px">{l.text}</span
+                    >
+                    <button
+                      onclick={() => toggleGear('label', l.id)}
+                      class="shrink-0 text-xs text-neutral-600 hover:text-neutral-300"
+                      title="Settings">&#x2699;</button
+                    >
+                    <button
+                      onclick={() => removeAtomLabel(l.id)}
+                      class="shrink-0 text-xs text-neutral-600 hover:text-red-400">&#x2715;</button
+                    >
+                  </div>
+                  {#if gearOpen?.kind === 'label' && gearOpen.id === l.id}
+                    <div class="space-y-1 border-t border-neutral-800/60 px-2 py-1">
+                      <input
+                        type="text"
+                        bind:value={l.text}
+                        class="w-full rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-xs text-neutral-200 outline-none"
+                      />
+                      <div class="flex items-center gap-1.5">
+                        <span class="text-xs text-neutral-500">Size</span>
+                        <input
+                          type="range"
+                          min="8"
+                          max="24"
+                          step="1"
+                          bind:value={l.size}
+                          class="h-1 flex-1 accent-yellow-400"
+                        />
+                        <span class="w-5 text-right text-xs text-neutral-400 tabular-nums"
+                          >{l.size}</span
+                        >
+                        <input
+                          type="color"
+                          bind:value={l.color}
+                          class="size-5 cursor-pointer rounded border-0 bg-transparent p-0"
+                        />
+                      </div>
+                    </div>
+                  {/if}
                 </div>
               {/each}
             </div>
