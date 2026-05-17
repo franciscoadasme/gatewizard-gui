@@ -6,12 +6,16 @@
     CameraRig,
     Canvas,
     Cartoon,
+    MeasureOverlay,
     VdwSpheres
   } from '../components/viewer'
+  import { mainViewerCamera } from '../components/viewer/CameraRig.svelte'
   import Axes from '../components/icons/Axes.svelte'
   import AxesLinesIcon from '../components/icons/AxesLines.svelte'
   import { COLOR_PALETTE, cpkScheme, defaultColorScheme } from '../lib/colorSchemes.js'
   import { getCameraForAtoms } from '../lib/viewer/base.js'
+  import { pickAtomFromViews } from '../lib/viewer/picking.js'
+  import { measureDistance, measureAngle, measureDihedral } from '../lib/viewer/measure.js'
   import { getStructure, detectMolecules } from '../lib/backendApi.js'
   import Button from '../components/ui/Button.svelte'
   import DetectIcon from '../components/icons/Detect.svelte'
@@ -48,6 +52,26 @@
   let structure = $state(null)
   /** @type {View[]} */
   let views = $state([])
+
+  // ── Measurement & label state ────────────────────────────────────────
+  /** @type {'distance'|'angle'|'dihedral'|null} */
+  let measureMode = $state(null)
+  /** @type {Atom[]} */
+  let measurePicks = $state([])
+  /** @type {Array<{ id:string, type:'distance'|'angle'|'dihedral', atoms:Atom[] }>} */
+  let measurements = $state([])
+  /** @type {Array<{ id:string, atom:Atom, text:string, size:number, color:string }>} */
+  let atomLabels = $state([])
+  /** @type {{ x:number, y:number, atom:Atom } | null} */
+  let ctxMenu = $state(null)
+  let canvasWidth = $state(0)
+  let canvasHeight = $state(0)
+  // Label display settings — captured into each label at creation time
+  let labelSize = $state(12)
+  let labelColor = $state('#ffffff')
+  // Panel section collapse state
+  let measExpanded = $state(true)
+  let labelsExpanded = $state(true)
 
   // derived state
   const isPdbIdValid = $derived.by(() => pdbId.trim().length === 4)
@@ -145,6 +169,11 @@
       })
       filePath = structure.path
       views.length = 0
+      measurements = []
+      measurePicks = []
+      atomLabels = []
+      measureMode = null
+      ctxMenu = null
       addView('all', { type: 'vdw' })
     } catch (ex) {
       structure = null
@@ -152,6 +181,133 @@
     } finally {
       loadingPDB = false
     }
+  }
+
+  // ── Measurement helpers ──────────────────────────────────────────────
+  const MEASURE_NEEDS = { distance: 2, angle: 3, dihedral: 4 }
+
+  /** Standard 3-letter → 1-letter amino acid map */
+  const AA1 = {
+    ALA: 'A',
+    ARG: 'R',
+    ASN: 'N',
+    ASP: 'D',
+    CYS: 'C',
+    GLN: 'Q',
+    GLU: 'E',
+    GLY: 'G',
+    HIS: 'H',
+    ILE: 'I',
+    LEU: 'L',
+    LYS: 'K',
+    MET: 'M',
+    PHE: 'F',
+    PRO: 'P',
+    SER: 'S',
+    THR: 'T',
+    TRP: 'W',
+    TYR: 'Y',
+    VAL: 'V',
+    HSD: 'H',
+    HSE: 'H',
+    HSP: 'H',
+    HID: 'H',
+    HIE: 'H',
+    HIP: 'H',
+    MSE: 'M'
+  }
+
+  /** Build ordered, deduplicated label format options for a right-clicked atom. */
+  function atomLabelFormats(atom) {
+    const res3 = atom.res_name ?? ''
+    const resId = atom.res_id ?? ''
+    const chain = atom.chain_id ?? ''
+    const res1 = AA1[res3] ?? ''
+    const resTc = res3 ? res3[0] + res3.slice(1).toLowerCase() : ''
+    const fmts = [atom.name]
+    if (res3 && resId !== '') {
+      fmts.push(`${res3}${resId}`)
+      fmts.push(`${resTc}${resId}`)
+      if (res1) fmts.push(`${res1}${resId}`)
+      if (chain) {
+        fmts.push(`${res3}${resId}:${chain}`)
+        fmts.push(`${resTc}${resId}:${chain}`)
+        if (res1) fmts.push(`${res1}${resId}:${chain}`)
+      }
+    }
+    return [...new Set(fmts)].filter(Boolean)
+  }
+
+  function toggleMeasureMode(mode) {
+    if (!structure) return
+    measureMode = measureMode === mode ? null : mode
+    measurePicks = []
+    ctxMenu = null
+  }
+
+  function handleCanvasClick({ x, y, w, h }) {
+    ctxMenu = null
+    if (!measureMode) return
+    const cam = mainViewerCamera.current
+    if (!cam) return
+    const atom = pickAtomFromViews(views, cam, w, h, x, y)
+    if (!atom) return
+    const next = [...measurePicks, atom]
+    const need = MEASURE_NEEDS[measureMode]
+    if (next.length >= need) {
+      measurements = [
+        ...measurements,
+        { id: crypto.randomUUID(), type: measureMode, atoms: next.slice(0, need) }
+      ]
+      measurePicks = []
+    } else {
+      measurePicks = next
+    }
+  }
+
+  function handleCanvasContextMenu({ x, y, w, h, clientX, clientY }) {
+    if (measureMode) {
+      // right-click cancels active measurement
+      measureMode = null
+      measurePicks = []
+      return
+    }
+    const cam = mainViewerCamera.current
+    if (!cam) return
+    const atom = pickAtomFromViews(views, cam, w, h, x, y)
+    if (!atom) return
+    ctxMenu = { x: clientX, y: clientY, atom }
+  }
+
+  function addAtomLabel(atom, text) {
+    atomLabels = [
+      ...atomLabels,
+      { id: crypto.randomUUID(), atom, text, size: labelSize, color: labelColor }
+    ]
+    ctxMenu = null
+  }
+
+  function removeMeasurement(id) {
+    measurements = measurements.filter((m) => m.id !== id)
+  }
+
+  function removeAtomLabel(id) {
+    atomLabels = atomLabels.filter((l) => l.id !== id)
+  }
+
+  function clearAllMeasurements() {
+    measurements = []
+    measurePicks = []
+  }
+
+  function clearAllLabels() {
+    atomLabels = []
+  }
+
+  function measurementLabel(m) {
+    if (m.type === 'distance') return `${measureDistance(m.atoms[0], m.atoms[1]).toFixed(2)} Å`
+    if (m.type === 'angle') return `${measureAngle(m.atoms[0], m.atoms[1], m.atoms[2]).toFixed(1)}°`
+    return `${measureDihedral(m.atoms[0], m.atoms[1], m.atoms[2], m.atoms[3]).toFixed(1)}°`
   }
 
   /** @param {string} id */
@@ -225,9 +381,13 @@
     {/if}
   </div>
 
-  <div class="relative min-h-100 min-w-100 flex-1 bg-black">
+  <div
+    class="relative min-h-100 min-w-100 flex-1 bg-black"
+    bind:clientWidth={canvasWidth}
+    bind:clientHeight={canvasHeight}
+  >
     {#if structure && camera}
-      <Canvas>
+      <Canvas onAtomClick={handleCanvasClick} onAtomContextMenu={handleCanvasContextMenu}>
         <CameraRig framing={camera} />
         {#each views.filter((v) => v.visible) as view (view.id)}
           {#if view.representation.type === 'ball-stick'}
@@ -244,6 +404,21 @@
       </Canvas>
       {#if axesVisible}
         <AxesGizmo />
+      {/if}
+      <MeasureOverlay
+        {measurements}
+        picks={measurePicks}
+        {atomLabels}
+        width={canvasWidth}
+        height={canvasHeight}
+      />
+      {#if measureMode}
+        <div
+          class="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-black/80 px-4 py-1.5 text-xs text-yellow-300"
+        >
+          {measureMode} — pick atom {measurePicks.length + 1} / {MEASURE_NEEDS[measureMode]}
+          · right-click to cancel
+        </div>
       {/if}
     {/if}
   </div>
@@ -293,6 +468,177 @@
           `size-4 stroke-2 ${axesLinesVisible ? 'opacity-100' : 'opacity-45'}`
         )}
         {@render toolbarBtn('Reset camera', resetCamera, ResetIcon, 'size-3 fill-white')}
+        <!-- Measurement mode buttons -->
+        <div class="mx-0.5 h-4 w-px bg-neutral-700"></div>
+        {#snippet measureBtn(title, mode)}
+          <button
+            type="button"
+            class="flex size-7 items-center justify-center rounded-lg border transition-colors active:translate-y-0.5
+              {measureMode === mode
+              ? 'border-yellow-500 bg-yellow-500/10 text-yellow-400'
+              : 'border-neutral-800 bg-neutral-900 text-neutral-400 hover:border-neutral-700 hover:bg-neutral-800'}"
+            aria-label={title}
+            {title}
+            onclick={() => toggleMeasureMode(mode)}
+          >
+            {#if mode === 'distance'}
+              <!-- Two filled circles connected by a stick -->
+              <svg viewBox="0 0 16 8" class="size-4" fill="currentColor" aria-hidden="true">
+                <circle cx="2.5" cy="4" r="2.5" />
+                <line
+                  x1="5"
+                  y1="4"
+                  x2="11"
+                  y2="4"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                />
+                <circle cx="13.5" cy="4" r="2.5" />
+              </svg>
+            {:else if mode === 'angle'}
+              <!-- Three dots with two lines at an angle -->
+              <svg viewBox="0 0 16 14" class="size-4" fill="currentColor" aria-hidden="true">
+                <circle cx="2" cy="12" r="2" />
+                <circle cx="8" cy="2" r="2" />
+                <circle cx="14" cy="12" r="2" />
+                <line
+                  x1="3.8"
+                  y1="10.5"
+                  x2="7"
+                  y2="3.7"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                />
+                <line
+                  x1="9"
+                  y1="3.7"
+                  x2="12.2"
+                  y2="10.5"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                />
+              </svg>
+            {:else}
+              <!-- Four dots in a zigzag -->
+              <svg viewBox="0 0 16 12" class="size-4" fill="currentColor" aria-hidden="true">
+                <circle cx="2" cy="3" r="2" />
+                <circle cx="6.5" cy="9" r="2" />
+                <circle cx="9.5" cy="3" r="2" />
+                <circle cx="14" cy="9" r="2" />
+                <polyline
+                  points="2,3 6.5,9 9.5,3 14,9"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            {/if}
+          </button>
+        {/snippet}
+        {@render measureBtn('Distance — click 2 atoms', 'distance')}
+        {@render measureBtn('Angle — click 3 atoms', 'angle')}
+        {@render measureBtn('Dihedral — click 4 atoms', 'dihedral')}
+      </div>
+      {#if measurements.length > 0}
+        <!-- Measurements collapsible section -->
+        <div class="border-t border-neutral-800">
+          <div class="flex items-center">
+            <button
+              class="flex flex-1 items-center justify-between px-2 py-1.5 hover:bg-neutral-800/40"
+              onclick={() => (measExpanded = !measExpanded)}
+            >
+              <span class="text-xs font-semibold text-neutral-300">Measurements</span>
+              <span class="text-xs text-neutral-500">{measExpanded ? '▾' : '▸'}</span>
+            </button>
+            <button
+              onclick={clearAllMeasurements}
+              class="px-2 py-1.5 text-xs text-neutral-500 hover:text-red-400"
+              title="Clear all measurements">&#x2715;</button
+            >
+          </div>
+          {#if measExpanded}
+            <div class="max-h-40 space-y-0.5 overflow-y-auto px-1.5 pb-1.5">
+              {#each measurements as m (m.id)}
+                <div class="flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-neutral-800/60">
+                  <span class="w-3 shrink-0 text-xs text-neutral-500"
+                    >{m.type === 'distance' ? 'd' : m.type === 'angle' ? '∠' : '⊿'}</span
+                  >
+                  <span class="flex-1 font-mono text-xs text-yellow-400">{measurementLabel(m)}</span
+                  >
+                  <button
+                    onclick={() => removeMeasurement(m.id)}
+                    class="shrink-0 text-xs text-neutral-600 hover:text-red-400">&#x2715;</button
+                  >
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
+      <!-- Labels collapsible section (always shown when structure loaded) -->
+      <div class="border-t border-neutral-800">
+        <div class="flex items-center">
+          <button
+            class="flex flex-1 items-center justify-between px-2 py-1.5 hover:bg-neutral-800/40"
+            onclick={() => (labelsExpanded = !labelsExpanded)}
+          >
+            <span class="text-xs font-semibold text-neutral-300">Labels</span>
+            <span class="text-xs text-neutral-500">{labelsExpanded ? '▾' : '▸'}</span>
+          </button>
+          {#if atomLabels.length > 0}
+            <button
+              onclick={clearAllLabels}
+              class="px-2 py-1.5 text-xs text-neutral-500 hover:text-red-400"
+              title="Clear all labels">&#x2715;</button
+            >
+          {/if}
+        </div>
+        {#if labelsExpanded}
+          <!-- Size + Color controls -->
+          <div class="flex items-center gap-1.5 border-b border-neutral-800/60 px-2 py-1">
+            <span class="text-xs text-neutral-500">Size</span>
+            <input
+              type="range"
+              min="8"
+              max="24"
+              step="1"
+              bind:value={labelSize}
+              class="h-1 flex-1 accent-yellow-400"
+            />
+            <span class="w-5 text-right text-xs text-neutral-400 tabular-nums">{labelSize}</span>
+            <span class="ml-1 text-xs text-neutral-500">Color</span>
+            <input
+              type="color"
+              bind:value={labelColor}
+              class="size-5 cursor-pointer rounded border-0 bg-transparent p-0"
+            />
+          </div>
+          {#if atomLabels.length > 0}
+            <div class="max-h-32 space-y-0.5 overflow-y-auto px-1.5 pb-1.5">
+              {#each atomLabels as l (l.id)}
+                <div class="flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-neutral-800/60">
+                  <span
+                    class="inline-block size-2 shrink-0 rounded-full"
+                    style="background:{l.color}"
+                  ></span>
+                  <span
+                    class="flex-1 truncate font-mono text-neutral-300"
+                    style="font-size:{l.size}px">{l.text}</span
+                  >
+                  <button
+                    onclick={() => removeAtomLabel(l.id)}
+                    class="shrink-0 text-xs text-neutral-600 hover:text-red-400">&#x2715;</button
+                  >
+                </div>
+              {/each}
+            </div>
+          {/if}
+        {/if}
       </div>
     {:else}
       <div class="flex-1 p-2">
@@ -301,3 +647,28 @@
     {/if}
   </div>
 </div>
+
+<!-- Right-click atom label context menu (fixed to viewport) -->
+{#if ctxMenu}
+  {@const atom = ctxMenu.atom}
+  <!-- backdrop — closes menu on outside click -->
+  <div class="fixed inset-0 z-40" role="presentation" onpointerdown={() => (ctxMenu = null)}></div>
+  <div
+    class="fixed z-50 min-w-36 overflow-hidden rounded-md border border-neutral-700 bg-neutral-900 py-1 text-xs shadow-xl"
+    style="left:{ctxMenu.x}px;top:{ctxMenu.y}px"
+  >
+    <div class="border-b border-neutral-800 px-2 py-1 text-neutral-500">Add label</div>
+    {#each atomLabelFormats(atom) as fmt}
+      <button
+        class="w-full px-2 py-1 text-left font-mono hover:bg-neutral-800"
+        onclick={() => addAtomLabel(atom, fmt)}>{fmt}</button
+      >
+    {/each}
+    <div class="mt-1 border-t border-neutral-800">
+      <button
+        class="w-full px-2 py-1 text-left text-neutral-500 hover:bg-neutral-800 hover:text-white"
+        onclick={() => (ctxMenu = null)}>Cancel</button
+      >
+    </div>
+  </div>
+{/if}
