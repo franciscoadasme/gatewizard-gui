@@ -1,6 +1,7 @@
 <script>
   import { Canvas as ThrelteCanvas, T } from '@threlte/core'
   import { TrackballControls } from '@threlte/extras'
+  import { MOUSE } from 'three'
 
   /**
    * @type {{
@@ -12,6 +13,14 @@
   let { children, onAtomClick, onAtomContextMenu } = $props()
 
   let wrapEl = $state(null)
+  let controls = $state(null)
+
+  // Remap middle-button → pan, disable right-button drag
+  $effect(() => {
+    if (!controls) return
+    controls.mouseButtons.MIDDLE = MOUSE.PAN
+    controls.mouseButtons.RIGHT = -1
+  })
   /** @type {{ x: number, y: number }} */
   let dragStart = { x: 0, y: 0 }
 
@@ -48,7 +57,14 @@
   <ThrelteCanvas>
     <T.Color attach="background" args={[0x000000]} />
     <T.OrthographicCamera makeDefault manual near={0.05} far={500000} />
-    <TrackballControls staticMoving={true} rotateSpeed={1.5} panSpeed={0.3} zoomSpeed={3} />
+    <TrackballControls
+      bind:ref={controls}
+      staticMoving={false}
+      dynamicDampingFactor={0.3}
+      rotateSpeed={2.5}
+      panSpeed={5.5}
+      zoomSpeed={2.5}
+    />
     <T.HemisphereLight args={['#c4d2e8', '#0c0e12', 0.52]} />
     <T.AmbientLight intensity={0.35} />
     <T.DirectionalLight position={[7, 11, 9]} intensity={0.42} />
