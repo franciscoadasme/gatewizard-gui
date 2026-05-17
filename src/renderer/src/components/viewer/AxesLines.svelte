@@ -3,8 +3,14 @@
   import { get } from 'svelte/store'
   import { BufferAttribute, BufferGeometry, LineBasicMaterial, LineSegments, Vector3 } from 'three'
 
-  /** @type {{ length?: number }} Half-length of each axis segment from the origin (same convention as `AxesHelper`). */
-  let { length = 5 } = $props()
+  /**
+   * @type {{
+   *   length?: number
+   *   center?: { x: number, y: number, z: number } | null
+   * }}
+   * `center` pins the axes to the molecule centroid so pan doesn't visually displace them.
+   */
+  let { length = 5, center = null } = $props()
 
   const controlsNamespace = useThrelteUserContext('threlte-controls')
   const { camera } = useThrelte()
@@ -42,6 +48,11 @@
         (ctx?.trackballControls && get(ctx.trackballControls)) ||
         (ctx?.orbitControls && get(ctx.orbitControls)) ||
         undefined
+
+      if (center) {
+        L.position.set(center.x, center.y, center.z)
+        return
+      }
 
       if (ctrl?.target) {
         L.position.copy(ctrl.target)
