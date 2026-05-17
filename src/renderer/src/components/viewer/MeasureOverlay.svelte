@@ -108,8 +108,8 @@
   <!-- Atom labels as HTML divs (CSS-positioned over the canvas) -->
   {#each proj.ls as l (l.id)}
     <div
-      class="absolute -translate-x-1/2 rounded bg-black/75 px-1.5 py-0.5 font-mono"
-      style="left:{l.x}px;top:{l.y - 22}px;font-size:{l.size ?? 12}px;color:{l.color ?? '#ffffff'}"
+      class="absolute -translate-x-1/2 rounded bg-black/75 px-1.5 py-0.5 font-mono text-xs text-white"
+      style="left:{l.x}px;top:{l.y - 22}px"
     >
       {l.text}
     </div>
