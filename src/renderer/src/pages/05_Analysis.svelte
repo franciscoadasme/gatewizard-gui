@@ -823,7 +823,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
 <div class="flex min-w-0 flex-1 divide-x divide-neutral-800 select-none">
   <!-- ===== SIDEBAR ===== -->
-  <aside class="w-80 space-y-3 overflow-x-clip overflow-y-auto p-4 text-xs">
+  <aside class="w-[22rem] space-y-3 overflow-x-clip overflow-y-auto p-4 text-xs">
     <div class="space-y-2">
       <h2 class="font-semibold">Analysis Mode</h2>
       <Select className="w-full" bind:value={mode}>
