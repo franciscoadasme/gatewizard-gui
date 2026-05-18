@@ -267,25 +267,41 @@ function buildRibbonGeometry(pts, nms, widths, thicknesses, colors) {
 // ── Public API ───────────────────────────────────────────────────────────
 
 /**
- * Build one cartoon `BufferGeometry` per continuous backbone segment.
- *
- * @param {{ x: number, y: number, z: number, name: string }[]} atoms
- * @param {Array<{
- *   chain: string,
- *   number: number,
- *   insertion?: string,
- *   atom_indices: number[],
- *   ca_index?: number,
- *   sec?: string
- * }>} residues
+ * @typedef {{helixWidth?: number, sheetWidth?: number, coilWidth?: number, ssColors?: Record<string,string>|null}} CartoonOpts
+ */
+
+// ── Colour helpers ────────────────────────────────────────────────────────────
+
+/** @param {string} hex  e.g. '#7259ea'  @returns {[number,number,number]} */
+function hexToRgb(hex) {
+  const h = hex.replace('#', '')
+  const v = parseInt(h, 16)
+  return [(v >> 16 & 0xff) / 255, (v >> 8 & 0xff) / 255, (v & 0xff) / 255]
+}
+
+/** @param {Record<string,string>} map  @returns {Record<string,[number,number,number]>} */
+function hexMapToRgb(map) {
+  /** @type {Record<string,[number,number,number]>} */
+  const out = {}
+  for (const [k, v] of Object.entries(map)) {
+    out[k] = hexToRgb(v)
+  }
+  return out
+}
+
+
+/**
+ * @param {Array} atoms
+ * @param {Array} residues
+ * @param {CartoonOpts} [opts]
  * @returns {BufferGeometry[]}
  */
-export function buildCartoonGeometries(atoms, residues) {
+export function buildCartoonGeometries(atoms, residues, opts = {}) {
   const segments = splitContinuousSegments(atoms, residues)
   /** @type {BufferGeometry[]} */
   const out = []
   for (const seg of segments) {
-    const geom = buildSegmentCartoon(atoms, seg)
+    const geom = buildSegmentCartoon(atoms, seg, opts)
     if (geom) out.push(geom)
   }
   return out
@@ -334,8 +350,27 @@ function splitContinuousSegments(atoms, residues) {
  * Build one cartoon geometry for a continuous backbone segment.
  * @param {{ x: number, y: number, z: number, name: string }[]} atoms
  * @param {Array<{ ca_index?: number, sec?: string, atom_indices: number[] }>} segResidues
+ * @param {CartoonOpts} [opts]
  */
-function buildSegmentCartoon(atoms, segResidues) {
+function buildSegmentCartoon(atoms, segResidues, opts = {}) {
+  const helixHW  = opts.helixWidth  ?? HELIX_HW
+  const strandHW = opts.sheetWidth  ?? STRAND_HW
+  const coilHW   = opts.coilWidth   ?? COIL_HW
+  const arrowHW  = strandHW * (ARROW_HW / STRAND_HW)  // preserve relative scale
+
+  // Build SS colour function from opts or use defaults
+  /** @type {(sec: string) => [number,number,number]} */
+  let ssColorFn
+  if (opts.ssColors && typeof opts.ssColors === 'object') {
+    const merged = { ...SS_RGB, ...hexMapToRgb(opts.ssColors) }
+    const coilRgb = opts.ssColors.C ? hexToRgb(opts.ssColors.C) : COIL_RGB
+    ssColorFn = (sec) => {
+      if (!sec || sec.trim() === '') return coilRgb
+      return merged[sec] || coilRgb
+    }
+  } else {
+    ssColorFn = ssColor
+  }
   const nr = segResidues.length
   if (nr < 2) return null
 
@@ -393,14 +428,14 @@ function buildSegmentCartoon(atoms, segResidues) {
   for (let i = 0; i < nSm; i++) {
     const cat = ssCategory(ssPerPt[i])
     if (cat === 'helix') {
-      widths[i] = HELIX_HW
+      widths[i] = helixHW
       thicknesses[i] = HALF_THICK
     } else if (cat === 'strand') {
-      widths[i] = STRAND_HW
+      widths[i] = strandHW
       thicknesses[i] = HALF_THICK
     } else {
-      widths[i] = COIL_HW
-      thicknesses[i] = COIL_HW
+      widths[i] = coilHW
+      thicknesses[i] = coilHW
     }
   }
 
@@ -411,7 +446,7 @@ function buildSegmentCartoon(atoms, segResidues) {
     const arrowStart = seg.s + Math.max(1, Math.floor(segLen * 0.7))
     for (let i = arrowStart; i <= seg.e; i++) {
       const frac = (i - arrowStart) / Math.max(1, seg.e - arrowStart)
-      widths[i] = ARROW_HW * (1 - frac)
+      widths[i] = arrowHW * (1 - frac)
     }
   }
 
@@ -434,5 +469,5 @@ function buildSegmentCartoon(atoms, segResidues) {
     }
   }
 
-  return buildRibbonGeometry(pts, nms, widths, thicknesses, ssPerPt.map(ssColor))
+  return buildRibbonGeometry(pts, nms, widths, thicknesses, ssPerPt.map(ssColorFn))
 }
