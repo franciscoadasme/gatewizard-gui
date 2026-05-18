@@ -147,7 +147,12 @@
         bonds: struc.bonds,
         residues: struc.residues,
         visible: struc.selection !== 'water',
-        colorScheme
+        colorScheme,
+        helixWidth: 1.0,
+        sheetWidth: 0.875,
+        coilWidth: 0.125,
+        ssColors: null,
+        material: { metalness: 0.08, roughness: 0.48, emissiveIntensity: 0.0 }
       })
     }
   }
@@ -183,7 +188,12 @@
       colorScheme: {
         name: 'cpk',
         resolver: cpkScheme()
-      }
+      },
+      helixWidth: 1.0,
+      sheetWidth: 0.875,
+      coilWidth: 0.125,
+      ssColors: null,
+      material: { metalness: 0.08, roughness: 0.48, emissiveIntensity: 0.0 }
     })
   }
 
@@ -455,11 +465,34 @@
         <CameraRig framing={camera} />
         {#each views.filter((v) => v.visible) as view (view.id)}
           {#if view.representation.type === 'ball-stick'}
-            <BallStick atoms={view.atoms} bonds={view.bonds} getColor={view.colorScheme.resolver} />
+            <BallStick
+              atoms={view.atoms}
+              bonds={view.bonds}
+              getColor={view.colorScheme.resolver}
+              metalness={view.material?.metalness ?? 0.08}
+              roughness={view.material?.roughness ?? 0.48}
+              emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
+            />
           {:else if view.representation.type === 'cartoon'}
-            <Cartoon atoms={view.atoms} residues={view.residues} />
+            <Cartoon
+              atoms={view.atoms}
+              residues={view.residues}
+              helixWidth={view.helixWidth ?? 1.0}
+              sheetWidth={view.sheetWidth ?? 0.875}
+              coilWidth={view.coilWidth ?? 0.125}
+              ssColors={view.ssColors}
+              metalness={view.material?.metalness ?? 0.08}
+              roughness={view.material?.roughness ?? 0.48}
+              emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
+            />
           {:else if view.representation.type === 'vdw'}
-            <VdwSpheres atoms={view.atoms} getColor={view.colorScheme.resolver} />
+            <VdwSpheres
+              atoms={view.atoms}
+              getColor={view.colorScheme.resolver}
+              metalness={view.material?.metalness ?? 0.12}
+              roughness={view.material?.roughness ?? 0.45}
+              emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
+            />
           {/if}
         {/each}
         {#if axesLinesVisible}
