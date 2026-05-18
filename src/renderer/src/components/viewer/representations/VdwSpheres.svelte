@@ -52,9 +52,15 @@
   }
 
   /**
-   * @type {{atoms: Atom[], getColor?: ColorScheme}}
+   * @type {{atoms: Atom[], getColor?: ColorScheme, metalness?: number, roughness?: number, emissiveIntensity?: number}}
    */
-  let { atoms = [], getColor = defaultColorScheme } = $props()
+  let {
+    atoms = [],
+    getColor = defaultColorScheme,
+    metalness = 0.12,
+    roughness = 0.45,
+    emissiveIntensity = 0.0
+  } = $props()
 
   const { invalidate } = useThrelte()
 
@@ -71,8 +77,9 @@
 
     const geometry = new SphereGeometry(1, 16, 12)
     const material = new MeshStandardMaterial({
-      metalness: 0.12,
-      roughness: 0.45
+      metalness,
+      roughness,
+      emissiveIntensity
     })
     const mesh = new InstancedMesh(geometry, material, n)
     mesh.instanceColor = new InstancedBufferAttribute(new Float32Array(n * 3), 3)
