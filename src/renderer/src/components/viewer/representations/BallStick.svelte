@@ -76,9 +76,16 @@
   }
 
   /**
-   * @type {{atoms: Atom[], bonds: [number, number][], getColor?: ColorScheme}}
+   * @type {{atoms: Atom[], bonds: [number, number][], getColor?: ColorScheme, metalness?: number, roughness?: number, emissiveIntensity?: number}}
    */
-  let { atoms = [], bonds = [], getColor = defaultColorScheme } = $props()
+  let {
+    atoms = [],
+    bonds = [],
+    getColor = defaultColorScheme,
+    metalness = 0.1,
+    roughness = 0.42,
+    emissiveIntensity = 0.0
+  } = $props()
 
   let sphereMeshRef = $state(/** @type {InstancedMesh | null} */ (null))
   let bondMeshRef = $state(/** @type {InstancedMesh | null} */ (null))
@@ -95,8 +102,9 @@
 
     const sphereGeom = new SphereGeometry(1, 20, 16)
     const sphereMat = new MeshStandardMaterial({
-      metalness: 0.1,
-      roughness: 0.42
+      metalness,
+      roughness,
+      emissiveIntensity
     })
     const sphereMesh = new InstancedMesh(sphereGeom, sphereMat, n)
     sphereMesh.instanceColor = new InstancedBufferAttribute(new Float32Array(n * 3), 3)
@@ -122,8 +130,9 @@
     const cylGeom = new CylinderGeometry(BOND_RADIUS, BOND_RADIUS, 1, 10, 1, false)
     const cylMat = new MeshStandardMaterial({
       color: new Color().setRGB(...STICK_GRAY),
-      metalness: 0.05,
-      roughness: 0.55
+      metalness,
+      roughness,
+      emissiveIntensity
     })
     const bondMesh = new InstancedMesh(cylGeom, cylMat, m)
 
