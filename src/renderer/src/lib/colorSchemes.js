@@ -1,8 +1,69 @@
 import { Color } from 'three'
 
 /**
- * @typedef {{ x: number, y: number, z: number, element: string, name: string }} AtomLike
+ * @typedef {{ x: number, y: number, z: number, element: string, name: string, res_name?: string, chain_id?: string }} AtomLike
  */
+
+// ── Chain palette (10 distinct colours, cycled) ──────────────────────────────
+export const CHAIN_PALETTE_HEX = [
+  '#e6194b', '#3cb44b', '#ffe119', '#0082c8',
+  '#f58231', '#911eb4', '#46f0f0', '#f032e6',
+  '#d2f53c', '#008080'
+]
+
+// ── Residue-nature mapping ────────────────────────────────────────────────────
+export const RESIDUE_NATURE = /** @type {Record<string, string>} */ ({
+  ASP: 'acidic', GLU: 'acidic',
+  ARG: 'basic', LYS: 'basic', HIS: 'basic',
+  SER: 'polar', THR: 'polar', ASN: 'polar', GLN: 'polar',
+  ALA: 'aliphatic', VAL: 'aliphatic', LEU: 'aliphatic', ILE: 'aliphatic', MET: 'aliphatic',
+  PHE: 'aromatic', TRP: 'aromatic', TYR: 'aromatic',
+  CYS: 'special', GLY: 'special', PRO: 'special'
+})
+
+export const RESIDUE_NATURE_COLORS = /** @type {Record<string, string>} */ ({
+  acidic:    '#dc3c3c',
+  basic:     '#4664dc',
+  polar:     '#3cb44b',
+  aliphatic: '#e6c832',
+  aromatic:  '#f09632',
+  special:   '#aa50c8',
+  other:     '#b4b4b4'
+})
+
+export const RESIDUE_NATURE_LABELS = /** @type {Record<string, string>} */ ({
+  acidic: 'Acidic', basic: 'Basic', polar: 'Polar',
+  aliphatic: 'Aliphatic', aromatic: 'Aromatic',
+  special: 'Special', other: 'Other'
+})
+
+// ── Secondary structure colours ──────────────────────────────────────────────
+/** Default hex colours per secondary structure code. Mutable per-view. */
+export const SS_COLORS_DEFAULT = /** @type {Record<string, string>} */ ({
+  H:  '#7259ea',  // alpha helix – lavender
+  G:  '#3fb4ea',  // 3-10 helix
+  I:  '#3b1aae',  // pi helix
+  PP: '#f9c74f',  // polyproline
+  E:  '#2196a6',  // beta sheet
+  C:  '#e8e8e8',  // coil
+  T:  '#b5d5c8'   // turn
+})
+
+export const SS_LABELS = /** @type {Record<string, string>} */ ({
+  H: 'Alpha helix', G: '3-10 helix', I: 'Pi helix',
+  PP: 'Polyproline', E: 'Sheet', C: 'Coil', T: 'Turn'
+})
+
+// ── Material presets ─────────────────────────────────────────────────────────
+/** [metalness, roughness, emissiveIntensity] */
+export const MATERIAL_PRESETS = /** @type {Record<string, [number,number,number]>} */ ({
+  Default:  [0.08, 0.48, 0.0],
+  Shiny:    [0.10, 0.10, 0.0],
+  Matte:    [0.00, 0.90, 0.05],
+  Metallic: [0.80, 0.20, 0.0],
+  Plastic:  [0.05, 0.30, 0.0],
+  Glowing:  [0.00, 0.60, 0.18]
+})
 
 export const COLOR_PALETTE = [
   // intense colors
@@ -105,3 +166,73 @@ function parseColor(color) {
 
 /** Shared resolver for the default CPK scheme (one cache for the whole app). */
 export const defaultColorScheme = cpkScheme()
+
+// ── Chain colour scheme ───────────────────────────────────────────────────────
+/**
+ * Returns a resolver that colours atoms by chain_id, cycling through the
+ * CHAIN_PALETTE_HEX.  Call once per view so each call gets its own cache.
+ * @returns {(atom: AtomLike) => Color}
+ */
+export function chainScheme() {
+  /** @type {Map<string, Color>} */
+  const cache = new Map()
+  let chainIndex = 0
+  return (atom) => {
+    const key = atom.chain_id ?? atom.chainId ?? ''
+    if (!cache.has(key)) {
+      const hex = CHAIN_PALETTE_HEX[chainIndex % CHAIN_PALETTE_HEX.length]
+      cache.set(key, new Color(hex))
+      chainIndex++
+    }
+    return cache.get(key)
+  }
+}
+
+// ── Residue-nature colour scheme ──────────────────────────────────────────────
+/**
+ * Returns a resolver that colours atoms by residue chemical nature.
+ * @returns {(atom: AtomLike) => Color}
+ */
+export function residueNatureScheme() {
+  /** @type {Map<string, Color>} */
+  const cache = new Map()
+  return (atom) => {
+    const resName = (atom.res_name ?? atom.resName ?? '').toUpperCase()
+    if (!cache.has(resName)) {
+      const nature = RESIDUE_NATURE[resName] ?? 'other'
+      cache.set(resName, new Color(RESIDUE_NATURE_COLORS[nature]))
+    }
+    return cache.get(resName)
+  }
+}
+
+// ── Secondary-structure colour scheme ────────────────────────────────────────
+/**
+ * Build a per-atom lookup from the view's residues array, then return a
+ * resolver.  Pass optional `ssColorsHex` to override default colours.
+ * @param {Array<{ atom_indices: number[], sec?: string }>} residues
+ * @param {Record<string, string>} [ssColorsHex]  – e.g. { H: '#ff0000', ... }
+ * @returns {(atom: AtomLike & { index?: number }) => Color}
+ */
+export function ssScheme(residues, ssColorsHex = {}) {
+  const colors = { ...SS_COLORS_DEFAULT, ...ssColorsHex }
+  // Build atom-index → ss code map
+  /** @type {Map<number, string>} */
+  const atomSs = new Map()
+  for (const res of residues ?? []) {
+    const code = res.sec ?? 'C'
+    for (const ai of res.atom_indices ?? []) {
+      atomSs.set(ai, code)
+    }
+  }
+  /** @type {Map<string, Color>} */
+  const colorCache = new Map()
+  for (const [code, hex] of Object.entries(colors)) {
+    colorCache.set(code, new Color(hex))
+  }
+  const fallback = new Color(colors.C ?? '#e8e8e8')
+  return (atom) => {
+    const code = atomSs.get(atom.index) ?? 'C'
+    return colorCache.get(code) ?? fallback
+  }
+}
