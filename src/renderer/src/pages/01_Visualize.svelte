@@ -7,12 +7,13 @@
     Canvas,
     Cartoon,
     MeasureOverlay,
+    Tube,
     VdwSpheres
   } from '../components/viewer'
   import { mainViewerCamera } from '../components/viewer/CameraRig.svelte'
   import Axes from '../components/icons/Axes.svelte'
   import AxesLinesIcon from '../components/icons/AxesLines.svelte'
-  import { COLOR_PALETTE, cpkScheme, defaultColorScheme } from '../lib/colorSchemes.js'
+  import { COLOR_PALETTE, cpkScheme, defaultColorScheme, ssScheme } from '../lib/colorSchemes.js'
   import { getCameraForAtoms } from '../lib/viewer/base.js'
   import { pickAtomFromViews } from '../lib/viewer/picking.js'
   import { measureDistance, measureAngle, measureDihedral } from '../lib/viewer/measure.js'
@@ -129,14 +130,18 @@
     views.length = 0
     for (const [i, struc] of data.entries()) {
       const representation = struc.selection === 'protein' ? { type: 'cartoon' } : { type: 'vdw' }
-      let colorScheme = { name: 'cpk', resolver: cpkScheme() }
-      if (struc.selection.startsWith('resname')) {
+      let colorScheme
+      if (struc.selection === 'protein' && struc.residues?.length) {
+        colorScheme = { name: 'ss', resolver: ssScheme(struc.residues, {}) }
+      } else if (struc.selection.startsWith('resname')) {
         const color = `#${COLOR_PALETTE[i % COLOR_PALETTE.length].getHexString()}`
         colorScheme = {
           name: 'cpk-carbon',
           color,
           resolver: cpkScheme({ carbonColor: color })
         }
+      } else {
+        colorScheme = { name: 'cpk', resolver: cpkScheme() }
       }
       views.push({
         id: crypto.randomUUID(),
@@ -152,6 +157,10 @@
         sheetWidth: 0.875,
         coilWidth: 0.125,
         ssColors: null,
+        tubeRadius: 0.9,
+        atomScale: 1.0,
+        bondScale: 1.0,
+        quality: 3,
         material: { metalness: 0.08, roughness: 0.48, emissiveIntensity: 0.0 }
       })
     }
@@ -193,6 +202,10 @@
       sheetWidth: 0.875,
       coilWidth: 0.125,
       ssColors: null,
+      tubeRadius: 0.9,
+      atomScale: 1.0,
+      bondScale: 1.0,
+      quality: 3,
       material: { metalness: 0.08, roughness: 0.48, emissiveIntensity: 0.0 }
     })
   }
@@ -469,6 +482,9 @@
               atoms={view.atoms}
               bonds={view.bonds}
               getColor={view.colorScheme.resolver}
+              quality={view.quality ?? 3}
+              atomScale={view.atomScale ?? 1.0}
+              bondScale={view.bondScale ?? 1.0}
               metalness={view.material?.metalness ?? 0.08}
               roughness={view.material?.roughness ?? 0.48}
               emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
@@ -477,10 +493,24 @@
             <Cartoon
               atoms={view.atoms}
               residues={view.residues}
+              getColor={view.colorScheme.resolver}
               helixWidth={view.helixWidth ?? 1.0}
               sheetWidth={view.sheetWidth ?? 0.875}
               coilWidth={view.coilWidth ?? 0.125}
               ssColors={view.ssColors}
+              quality={view.quality ?? 3}
+              metalness={view.material?.metalness ?? 0.08}
+              roughness={view.material?.roughness ?? 0.48}
+              emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
+            />
+          {:else if view.representation.type === 'tube'}
+            <Tube
+              atoms={view.atoms}
+              residues={view.residues}
+              getColor={view.colorScheme.resolver}
+              tubeRadius={view.tubeRadius ?? 0.9}
+              ssColors={view.ssColors}
+              quality={view.quality ?? 3}
               metalness={view.material?.metalness ?? 0.08}
               roughness={view.material?.roughness ?? 0.48}
               emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
@@ -489,6 +519,8 @@
             <VdwSpheres
               atoms={view.atoms}
               getColor={view.colorScheme.resolver}
+              quality={view.quality ?? 3}
+              atomScale={view.atomScale ?? 1.0}
               metalness={view.material?.metalness ?? 0.12}
               roughness={view.material?.roughness ?? 0.45}
               emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}

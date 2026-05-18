@@ -10,6 +10,11 @@ const STRAND_HW = 0.875 // sheet_w * 0.35
 const ARROW_HW = 1.375 // sheet_w * 0.55
 const COIL_HW = 0.125 // coil_w * 0.25
 
+/** Quality presets: [smoothFactor, csSides] */
+const QUALITY_PRESETS = /** @type {Record<number,[number,number]>} */ ({ 1: [4, 6], 2: [8, 10], 3: [12, 14], 4: [20, 24], 5: [32, 36] })
+/** @param {number} [q] @returns {[number,number]} */
+function getQualityPreset(q) { return QUALITY_PRESETS[q] ?? QUALITY_PRESETS[3] }
+
 // ── SS helpers ───────────────────────────────────────────────────────────
 
 const HELIX_CODES = new Set(['H', 'h', 'G', 'g', 'I', 'i', 'F', 'f'])
@@ -24,16 +29,16 @@ function ssCategory(sec) {
 
 /** @type {Record<string, [number,number,number]>} */
 const SS_RGB = {
-  H: [0.45, 0.35, 0.92],
-  h: [0.45, 0.35, 0.92],
-  G: [0.35, 0.75, 0.92],
-  g: [0.35, 0.75, 0.92],
-  I: [0.35, 0.75, 0.92],
-  i: [0.35, 0.75, 0.92],
-  F: [0.35, 0.75, 0.92],
-  f: [0.35, 0.75, 0.92],
-  E: [0.95, 0.78, 0.22],
-  P: [0.35, 0.85, 0.42]
+  H: [0.706, 0.553, 0.855],  // #b48dda  alpha helix
+  h: [0.706, 0.553, 0.855],
+  G: [0.482, 0.247, 0.710],  // #7b3fb5  3-10 helix
+  g: [0.482, 0.247, 0.710],
+  I: [0.239, 0.102, 0.431],  // #3d1a6e  pi helix
+  i: [0.239, 0.102, 0.431],
+  F: [0.482, 0.247, 0.710],
+  f: [0.482, 0.247, 0.710],
+  E: [0.129, 0.588, 0.651],  // #2196a6  beta sheet
+  PP:[0.976, 0.780, 0.310]   // #f9c74f  polyproline
 }
 const COIL_RGB = /** @type {[number,number,number]} */ ([0.55, 0.55, 0.58])
 
@@ -182,11 +187,11 @@ function smoothCoordsAndNormals(coords, normals, factor) {
  * @param {[number,number,number][]} colors
  * @returns {BufferGeometry | null}
  */
-function buildRibbonGeometry(pts, nms, widths, thicknesses, colors) {
+function buildRibbonGeometry(pts, nms, widths, thicknesses, colors, csSides = CS_SIDES) {
   const n = pts.length
   if (n < 2) return null
 
-  const S = CS_SIDES
+  const S = csSides
   const cosA = new Float32Array(S)
   const sinA = new Float32Array(S)
   for (let k = 0; k < S; k++) {
@@ -267,7 +272,11 @@ function buildRibbonGeometry(pts, nms, widths, thicknesses, colors) {
 // ── Public API ───────────────────────────────────────────────────────────
 
 /**
- * @typedef {{helixWidth?: number, sheetWidth?: number, coilWidth?: number, ssColors?: Record<string,string>|null}} CartoonOpts
+ * @typedef {{helixWidth?: number, sheetWidth?: number, coilWidth?: number, ssColors?: Record<string,string>|null, quality?: number}} CartoonOpts
+ */
+
+/**
+ * @typedef {{ tubeRadius?: number, ssColors?: Record<string,string>|null, quality?: number }} TubeOpts
  */
 
 // ── Colour helpers ────────────────────────────────────────────────────────────
@@ -293,15 +302,16 @@ function hexMapToRgb(map) {
 /**
  * @param {Array} atoms
  * @param {Array} residues
+ * @param {(atom: any) => import('three').Color} colorFn
  * @param {CartoonOpts} [opts]
  * @returns {BufferGeometry[]}
  */
-export function buildCartoonGeometries(atoms, residues, opts = {}) {
+export function buildCartoonGeometries(atoms, residues, colorFn, opts = {}) {
   const segments = splitContinuousSegments(atoms, residues)
   /** @type {BufferGeometry[]} */
   const out = []
   for (const seg of segments) {
-    const geom = buildSegmentCartoon(atoms, seg, opts)
+    const geom = buildSegmentCartoon(atoms, seg, colorFn, opts)
     if (geom) out.push(geom)
   }
   return out
@@ -350,27 +360,16 @@ function splitContinuousSegments(atoms, residues) {
  * Build one cartoon geometry for a continuous backbone segment.
  * @param {{ x: number, y: number, z: number, name: string }[]} atoms
  * @param {Array<{ ca_index?: number, sec?: string, atom_indices: number[] }>} segResidues
+ * @param {(atom: any) => import('three').Color} colorFn
  * @param {CartoonOpts} [opts]
  */
-function buildSegmentCartoon(atoms, segResidues, opts = {}) {
+function buildSegmentCartoon(atoms, segResidues, colorFn, opts = {}) {
   const helixHW  = opts.helixWidth  ?? HELIX_HW
   const strandHW = opts.sheetWidth  ?? STRAND_HW
   const coilHW   = opts.coilWidth   ?? COIL_HW
   const arrowHW  = strandHW * (ARROW_HW / STRAND_HW)  // preserve relative scale
+  const [smoothFactor, csSides] = getQualityPreset(opts.quality)
 
-  // Build SS colour function from opts or use defaults
-  /** @type {(sec: string) => [number,number,number]} */
-  let ssColorFn
-  if (opts.ssColors && typeof opts.ssColors === 'object') {
-    const merged = { ...SS_RGB, ...hexMapToRgb(opts.ssColors) }
-    const coilRgb = opts.ssColors.C ? hexToRgb(opts.ssColors.C) : COIL_RGB
-    ssColorFn = (sec) => {
-      if (!sec || sec.trim() === '') return coilRgb
-      return merged[sec] || coilRgb
-    }
-  } else {
-    ssColorFn = ssColor
-  }
   const nr = segResidues.length
   if (nr < 2) return null
 
@@ -400,14 +399,18 @@ function buildSegmentCartoon(atoms, segResidues, opts = {}) {
   }
 
   const ribbonNormals = computeRibbonNormals(caCoords, oCoords)
-  const { pts, nms } = smoothCoordsAndNormals(caCoords, ribbonNormals, SMOOTH_FACTOR)
+  const { pts, nms } = smoothCoordsAndNormals(caCoords, ribbonNormals, smoothFactor)
   const nSm = pts.length
 
   /** @type {string[]} */
   const ssPerPt = []
+  /** @type {[number,number,number][]} */
+  const ptColors = []
   for (let ri = 0; ri < nr; ri++) {
-    const count = ri < nr - 1 ? SMOOTH_FACTOR : 1
-    for (let k = 0; k < count; k++) ssPerPt.push(secs[ri])
+    const count = ri < nr - 1 ? smoothFactor : 1
+    const cv = colorFn(atoms[segResidues[ri].ca_index])
+    const col = /** @type {[number,number,number]} */ ([cv.r, cv.g, cv.b])
+    for (let k = 0; k < count; k++) { ssPerPt.push(secs[ri]); ptColors.push(col) }
   }
 
   /** @type {{ s: number, e: number, ss: string }[]} */
@@ -451,7 +454,7 @@ function buildSegmentCartoon(atoms, segResidues, opts = {}) {
   }
 
   // Smooth width / thickness at SS-type boundaries
-  const transition = Math.max(3, SMOOTH_FACTOR)
+  const transition = Math.max(3, smoothFactor)
   for (let si = 0; si < segments.length - 1; si++) {
     const bnd = segments[si].e + 1
     for (let d = 0; d < transition; d++) {
@@ -469,5 +472,146 @@ function buildSegmentCartoon(atoms, segResidues, opts = {}) {
     }
   }
 
-  return buildRibbonGeometry(pts, nms, widths, thicknesses, ssPerPt.map(ssColorFn))
+  return buildRibbonGeometry(pts, nms, widths, thicknesses, ptColors, csSides)
+}
+
+// ── Tube ─────────────────────────────────────────────────────────────────────
+
+/** @param {[number,number,number]} a @param {[number,number,number]} b @param {number} t @returns {[number,number,number]} */
+function lerpRgb(a, b, t) {
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
+}
+
+/**
+ * Build circular tube geometries following the Cα backbone with SS-varying
+ * radius and smooth SS color transitions (matching the old gatewizard Tube SS).
+ * @param {Array} atoms
+ * @param {Array} residues
+ * @param {(atom: any) => import('three').Color} colorFn  fallback per-atom color
+ * @param {TubeOpts} [opts]
+ * @returns {BufferGeometry[]}
+ */
+export function buildTubeGeometries(atoms, residues, colorFn, opts = {}) {
+  const segments = splitContinuousSegments(atoms, residues)
+  /** @type {BufferGeometry[]} */
+  const out = []
+  for (const seg of segments) {
+    const geom = buildSegmentTube(atoms, seg, colorFn, opts)
+    if (geom) out.push(geom)
+  }
+  return out
+}
+
+/**
+ * @param {any[]} atoms
+ * @param {Array<{ ca_index?: number, sec?: string, atom_indices: number[] }>} segResidues
+ * @param {(atom: any) => import('three').Color} colorFn
+ * @param {TubeOpts} opts
+ * @returns {BufferGeometry | null}
+ */
+function buildSegmentTube(atoms, segResidues, colorFn, opts) {
+  const nr = segResidues.length
+  if (nr < 2) return null
+
+  const baseRadius = opts.tubeRadius ?? 0.35
+  // Radii: helix/sheet are full size; coils are ~28% (matches old gatewizard proportions)
+  const helixR = baseRadius
+  const sheetR = baseRadius
+  const coilR  = baseRadius * 0.28
+  const arrowR = baseRadius * 1.2
+  const [smoothFactor, csSides] = getQualityPreset(opts.quality)
+
+  /** @type {Vector3[]} */
+  const caCoords = []
+  /** @type {(Vector3 | null)[]} */
+  const oCoords = []
+  /** @type {string[]} */
+  const secs = []
+
+  for (const res of segResidues) {
+    const ca = atoms[res.ca_index]
+    caCoords.push(new Vector3(ca.x, ca.y, ca.z))
+    secs.push(res.sec || '')
+    let oCoord = null
+    if (res.atom_indices) {
+      for (const idx of res.atom_indices) {
+        const at = atoms[idx]
+        if (at && at.name === 'O') { oCoord = new Vector3(at.x, at.y, at.z); break }
+      }
+    }
+    oCoords.push(oCoord)
+  }
+
+  const ribbonNormals = computeRibbonNormals(caCoords, oCoords)
+  const { pts, nms } = smoothCoordsAndNormals(caCoords, ribbonNormals, smoothFactor)
+  const nSm = pts.length
+
+  // Expand per-residue SS codes and colors to smoothed point count
+  /** @type {string[]} */
+  const ssPerPt = []
+  /** @type {[number,number,number][]} */
+  const baseColors = []
+  for (let ri = 0; ri < nr; ri++) {
+    const count = ri < nr - 1 ? smoothFactor : 1
+    const sec = secs[ri]
+    const c = colorFn(atoms[segResidues[ri].ca_index])
+    const col = /** @type {[number,number,number]} */ ([c.r, c.g, c.b])
+    for (let k = 0; k < count; k++) { ssPerPt.push(sec); baseColors.push(col) }
+  }
+
+  // SS-segment boundaries
+  /** @type {{ s: number, e: number, ss: string }[]} */
+  const segments = []
+  let segStart = 0
+  for (let j = 1; j < nSm; j++) {
+    if (ssPerPt[j] !== ssPerPt[j - 1]) {
+      segments.push({ s: segStart, e: j - 1, ss: ssPerPt[segStart] })
+      segStart = j
+    }
+  }
+  segments.push({ s: segStart, e: nSm - 1, ss: ssPerPt[segStart] })
+
+  // Radii by SS type
+  const radii = new Float32Array(nSm)
+  for (let i = 0; i < nSm; i++) {
+    const cat = ssCategory(ssPerPt[i])
+    if (cat === 'helix') radii[i] = helixR
+    else if (cat === 'strand') radii[i] = sheetR
+    else radii[i] = coilR
+  }
+
+  // Arrow taper for strands (last 30%)
+  for (const seg of segments) {
+    if (ssCategory(seg.ss) !== 'strand') continue
+    const segLen = seg.e - seg.s + 1
+    const arrowStart = seg.s + Math.max(1, Math.floor(segLen * 0.7))
+    for (let i = arrowStart; i <= seg.e; i++) {
+      const frac = (i - arrowStart) / Math.max(1, seg.e - arrowStart)
+      radii[i] = arrowR * (1 - frac)
+    }
+  }
+
+  // Smooth radii and colors at SS-type boundaries
+  const transition = Math.max(3, smoothFactor)
+  const smoothColors = baseColors.slice()
+  for (let si = 0; si < segments.length - 1; si++) {
+    const bnd = segments[si].e + 1
+    const cBefore = baseColors[bnd - 1]
+    const cAfter  = baseColors[Math.min(bnd, nSm - 1)]
+    for (let d = 0; d < transition; d++) {
+      const alpha = 0.5 * (1 - d / transition)
+      const ib = bnd - 1 - d
+      const ia = bnd + d
+      if (ib >= 0 && ib < nSm && ia >= 0 && ia < nSm) {
+        const avgR = 0.5 * (radii[ib] + radii[ia])
+        radii[ib] += alpha * (avgR - radii[ib])
+        radii[ia] += alpha * (avgR - radii[ia])
+      }
+      const blend = (1 - d / transition) * 0.7
+      if (ib >= 0 && ib < nSm) smoothColors[ib] = lerpRgb(baseColors[ib], cAfter, blend)
+      if (ia >= 0 && ia < nSm) smoothColors[ia] = lerpRgb(baseColors[ia], cBefore, blend)
+    }
+  }
+
+  return buildRibbonGeometry(pts, nms, radii, radii, smoothColors, csSides)
 }

@@ -40,13 +40,13 @@ export const RESIDUE_NATURE_LABELS = /** @type {Record<string, string>} */ ({
 // ── Secondary structure colours ──────────────────────────────────────────────
 /** Default hex colours per secondary structure code. Mutable per-view. */
 export const SS_COLORS_DEFAULT = /** @type {Record<string, string>} */ ({
-  H:  '#7259ea',  // alpha helix – lavender
-  G:  '#3fb4ea',  // 3-10 helix
-  I:  '#3b1aae',  // pi helix
-  PP: '#f9c74f',  // polyproline
-  E:  '#2196a6',  // beta sheet
-  C:  '#e8e8e8',  // coil
-  T:  '#b5d5c8'   // turn
+  H:  '#b48dda',  // alpha helix  – lavender   RGB(180,141,218)
+  G:  '#7b3fb5',  // 3-10 helix   – medium violet RGB(123,63,181)
+  I:  '#3d1a6e',  // pi helix     – deep indigo  RGB(61,26,110)
+  PP: '#f9c74f',  // polyproline  – golden yellow
+  E:  '#2196a6',  // beta sheet   – deep teal
+  C:  '#e8e8e8',  // coil         – light gray
+  T:  '#b5d5c8'   // turn         – soft sage green
 })
 
 export const SS_LABELS = /** @type {Record<string, string>} */ ({

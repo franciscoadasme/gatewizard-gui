@@ -51,12 +51,17 @@
     return DEFAULT_VDW
   }
 
+  /** Sphere widthSegments × heightSegments per quality level (1–5). */
+  const VDW_SPHERE_Q = { 1: [12, 8], 2: [24, 16], 3: [48, 32], 4: [72, 48], 5: [128, 96] }
+
   /**
-   * @type {{atoms: Atom[], getColor?: ColorScheme, metalness?: number, roughness?: number, emissiveIntensity?: number}}
+   * @type {{atoms: Atom[], getColor?: ColorScheme, quality?: number, atomScale?: number, metalness?: number, roughness?: number, emissiveIntensity?: number}}
    */
   let {
     atoms = [],
     getColor = defaultColorScheme,
+    quality = 3,
+    atomScale = 1.0,
     metalness = 0.12,
     roughness = 0.45,
     emissiveIntensity = 0.0
@@ -75,7 +80,8 @@
       return
     }
 
-    const geometry = new SphereGeometry(1, 16, 12)
+    const [ws, hs] = VDW_SPHERE_Q[quality] ?? VDW_SPHERE_Q[3]
+    const geometry = new SphereGeometry(1, ws, hs)
     const material = new MeshStandardMaterial({
       metalness,
       roughness,
@@ -91,7 +97,7 @@
 
     atoms.forEach((atom, index) => {
       pos.set(atom.x, atom.y, atom.z)
-      const r = vdwRadius(atom.element)
+      const r = vdwRadius(atom.element) * atomScale
       const color = untrack(() => getColor(atom))
       scale.set(r, r, r)
       matrix.compose(pos, quat, scale)

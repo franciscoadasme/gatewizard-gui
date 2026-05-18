@@ -31,8 +31,8 @@
     'ligand',
     'other'
   ]
-  const REPR_TYPES = ['ball-stick', 'cartoon', 'vdw']
-  const REPR_LABELS = { 'ball-stick': 'Ball & Stick', cartoon: 'Cartoon', vdw: 'vdW' }
+  const REPR_TYPES = ['ball-stick', 'cartoon', 'tube', 'vdw']
+  const REPR_LABELS = { 'ball-stick': 'Ball & Stick', cartoon: 'Cartoon', tube: 'Tube', vdw: 'vdW' }
 
   const MDA_HELP = `Basic:
   protein · backbone · nucleic · water
@@ -58,7 +58,7 @@ Distance:
 
   /** @typedef {{ x: number, y: number, z: number, element: string, name: string, index?: number, res_name?: string, chain_id?: string }} Atom */
   /** @typedef {{ chain: string, resname: string, number: number, atom_indices: number[], ca_index?: number, sec?: string }} Residue */
-  /** @typedef {{ type: 'cartoon' | 'ball-stick' | 'vdw' }} Representation */
+  /** @typedef {{ type: 'cartoon' | 'ball-stick' | 'vdw' | 'tube' }} Representation */
   /** @typedef {{ name: string, color?: string, resolver: (atom: Atom) => import('three').Color }} ColorScheme */
   /**
    * @typedef {{
@@ -68,7 +68,11 @@ Distance:
    *   visible: boolean, colorScheme: ColorScheme,
    *   helixWidth: number, sheetWidth: number, coilWidth: number,
    *   ssColors: Record<string,string>|null,
-   *   material: { metalness: number, roughness: number, emissiveIntensity: number }
+   *   tubeRadius: number,
+   *   atomScale: number,
+   *   bondScale: number,
+   *   material: { metalness: number, roughness: number, emissiveIntensity: number },
+   *   quality: number
    * }} View
    */
 
@@ -110,7 +114,7 @@ Distance:
     const needsFetch = untrack(
       () =>
         (repr === 'ball-stick' && (view.bonds?.length || 0) < view.atoms.length / 2) ||
-        (repr === 'cartoon' && !view.residues)
+        ((repr === 'cartoon' || repr === 'tube') && !view.residues)
     )
     if (!needsFetch) return
     const tid = setTimeout(updateStructure, 300)
@@ -145,7 +149,10 @@ Distance:
   // ── API ──────────────────────────────────────────────────────────────────
 
   function updateStructure() {
-    const needsSS = view.representation.type === 'cartoon' || colorSchemeName === 'ss'
+    const needsSS =
+      view.representation.type === 'cartoon' ||
+      view.representation.type === 'tube' ||
+      colorSchemeName === 'ss'
     getStructure({
       path: view.path,
       selection: namedSelection === 'other' ? view.selection : namedSelection,
@@ -310,6 +317,7 @@ Distance:
           {#each COLOR_PALETTE as color (color.getHexString())}
             <button
               class="aspect-square w-full rounded-sm border border-neutral-800 bg-neutral-950 p-0.5 hover:border-neutral-600 active:translate-y-0.5"
+              aria-label="Select color #{color.getHexString()}"
               onclick={() => (constantColorHex = `#${color.getHexString()}`)}
             >
               <div
@@ -389,17 +397,64 @@ Distance:
         >
           <option value="ball-stick">Ball &amp; Stick</option>
           <option value="cartoon">Cartoon</option>
+          <option value="tube">Tube</option>
           <option value="vdw">vdW</option>
         </Select>
       </section>
 
-      <!-- Cartoon dimensions -->
+      <!-- VdW atom size -->
+      {#if view.representation.type === 'vdw'}
+        <section class="space-y-2">
+          <p class="font-medium text-neutral-300">Atom size</p>
+          <div class="flex items-center gap-2">
+            <span class="w-10 shrink-0 text-neutral-400">Scale</span>
+            <input
+              type="range"
+              class="flex-1 accent-blue-500"
+              min={0.3}
+              max={2.0}
+              step={0.05}
+              value={view.atomScale ?? 1.0}
+              oninput={(e) => {
+                view.atomScale = +e.target.value
+              }}
+            />
+            <span class="w-8 text-right tabular-nums">{(view.atomScale ?? 1.0).toFixed(2)}</span>
+          </div>
+        </section>
+      {/if}
+
+      <!-- Ball-stick atom & bond size -->
+      {#if view.representation.type === 'ball-stick'}
+        <section class="space-y-2">
+          <p class="font-medium text-neutral-300">Atom &amp; Bond size</p>
+          {#each [{ label: 'Atom', key: 'atomScale', min: 0.2, max: 2.0, step: 0.05, def: 1.0 }, { label: 'Bond', key: 'bondScale', min: 0.1, max: 4.0, step: 0.1, def: 1.0 }] as s (s.key)}
+            <div class="flex items-center gap-2">
+              <span class="w-10 shrink-0 text-neutral-400">{s.label}</span>
+              <input
+                type="range"
+                class="flex-1 accent-blue-500"
+                min={s.min}
+                max={s.max}
+                step={s.step}
+                value={view[s.key] ?? s.def}
+                oninput={(e) => {
+                  view[s.key] = +e.target.value
+                }}
+              />
+              <span class="w-8 text-right tabular-nums">{(view[s.key] ?? s.def).toFixed(2)}</span>
+            </div>
+          {/each}
+        </section>
+      {/if}
+
+      <!-- Cartoon dimensions / Tube radius -->
       {#if view.representation.type === 'cartoon'}
         <section class="space-y-2">
           <p class="font-medium text-neutral-300">Cartoon dimensions</p>
           {#each [{ label: 'Helix', key: 'helixWidth', min: 0.1, max: 2.5, step: 0.05 }, { label: 'Sheet', key: 'sheetWidth', min: 0.1, max: 2.5, step: 0.05 }, { label: 'Coil', key: 'coilWidth', min: 0.03, max: 0.5, step: 0.01 }] as s (s.key)}
             <div class="flex items-center gap-2">
-              <label class="w-10 shrink-0 text-neutral-400">{s.label}</label>
+              <span class="w-10 shrink-0 text-neutral-400">{s.label}</span>
               <input
                 type="range"
                 class="flex-1 accent-blue-500"
@@ -415,8 +470,10 @@ Distance:
             </div>
           {/each}
         </section>
+      {/if}
 
-        <!-- SS colors -->
+      <!-- SS colors (cartoon and tube) -->
+      {#if view.representation.type === 'cartoon' || view.representation.type === 'tube'}
         <section class="space-y-2">
           <div class="flex items-center justify-between">
             <p class="font-medium text-neutral-300">SS colors</p>
@@ -458,6 +515,28 @@ Distance:
         </section>
       {/if}
 
+      <!-- Tube radius -->
+      {#if view.representation.type === 'tube'}
+        <section class="space-y-2">
+          <p class="font-medium text-neutral-300">Tube radius</p>
+          <div class="flex items-center gap-2">
+            <span class="w-10 shrink-0 text-neutral-400">Radius</span>
+            <input
+              type="range"
+              class="flex-1 accent-blue-500"
+              min={0.05}
+              max={2.0}
+              step={0.05}
+              value={view.tubeRadius ?? 0.9}
+              oninput={(e) => {
+                view.tubeRadius = +e.target.value
+              }}
+            />
+            <span class="w-8 text-right tabular-nums">{(view.tubeRadius ?? 0.9).toFixed(2)}</span>
+          </div>
+        </section>
+      {/if}
+
       <!-- Material -->
       <section class="space-y-2">
         <p class="font-medium text-neutral-300">Material</p>
@@ -472,7 +551,7 @@ Distance:
         </div>
         {#each [{ label: 'Metalness', key: 'metalness', min: 0, max: 1, step: 0.01 }, { label: 'Roughness', key: 'roughness', min: 0, max: 1, step: 0.01 }, { label: 'Ambient', key: 'emissiveIntensity', min: 0, max: 0.4, step: 0.01 }] as s (s.key)}
           <div class="flex items-center gap-2">
-            <label class="w-16 shrink-0 text-neutral-400">{s.label}</label>
+            <span class="w-16 shrink-0 text-neutral-400">{s.label}</span>
             <input
               type="range"
               class="flex-1 accent-blue-500"
@@ -488,6 +567,25 @@ Distance:
             >
           </div>
         {/each}
+      </section>
+
+      <!-- Quality -->
+      <section class="space-y-2">
+        <p class="font-medium text-neutral-300">Quality</p>
+        <div class="flex gap-1">
+          {#each [{ v: 1, l: 'Low' }, { v: 2, l: 'Med' }, { v: 3, l: 'High' }, { v: 4, l: 'Ultra' }, { v: 5, l: 'Max' }] as q (q.v)}
+            <button
+              type="button"
+              class="flex-1 rounded px-1 py-0.5 text-xs transition-colors
+                {(view.quality ?? 3) === q.v
+                ? 'bg-blue-600 text-white'
+                : 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700'}"
+              onclick={() => {
+                view.quality = q.v
+              }}>{q.l}</button
+            >
+          {/each}
+        </div>
       </section>
 
       <!-- Remove -->

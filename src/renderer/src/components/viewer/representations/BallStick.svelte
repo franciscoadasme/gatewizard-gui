@@ -75,13 +75,26 @@
     return Math.max(covalRadius(el) * BALL_STICK_ATOM_SCALE, 0.12)
   }
 
+  /** Sphere segments and cylinder radial segments per quality level (1–5). */
+  const BS_QUALITY = /** @type {Record<number,[number,number,number]>} */ ({
+    1: [12, 10, 8],
+    2: [18, 14, 10],
+    3: [28, 22, 14],
+    4: [48, 36, 20],
+    5: [72, 56, 32]
+  })
+  // [sphereW, sphereH, cylRadial]
+
   /**
-   * @type {{atoms: Atom[], bonds: [number, number][], getColor?: ColorScheme, metalness?: number, roughness?: number, emissiveIntensity?: number}}
+   * @type {{ atoms: Atom[], bonds?: [number,number][], getColor?: ColorScheme, quality?: number, atomScale?: number, bondScale?: number, metalness?: number, roughness?: number, emissiveIntensity?: number }}
    */
   let {
     atoms = [],
     bonds = [],
     getColor = defaultColorScheme,
+    quality = 3,
+    atomScale = 1.0,
+    bondScale = 1.0,
     metalness = 0.1,
     roughness = 0.42,
     emissiveIntensity = 0.0
@@ -100,7 +113,8 @@
       return
     }
 
-    const sphereGeom = new SphereGeometry(1, 20, 16)
+    const [sw, sh, cr] = BS_QUALITY[quality] ?? BS_QUALITY[3]
+    const sphereGeom = new SphereGeometry(1, sw, sh)
     const sphereMat = new MeshStandardMaterial({
       metalness,
       roughness,
@@ -115,7 +129,7 @@
     const spherePos = new Vector3()
 
     atoms.forEach((atom, index) => {
-      const ri = atomBallRadius(atom.element)
+      const ri = atomBallRadius(atom.element) * atomScale
       const color = untrack(() => getColor(atom))
       spherePos.set(atom.x, atom.y, atom.z)
       sphereScale.set(ri, ri, ri)
@@ -127,7 +141,14 @@
     sphereMesh.instanceColor.needsUpdate = true
 
     const m = bonds.length
-    const cylGeom = new CylinderGeometry(BOND_RADIUS, BOND_RADIUS, 1, 10, 1, false)
+    const cylGeom = new CylinderGeometry(
+      BOND_RADIUS * bondScale,
+      BOND_RADIUS * bondScale,
+      1,
+      cr,
+      1,
+      false
+    )
     const cylMat = new MeshStandardMaterial({
       color: new Color().setRGB(...STICK_GRAY),
       metalness,

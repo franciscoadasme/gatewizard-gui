@@ -1,7 +1,7 @@
 <script>
   import { T, useThrelte } from '@threlte/core'
   import { DoubleSide, Mesh, MeshStandardMaterial } from 'three'
-  import { buildCartoonGeometries } from '../../../lib/viewer/cartoon.js'
+  import { buildTubeGeometries } from '../../../lib/viewer/cartoon.js'
   import { defaultColorScheme } from '../../../lib/colorSchemes.js'
 
   /**
@@ -15,10 +15,8 @@
    *     ca_index?: number,
    *     sec?: string
    *   }>,
-   *   helixWidth?: number,
-   *   sheetWidth?: number,
-   *   coilWidth?: number,
    *   getColor?: (atom: any) => import('three').Color,
+   *   tubeRadius?: number,
    *   ssColors?: Record<string, string> | null,
    *   quality?: number,
    *   metalness?: number,
@@ -27,12 +25,10 @@
    * }}
    */
   let {
-    atoms,
+    atoms = [],
     residues = [],
-    helixWidth = 1.0,
-    sheetWidth = 0.875,
-    coilWidth = 0.125,
     getColor = defaultColorScheme,
+    tubeRadius = 0.9,
     ssColors = null,
     quality = 3,
     metalness = 0.08,
@@ -64,10 +60,8 @@
       return
     }
 
-    const geometries = buildCartoonGeometries(atoms, residues, getColor, {
-      helixWidth,
-      sheetWidth,
-      coilWidth,
+    const geometries = buildTubeGeometries(atoms, residues, getColor, {
+      tubeRadius,
       ssColors,
       quality
     })
