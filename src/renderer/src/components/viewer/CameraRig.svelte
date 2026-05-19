@@ -183,6 +183,22 @@
       const extentChanged = lastExtent === null || Math.abs(ext - lastExtent) > 1e-6
       const explicitReframe = framing.framingGeneration !== lastFramingGeneration
 
+      // Normalize pan speed so a given mouse drag always moves the same fraction
+      // of the visible area, regardless of molecule size or zoom level.
+      //
+      // TrackballControls ortho pan_fraction = Δpx × eyeLen × panSpeed / clientWidth²
+      // For pixel-consistent feel: panSpeed = K × clientWidth / eyeLen
+      // K=0.8 gives ~80% 1:1 tracking (comfortable, not too snappy).
+      if ('panSpeed' in ctrl && cam instanceof OrthographicCamera) {
+        const elW = ctrl.domElement?.clientWidth ?? 0
+        if (elW > 0) {
+          const eyeLen = cam.position.distanceTo(ctrl.target)
+          if (eyeLen > 0) {
+            ctrl.panSpeed = (0.5 * elW) / eyeLen
+          }
+        }
+      }
+
       if (!centerChanged && !extentChanged && !explicitReframe) {
         return
       }

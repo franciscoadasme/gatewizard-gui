@@ -1,7 +1,7 @@
 <script>
   import { Canvas as ThrelteCanvas, T } from '@threlte/core'
   import { TrackballControls } from '@threlte/extras'
-  import { MOUSE } from 'three'
+  import { MOUSE, WebGLRenderer } from 'three'
 
   /**
    * @type {{
@@ -15,7 +15,8 @@
   let wrapEl = $state(null)
   let controls = $state(null)
 
-  // Remap middle-button → pan, disable right-button drag
+  // Middle-drag pans the camera view (slides camera+target together).
+  // Atoms are never moved — this is pure camera navigation, like VMD T-mode.
   $effect(() => {
     if (!controls) return
     controls.mouseButtons.MIDDLE = MOUSE.PAN
@@ -54,16 +55,24 @@
     onAtomContextMenu({ ..._coords(e), clientX: e.clientX, clientY: e.clientY })
   }}
 >
-  <ThrelteCanvas>
+  <ThrelteCanvas
+    createRenderer={(canvas) =>
+      new WebGLRenderer({
+        canvas,
+        powerPreference: 'high-performance',
+        antialias: true,
+        alpha: true,
+        preserveDrawingBuffer: true
+      })}
+  >
     <T.Color attach="background" args={[0x000000]} />
     <T.OrthographicCamera makeDefault manual near={0.05} far={500000} />
     <TrackballControls
       bind:ref={controls}
       staticMoving={false}
       dynamicDampingFactor={0.3}
-      rotateSpeed={2.5}
-      panSpeed={5.5}
-      zoomSpeed={2.5}
+      rotateSpeed={3.5}
+      zoomSpeed={3.5}
     />
     <T.HemisphereLight args={['#c4d2e8', '#0c0e12', 0.52]} />
     <T.AmbientLight intensity={0.35} />
