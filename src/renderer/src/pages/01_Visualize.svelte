@@ -587,6 +587,8 @@
     if (!r || r.canceled || !r.filePath) return
     try {
       await editSavePdb({ source: filePath, dest: r.filePath })
+      filePath = r.filePath
+      if (structure) structure.path = r.filePath
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : String(ex))
     }
