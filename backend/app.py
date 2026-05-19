@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import tempfile
+import uuid
 from collections import deque
 from dataclasses import dataclass
 from importlib import metadata
@@ -34,6 +35,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from gatewizard.utils.protein_capping import cap_protein
+from gatewizard.core.viewer import MolecularViewer, ViewerError
 from gatewizard.core.preparation import PreparationManager
 from gatewizard.core.builder import Builder
 from gatewizard.tools.equilibration import NAMDEquilibrationManager
@@ -1387,6 +1389,366 @@ def detect_molecules(payload: DetectMoleculesRequest) -> list[dict]:
         )
 
     return datalist
+
+
+# ---------------------------------------------------------------------------
+# Structure editing endpoints
+# ---------------------------------------------------------------------------
+
+
+def _mv_edit(pdb_path: str, operation) -> dict:
+    """Load pdb_path into MolecularViewer, run operation(mv), save temp PDB, return atoms dict."""
+    mv = MolecularViewer()
+    mv.load_structure(pdb_path)
+    operation(mv)
+    fd, tmp_path = tempfile.mkstemp(suffix=".pdb")
+    os.close(fd)
+    mv.save_pdb(tmp_path)
+    u = mda.Universe(tmp_path)
+    data: dict = {"path": tmp_path, "atoms": get_atoms(u.atoms)}
+    try:
+        data["bonds"] = u.atoms.bonds.indices.tolist()
+    except mda.exceptions.NoDataError:
+        data["bonds"] = []
+    return data
+
+
+class EditRenameChainRequest(BaseModel):
+    path: str
+    old_chain: str
+    new_chain: str
+
+
+@app.post("/edit/rename-chain")
+def edit_rename_chain(payload: EditRenameChainRequest) -> dict:
+    try:
+        return _mv_edit(
+            payload.path,
+            lambda mv: mv.rename_chain(
+                payload.old_chain.strip(), payload.new_chain.strip()
+            ),
+        )
+    except (ViewerError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+
+
+class EditRenameResiduesRequest(BaseModel):
+    path: str
+    chain_id: str
+    start: int
+    end: int
+    new_name: str
+
+
+@app.post("/edit/rename-residues")
+def edit_rename_residues(payload: EditRenameResiduesRequest) -> dict:
+    try:
+        return _mv_edit(
+            payload.path,
+            lambda mv: mv.rename_residues(
+                payload.chain_id, payload.start, payload.end, payload.new_name
+            ),
+        )
+    except (ViewerError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+
+
+class EditRenumberResiduesRequest(BaseModel):
+    path: str
+    chain_id: str
+    start: int
+    end: int
+    new_start: int = 1
+
+
+@app.post("/edit/renumber-residues")
+def edit_renumber_residues(payload: EditRenumberResiduesRequest) -> dict:
+    try:
+        return _mv_edit(
+            payload.path,
+            lambda mv: mv.renumber_residues(
+                payload.chain_id, payload.start, payload.end, payload.new_start
+            ),
+        )
+    except (ViewerError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+
+
+class EditDeleteAtomsRequest(BaseModel):
+    path: str
+    selection: str  # MDAnalysis selection string or named shorthand
+
+
+@app.post("/edit/delete-atoms")
+def edit_delete_atoms(payload: EditDeleteAtomsRequest) -> dict:
+    """Delete atoms matching a selection and return the updated structure."""
+    try:
+        # Resolve named shorthand → MDAnalysis expression
+        sel_str = NAMED_SELECTIONS.get(payload.selection, payload.selection)
+        u_orig = load_structure(payload.path)
+        idx = u_orig.select_atoms(sel_str).indices.tolist()
+        if not idx:
+            raise HTTPException(400, "Selection matched no atoms")
+        if len(idx) == u_orig.atoms.n_atoms:
+            raise HTTPException(400, "Selection would delete all atoms")
+        return _mv_edit(payload.path, lambda mv: mv.delete_atoms(idx))
+    except HTTPException:
+        raise
+    except (ViewerError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
+
+class EditTransformRequest(BaseModel):
+    path: str
+    rotate: dict | None = None  # {"angle": float, "axis": "x"|"y"|"z"}
+    translate: List[float] | None = None  # [dx, dy, dz]
+
+
+@app.post("/edit/transform")
+def edit_transform(payload: EditTransformRequest) -> dict:
+    try:
+
+        def _apply(mv: MolecularViewer) -> None:
+            if payload.translate:
+                mv.translate_atoms([float(v) for v in payload.translate])
+            if payload.rotate:
+                mv.rotate_atoms(
+                    float(payload.rotate["angle"]),
+                    str(payload.rotate.get("axis", "z")).lower(),
+                    center="selection",
+                )
+
+        return _mv_edit(payload.path, _apply)
+    except (ViewerError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
+
+class EditSavePdbRequest(BaseModel):
+    source: str
+    dest: str
+
+
+@app.post("/edit/save-pdb")
+def edit_save_pdb(payload: EditSavePdbRequest) -> dict:
+    try:
+        shutil.copy2(payload.source, payload.dest)
+        return {"path": payload.dest, "success": True}
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
+
+# ── Transform (enhanced) ──────────────────────────────────────────────
+
+
+class TransformCountRequest(BaseModel):
+    path: str
+    selection: str
+
+
+@app.post("/transform/count-selection")
+def transform_count_selection(payload: TransformCountRequest) -> dict:
+    """Return the number of atoms matching a MDAnalysis selection string."""
+    try:
+        mv = MolecularViewer()
+        mv.load_structure(payload.path)
+        sel_str = NAMED_SELECTIONS.get(payload.selection, payload.selection)
+        indices = mv.select_atoms(sel_str)
+        return {"count": len(indices), "total": len(mv.structure.atoms)}
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
+
+class TransformOperation(BaseModel):
+    type: str  # 'rotate' | 'translate' | 'center' | 'align'
+    # Rotate
+    angle: float | None = None
+    axis: str | None = None  # 'x' | 'y' | 'z'
+    center: str = "selection"  # 'selection' | 'origin'
+    # Translate
+    dx: float = 0.0
+    dy: float = 0.0
+    dz: float = 0.0
+    # Align
+    target_axis: str | None = None
+    secondary_selection: str | None = None
+    secondary_axis: str | None = None
+    apply_to: str | None = None  # MDAnalysis selection or None (all atoms)
+
+
+class TransformRequest(BaseModel):
+    path: str
+    selection: str | None = None  # MDAnalysis selection (None = all atoms)
+    op: TransformOperation
+
+
+def _apply_mv_op(
+    mv: MolecularViewer,
+    selection: "str | None",
+    op: TransformOperation,
+) -> "list[int] | None":
+    """Apply one transform operation to *mv*; returns affected indices or None."""
+    sel_str = NAMED_SELECTIONS.get(selection, selection) if selection else None
+    indices = mv.select_atoms(sel_str) if sel_str else None
+
+    if op.type == "rotate":
+        mv.rotate_atoms(
+            op.angle or 0.0, op.axis or "z", indices=indices, center=op.center
+        )
+    elif op.type == "translate":
+        mv.translate_atoms([op.dx, op.dy, op.dz], indices=indices)
+    elif op.type == "center":
+        mv.center_atoms(indices=indices)
+    elif op.type == "align":
+        primary = (
+            indices if indices is not None else list(range(len(mv.structure.atoms)))
+        )
+        sec_indices = None
+        if op.secondary_selection:
+            sec_str = NAMED_SELECTIONS.get(
+                op.secondary_selection, op.secondary_selection
+            )
+            sec_indices = mv.select_atoms(sec_str)
+        apply_to = None
+        if op.apply_to:
+            apl_str = NAMED_SELECTIONS.get(op.apply_to, op.apply_to)
+            apply_to = mv.select_atoms(apl_str)
+        mv.align_to_axis(
+            primary,
+            target_axis=op.target_axis or "z",
+            secondary_indices=sec_indices if sec_indices else None,
+            secondary_axis=op.secondary_axis or None,
+            apply_to=apply_to,
+        )
+    return indices
+
+
+@app.post("/transform/preview")
+def transform_preview(payload: TransformRequest) -> dict:
+    """Return new atom positions after a transform without saving."""
+    try:
+        mv = MolecularViewer()
+        mv.load_structure(payload.path)
+        indices = _apply_mv_op(mv, payload.selection, payload.op)
+        atoms = mv.structure.atoms
+        positions = [
+            [float(a.coord[0]), float(a.coord[1]), float(a.coord[2])] for a in atoms
+        ]
+        affected = len(indices) if indices is not None else len(atoms)
+        return {"positions": positions, "affected_count": affected}
+    except (ViewerError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/transform/apply")
+def transform_apply(payload: TransformRequest) -> dict:
+    """Apply a transform, save to temp PDB, return updated structure."""
+    try:
+        return _mv_edit(
+            payload.path, lambda mv: _apply_mv_op(mv, payload.selection, payload.op)
+        )
+    except (ViewerError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
+
+# ── MemPro orientation ─────────────────────────────────────────────────
+
+_mempro_jobs: dict = {}  # job_id → {status, results, error}
+
+
+class MemProRunRequest(BaseModel):
+    path: str
+    n_cpus: int | None = None
+    n_iters: int = 150
+    grid_size: int = 36
+    dual_membrane: bool = False
+    peripheral: bool = False
+    use_weights: bool = False
+    flip: bool = False
+    membrane_thickness: float | None = None
+
+
+@app.post("/mempro/run")
+def mempro_run(payload: MemProRunRequest) -> dict:
+    """Start a MemPro orientation job asynchronously; returns job_id."""
+    from gatewizard.core.mempro import MemPrO  # noqa: PLC0415
+
+    if not MemPrO.is_available():
+        raise HTTPException(
+            503,
+            "mempro executable not found. Install with: "
+            "pip install git+https://github.com/pstansfeld/MemPrO.git",
+        )
+
+    job_id = str(uuid.uuid4())
+    _mempro_jobs[job_id] = {"status": "running", "results": None, "error": None}
+
+    def _run() -> None:
+        try:
+            mp = MemPrO()
+            results = mp.run(
+                payload.path,
+                n_cpus=payload.n_cpus,
+                n_iters=payload.n_iters,
+                grid_size=payload.grid_size,
+                dual_membrane=payload.dual_membrane,
+                peripheral=payload.peripheral,
+                use_weights=payload.use_weights,
+                flip=payload.flip,
+                membrane_thickness=payload.membrane_thickness,
+            )
+            _mempro_jobs[job_id]["results"] = [
+                {
+                    "rank": r.rank,
+                    "relative_potential": r.relative_potential,
+                    "hits_pct": r.hits_pct,
+                    "rerank_potential": r.rerank_potential,
+                    "rerank_depth": r.rerank_depth,
+                    "rerank_value": r.rerank_value,
+                    "pdb_path": r.pdb_path,
+                }
+                for r in results
+            ]
+            _mempro_jobs[job_id]["status"] = "done"
+        except Exception as exc:
+            _mempro_jobs[job_id]["status"] = "error"
+            _mempro_jobs[job_id]["error"] = str(exc)
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"job_id": job_id}
+
+
+@app.get("/mempro/status/{job_id}")
+def mempro_status(job_id: str) -> dict:
+    if job_id not in _mempro_jobs:
+        raise HTTPException(404, f"MemPro job {job_id!r} not found")
+    return _mempro_jobs[job_id]
+
+
+class MemProApplyRequest(BaseModel):
+    pdb_path: str
+
+
+@app.post("/mempro/apply")
+def mempro_apply(payload: MemProApplyRequest) -> dict:
+    """Load an oriented PDB file as the new current structure."""
+    try:
+        u = mda.Universe(payload.pdb_path)
+        data: dict = {"path": payload.pdb_path, "atoms": get_atoms(u.atoms)}
+        try:
+            data["bonds"] = u.atoms.bonds.indices.tolist()
+        except mda.exceptions.NoDataError:
+            data["bonds"] = []
+        return data
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
 
 
 if __name__ == "__main__":
