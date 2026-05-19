@@ -246,6 +246,115 @@ function throwFromFastApiBody(data, response) {
   throw new Error(msg)
 }
 
+// ---------------------------------------------------------------------------
+// Structure editing
+// ---------------------------------------------------------------------------
+
+/** @typedef {{ path: string, atoms: object[], bonds: number[][] }} EditResult */
+
+/**
+ * @param {{ path: string, oldChain: string, newChain: string }} payload
+ * @returns {Promise<EditResult>}
+ */
+export function editRenameChain(payload) {
+  return backendJson('/edit/rename-chain', payload)
+}
+
+/**
+ * @param {{ path: string, chainId: string, start: number, end: number, newName: string }} payload
+ * @returns {Promise<EditResult>}
+ */
+export function editRenameResidues(payload) {
+  return backendJson('/edit/rename-residues', payload)
+}
+
+/**
+ * @param {{ path: string, chainId: string, start: number, end: number, newStart?: number }} payload
+ * @returns {Promise<EditResult>}
+ */
+export function editRenumberResidues(payload) {
+  return backendJson('/edit/renumber-residues', payload)
+}
+
+/**
+ * @param {{ path: string, selection: string }} payload
+ * @returns {Promise<EditResult>}
+ */
+export function editDeleteAtoms(payload) {
+  return backendJson('/edit/delete-atoms', payload)
+}
+
+/**
+ * @param {{ path: string, rotate?: { angle: number, axis: string }, translate?: [number, number, number] }} payload
+ * @returns {Promise<EditResult>}
+ */
+export function editTransform(payload) {
+  return backendJson('/edit/transform', payload)
+}
+
+/**
+ * Copy a PDB file to a new destination path.
+ * @param {{ source: string, dest: string }} payload
+ * @returns {Promise<{ path: string, success: boolean }>}
+ */
+export function editSavePdb(payload) {
+  return backendJson('/edit/save-pdb', payload)
+}
+
+/**
+ * Count atoms matching a MDAnalysis selection.
+ * @param {{ path: string, selection: string }} payload
+ * @returns {Promise<{ count: number, total: number }>}
+ */
+export function transformCountSelection(payload) {
+  return backendJson('/transform/count-selection', payload)
+}
+
+/**
+ * Preview a transform — returns new atom positions without saving.
+ * @param {{ path: string, selection?: string|null, op: object }} payload
+ * @returns {Promise<{ positions: number[][], affected_count: number }>}
+ */
+export function transformPreview(payload) {
+  return backendJson('/transform/preview', payload)
+}
+
+/**
+ * Apply a transform, save to temp PDB, return updated structure.
+ * @param {{ path: string, selection?: string|null, op: object }} payload
+ * @returns {Promise<{ path: string, atoms: object[], bonds: number[][] }>}
+ */
+export function transformApply(payload) {
+  return backendJson('/transform/apply', payload)
+}
+
+/**
+ * Start a MemPro orientation job asynchronously.
+ * @param {object} payload
+ * @returns {Promise<{ job_id: string }>}
+ */
+export function memproRun(payload) {
+  return backendJson('/mempro/run', payload)
+}
+
+/**
+ * Poll the status of a MemPro job.
+ * @param {string} jobId
+ * @returns {Promise<{ status: string, results: object[]|null, error: string|null }>}
+ */
+export function memproStatus(jobId) {
+  return backendJson(`/mempro/status/${jobId}`)
+}
+
+/**
+ * Load an oriented PDB as the current structure.
+ * @param {{ pdb_path: string }} payload
+ * @returns {Promise<{ path: string, atoms: object[], bonds: number[][] }>}
+ */
+export function memproApply(payload) {
+  return backendJson('/mempro/apply', payload)
+}
+
 /**
  * @template T
  * @param {string} path
