@@ -17,12 +17,23 @@
   import { getCameraForAtoms } from '../lib/viewer/base.js'
   import { pickAtomFromViews } from '../lib/viewer/picking.js'
   import { measureDistance, measureAngle, measureDihedral } from '../lib/viewer/measure.js'
-  import { getStructure, detectMolecules } from '../lib/backendApi.js'
-  import Button from '../components/ui/Button.svelte'
+  import {
+    getStructure,
+    detectMolecules,
+    editRenameChain,
+    editRenameResidues,
+    editRenumberResidues,
+    editDeleteAtoms,
+    editSavePdb,
+    transformCountSelection,
+    transformPreview,
+    transformApply,
+    memproRun,
+    memproStatus,
+    memproApply
+  } from '../lib/backendApi.js'
   import DetectIcon from '../components/icons/Detect.svelte'
-  import Divider from '../components/ui/Divider.svelte'
   import Empty from '../components/ui/Empty.svelte'
-  import Input from '../components/ui/Input.svelte'
   import Plus from '../components/icons/Plus.svelte'
   import ResetIcon from '../components/icons/Reset.svelte'
   import Spinner from '../components/ui/Spinner.svelte'
@@ -74,24 +85,6 @@
   let measExpanded = $state(true)
   let labelsExpanded = $state(true)
 
-  // Left panel resize
-  let leftW = $state(280)
-  let _rsX = 0,
-    _rsW = 0
-  function _startResize(e) {
-    _rsX = e.clientX
-    _rsW = leftW
-    window.addEventListener('pointermove', _doResize)
-    window.addEventListener('pointerup', _stopResize)
-  }
-  function _doResize(e) {
-    leftW = Math.max(180, Math.min(480, _rsW + e.clientX - _rsX))
-  }
-  function _stopResize() {
-    window.removeEventListener('pointermove', _doResize)
-    window.removeEventListener('pointerup', _stopResize)
-  }
-
   // Right panel resize
   let rightW = $state(240)
   let _rrX = 0,
@@ -117,12 +110,155 @@
     gearOpen = gearOpen?.kind === kind && gearOpen.id === id ? null : { kind, id }
   }
 
-  // derived state
+  // Bottom toolbar / edit state
+  let editMenuOpen = $state(false)
+  let editBusy = $state(false)
+  /** @type {HTMLElement | null} */
+  let viewerEl = $state(null)
+  // Edit dialog refs
+  /** @type {HTMLDialogElement | null} */
+  let dlgRenameChain = $state(null)
+  /** @type {HTMLDialogElement | null} */
+  let dlgRenameRes = $state(null)
+  /** @type {HTMLDialogElement | null} */
+  let dlgRenumberRes = $state(null)
+  /** @type {HTMLDialogElement | null} */
+  let dlgDeleteAtoms = $state(null)
+  /** @type {HTMLDialogElement | null} */
+  let dlgTransform = $state(null)
+  // Rename chain form fields
+  let rcOldChain = $state('')
+  let rcNewChain = $state('')
+  // Rename residues form fields
+  let rrChain = $state('')
+  let rrStart = $state(1)
+  let rrEnd = $state(9999)
+  let rrNewName = $state('')
+  // Renumber residues form fields
+  let rnChain = $state('')
+  let rnStart = $state(1)
+  let rnEnd = $state(9999)
+  let rnNewStart = $state(1)
+  // Delete atoms form field
+  let daSelection = $state('water')
+  // Transform form fields
+  let tfRotAngle = $state(0)
+  let tfRotAxis = $state('z')
+  let tfTx = $state(0)
+  let tfTy = $state(0)
+  let tfTz = $state(0)
+  // Transform enhanced state
+  /** @type {HTMLDialogElement | null} */
+  let dlgMempro = $state(null)
+  let transformTab = $state('rotate') // 'rotate' | 'translate' | 'align'
+  /** @type {number[][] | null} positions[atom.index] = [x,y,z] */
+  let previewPositions = $state(null)
+  let tfPreviewBusy = $state(false)
+  // Shared selection (rotate / translate tabs)
+  let tfSel = $state('')
+  let tfSelCount = $state(null)
+  let tfRotCenter = $state('selection') // 'selection' | 'origin'
+  // Align tab
+  let tfAlignPrimSel = $state('')
+  let tfAlignPrimCount = $state(null)
+  let tfAlignTargetAxis = $state('z')
+  let tfAlignSecSel = $state('')
+  let tfAlignSecCount = $state(null)
+  let tfAlignSecAxis = $state('x')
+  let tfAlignApplyTo = $state('') // MDAnalysis sel or '' = all
+  // MemPro
+  let memproJobId = $state(null)
+  let memproJobStatus = $state(null) // 'running' | 'done' | 'error' | null
+  /** @type {object[]} */
+  let memproResults = $state([])
+  let memproError = $state(null)
+  let memproBusy = $state(false)
+  let memproNIters = $state(150)
+  let memproGridSize = $state(36)
+  let memproDualMembrane = $state(false)
+  let memproPeripheral = $state(false)
+  let memproUseWeights = $state(false)
+  let memproFlip = $state(false)
+  let memproMembrane = $state('')
   const isPdbIdValid = $derived.by(() => pdbId.trim().length === 4)
 
+  // Debounced atom-count lookups for transform selections
+  let _tfSelTimer = null
   $effect(() => {
-    const base = getCameraForAtoms(structure?.atoms)
-    camera = base ? { ...base, framingZoom: 1, framingGeneration: 0, poseResetGeneration: 0 } : null
+    const s = tfSel
+    clearTimeout(_tfSelTimer)
+    if (!filePath || !s.trim()) {
+      tfSelCount = null
+      return
+    }
+    _tfSelTimer = setTimeout(async () => {
+      try {
+        const r = await transformCountSelection({ path: filePath, selection: s.trim() })
+        tfSelCount = r.count
+      } catch {
+        tfSelCount = null
+      }
+    }, 500)
+    return () => clearTimeout(_tfSelTimer)
+  })
+
+  let _tfAlignPrimTimer = null
+  $effect(() => {
+    const s = tfAlignPrimSel
+    clearTimeout(_tfAlignPrimTimer)
+    if (!filePath || !s.trim()) {
+      tfAlignPrimCount = null
+      return
+    }
+    _tfAlignPrimTimer = setTimeout(async () => {
+      try {
+        const r = await transformCountSelection({ path: filePath, selection: s.trim() })
+        tfAlignPrimCount = r.count
+      } catch {
+        tfAlignPrimCount = null
+      }
+    }, 500)
+    return () => clearTimeout(_tfAlignPrimTimer)
+  })
+
+  let _tfAlignSecTimer = null
+  $effect(() => {
+    const s = tfAlignSecSel
+    clearTimeout(_tfAlignSecTimer)
+    if (!filePath || !s.trim()) {
+      tfAlignSecCount = null
+      return
+    }
+    _tfAlignSecTimer = setTimeout(async () => {
+      try {
+        const r = await transformCountSelection({ path: filePath, selection: s.trim() })
+        tfAlignSecCount = r.count
+      } catch {
+        tfAlignSecCount = null
+      }
+    }, 500)
+    return () => clearTimeout(_tfAlignSecTimer)
+  })
+
+  // MemPro job polling
+  $effect(() => {
+    if (!memproJobId || memproJobStatus !== 'running') return
+    const interval = setInterval(async () => {
+      try {
+        const r = await memproStatus(memproJobId)
+        memproJobStatus = r.status
+        if (r.status === 'done') {
+          memproResults = r.results
+          clearInterval(interval)
+        } else if (r.status === 'error') {
+          memproError = r.error
+          clearInterval(interval)
+        }
+      } catch {
+        /* ignore */
+      }
+    }, 3000)
+    return () => clearInterval(interval)
   })
 
   async function onAutoGenerateViews() {
@@ -225,7 +361,7 @@
   }
 
   /** @param {string} path */
-  async function loadStructure(path) {
+  async function loadStructure(path, { resetCamera = true } = {}) {
     try {
       loadingPDB = true
       structure = await getStructure({
@@ -241,6 +377,12 @@
       measureMode = null
       ctxMenu = null
       addView('all', { type: 'vdw' })
+      if (resetCamera || !camera) {
+        const base = getCameraForAtoms(structure.atoms)
+        camera = base
+          ? { ...base, framingZoom: 1, framingGeneration: 0, poseResetGeneration: 0 }
+          : null
+      }
     } catch (ex) {
       structure = null
       alert(ex instanceof Error ? ex.message : String(ex))
@@ -402,546 +544,930 @@
       poseResetGeneration: (camera?.poseResetGeneration ?? 0) + 1
     }
   }
+
+  function clearWorkspace() {
+    structure = null
+    filePath = null
+    views = []
+    measurements = []
+    measurePicks = []
+    atomLabels = []
+    camera = null
+    measureMode = null
+    ctxMenu = null
+    previewPositions = null
+  }
+
+  function onSaveViewpoint() {
+    if (!camera) return
+    try {
+      localStorage.setItem('gw_viewpoint', JSON.stringify(camera))
+    } catch {}
+  }
+
+  function onLoadViewpoint() {
+    try {
+      const raw = localStorage.getItem('gw_viewpoint')
+      if (!raw) return
+      const vp = JSON.parse(raw)
+      camera = {
+        ...vp,
+        framingGeneration: (camera?.framingGeneration ?? 0) + 1,
+        poseResetGeneration: (camera?.poseResetGeneration ?? 0) + 1
+      }
+    } catch {}
+  }
+
+  async function onSavePdb() {
+    if (!filePath) return
+    const r = await window.api.saveFileDialog('Save PDB', [
+      { name: 'PDB files', extensions: ['pdb'] }
+    ])
+    if (!r || r.canceled || !r.filePath) return
+    try {
+      await editSavePdb({ source: filePath, dest: r.filePath })
+    } catch (ex) {
+      alert(ex instanceof Error ? ex.message : String(ex))
+    }
+  }
+
+  async function onSaveImage() {
+    const canvas = viewerEl?.querySelector('canvas')
+    if (!canvas) return
+    const r = await window.api.saveFileDialog('Save Image', [
+      { name: 'PNG Image', extensions: ['png'] }
+    ])
+    if (!r || r.canceled || !r.filePath) return
+    const dataUrl = /** @type {HTMLCanvasElement} */ (canvas).toDataURL('image/png')
+    const base64 = dataUrl.split(',')[1]
+    await window.api.writeBinary(r.filePath, base64)
+  }
+
+  async function applyEditResult(result) {
+    await loadStructure(result.path, { resetCamera: false })
+  }
+
+  async function onEditRenameChain() {
+    if (!filePath || !rcOldChain || !rcNewChain) return
+    editBusy = true
+    try {
+      const res = await editRenameChain({
+        path: filePath,
+        oldChain: rcOldChain,
+        newChain: rcNewChain
+      })
+      dlgRenameChain?.close()
+      await applyEditResult(res)
+    } catch (ex) {
+      alert(ex instanceof Error ? ex.message : String(ex))
+    } finally {
+      editBusy = false
+    }
+  }
+
+  async function onEditRenameResidues() {
+    if (!filePath || !rrChain || !rrNewName) return
+    editBusy = true
+    try {
+      const res = await editRenameResidues({
+        path: filePath,
+        chainId: rrChain,
+        start: rrStart,
+        end: rrEnd,
+        newName: rrNewName
+      })
+      dlgRenameRes?.close()
+      await applyEditResult(res)
+    } catch (ex) {
+      alert(ex instanceof Error ? ex.message : String(ex))
+    } finally {
+      editBusy = false
+    }
+  }
+
+  async function onEditRenumberResidues() {
+    if (!filePath || !rnChain) return
+    editBusy = true
+    try {
+      const res = await editRenumberResidues({
+        path: filePath,
+        chainId: rnChain,
+        start: rnStart,
+        end: rnEnd,
+        newStart: rnNewStart
+      })
+      dlgRenumberRes?.close()
+      await applyEditResult(res)
+    } catch (ex) {
+      alert(ex instanceof Error ? ex.message : String(ex))
+    } finally {
+      editBusy = false
+    }
+  }
+
+  async function onEditDeleteAtoms() {
+    if (!filePath || !daSelection) return
+    editBusy = true
+    try {
+      const res = await editDeleteAtoms({ path: filePath, selection: daSelection })
+      dlgDeleteAtoms?.close()
+      await applyEditResult(res)
+    } catch (ex) {
+      alert(ex instanceof Error ? ex.message : String(ex))
+    } finally {
+      editBusy = false
+    }
+  }
+
+  // ── Preview helper ─────────────────────────────────────────────────
+  /**
+   * Return atoms with preview positions applied if a preview is active.
+   * @param {import('../lib/backendApi.js').View} view
+   */
+  function viewAtoms(view) {
+    if (!previewPositions || !view.atoms) return view.atoms
+    return view.atoms.map((a) => {
+      const pos = previewPositions[a.index]
+      if (!pos) return a
+      return { ...a, x: pos[0], y: pos[1], z: pos[2] }
+    })
+  }
+
+  function _buildTransformOp() {
+    if (transformTab === 'rotate') {
+      return { type: 'rotate', angle: tfRotAngle, axis: tfRotAxis, center: tfRotCenter }
+    } else if (transformTab === 'translate') {
+      return { type: 'translate', dx: tfTx, dy: tfTy, dz: tfTz }
+    } else {
+      return {
+        type: 'align',
+        targetAxis: tfAlignTargetAxis,
+        secondarySelection: tfAlignSecSel.trim() || null,
+        secondaryAxis: tfAlignSecAxis,
+        applyTo: tfAlignApplyTo.trim() || null
+      }
+    }
+  }
+
+  function _buildTransformSel() {
+    return transformTab === 'align' ? tfAlignPrimSel.trim() || null : tfSel.trim() || null
+  }
+
+  async function onTransformPreview() {
+    if (!filePath) return
+    tfPreviewBusy = true
+    try {
+      const r = await transformPreview({
+        path: filePath,
+        selection: _buildTransformSel(),
+        op: _buildTransformOp()
+      })
+      previewPositions = r.positions
+    } catch (ex) {
+      alert(ex instanceof Error ? ex.message : String(ex))
+    } finally {
+      tfPreviewBusy = false
+    }
+  }
+
+  async function onTransformApply() {
+    if (!filePath) return
+    editBusy = true
+    try {
+      const res = await transformApply({
+        path: filePath,
+        selection: _buildTransformSel(),
+        op: _buildTransformOp()
+      })
+      previewPositions = null
+      dlgTransform?.close()
+      await applyEditResult(res)
+    } catch (ex) {
+      alert(ex instanceof Error ? ex.message : String(ex))
+    } finally {
+      editBusy = false
+    }
+  }
+
+  async function onCenterAtOrigin() {
+    if (!filePath) return
+    editBusy = true
+    try {
+      const sel = tfSel.trim() || null
+      const res = await transformApply({ path: filePath, selection: sel, op: { type: 'center' } })
+      previewPositions = null
+      dlgTransform?.close()
+      await applyEditResult(res)
+    } catch (ex) {
+      alert(ex instanceof Error ? ex.message : String(ex))
+    } finally {
+      editBusy = false
+    }
+  }
+
+  async function onMemproRun() {
+    if (!filePath) return
+    memproBusy = true
+    try {
+      const r = await memproRun({
+        path: filePath,
+        nIters: memproNIters,
+        gridSize: memproGridSize,
+        dualMembrane: memproDualMembrane,
+        peripheral: memproPeripheral,
+        useWeights: memproUseWeights,
+        flip: memproFlip,
+        membraneThickness: memproMembrane ? parseFloat(memproMembrane) : null
+      })
+      memproJobId = r.job_id
+      memproJobStatus = 'running'
+      memproResults = []
+      memproError = null
+    } catch (ex) {
+      alert(ex instanceof Error ? ex.message : String(ex))
+    } finally {
+      memproBusy = false
+    }
+  }
+
+  async function onMemproApply(result) {
+    editBusy = true
+    try {
+      await loadStructure(result.pdb_path)
+      dlgMempro?.close()
+    } catch (ex) {
+      alert(ex instanceof Error ? ex.message : String(ex))
+    } finally {
+      editBusy = false
+    }
+  }
 </script>
 
-<div class="flex min-w-0 flex-1">
-  <div
-    class="flex shrink-0 flex-col gap-2 overflow-y-auto border-r border-neutral-800 p-4"
-    style="width:{leftW}px"
-  >
-    <div class="space-y-2">
-      <p class="mb-1 text-xs">Structure file:</p>
-      {#if filePath && !loadingPDB}
-        <div
-          class="w-full rounded-md border border-neutral-800 p-2 font-mono text-xs wrap-anywhere"
-        >
-          {filePath}
-        </div>
-        <Button variant="outline" className="w-full" onclick={onOpenPdb}
-          >Select another file...</Button
-        >
-      {:else}
-        <Button
-          variant="outline"
-          className="w-full flex items-center gap-1"
-          onclick={onOpenPdb}
-          disabled={loadingPDB}
-        >
-          {#if loadingPDB}
-            <Spinner />
-            Loading...
-          {:else}
-            Select a file...
+<div class="flex min-w-0 flex-1 flex-col">
+  <div class="flex min-h-0 min-w-0 flex-1">
+    <div
+      class="relative min-h-0 min-w-0 flex-1 bg-black"
+      bind:this={viewerEl}
+      bind:clientWidth={canvasWidth}
+      bind:clientHeight={canvasHeight}
+    >
+      {#if structure && camera}
+        <Canvas onAtomClick={handleCanvasClick} onAtomContextMenu={handleCanvasContextMenu}>
+          <CameraRig framing={camera} />
+          {#each views.filter((v) => v.visible) as view (view.id)}
+            {#if view.representation.type === 'ball-stick'}
+              <BallStick
+                atoms={viewAtoms(view)}
+                bonds={view.bonds}
+                getColor={view.colorScheme.resolver}
+                quality={view.quality ?? 3}
+                atomScale={view.atomScale ?? 1.0}
+                bondScale={view.bondScale ?? 1.0}
+                metalness={view.material?.metalness ?? 0.08}
+                roughness={view.material?.roughness ?? 0.48}
+                emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
+              />
+            {:else if view.representation.type === 'cartoon'}
+              <Cartoon
+                atoms={viewAtoms(view)}
+                residues={view.residues}
+                getColor={view.colorScheme.resolver}
+                helixWidth={view.helixWidth ?? 1.0}
+                sheetWidth={view.sheetWidth ?? 0.875}
+                coilWidth={view.coilWidth ?? 0.125}
+                ssColors={view.ssColors}
+                quality={view.quality ?? 3}
+                metalness={view.material?.metalness ?? 0.08}
+                roughness={view.material?.roughness ?? 0.48}
+                emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
+              />
+            {:else if view.representation.type === 'tube'}
+              <Tube
+                atoms={viewAtoms(view)}
+                residues={view.residues}
+                getColor={view.colorScheme.resolver}
+                tubeRadius={view.tubeRadius ?? 0.9}
+                ssColors={view.ssColors}
+                quality={view.quality ?? 3}
+                metalness={view.material?.metalness ?? 0.08}
+                roughness={view.material?.roughness ?? 0.48}
+                emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
+              />
+            {:else if view.representation.type === 'vdw'}
+              <VdwSpheres
+                atoms={viewAtoms(view)}
+                getColor={view.colorScheme.resolver}
+                quality={view.quality ?? 3}
+                atomScale={view.atomScale ?? 1.0}
+                metalness={view.material?.metalness ?? 0.12}
+                roughness={view.material?.roughness ?? 0.45}
+                emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
+              />
+            {/if}
+          {/each}
+          {#if axesLinesVisible}
+            <AxesLines length={camera.extent * 2} />
           {/if}
-        </Button>
+        </Canvas>
+        {#if axesVisible}
+          <AxesGizmo />
+        {/if}
+        <MeasureOverlay
+          {measurements}
+          picks={measurePicks}
+          {atomLabels}
+          width={canvasWidth}
+          height={canvasHeight}
+        />
+        {#if measureMode}
+          <div
+            class="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-black/80 px-4 py-1.5 text-xs text-yellow-300"
+          >
+            {measureMode} — pick atom {measurePicks.length + 1} / {MEASURE_NEEDS[measureMode]}
+            · right-click to cancel
+          </div>
+        {/if}
       {/if}
     </div>
 
-    {#if !loadingPDB}
-      <Divider message="or" />
+    <!-- Right-panel resize handle -->
+    <div
+      class="w-1 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-yellow-500/50"
+      role="separator"
+      aria-orientation="vertical"
+      title="Drag to resize panel"
+      onpointerdown={_startRightResize}
+    ></div>
 
-      <form class="flex gap-2" onsubmit={onFetchPDB}>
-        <Input
-          placeholder="1crn"
-          className="w-[calc(4ch+--spacing(3.5)*2)] font-mono"
-          bind:value={pdbId}
-          oninput={(e) => {
-            if (e.target.value.length > 4) e.target.value = e.target.value.slice(0, 4)
-          }}
-        />
-        <Button
-          className="w-full"
-          variant="outline"
-          type="submit"
-          disabled={loadingPDB || !isPdbIdValid}>Download PDB</Button
-        >
-      </form>
-    {/if}
-  </div>
-
-  <!-- Left-panel resize handle -->
-  <div
-    class="w-1 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-yellow-500/50"
-    role="separator"
-    aria-orientation="vertical"
-    title="Drag to resize panel"
-    onpointerdown={_startResize}
-  ></div>
-
-  <div
-    class="relative min-h-100 min-w-100 flex-1 bg-black"
-    bind:clientWidth={canvasWidth}
-    bind:clientHeight={canvasHeight}
-  >
-    {#if structure && camera}
-      <Canvas onAtomClick={handleCanvasClick} onAtomContextMenu={handleCanvasContextMenu}>
-        <CameraRig framing={camera} />
-        {#each views.filter((v) => v.visible) as view (view.id)}
-          {#if view.representation.type === 'ball-stick'}
-            <BallStick
-              atoms={view.atoms}
-              bonds={view.bonds}
-              getColor={view.colorScheme.resolver}
-              quality={view.quality ?? 3}
-              atomScale={view.atomScale ?? 1.0}
-              bondScale={view.bondScale ?? 1.0}
-              metalness={view.material?.metalness ?? 0.08}
-              roughness={view.material?.roughness ?? 0.48}
-              emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
+    <div class="flex shrink-0 flex-col border-l border-neutral-800" style="width:{rightW}px">
+      <h2 class="border-b border-neutral-800 p-2 text-xs font-semibold">Representations</h2>
+      {#if views.length > 0 || filePath}
+        <div class="min-h-0 flex-1 overflow-y-auto">
+          {#each views as view, i (view.id)}
+            <ViewItem
+              bind:view={views[i]}
+              onremove={() => removeView(view.id)}
+              oncenter={() => centerCameraOnAtoms(view.atoms)}
             />
-          {:else if view.representation.type === 'cartoon'}
-            <Cartoon
-              atoms={view.atoms}
-              residues={view.residues}
-              getColor={view.colorScheme.resolver}
-              helixWidth={view.helixWidth ?? 1.0}
-              sheetWidth={view.sheetWidth ?? 0.875}
-              coilWidth={view.coilWidth ?? 0.125}
-              ssColors={view.ssColors}
-              quality={view.quality ?? 3}
-              metalness={view.material?.metalness ?? 0.08}
-              roughness={view.material?.roughness ?? 0.48}
-              emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
-            />
-          {:else if view.representation.type === 'tube'}
-            <Tube
-              atoms={view.atoms}
-              residues={view.residues}
-              getColor={view.colorScheme.resolver}
-              tubeRadius={view.tubeRadius ?? 0.9}
-              ssColors={view.ssColors}
-              quality={view.quality ?? 3}
-              metalness={view.material?.metalness ?? 0.08}
-              roughness={view.material?.roughness ?? 0.48}
-              emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
-            />
-          {:else if view.representation.type === 'vdw'}
-            <VdwSpheres
-              atoms={view.atoms}
-              getColor={view.colorScheme.resolver}
-              quality={view.quality ?? 3}
-              atomScale={view.atomScale ?? 1.0}
-              metalness={view.material?.metalness ?? 0.12}
-              roughness={view.material?.roughness ?? 0.45}
-              emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
-            />
-          {/if}
-        {/each}
-        {#if axesLinesVisible}
-          <AxesLines length={camera.extent * 2} center={camera.center} />
-        {/if}
-      </Canvas>
-      {#if axesVisible}
-        <AxesGizmo />
-      {/if}
-      <MeasureOverlay
-        {measurements}
-        picks={measurePicks}
-        {atomLabels}
-        width={canvasWidth}
-        height={canvasHeight}
-      />
-      {#if measureMode}
-        <div
-          class="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-black/80 px-4 py-1.5 text-xs text-yellow-300"
-        >
-          {measureMode} — pick atom {measurePicks.length + 1} / {MEASURE_NEEDS[measureMode]}
-          · right-click to cancel
+          {/each}
         </div>
-      {/if}
-    {/if}
-  </div>
+        <div class="flex gap-1 border-t border-neutral-800 p-2">
+          {#snippet toolbarBtn(title, onclick, Icon, className)}
+            <button
+              type="button"
+              class="flex size-7 items-center justify-center rounded-lg border border-neutral-800 bg-neutral-900 transition-colors hover:border-neutral-700 hover:bg-neutral-800 active:translate-y-0.5"
+              aria-label={title}
+              {title}
+              {onclick}
+            >
+              <Icon {className} />
+            </button>
+          {/snippet}
 
-  <!-- Right-panel resize handle -->
-  <div
-    class="w-1 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-yellow-500/50"
-    role="separator"
-    aria-orientation="vertical"
-    title="Drag to resize panel"
-    onpointerdown={_startRightResize}
-  ></div>
-
-  <div class="flex shrink-0 flex-col border-l border-neutral-800" style="width:{rightW}px">
-    <h2 class="border-b border-neutral-800 p-2 text-xs font-semibold">Representations</h2>
-    {#if views.length > 0 || filePath}
-      <div class="min-h-0 flex-1 overflow-y-auto">
-        {#each views as view, i (view.id)}
-          <ViewItem
-            bind:view={views[i]}
-            onremove={() => removeView(view.id)}
-            oncenter={() => centerCameraOnAtoms(view.atoms)}
-          />
-        {/each}
-      </div>
-      <div class="flex gap-1 border-t border-neutral-800 p-2">
-        {#snippet toolbarBtn(title, onclick, Icon, className)}
+          {@render toolbarBtn('Add view', () => addView(), Plus, 'size-3 fill-white')}
+          {@render toolbarBtn(
+            'Auto-generate representations',
+            onAutoGenerateViews,
+            DetectIcon,
+            'size-4 stroke-2 stroke-white'
+          )}
+          {@render toolbarBtn(
+            axesVisible ? 'Hide axes gizmo' : 'Show axes gizmo',
+            () => (axesVisible = !axesVisible),
+            Axes,
+            `size-4 ${axesVisible ? 'fill-white' : 'fill-neutral-500'}`
+          )}
+          {@render toolbarBtn(
+            axesLinesVisible ? 'Hide axes lines' : 'Show axes lines',
+            () => (axesLinesVisible = !axesLinesVisible),
+            AxesLinesIcon,
+            `size-4 stroke-2 ${axesLinesVisible ? 'opacity-100' : 'opacity-45'}`
+          )}
+          {@render toolbarBtn('Reset camera', resetCamera, ResetIcon, 'size-3 fill-white')}
           <button
             type="button"
-            class="flex size-7 items-center justify-center rounded-lg border border-neutral-800 bg-neutral-900 transition-colors hover:border-neutral-700 hover:bg-neutral-800 active:translate-y-0.5"
-            aria-label={title}
-            {title}
-            {onclick}
+            class="flex h-7 items-center justify-center rounded-lg border border-neutral-800 bg-neutral-900 px-1.5 text-xs text-neutral-400 transition-colors hover:border-neutral-700 hover:bg-neutral-800 active:translate-y-0.5 disabled:opacity-40"
+            title="Save viewpoint"
+            aria-label="Save viewpoint"
+            onclick={onSaveViewpoint}
+            disabled={!camera}>VP↑</button
           >
-            <Icon {className} />
-          </button>
-        {/snippet}
-
-        {@render toolbarBtn('Add view', () => addView(), Plus, 'size-3 fill-white')}
-        {@render toolbarBtn(
-          'Auto-generate representations',
-          onAutoGenerateViews,
-          DetectIcon,
-          'size-4 stroke-2 stroke-white'
-        )}
-        {@render toolbarBtn(
-          axesVisible ? 'Hide axes gizmo' : 'Show axes gizmo',
-          () => (axesVisible = !axesVisible),
-          Axes,
-          `size-4 ${axesVisible ? 'fill-white' : 'fill-neutral-500'}`
-        )}
-        {@render toolbarBtn(
-          axesLinesVisible ? 'Hide axes lines' : 'Show axes lines',
-          () => (axesLinesVisible = !axesLinesVisible),
-          AxesLinesIcon,
-          `size-4 stroke-2 ${axesLinesVisible ? 'opacity-100' : 'opacity-45'}`
-        )}
-        {@render toolbarBtn('Reset camera', resetCamera, ResetIcon, 'size-3 fill-white')}
-        <!-- Measurement mode buttons -->
-        <div class="mx-0.5 h-4 w-px bg-neutral-700"></div>
-        {#snippet measureBtn(title, mode)}
           <button
             type="button"
-            class="flex size-7 items-center justify-center rounded-lg border transition-colors active:translate-y-0.5
+            class="flex h-7 items-center justify-center rounded-lg border border-neutral-800 bg-neutral-900 px-1.5 text-xs text-neutral-400 transition-colors hover:border-neutral-700 hover:bg-neutral-800 active:translate-y-0.5 disabled:opacity-40"
+            title="Load saved viewpoint"
+            aria-label="Load saved viewpoint"
+            onclick={onLoadViewpoint}>VP↓</button
+          >
+          <!-- Measurement mode buttons -->
+          <div class="mx-0.5 h-4 w-px bg-neutral-700"></div>
+          {#snippet measureBtn(title, mode)}
+            <button
+              type="button"
+              class="flex size-7 items-center justify-center rounded-lg border transition-colors active:translate-y-0.5
               {measureMode === mode
-              ? 'border-yellow-500 bg-yellow-500/10 text-yellow-400'
-              : 'border-neutral-800 bg-neutral-900 text-neutral-400 hover:border-neutral-700 hover:bg-neutral-800'}"
-            aria-label={title}
-            {title}
-            onclick={() => toggleMeasureMode(mode)}
-          >
-            {#if mode === 'distance'}
-              <!-- Two filled circles connected by a stick -->
-              <svg viewBox="0 0 16 8" class="size-4" fill="currentColor" aria-hidden="true">
-                <circle cx="2.5" cy="4" r="2.5" />
-                <line
-                  x1="5"
-                  y1="4"
-                  x2="11"
-                  y2="4"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  stroke-linecap="round"
-                />
-                <circle cx="13.5" cy="4" r="2.5" />
-              </svg>
-            {:else if mode === 'angle'}
-              <!-- 45-degree angle: vertex at left, horizontal arm, diagonal arm -->
-              <svg viewBox="0 0 16 14" class="size-4" fill="currentColor" aria-hidden="true">
-                <circle cx="2" cy="12" r="2" />
-                <circle cx="14" cy="12" r="2" />
-                <circle cx="11" cy="3" r="2" />
-                <line
-                  x1="4"
-                  y1="12"
-                  x2="12"
-                  y2="12"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  stroke-linecap="round"
-                />
-                <line
-                  x1="3.4"
-                  y1="10.6"
-                  x2="9.6"
-                  y2="4.4"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  stroke-linecap="round"
-                />
-              </svg>
-            {:else}
-              <!-- Four dots in a zigzag -->
-              <svg viewBox="0 0 16 12" class="size-4" fill="currentColor" aria-hidden="true">
-                <circle cx="2" cy="3" r="2" />
-                <circle cx="6.5" cy="9" r="2" />
-                <circle cx="9.5" cy="3" r="2" />
-                <circle cx="14" cy="9" r="2" />
-                <polyline
-                  points="2,3 6.5,9 9.5,3 14,9"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
+                ? 'border-yellow-500 bg-yellow-500/10 text-yellow-400'
+                : 'border-neutral-800 bg-neutral-900 text-neutral-400 hover:border-neutral-700 hover:bg-neutral-800'}"
+              aria-label={title}
+              {title}
+              onclick={() => toggleMeasureMode(mode)}
+            >
+              {#if mode === 'distance'}
+                <!-- Two filled circles connected by a stick -->
+                <svg viewBox="0 0 16 8" class="size-4" fill="currentColor" aria-hidden="true">
+                  <circle cx="2.5" cy="4" r="2.5" />
+                  <line
+                    x1="5"
+                    y1="4"
+                    x2="11"
+                    y2="4"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                  />
+                  <circle cx="13.5" cy="4" r="2.5" />
+                </svg>
+              {:else if mode === 'angle'}
+                <!-- 45-degree angle: vertex at left, horizontal arm, diagonal arm -->
+                <svg viewBox="0 0 16 14" class="size-4" fill="currentColor" aria-hidden="true">
+                  <circle cx="2" cy="12" r="2" />
+                  <circle cx="14" cy="12" r="2" />
+                  <circle cx="11" cy="3" r="2" />
+                  <line
+                    x1="4"
+                    y1="12"
+                    x2="12"
+                    y2="12"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                  />
+                  <line
+                    x1="3.4"
+                    y1="10.6"
+                    x2="9.6"
+                    y2="4.4"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                  />
+                </svg>
+              {:else}
+                <!-- Four dots in a zigzag -->
+                <svg viewBox="0 0 16 12" class="size-4" fill="currentColor" aria-hidden="true">
+                  <circle cx="2" cy="3" r="2" />
+                  <circle cx="6.5" cy="9" r="2" />
+                  <circle cx="9.5" cy="3" r="2" />
+                  <circle cx="14" cy="9" r="2" />
+                  <polyline
+                    points="2,3 6.5,9 9.5,3 14,9"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              {/if}
+            </button>
+          {/snippet}
+          {@render measureBtn('Distance — click 2 atoms', 'distance')}
+          {@render measureBtn('Angle — click 3 atoms', 'angle')}
+          {@render measureBtn('Dihedral — click 4 atoms', 'dihedral')}
+        </div>
+        {#if measurements.length > 0}
+          <!-- Measurements collapsible section -->
+          <div class="border-t border-neutral-800">
+            <div class="flex items-center">
+              <button
+                class="flex flex-1 items-center justify-between px-2 py-1.5 hover:bg-neutral-800/40"
+                onclick={() => (measExpanded = !measExpanded)}
+              >
+                <span class="text-xs font-semibold text-neutral-300">Measurements</span>
+                <span class="text-xs text-neutral-500">{measExpanded ? '▾' : '▸'}</span>
+              </button>
+              <button
+                onclick={clearAllMeasurements}
+                class="px-2 py-1.5 text-xs text-neutral-500 hover:text-red-400"
+                title="Clear all measurements">&#x2715;</button
+              >
+            </div>
+            {#if measExpanded}
+              <div class="max-h-40 space-y-0.5 overflow-y-auto px-1.5 pb-1.5">
+                {#each measurements as m (m.id)}
+                  <div class="flex flex-col rounded hover:bg-neutral-800/40">
+                    <div class="flex items-center gap-1.5 px-1 py-0.5">
+                      <span class="shrink-0" style="color:{m.color ?? '#facc15'}">
+                        {#if m.type === 'distance'}
+                          <svg
+                            viewBox="0 0 16 8"
+                            class="size-3"
+                            fill="currentColor"
+                            aria-hidden="true"
+                          >
+                            <circle cx="2.5" cy="4" r="2.5" />
+                            <line
+                              x1="5"
+                              y1="4"
+                              x2="11"
+                              y2="4"
+                              stroke="currentColor"
+                              stroke-width="1.5"
+                              stroke-linecap="round"
+                            />
+                            <circle cx="13.5" cy="4" r="2.5" />
+                          </svg>
+                        {:else if m.type === 'angle'}
+                          <svg
+                            viewBox="0 0 16 14"
+                            class="size-3"
+                            fill="currentColor"
+                            aria-hidden="true"
+                          >
+                            <circle cx="2" cy="12" r="2" />
+                            <circle cx="14" cy="12" r="2" />
+                            <circle cx="11" cy="3" r="2" />
+                            <line
+                              x1="4"
+                              y1="12"
+                              x2="12"
+                              y2="12"
+                              stroke="currentColor"
+                              stroke-width="1.5"
+                              stroke-linecap="round"
+                            />
+                            <line
+                              x1="3.4"
+                              y1="10.6"
+                              x2="9.6"
+                              y2="4.4"
+                              stroke="currentColor"
+                              stroke-width="1.5"
+                              stroke-linecap="round"
+                            />
+                          </svg>
+                        {:else}
+                          <svg
+                            viewBox="0 0 16 12"
+                            class="size-3"
+                            fill="currentColor"
+                            aria-hidden="true"
+                          >
+                            <circle cx="2" cy="3" r="2" />
+                            <circle cx="6.5" cy="9" r="2" />
+                            <circle cx="9.5" cy="3" r="2" />
+                            <circle cx="14" cy="9" r="2" />
+                            <polyline
+                              points="2,3 6.5,9 9.5,3 14,9"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.5"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                            />
+                          </svg>
+                        {/if}
+                      </span>
+                      <span class="flex-1 font-mono text-xs" style="color:{m.color ?? '#facc15'}"
+                        >{measurementLabel(m)}</span
+                      >
+                      <button
+                        onclick={() => toggleGear('meas', m.id)}
+                        class="shrink-0 text-xs text-neutral-600 hover:text-neutral-300"
+                        title="Settings">&#x2699;</button
+                      >
+                      <button
+                        onclick={() => removeMeasurement(m.id)}
+                        class="shrink-0 text-xs text-neutral-600 hover:text-red-400"
+                        >&#x2715;</button
+                      >
+                    </div>
+                    {#if gearOpen?.kind === 'meas' && gearOpen.id === m.id}
+                      <div class="space-y-1 border-t border-neutral-800/60 px-2 py-1">
+                        <div class="flex items-center gap-1.5">
+                          <span class="text-xs text-neutral-500">Color</span>
+                          <input
+                            type="color"
+                            bind:value={m.color}
+                            class="size-5 cursor-pointer rounded border-0 bg-transparent p-0"
+                          />
+                        </div>
+                        <div class="flex items-center gap-1.5">
+                          <span class="text-xs text-neutral-500">Size</span>
+                          <input
+                            type="range"
+                            min="8"
+                            max="24"
+                            step="1"
+                            bind:value={m.size}
+                            class="h-1 flex-1 accent-yellow-400"
+                          />
+                          <span class="w-5 text-right text-xs text-neutral-400 tabular-nums"
+                            >{m.size}</span
+                          >
+                        </div>
+                        <div class="flex items-center gap-1.5">
+                          <span class="text-xs text-neutral-500">Line</span>
+                          <input
+                            type="range"
+                            min="0.5"
+                            max="4"
+                            step="0.5"
+                            bind:value={m.lineWidth}
+                            class="h-1 flex-1 accent-yellow-400"
+                          />
+                          <span class="w-5 text-right text-xs text-neutral-400 tabular-nums"
+                            >{m.lineWidth}</span
+                          >
+                        </div>
+                      </div>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
             {/if}
-          </button>
-        {/snippet}
-        {@render measureBtn('Distance — click 2 atoms', 'distance')}
-        {@render measureBtn('Angle — click 3 atoms', 'angle')}
-        {@render measureBtn('Dihedral — click 4 atoms', 'dihedral')}
-      </div>
-      {#if measurements.length > 0}
-        <!-- Measurements collapsible section -->
+          </div>
+        {/if}
+        <!-- Labels collapsible section (always shown when structure loaded) -->
         <div class="border-t border-neutral-800">
           <div class="flex items-center">
             <button
               class="flex flex-1 items-center justify-between px-2 py-1.5 hover:bg-neutral-800/40"
-              onclick={() => (measExpanded = !measExpanded)}
+              onclick={() => (labelsExpanded = !labelsExpanded)}
             >
-              <span class="text-xs font-semibold text-neutral-300">Measurements</span>
-              <span class="text-xs text-neutral-500">{measExpanded ? '▾' : '▸'}</span>
+              <span class="text-xs font-semibold text-neutral-300">Labels</span>
+              <span class="text-xs text-neutral-500">{labelsExpanded ? '▾' : '▸'}</span>
             </button>
-            <button
-              onclick={clearAllMeasurements}
-              class="px-2 py-1.5 text-xs text-neutral-500 hover:text-red-400"
-              title="Clear all measurements">&#x2715;</button
-            >
+            {#if atomLabels.length > 0}
+              <button
+                onclick={clearAllLabels}
+                class="px-2 py-1.5 text-xs text-neutral-500 hover:text-red-400"
+                title="Clear all labels">&#x2715;</button
+              >
+            {/if}
           </div>
-          {#if measExpanded}
-            <div class="max-h-40 space-y-0.5 overflow-y-auto px-1.5 pb-1.5">
-              {#each measurements as m (m.id)}
-                <div class="flex flex-col rounded hover:bg-neutral-800/40">
-                  <div class="flex items-center gap-1.5 px-1 py-0.5">
-                    <span class="shrink-0" style="color:{m.color ?? '#facc15'}">
-                      {#if m.type === 'distance'}
-                        <svg
-                          viewBox="0 0 16 8"
-                          class="size-3"
-                          fill="currentColor"
-                          aria-hidden="true"
-                        >
-                          <circle cx="2.5" cy="4" r="2.5" />
-                          <line
-                            x1="5"
-                            y1="4"
-                            x2="11"
-                            y2="4"
-                            stroke="currentColor"
-                            stroke-width="1.5"
-                            stroke-linecap="round"
-                          />
-                          <circle cx="13.5" cy="4" r="2.5" />
-                        </svg>
-                      {:else if m.type === 'angle'}
-                        <svg
-                          viewBox="0 0 16 14"
-                          class="size-3"
-                          fill="currentColor"
-                          aria-hidden="true"
-                        >
-                          <circle cx="2" cy="12" r="2" />
-                          <circle cx="14" cy="12" r="2" />
-                          <circle cx="11" cy="3" r="2" />
-                          <line
-                            x1="4"
-                            y1="12"
-                            x2="12"
-                            y2="12"
-                            stroke="currentColor"
-                            stroke-width="1.5"
-                            stroke-linecap="round"
-                          />
-                          <line
-                            x1="3.4"
-                            y1="10.6"
-                            x2="9.6"
-                            y2="4.4"
-                            stroke="currentColor"
-                            stroke-width="1.5"
-                            stroke-linecap="round"
-                          />
-                        </svg>
-                      {:else}
-                        <svg
-                          viewBox="0 0 16 12"
-                          class="size-3"
-                          fill="currentColor"
-                          aria-hidden="true"
-                        >
-                          <circle cx="2" cy="3" r="2" />
-                          <circle cx="6.5" cy="9" r="2" />
-                          <circle cx="9.5" cy="3" r="2" />
-                          <circle cx="14" cy="9" r="2" />
-                          <polyline
-                            points="2,3 6.5,9 9.5,3 14,9"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="1.5"
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                          />
-                        </svg>
-                      {/if}
-                    </span>
-                    <span class="flex-1 font-mono text-xs" style="color:{m.color ?? '#facc15'}"
-                      >{measurementLabel(m)}</span
-                    >
-                    <button
-                      onclick={() => toggleGear('meas', m.id)}
-                      class="shrink-0 text-xs text-neutral-600 hover:text-neutral-300"
-                      title="Settings">&#x2699;</button
-                    >
-                    <button
-                      onclick={() => removeMeasurement(m.id)}
-                      class="shrink-0 text-xs text-neutral-600 hover:text-red-400">&#x2715;</button
-                    >
-                  </div>
-                  {#if gearOpen?.kind === 'meas' && gearOpen.id === m.id}
-                    <div class="space-y-1 border-t border-neutral-800/60 px-2 py-1">
-                      <div class="flex items-center gap-1.5">
-                        <span class="text-xs text-neutral-500">Color</span>
-                        <input
-                          type="color"
-                          bind:value={m.color}
-                          class="size-5 cursor-pointer rounded border-0 bg-transparent p-0"
-                        />
-                      </div>
-                      <div class="flex items-center gap-1.5">
-                        <span class="text-xs text-neutral-500">Size</span>
-                        <input
-                          type="range"
-                          min="8"
-                          max="24"
-                          step="1"
-                          bind:value={m.size}
-                          class="h-1 flex-1 accent-yellow-400"
-                        />
-                        <span class="w-5 text-right text-xs text-neutral-400 tabular-nums"
-                          >{m.size}</span
-                        >
-                      </div>
-                      <div class="flex items-center gap-1.5">
-                        <span class="text-xs text-neutral-500">Line</span>
-                        <input
-                          type="range"
-                          min="0.5"
-                          max="4"
-                          step="0.5"
-                          bind:value={m.lineWidth}
-                          class="h-1 flex-1 accent-yellow-400"
-                        />
-                        <span class="w-5 text-right text-xs text-neutral-400 tabular-nums"
-                          >{m.lineWidth}</span
-                        >
-                      </div>
-                    </div>
-                  {/if}
-                </div>
-              {/each}
+          {#if labelsExpanded}
+            <!-- Size + Color controls -->
+            <div class="flex items-center gap-1.5 border-b border-neutral-800/60 px-2 py-1">
+              <span class="text-xs text-neutral-500">Size</span>
+              <input
+                type="range"
+                min="8"
+                max="24"
+                step="1"
+                value={labelSize}
+                oninput={(e) => {
+                  labelSize = +e.target.value
+                  for (const l of atomLabels) l.size = labelSize
+                }}
+                class="h-1 flex-1 accent-yellow-400"
+              />
+              <span class="w-5 text-right text-xs text-neutral-400 tabular-nums">{labelSize}</span>
+              <span class="ml-1 text-xs text-neutral-500">Color</span>
+              <input
+                type="color"
+                value={labelColor}
+                oninput={(e) => {
+                  labelColor = e.target.value
+                  for (const l of atomLabels) l.color = labelColor
+                }}
+                class="size-5 cursor-pointer rounded border-0 bg-transparent p-0"
+              />
             </div>
+            {#if atomLabels.length > 0}
+              <div class="max-h-32 space-y-0.5 overflow-y-auto px-1.5 pb-1.5">
+                {#each atomLabels as l (l.id)}
+                  <div class="flex flex-col rounded hover:bg-neutral-800/40">
+                    <div class="flex items-center gap-1.5 px-1 py-0.5">
+                      <span
+                        class="inline-block size-2 shrink-0 rounded-full"
+                        style="background:{l.color}"
+                      ></span>
+                      <span
+                        class="flex-1 truncate font-mono text-neutral-300"
+                        style="font-size:{l.size}px">{l.text}</span
+                      >
+                      <button
+                        onclick={() => toggleGear('label', l.id)}
+                        class="shrink-0 text-xs text-neutral-600 hover:text-neutral-300"
+                        title="Settings">&#x2699;</button
+                      >
+                      <button
+                        onclick={() => removeAtomLabel(l.id)}
+                        class="shrink-0 text-xs text-neutral-600 hover:text-red-400"
+                        >&#x2715;</button
+                      >
+                    </div>
+                    {#if gearOpen?.kind === 'label' && gearOpen.id === l.id}
+                      <div class="space-y-1 border-t border-neutral-800/60 px-2 py-1">
+                        <input
+                          type="text"
+                          bind:value={l.text}
+                          class="w-full rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-xs text-neutral-200 outline-none"
+                        />
+                        <div class="flex items-center gap-1.5">
+                          <span class="text-xs text-neutral-500">Size</span>
+                          <input
+                            type="range"
+                            min="8"
+                            max="24"
+                            step="1"
+                            bind:value={l.size}
+                            class="h-1 flex-1 accent-yellow-400"
+                          />
+                          <span class="w-5 text-right text-xs text-neutral-400 tabular-nums"
+                            >{l.size}</span
+                          >
+                          <input
+                            type="color"
+                            bind:value={l.color}
+                            class="size-5 cursor-pointer rounded border-0 bg-transparent p-0"
+                          />
+                        </div>
+                      </div>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            {/if}
           {/if}
+        </div>
+      {:else}
+        <div class="flex-1 p-2">
+          <Empty message="Load a PDB file to get started" className="text-sm h-full" />
         </div>
       {/if}
-      <!-- Labels collapsible section (always shown when structure loaded) -->
-      <div class="border-t border-neutral-800">
-        <div class="flex items-center">
-          <button
-            class="flex flex-1 items-center justify-between px-2 py-1.5 hover:bg-neutral-800/40"
-            onclick={() => (labelsExpanded = !labelsExpanded)}
-          >
-            <span class="text-xs font-semibold text-neutral-300">Labels</span>
-            <span class="text-xs text-neutral-500">{labelsExpanded ? '▾' : '▸'}</span>
-          </button>
-          {#if atomLabels.length > 0}
-            <button
-              onclick={clearAllLabels}
-              class="px-2 py-1.5 text-xs text-neutral-500 hover:text-red-400"
-              title="Clear all labels">&#x2715;</button
-            >
-          {/if}
-        </div>
-        {#if labelsExpanded}
-          <!-- Size + Color controls -->
-          <div class="flex items-center gap-1.5 border-b border-neutral-800/60 px-2 py-1">
-            <span class="text-xs text-neutral-500">Size</span>
-            <input
-              type="range"
-              min="8"
-              max="24"
-              step="1"
-              value={labelSize}
-              oninput={(e) => {
-                labelSize = +e.target.value
-                for (const l of atomLabels) l.size = labelSize
-              }}
-              class="h-1 flex-1 accent-yellow-400"
-            />
-            <span class="w-5 text-right text-xs text-neutral-400 tabular-nums">{labelSize}</span>
-            <span class="ml-1 text-xs text-neutral-500">Color</span>
-            <input
-              type="color"
-              value={labelColor}
-              oninput={(e) => {
-                labelColor = e.target.value
-                for (const l of atomLabels) l.color = labelColor
-              }}
-              class="size-5 cursor-pointer rounded border-0 bg-transparent p-0"
-            />
-          </div>
-          {#if atomLabels.length > 0}
-            <div class="max-h-32 space-y-0.5 overflow-y-auto px-1.5 pb-1.5">
-              {#each atomLabels as l (l.id)}
-                <div class="flex flex-col rounded hover:bg-neutral-800/40">
-                  <div class="flex items-center gap-1.5 px-1 py-0.5">
-                    <span
-                      class="inline-block size-2 shrink-0 rounded-full"
-                      style="background:{l.color}"
-                    ></span>
-                    <span
-                      class="flex-1 truncate font-mono text-neutral-300"
-                      style="font-size:{l.size}px">{l.text}</span
-                    >
-                    <button
-                      onclick={() => toggleGear('label', l.id)}
-                      class="shrink-0 text-xs text-neutral-600 hover:text-neutral-300"
-                      title="Settings">&#x2699;</button
-                    >
-                    <button
-                      onclick={() => removeAtomLabel(l.id)}
-                      class="shrink-0 text-xs text-neutral-600 hover:text-red-400">&#x2715;</button
-                    >
-                  </div>
-                  {#if gearOpen?.kind === 'label' && gearOpen.id === l.id}
-                    <div class="space-y-1 border-t border-neutral-800/60 px-2 py-1">
-                      <input
-                        type="text"
-                        bind:value={l.text}
-                        class="w-full rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-xs text-neutral-200 outline-none"
-                      />
-                      <div class="flex items-center gap-1.5">
-                        <span class="text-xs text-neutral-500">Size</span>
-                        <input
-                          type="range"
-                          min="8"
-                          max="24"
-                          step="1"
-                          bind:value={l.size}
-                          class="h-1 flex-1 accent-yellow-400"
-                        />
-                        <span class="w-5 text-right text-xs text-neutral-400 tabular-nums"
-                          >{l.size}</span
-                        >
-                        <input
-                          type="color"
-                          bind:value={l.color}
-                          class="size-5 cursor-pointer rounded border-0 bg-transparent p-0"
-                        />
-                      </div>
-                    </div>
-                  {/if}
-                </div>
-              {/each}
-            </div>
-          {/if}
-        {/if}
-      </div>
-    {:else}
-      <div class="flex-1 p-2">
-        <Empty message="Load a PDB file to get started" className="text-sm h-full" />
-      </div>
+    </div>
+  </div>
+  <!-- end inner row -->
+
+  <!-- Bottom toolbar -->
+  <div
+    class="relative flex h-8 shrink-0 items-center gap-1 border-t border-neutral-800 bg-neutral-950 px-2 text-[11px]"
+  >
+    <!-- Open file -->
+    <button
+      type="button"
+      class="flex items-center gap-1 rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-neutral-300 transition-colors hover:border-neutral-600 hover:bg-neutral-800 active:translate-y-0.5 disabled:opacity-40"
+      onclick={onOpenPdb}
+      disabled={loadingPDB}
+      title="Open PDB file"
+    >
+      {#if loadingPDB}
+        <Spinner />
+        Loading…
+      {:else}
+        <svg viewBox="0 0 16 16" class="size-3 fill-current" aria-hidden="true">
+          <path
+            d="M1.5 3A1.5 1.5 0 0 0 0 4.5v8A1.5 1.5 0 0 0 1.5 14h13a1.5 1.5 0 0 0 1.5-1.5v-6A1.5 1.5 0 0 0 14.5 5H7.707l-1.5-1.5H1.5z"
+          />
+        </svg>
+        Open
+      {/if}
+    </button>
+    {#if filePath && !loadingPDB}
+      <span class="max-w-36 truncate font-mono text-neutral-400" title={filePath}>
+        {filePath.split(/[/\\]/).at(-1)}
+      </span>
     {/if}
+
+    <!-- PDB download -->
+    <form
+      class="flex items-center gap-0.5"
+      onsubmit={(e) => {
+        e.preventDefault()
+        onFetchPDB()
+      }}
+    >
+      <input
+        type="text"
+        placeholder="1CRN"
+        maxlength="4"
+        class="w-14 rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 font-mono text-[11px] text-neutral-200 uppercase outline-none focus:border-neutral-500"
+        bind:value={pdbId}
+        oninput={(e) => {
+          if (/** @type {HTMLInputElement} */ (e.target).value.length > 4)
+            /** @type {HTMLInputElement} */ (e.target).value = /** @type {HTMLInputElement} */ (
+              e.target
+            ).value.slice(0, 4)
+        }}
+      />
+      <button
+        type="submit"
+        class="rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 text-neutral-300 transition-colors hover:border-neutral-500 hover:bg-neutral-800 disabled:opacity-40"
+        disabled={!isPdbIdValid || loadingPDB}
+        title="Download PDB from RCSB">↓ PDB</button
+      >
+    </form>
+
+    <div class="h-4 w-px bg-neutral-700"></div>
+
+    <!-- Edit dropdown -->
+    <div class="relative">
+      <button
+        type="button"
+        class="flex items-center gap-0.5 rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-neutral-300 transition-colors hover:border-neutral-600 hover:bg-neutral-800 disabled:opacity-40"
+        onclick={() => (editMenuOpen = !editMenuOpen)}
+        disabled={!filePath || editBusy}
+        title="Edit structure">Edit ▾</button
+      >
+      {#if editMenuOpen}
+        <div
+          class="fixed inset-0 z-30"
+          role="presentation"
+          onpointerdown={() => (editMenuOpen = false)}
+        ></div>
+        <div
+          class="absolute bottom-full left-0 z-40 mb-1 min-w-44 overflow-hidden rounded border border-neutral-700 bg-neutral-900 py-1 text-[11px] shadow-xl"
+        >
+          <button
+            type="button"
+            class="w-full px-3 py-1 text-left hover:bg-neutral-800"
+            onclick={() => {
+              editMenuOpen = false
+              dlgRenameChain?.showModal()
+            }}>Rename Chain…</button
+          >
+          <button
+            type="button"
+            class="w-full px-3 py-1 text-left hover:bg-neutral-800"
+            onclick={() => {
+              editMenuOpen = false
+              dlgRenameRes?.showModal()
+            }}>Rename Residues…</button
+          >
+          <button
+            type="button"
+            class="w-full px-3 py-1 text-left hover:bg-neutral-800"
+            onclick={() => {
+              editMenuOpen = false
+              dlgRenumberRes?.showModal()
+            }}>Renumber Residues…</button
+          >
+          <div class="my-0.5 border-t border-neutral-800"></div>
+          <button
+            type="button"
+            class="w-full px-3 py-1 text-left hover:bg-neutral-800"
+            onclick={() => {
+              editMenuOpen = false
+              dlgDeleteAtoms?.showModal()
+            }}>Delete Atoms…</button
+          >
+        </div>
+      {/if}
+    </div>
+
+    <!-- Transform -->
+    <button
+      type="button"
+      class="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-neutral-300 transition-colors hover:border-neutral-600 hover:bg-neutral-800 disabled:opacity-40"
+      onclick={() => {
+        previewPositions = null
+        dlgTransform?.showModal()
+      }}
+      disabled={!filePath || editBusy}
+      title="Transform structure (rotate / translate / align)">Transform</button
+    >
+
+    <!-- MemPro orientation -->
+    <button
+      type="button"
+      class="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-neutral-300 transition-colors hover:border-neutral-600 hover:bg-neutral-800 disabled:opacity-40"
+      onclick={() => dlgMempro?.showModal()}
+      disabled={!filePath || editBusy}
+      title="MemPro membrane protein orientation">MemPro</button
+    >
+
+    <div class="h-4 w-px bg-neutral-700"></div>
+
+    <!-- Save PDB -->
+    <button
+      type="button"
+      class="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-neutral-300 transition-colors hover:border-neutral-600 hover:bg-neutral-800 disabled:opacity-40"
+      onclick={onSavePdb}
+      disabled={!filePath}
+      title="Save current PDB file">Save PDB</button
+    >
+
+    <!-- Save Image -->
+    <button
+      type="button"
+      class="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-neutral-300 transition-colors hover:border-neutral-600 hover:bg-neutral-800 disabled:opacity-40"
+      onclick={onSaveImage}
+      disabled={!structure}
+      title="Save viewport as PNG image">Save Image</button
+    >
+
+    <div class="flex-1"></div>
+
+    <!-- Clear workspace -->
+    <button
+      type="button"
+      class="rounded border border-red-900/40 bg-neutral-900 px-2 py-0.5 text-red-400/70 transition-colors hover:border-red-700/60 hover:bg-red-900/20 hover:text-red-300 disabled:opacity-40"
+      onclick={clearWorkspace}
+      disabled={!structure}
+      title="Clear workspace">Clear</button
+    >
   </div>
 </div>
 
@@ -969,3 +1495,667 @@
     </div>
   </div>
 {/if}
+
+<!-- Edit dialogs -->
+
+<dialog
+  bind:this={dlgRenameChain}
+  class="rounded-lg border border-neutral-700 bg-neutral-900 p-0 text-neutral-200 shadow-2xl backdrop:bg-black/60"
+>
+  <form
+    method="dialog"
+    class="min-w-72 p-4"
+    onsubmit={(e) => {
+      e.preventDefault()
+      onEditRenameChain()
+    }}
+  >
+    <h3 class="mb-3 text-sm font-semibold">Rename Chain</h3>
+    <div class="space-y-2">
+      <label class="flex items-center gap-2 text-xs">
+        <span class="w-24 text-neutral-400">Old chain ID</span>
+        <input
+          type="text"
+          maxlength="1"
+          class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs uppercase ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          bind:value={rcOldChain}
+          required
+        />
+      </label>
+      <label class="flex items-center gap-2 text-xs">
+        <span class="w-24 text-neutral-400">New chain ID</span>
+        <input
+          type="text"
+          maxlength="1"
+          class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs uppercase ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          bind:value={rcNewChain}
+          required
+        />
+      </label>
+    </div>
+    <div class="mt-4 flex justify-end gap-2">
+      <button
+        type="button"
+        class="rounded border border-neutral-700 px-3 py-1 text-xs hover:bg-neutral-800"
+        onclick={() => dlgRenameChain?.close()}>Cancel</button
+      >
+      <button
+        type="submit"
+        class="flex items-center gap-1 rounded bg-yellow-600 px-3 py-1 text-xs font-semibold text-black hover:bg-yellow-500 disabled:opacity-40"
+        disabled={editBusy || !rcOldChain || !rcNewChain}
+        >{#if editBusy}<Spinner />{/if} Apply</button
+      >
+    </div>
+  </form>
+</dialog>
+
+<dialog
+  bind:this={dlgRenameRes}
+  class="rounded-lg border border-neutral-700 bg-neutral-900 p-0 text-neutral-200 shadow-2xl backdrop:bg-black/60"
+>
+  <form
+    method="dialog"
+    class="min-w-72 p-4"
+    onsubmit={(e) => {
+      e.preventDefault()
+      onEditRenameResidues()
+    }}
+  >
+    <h3 class="mb-3 text-sm font-semibold">Rename Residues</h3>
+    <div class="space-y-2">
+      <label class="flex items-center gap-2 text-xs">
+        <span class="w-24 text-neutral-400">Chain ID</span>
+        <input
+          type="text"
+          maxlength="1"
+          class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs uppercase ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          bind:value={rrChain}
+          required
+        />
+      </label>
+      <label class="flex items-center gap-2 text-xs">
+        <span class="w-24 text-neutral-400">Residue range</span>
+        <input
+          type="number"
+          class="w-16 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          bind:value={rrStart}
+          required
+        />
+        <span class="text-neutral-500">–</span>
+        <input
+          type="number"
+          class="w-16 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          bind:value={rrEnd}
+          required
+        />
+      </label>
+      <label class="flex items-center gap-2 text-xs">
+        <span class="w-24 text-neutral-400">New name</span>
+        <input
+          type="text"
+          maxlength="4"
+          class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs uppercase ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          bind:value={rrNewName}
+          required
+        />
+      </label>
+    </div>
+    <div class="mt-4 flex justify-end gap-2">
+      <button
+        type="button"
+        class="rounded border border-neutral-700 px-3 py-1 text-xs hover:bg-neutral-800"
+        onclick={() => dlgRenameRes?.close()}>Cancel</button
+      >
+      <button
+        type="submit"
+        class="flex items-center gap-1 rounded bg-yellow-600 px-3 py-1 text-xs font-semibold text-black hover:bg-yellow-500 disabled:opacity-40"
+        disabled={editBusy || !rrChain || !rrNewName}
+        >{#if editBusy}<Spinner />{/if} Apply</button
+      >
+    </div>
+  </form>
+</dialog>
+
+<dialog
+  bind:this={dlgRenumberRes}
+  class="rounded-lg border border-neutral-700 bg-neutral-900 p-0 text-neutral-200 shadow-2xl backdrop:bg-black/60"
+>
+  <form
+    method="dialog"
+    class="min-w-72 p-4"
+    onsubmit={(e) => {
+      e.preventDefault()
+      onEditRenumberResidues()
+    }}
+  >
+    <h3 class="mb-3 text-sm font-semibold">Renumber Residues</h3>
+    <div class="space-y-2">
+      <label class="flex items-center gap-2 text-xs">
+        <span class="w-24 text-neutral-400">Chain ID</span>
+        <input
+          type="text"
+          maxlength="1"
+          class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs uppercase ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          bind:value={rnChain}
+          required
+        />
+      </label>
+      <label class="flex items-center gap-2 text-xs">
+        <span class="w-24 text-neutral-400">Residue range</span>
+        <input
+          type="number"
+          class="w-16 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          bind:value={rnStart}
+          required
+        />
+        <span class="text-neutral-500">–</span>
+        <input
+          type="number"
+          class="w-16 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          bind:value={rnEnd}
+          required
+        />
+      </label>
+      <label class="flex items-center gap-2 text-xs">
+        <span class="w-24 text-neutral-400">New start</span>
+        <input
+          type="number"
+          class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          bind:value={rnNewStart}
+          required
+        />
+      </label>
+    </div>
+    <div class="mt-4 flex justify-end gap-2">
+      <button
+        type="button"
+        class="rounded border border-neutral-700 px-3 py-1 text-xs hover:bg-neutral-800"
+        onclick={() => dlgRenumberRes?.close()}>Cancel</button
+      >
+      <button
+        type="submit"
+        class="flex items-center gap-1 rounded bg-yellow-600 px-3 py-1 text-xs font-semibold text-black hover:bg-yellow-500 disabled:opacity-40"
+        disabled={editBusy || !rnChain}
+        >{#if editBusy}<Spinner />{/if} Apply</button
+      >
+    </div>
+  </form>
+</dialog>
+
+<dialog
+  bind:this={dlgDeleteAtoms}
+  class="rounded-lg border border-neutral-700 bg-neutral-900 p-0 text-neutral-200 shadow-2xl backdrop:bg-black/60"
+>
+  <form
+    method="dialog"
+    class="min-w-72 p-4"
+    onsubmit={(e) => {
+      e.preventDefault()
+      onEditDeleteAtoms()
+    }}
+  >
+    <h3 class="mb-3 text-sm font-semibold">Delete Atoms</h3>
+    <div class="space-y-2">
+      <label class="flex flex-col gap-1 text-xs">
+        <span class="text-neutral-400">MDAnalysis selection</span>
+        <input
+          type="text"
+          class="w-full rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          bind:value={daSelection}
+          placeholder="water"
+          required
+        />
+        <span class="text-neutral-500">Examples: water · protein · resname LIG · name H*</span>
+      </label>
+    </div>
+    <div class="mt-4 flex justify-end gap-2">
+      <button
+        type="button"
+        class="rounded border border-neutral-700 px-3 py-1 text-xs hover:bg-neutral-800"
+        onclick={() => dlgDeleteAtoms?.close()}>Cancel</button
+      >
+      <button
+        type="submit"
+        class="flex items-center gap-1 rounded bg-red-700 px-3 py-1 text-xs font-semibold text-white hover:bg-red-600 disabled:opacity-40"
+        disabled={editBusy || !daSelection}
+        >{#if editBusy}<Spinner />{/if} Delete</button
+      >
+    </div>
+  </form>
+</dialog>
+
+<dialog
+  bind:this={dlgTransform}
+  class="rounded-lg border border-neutral-700 bg-neutral-900 p-0 text-neutral-200 shadow-2xl backdrop:bg-black/60"
+>
+  <!-- Header -->
+  <div class="flex items-center justify-between border-b border-neutral-800 px-4 py-2.5">
+    <h3 class="text-sm font-semibold">Transform Structure</h3>
+    {#if previewPositions}
+      <span class="rounded bg-yellow-500/15 px-1.5 py-0.5 text-[10px] text-yellow-400"
+        >● Preview active</span
+      >
+    {/if}
+    <button
+      type="button"
+      class="ml-2 text-neutral-500 hover:text-neutral-200"
+      onclick={() => {
+        previewPositions = null
+        dlgTransform?.close()
+      }}>✕</button
+    >
+  </div>
+
+  <!-- Tabs -->
+  <div class="flex border-b border-neutral-800 text-xs">
+    {#each ['rotate', 'translate', 'align'] as tab}
+      <button
+        type="button"
+        class="px-4 py-2 transition-colors {transformTab === tab
+          ? 'border-b-2 border-yellow-400 text-yellow-300'
+          : 'text-neutral-400 hover:text-neutral-200'}"
+        onclick={() => (transformTab = tab)}>{tab[0].toUpperCase() + tab.slice(1)}</button
+      >
+    {/each}
+  </div>
+
+  <div class="w-[420px] space-y-3 p-4">
+    <!-- ── Shared selection row (rotate / translate) ── -->
+    {#if transformTab !== 'align'}
+      <div class="flex items-center gap-2">
+        <label for="tf-sel" class="w-20 shrink-0 text-xs text-neutral-400">Selection</label>
+        <input
+          id="tf-sel"
+          type="text"
+          class="min-w-0 flex-1 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          bind:value={tfSel}
+          placeholder="all atoms"
+        />
+        {#if tfSel.trim()}
+          <span class="shrink-0 text-xs text-neutral-500">
+            {tfSelCount !== null ? `${tfSelCount} atoms` : '…'}
+          </span>
+        {/if}
+      </div>
+    {/if}
+
+    <!-- ── Rotate tab ── -->
+    {#if transformTab === 'rotate'}
+      <div class="flex items-center gap-2">
+        <label for="tf-angle" class="w-20 shrink-0 text-xs text-neutral-400">Angle</label>
+        <input
+          id="tf-angle"
+          type="number"
+          step="any"
+          class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          bind:value={tfRotAngle}
+          placeholder="0"
+        />
+        <span class="text-xs text-neutral-500">°</span>
+        <div class="flex gap-0.5">
+          {#each [90, 180, -90, 270] as a}
+            <button
+              type="button"
+              class="rounded border border-neutral-700 px-1 py-0.5 text-[10px] hover:bg-neutral-800"
+              onclick={() => (tfRotAngle = a)}>{a}°</button
+            >
+          {/each}
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="w-20 shrink-0 text-xs text-neutral-400">Axis</span>
+        <div class="flex gap-3">
+          {#each ['x', 'y', 'z'] as ax}
+            <label class="flex cursor-pointer items-center gap-1 text-xs">
+              <input type="radio" bind:group={tfRotAxis} value={ax} class="accent-yellow-400" />
+              {ax.toUpperCase()}
+            </label>
+          {/each}
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="w-20 shrink-0 text-xs text-neutral-400">Center</span>
+        <div class="flex gap-3">
+          <label class="flex cursor-pointer items-center gap-1 text-xs">
+            <input
+              type="radio"
+              bind:group={tfRotCenter}
+              value="selection"
+              class="accent-yellow-400"
+            />
+            Centroid of selection
+          </label>
+          <label class="flex cursor-pointer items-center gap-1 text-xs">
+            <input type="radio" bind:group={tfRotCenter} value="origin" class="accent-yellow-400" />
+            Origin (0,0,0)
+          </label>
+        </div>
+      </div>
+    {/if}
+
+    <!-- ── Translate tab ── -->
+    {#if transformTab === 'translate'}
+      <div class="flex items-center gap-1">
+        <span class="w-20 shrink-0 text-xs text-neutral-400">Displacement</span>
+        {#each [['X', 'tfTx'], ['Y', 'tfTy'], ['Z', 'tfTz']] as [lbl, field]}
+          <span class="text-xs text-neutral-500">{lbl}</span>
+          {#if field === 'tfTx'}
+            <input
+              type="number"
+              step="any"
+              class="w-16 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+              bind:value={tfTx}
+              placeholder="0"
+            />
+          {:else if field === 'tfTy'}
+            <input
+              type="number"
+              step="any"
+              class="w-16 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+              bind:value={tfTy}
+              placeholder="0"
+            />
+          {:else}
+            <input
+              type="number"
+              step="any"
+              class="w-16 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+              bind:value={tfTz}
+              placeholder="0"
+            />
+          {/if}
+        {/each}
+        <span class="text-xs text-neutral-500">Å</span>
+      </div>
+      <div>
+        <button
+          type="button"
+          class="flex items-center gap-1 rounded border border-neutral-700 px-3 py-1 text-xs hover:bg-neutral-800 disabled:opacity-40"
+          disabled={editBusy}
+          onclick={onCenterAtOrigin}
+          title="Translate so the centroid of the selection is at origin (0,0,0)"
+          >Center at origin</button
+        >
+      </div>
+    {/if}
+
+    <!-- ── Align tab ── -->
+    {#if transformTab === 'align'}
+      <!-- Primary selection -->
+      <div class="flex items-center gap-2">
+        <label for="tf-align-prim" class="w-28 shrink-0 text-xs text-neutral-400"
+          >Primary selection</label
+        >
+        <input
+          id="tf-align-prim"
+          type="text"
+          class="min-w-0 flex-1 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          bind:value={tfAlignPrimSel}
+          placeholder="protein  (required)"
+        />
+        {#if tfAlignPrimSel.trim()}
+          <span class="shrink-0 text-xs text-neutral-500">
+            {tfAlignPrimCount !== null ? `${tfAlignPrimCount} atoms` : '…'}
+          </span>
+        {/if}
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="w-28 shrink-0 text-xs text-neutral-400">Target axis</span>
+        <div class="flex gap-3">
+          {#each ['x', 'y', 'z'] as ax}
+            <label class="flex cursor-pointer items-center gap-1 text-xs">
+              <input
+                type="radio"
+                bind:group={tfAlignTargetAxis}
+                value={ax}
+                class="accent-yellow-400"
+              />
+              {ax.toUpperCase()}
+            </label>
+          {/each}
+        </div>
+      </div>
+      <div class="border-t border-neutral-800/60 pt-2">
+        <p class="mb-1.5 text-[10px] text-neutral-500">Secondary alignment (optional)</p>
+        <div class="flex items-center gap-2">
+          <label for="tf-align-sec" class="w-28 shrink-0 text-xs text-neutral-400"
+            >Secondary sel.</label
+          >
+          <input
+            id="tf-align-sec"
+            type="text"
+            class="min-w-0 flex-1 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+            bind:value={tfAlignSecSel}
+            placeholder="resname LIG  (optional)"
+          />
+          {#if tfAlignSecSel.trim()}
+            <span class="shrink-0 text-xs text-neutral-500">
+              {tfAlignSecCount !== null ? `${tfAlignSecCount} atoms` : '…'}
+            </span>
+          {/if}
+        </div>
+        <div class="mt-1.5 flex items-center gap-2">
+          <span class="w-28 shrink-0 text-xs text-neutral-400">Secondary axis</span>
+          <div class="flex gap-3">
+            {#each ['x', 'y', 'z'] as ax}
+              <label class="flex cursor-pointer items-center gap-1 text-xs">
+                <input
+                  type="radio"
+                  bind:group={tfAlignSecAxis}
+                  value={ax}
+                  class="accent-yellow-400"
+                />
+                {ax.toUpperCase()}
+              </label>
+            {/each}
+          </div>
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <label for="tf-align-applyto" class="w-28 shrink-0 text-xs text-neutral-400"
+          >Apply transform to</label
+        >
+        <input
+          id="tf-align-applyto"
+          type="text"
+          class="min-w-0 flex-1 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          bind:value={tfAlignApplyTo}
+          placeholder="all atoms  (default)"
+        />
+      </div>
+    {/if}
+  </div>
+
+  <!-- Footer -->
+  <div class="flex items-center justify-end gap-2 border-t border-neutral-800 px-4 py-3">
+    <button
+      type="button"
+      class="rounded border border-neutral-700 px-3 py-1 text-xs hover:bg-neutral-800"
+      onclick={() => {
+        previewPositions = null
+        dlgTransform?.close()
+      }}>Cancel</button
+    >
+    <button
+      type="button"
+      class="flex items-center gap-1 rounded border border-neutral-700 bg-neutral-800 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-700 disabled:opacity-40"
+      disabled={tfPreviewBusy || !filePath}
+      onclick={onTransformPreview}
+      title="Preview the transformation without saving"
+      >{#if tfPreviewBusy}<Spinner />{/if} Preview</button
+    >
+    <button
+      type="button"
+      class="flex items-center gap-1 rounded bg-yellow-600 px-3 py-1 text-xs font-semibold text-black hover:bg-yellow-500 disabled:opacity-40"
+      disabled={editBusy || !filePath}
+      onclick={onTransformApply}
+      >{#if editBusy}<Spinner />{/if} Apply</button
+    >
+  </div>
+</dialog>
+
+<!-- MemPro orientation dialog -->
+<dialog
+  bind:this={dlgMempro}
+  class="rounded-lg border border-neutral-700 bg-neutral-900 p-0 text-neutral-200 shadow-2xl backdrop:bg-black/60"
+>
+  <!-- Header -->
+  <div class="flex items-center justify-between border-b border-neutral-800 px-4 py-2.5">
+    <h3 class="text-sm font-semibold">MemPro Orientation</h3>
+    <button
+      type="button"
+      class="text-neutral-500 hover:text-neutral-200"
+      onclick={() => dlgMempro?.close()}>✕</button
+    >
+  </div>
+
+  {#if memproJobStatus === 'running'}
+    <!-- Running -->
+    <div class="flex w-[380px] flex-col items-center gap-3 px-6 py-8 text-center">
+      <Spinner className="size-6" />
+      <p class="text-sm">Running MemPro orientation…</p>
+      <p class="text-xs text-neutral-400">
+        This may take several minutes depending on the structure size.
+      </p>
+      <p class="font-mono text-xs text-neutral-500">
+        Iterations: {memproNIters} · Grid: {memproGridSize}
+      </p>
+    </div>
+  {:else if memproJobStatus === 'done'}
+    <!-- Results -->
+    <div class="w-[520px] p-4">
+      <p class="mb-2 text-xs text-neutral-400">
+        Orientation results — click Apply to load a result:
+      </p>
+      <div class="overflow-x-auto rounded border border-neutral-800">
+        <table class="w-full text-xs">
+          <thead>
+            <tr class="border-b border-neutral-800 text-left text-neutral-500">
+              <th class="px-2 py-1">Rank</th>
+              <th class="px-2 py-1">Rel. Potential</th>
+              <th class="px-2 py-1">Hits %</th>
+              <th class="px-2 py-1">Re-rank</th>
+              <th class="px-2 py-1">Depth</th>
+              <th class="px-2 py-1"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each memproResults as r}
+              <tr class="border-b border-neutral-800/50 hover:bg-neutral-800/30">
+                <td class="px-2 py-1 font-semibold text-yellow-400">#{r.rank}</td>
+                <td class="px-2 py-1 font-mono">{r.relative_potential?.toFixed(3) ?? '—'}</td>
+                <td class="px-2 py-1 font-mono">{r.hits_pct?.toFixed(1) ?? '—'}%</td>
+                <td class="px-2 py-1 font-mono">{r.rerank_value?.toFixed(3) ?? '—'}</td>
+                <td class="px-2 py-1 font-mono">{r.rerank_depth?.toFixed(2) ?? '—'} Å</td>
+                <td class="px-2 py-1">
+                  <button
+                    type="button"
+                    class="flex items-center gap-1 rounded bg-yellow-600 px-2 py-0.5 text-xs font-semibold text-black hover:bg-yellow-500 disabled:opacity-40"
+                    disabled={editBusy}
+                    onclick={() => onMemproApply(r)}
+                    >{#if editBusy}<Spinner />{/if} Apply</button
+                  >
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  {:else if memproJobStatus === 'error'}
+    <!-- Error -->
+    <div class="w-[380px] p-4">
+      <p class="mb-1 text-xs text-red-400">MemPro failed:</p>
+      <p class="rounded bg-neutral-800 px-2 py-1.5 font-mono text-xs text-neutral-300">
+        {memproError}
+      </p>
+    </div>
+  {:else}
+    <!-- Setup form -->
+    <div class="w-[380px] space-y-2.5 p-4">
+      <div class="flex items-center gap-2">
+        <label for="mp-iters" class="w-36 shrink-0 text-xs text-neutral-400">Iterations</label>
+        <input
+          id="mp-iters"
+          type="number"
+          min="10"
+          class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          bind:value={memproNIters}
+        />
+      </div>
+      <div class="flex items-center gap-2">
+        <label for="mp-grid" class="w-36 shrink-0 text-xs text-neutral-400">Grid size</label>
+        <input
+          id="mp-grid"
+          type="number"
+          min="4"
+          class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          bind:value={memproGridSize}
+        />
+      </div>
+      <div class="flex items-center gap-2">
+        <label for="mp-memthick" class="w-36 shrink-0 text-xs text-neutral-400"
+          >Membrane thickness (Å)</label
+        >
+        <input
+          id="mp-memthick"
+          type="number"
+          step="any"
+          class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          bind:value={memproMembrane}
+          placeholder="auto"
+        />
+      </div>
+      <div class="grid grid-cols-2 gap-x-4 gap-y-1.5 pt-1">
+        {#each [['memproDualMembrane', 'Dual membrane'], ['memproPeripheral', 'Peripheral protein'], ['memproUseWeights', 'Use weights'], ['memproFlip', 'Flip orientation']] as [field, label]}
+          <label class="flex cursor-pointer items-center gap-1.5 text-xs">
+            {#if field === 'memproDualMembrane'}
+              <input type="checkbox" bind:checked={memproDualMembrane} class="accent-yellow-400" />
+            {:else if field === 'memproPeripheral'}
+              <input type="checkbox" bind:checked={memproPeripheral} class="accent-yellow-400" />
+            {:else if field === 'memproUseWeights'}
+              <input type="checkbox" bind:checked={memproUseWeights} class="accent-yellow-400" />
+            {:else}
+              <input type="checkbox" bind:checked={memproFlip} class="accent-yellow-400" />
+            {/if}
+            {label}
+          </label>
+        {/each}
+      </div>
+    </div>
+  {/if}
+
+  <!-- Footer -->
+  <div class="flex items-center justify-between border-t border-neutral-800 px-4 py-3">
+    <div>
+      {#if memproJobStatus === 'done'}
+        <button
+          type="button"
+          class="rounded border border-neutral-700 px-3 py-1 text-xs hover:bg-neutral-800"
+          onclick={() => {
+            memproJobId = null
+            memproJobStatus = null
+            memproResults = []
+            memproError = null
+          }}>New run</button
+        >
+      {/if}
+    </div>
+    <div class="flex gap-2">
+      {#if !memproJobStatus || memproJobStatus === 'error'}
+        <button
+          type="button"
+          class="flex items-center gap-1 rounded bg-yellow-600 px-3 py-1 text-xs font-semibold text-black hover:bg-yellow-500 disabled:opacity-40"
+          disabled={memproBusy || !filePath}
+          onclick={onMemproRun}
+          >{#if memproBusy}<Spinner />{/if} Run MemPro</button
+        >
+      {/if}
+      <button
+        type="button"
+        class="rounded border border-neutral-700 px-3 py-1 text-xs hover:bg-neutral-800"
+        onclick={() => dlgMempro?.close()}>Close</button
+      >
+    </div>
+  </div>
+</dialog>
