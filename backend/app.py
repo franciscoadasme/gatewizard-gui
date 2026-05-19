@@ -157,9 +157,21 @@ FILE_CACHE: dict[str, FileCacheEntry] = {}
 FILE_CACHE_LOCK = threading.Lock()
 
 
+def _ensure_elements(atoms: mda.AtomGroup) -> None:
+    """Add guessed element topology attribute if the universe lacks it."""
+    try:
+        atoms[0].element
+    except (mda.exceptions.NoDataError, IndexError):
+        from MDAnalysis.topology.guessers import guess_atom_element
+
+        els = [guess_atom_element(n) for n in atoms.universe.atoms.names]
+        atoms.universe.add_TopologyAttr("elements", els)
+
+
 def get_atoms(atoms: mda.AtomGroup | mda.Universe) -> list[dict]:
     if isinstance(atoms, mda.Universe):
         atoms = atoms.atoms
+    _ensure_elements(atoms)
     return [
         dict(
             x=float(it.position[0]),
@@ -1306,6 +1318,9 @@ class StructureRequest(BaseModel):
     needs_secondary_structure: bool = Field(
         False, description="Whether to get secondary structure"
     )
+    save_dir: str | None = Field(
+        None, description="Directory to save downloaded PDB files (uses cwd if omitted)"
+    )
 
 
 @app.post("/get-structure")
@@ -1317,7 +1332,9 @@ def get_structure(payload: StructureRequest) -> dict:
             resp = requests.get(url, timeout=15)
             resp.raise_for_status()
 
-            path = Path(f"{pdbid.lower()}.pdb").resolve()
+            base = Path(payload.save_dir).resolve() if payload.save_dir else Path.cwd()
+            base.mkdir(parents=True, exist_ok=True)
+            path = base / f"{pdbid.lower()}.pdb"
             path.write_text(resp.text)
             payload.path = str(path)
         except requests.HTTPError as ex:
@@ -1740,7 +1757,7 @@ class MemProApplyRequest(BaseModel):
 def mempro_apply(payload: MemProApplyRequest) -> dict:
     """Load an oriented PDB file as the new current structure."""
     try:
-        u = mda.Universe(payload.pdb_path)
+        u = load_structure(payload.pdb_path)
         data: dict = {"path": payload.pdb_path, "atoms": get_atoms(u.atoms)}
         try:
             data["bonds"] = u.atoms.bonds.indices.tolist()

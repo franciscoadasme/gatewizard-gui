@@ -147,7 +147,7 @@ export function analyzeTopology(payload) {
 }
 
 /**
- * @param {{ path: string, topology: string|null, selection: string|null, needs_bonds: boolean, needs_secondary_structure: boolean }} payload
+ * @param {{ path: string, topology: string|null, selection: string|null, needs_bonds: boolean, needs_secondary_structure: boolean, save_dir?: string|null }} payload
  * @returns {Promise<{
  *   path: string,
  *   atoms: { x: number, y: number, z: number, element: string, name: string }[],

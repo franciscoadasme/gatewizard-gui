@@ -367,7 +367,8 @@
       structure = await getStructure({
         path,
         needs_bonds: false,
-        needs_secondary_structure: false
+        needs_secondary_structure: false,
+        save_dir: workingDir || null
       })
       filePath = structure.path
       views.length = 0
