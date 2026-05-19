@@ -1,11 +1,16 @@
+<script module>
+  /** Mini gizmo camera — AxesGizmo reads `.current` for raycasting on click. */
+  export const gizmoCamera = { current: /** @type {import('three').Camera | null} */ (null) }
+</script>
+
 <script>
   import { T, useRenderer, useTask, useThrelte } from '@threlte/core'
   import { get } from 'svelte/store'
   import { OrthographicCamera, Quaternion, Vector3 } from 'three'
   import { mainViewerCamera } from './CameraRig.svelte'
 
-  /** @type {{ gizmo: import('three').Group }} */
-  let { gizmo } = $props()
+  /** @type {{ gizmo: import('three').Group, onFrame?: ((cam: import('three').Camera) => void) | null }} */
+  let { gizmo, onFrame = null } = $props()
 
   const { camera, size } = useThrelte()
   const { autoRenderTask } = useRenderer()
@@ -22,6 +27,7 @@
     () => {
       const mini = camera.current
       const main = mainViewerCamera.current
+      gizmoCamera.current = mini
       if (!mini || !main) return
 
       const { width: w, height: h } = get(size)
@@ -43,6 +49,7 @@
       mini.quaternion.copy(q)
       mini.up.copy(main.up)
       mini.updateMatrixWorld(true)
+      if (onFrame) onFrame(mini)
     },
     { before: autoRenderTask }
   )

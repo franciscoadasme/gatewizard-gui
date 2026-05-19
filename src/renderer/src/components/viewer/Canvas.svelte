@@ -1,3 +1,8 @@
+<script module>
+  /** Main viewer TrackballControls — gizmo reads `.current` to snap camera. */
+  export const mainViewerControls = { current: /** @type {any | null} */ (null) }
+</script>
+
 <script>
   import { Canvas as ThrelteCanvas, T } from '@threlte/core'
   import { TrackballControls } from '@threlte/extras'
@@ -14,6 +19,13 @@
 
   let wrapEl = $state(null)
   let controls = $state(null)
+
+  $effect(() => {
+    mainViewerControls.current = controls
+    return () => {
+      mainViewerControls.current = null
+    }
+  })
 
   // Middle-drag pans the camera view (slides camera+target together).
   // Atoms are never moved — this is pure camera navigation, like VMD T-mode.

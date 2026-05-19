@@ -1,6 +1,9 @@
 <script module>
   /** Main viewer default camera — axes overlay reads `.current` each frame. */
   export const mainViewerCamera = { current: /** @type {import('three').Camera | null} */ (null) }
+
+  /** Invalidate main renderer — call after programmatic camera manipulation. */
+  export const mainViewerInvalidate = { fn: /** @type {() => void} */ (() => {}) }
 </script>
 
 <script>
@@ -23,6 +26,7 @@
   let { framing } = $props()
 
   const { camera, invalidate, size } = useThrelte()
+  mainViewerInvalidate.fn = invalidate
 
   useTask(
     () => {
