@@ -307,11 +307,13 @@ function hexMapToRgb(map) {
  * @returns {BufferGeometry[]}
  */
 export function buildCartoonGeometries(atoms, residues, colorFn, opts = {}) {
-  const segments = splitContinuousSegments(atoms, residues)
+  /** @type {Map<number, any>} Map from atom.index (global MDAnalysis id) → atom */
+  const atomByIndex = new Map(atoms.map((a) => [a.index, a]))
+  const segments = splitContinuousSegments(atomByIndex, residues)
   /** @type {BufferGeometry[]} */
   const out = []
   for (const seg of segments) {
-    const geom = buildSegmentCartoon(atoms, seg, colorFn, opts)
+    const geom = buildSegmentCartoon(atomByIndex, seg, colorFn, opts)
     if (geom) out.push(geom)
   }
   return out
@@ -320,10 +322,11 @@ export function buildCartoonGeometries(atoms, residues, colorFn, opts = {}) {
 /**
  * Sort CA-bearing residues by chain / number / insertion and split at chain
  * breaks or backbone discontinuities (Cα–Cα > 7.2 Å or < 1.0 Å).
+ * @param {Map<number, any>} atomByIndex  Map from atom.index → atom
  */
-function splitContinuousSegments(atoms, residues) {
+function splitContinuousSegments(atomByIndex, residues) {
   const caRes = residues
-    .filter((r) => typeof r.ca_index === 'number' && atoms[r.ca_index])
+    .filter((r) => typeof r.ca_index === 'number' && atomByIndex.get(r.ca_index))
     .sort(
       (a, b) =>
         (a.chain || '').localeCompare(b.chain || '') ||
@@ -342,8 +345,8 @@ function splitContinuousSegments(atoms, residues) {
       if ((prev.chain || '') !== (curr.chain || '')) {
         split = true
       } else {
-        const pa = atoms[prev.ca_index]
-        const pb = atoms[curr.ca_index]
+        const pa = atomByIndex.get(prev.ca_index)
+        const pb = atomByIndex.get(curr.ca_index)
         const d = Math.hypot(pa.x - pb.x, pa.y - pb.y, pa.z - pb.z)
         if (d > 7.2 || d < 1.0) split = true
       }
@@ -358,12 +361,12 @@ function splitContinuousSegments(atoms, residues) {
 
 /**
  * Build one cartoon geometry for a continuous backbone segment.
- * @param {{ x: number, y: number, z: number, name: string }[]} atoms
+ * @param {Map<number, any>} atomByIndex  Map from atom.index → atom
  * @param {Array<{ ca_index?: number, sec?: string, atom_indices: number[] }>} segResidues
  * @param {(atom: any) => import('three').Color} colorFn
  * @param {CartoonOpts} [opts]
  */
-function buildSegmentCartoon(atoms, segResidues, colorFn, opts = {}) {
+function buildSegmentCartoon(atomByIndex, segResidues, colorFn, opts = {}) {
   const helixHW  = opts.helixWidth  ?? HELIX_HW
   const strandHW = opts.sheetWidth  ?? STRAND_HW
   const coilHW   = opts.coilWidth   ?? COIL_HW
@@ -381,14 +384,14 @@ function buildSegmentCartoon(atoms, segResidues, colorFn, opts = {}) {
   const secs = []
 
   for (const res of segResidues) {
-    const ca = atoms[res.ca_index]
+    const ca = atomByIndex.get(res.ca_index)
     caCoords.push(new Vector3(ca.x, ca.y, ca.z))
     secs.push(res.sec || '')
 
     let oCoord = null
     if (res.atom_indices) {
       for (const idx of res.atom_indices) {
-        const at = atoms[idx]
+        const at = atomByIndex.get(idx)
         if (at && at.name === 'O') {
           oCoord = new Vector3(at.x, at.y, at.z)
           break
@@ -408,7 +411,7 @@ function buildSegmentCartoon(atoms, segResidues, colorFn, opts = {}) {
   const ptColors = []
   for (let ri = 0; ri < nr; ri++) {
     const count = ri < nr - 1 ? smoothFactor : 1
-    const cv = colorFn(atoms[segResidues[ri].ca_index])
+    const cv = colorFn(atomByIndex.get(segResidues[ri].ca_index))
     const col = /** @type {[number,number,number]} */ ([cv.r, cv.g, cv.b])
     for (let k = 0; k < count; k++) { ssPerPt.push(secs[ri]); ptColors.push(col) }
   }
@@ -492,24 +495,26 @@ function lerpRgb(a, b, t) {
  * @returns {BufferGeometry[]}
  */
 export function buildTubeGeometries(atoms, residues, colorFn, opts = {}) {
-  const segments = splitContinuousSegments(atoms, residues)
+  /** @type {Map<number, any>} Map from atom.index (global MDAnalysis id) → atom */
+  const atomByIndex = new Map(atoms.map((a) => [a.index, a]))
+  const segments = splitContinuousSegments(atomByIndex, residues)
   /** @type {BufferGeometry[]} */
   const out = []
   for (const seg of segments) {
-    const geom = buildSegmentTube(atoms, seg, colorFn, opts)
+    const geom = buildSegmentTube(atomByIndex, seg, colorFn, opts)
     if (geom) out.push(geom)
   }
   return out
 }
 
 /**
- * @param {any[]} atoms
+ * @param {Map<number, any>} atomByIndex  Map from atom.index → atom
  * @param {Array<{ ca_index?: number, sec?: string, atom_indices: number[] }>} segResidues
  * @param {(atom: any) => import('three').Color} colorFn
  * @param {TubeOpts} opts
  * @returns {BufferGeometry | null}
  */
-function buildSegmentTube(atoms, segResidues, colorFn, opts) {
+function buildSegmentTube(atomByIndex, segResidues, colorFn, opts) {
   const nr = segResidues.length
   if (nr < 2) return null
 
@@ -529,13 +534,13 @@ function buildSegmentTube(atoms, segResidues, colorFn, opts) {
   const secs = []
 
   for (const res of segResidues) {
-    const ca = atoms[res.ca_index]
+    const ca = atomByIndex.get(res.ca_index)
     caCoords.push(new Vector3(ca.x, ca.y, ca.z))
     secs.push(res.sec || '')
     let oCoord = null
     if (res.atom_indices) {
       for (const idx of res.atom_indices) {
-        const at = atoms[idx]
+        const at = atomByIndex.get(idx)
         if (at && at.name === 'O') { oCoord = new Vector3(at.x, at.y, at.z); break }
       }
     }
@@ -554,7 +559,7 @@ function buildSegmentTube(atoms, segResidues, colorFn, opts) {
   for (let ri = 0; ri < nr; ri++) {
     const count = ri < nr - 1 ? smoothFactor : 1
     const sec = secs[ri]
-    const c = colorFn(atoms[segResidues[ri].ca_index])
+    const c = colorFn(atomByIndex.get(segResidues[ri].ca_index))
     const col = /** @type {[number,number,number]} */ ([c.r, c.g, c.b])
     for (let k = 0; k < count; k++) { ssPerPt.push(sec); baseColors.push(col) }
   }
