@@ -97,7 +97,8 @@
     bondScale = 1.0,
     metalness = 0.1,
     roughness = 0.42,
-    emissiveIntensity = 0.0
+    emissiveIntensity = 0.0,
+    highlightIndices = new Set()
   } = $props()
 
   let sphereMeshRef = $state(/** @type {InstancedMesh | null} */ (null))
@@ -205,17 +206,29 @@
     }
   })
 
-  // Update colors when `getColor` changes (atoms is not tracked).
+  const _tmpHL = new Color()
+
+  // Update colors when `getColor` or `highlightIndices` changes (atoms is not tracked).
   $effect(() => {
     const mesh = untrack(() => sphereMeshRef)
     if (!mesh) return
 
     const arr = untrack(() => atoms)
+    const hi = highlightIndices
     const n = arr.length
     for (let index = 0; index < n; index++) {
       const atom = arr[index]
       const color = getColor(atom)
-      mesh.setColorAt(index, color)
+      if (hi.size > 0 && hi.has(atom.index)) {
+        _tmpHL.setRGB(
+          Math.min(1, color.r * 1.5 + 0.4),
+          Math.min(1, color.g * 1.5 + 0.4),
+          Math.min(1, color.b * 1.5 + 0.4)
+        )
+        mesh.setColorAt(index, _tmpHL)
+      } else {
+        mesh.setColorAt(index, color)
+      }
     }
     mesh.instanceColor.needsUpdate = true
     invalidate()

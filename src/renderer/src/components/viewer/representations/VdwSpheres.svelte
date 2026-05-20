@@ -1,6 +1,8 @@
 <script>
   import { T, useThrelte } from '@threlte/core'
   import {
+    BackSide,
+    Color,
     InstancedBufferAttribute,
     InstancedMesh,
     Matrix4,
@@ -55,7 +57,7 @@
   const VDW_SPHERE_Q = { 1: [12, 8], 2: [24, 16], 3: [48, 32], 4: [72, 48], 5: [128, 96] }
 
   /**
-   * @type {{atoms: Atom[], getColor?: ColorScheme, quality?: number, atomScale?: number, metalness?: number, roughness?: number, emissiveIntensity?: number}}
+   * @type {{atoms: Atom[], getColor?: ColorScheme, quality?: number, atomScale?: number, metalness?: number, roughness?: number, emissiveIntensity?: number, renderOrder?: number, depthTest?: boolean, opacity?: number, outline?: boolean}}
    */
   let {
     atoms = [],
@@ -64,7 +66,12 @@
     atomScale = 1.0,
     metalness = 0.12,
     roughness = 0.45,
-    emissiveIntensity = 0.0
+    emissiveIntensity = 0.0,
+    renderOrder = 0,
+    depthTest = true,
+    opacity = 1.0,
+    outline = false,
+    highlightIndices = new Set()
   } = $props()
 
   const { invalidate } = useThrelte()
@@ -85,9 +92,14 @@
     const material = new MeshStandardMaterial({
       metalness,
       roughness,
-      emissiveIntensity
+      emissiveIntensity,
+      transparent: opacity < 1,
+      opacity,
+      depthTest,
+      ...(outline ? { side: BackSide } : {})
     })
     const mesh = new InstancedMesh(geometry, material, n)
+    mesh.renderOrder = renderOrder
     mesh.instanceColor = new InstancedBufferAttribute(new Float32Array(n * 3), 3)
 
     const matrix = new Matrix4()
@@ -116,17 +128,29 @@
     }
   })
 
-  // Update colors when `getColor` changes (atoms is not tracked).
+  const _tmpHL = new Color()
+
+  // Update colors when `getColor` or `highlightIndices` changes (atoms is not tracked).
   $effect(() => {
     const mesh = untrack(() => meshRef)
     if (!mesh) return
 
     const arr = untrack(() => atoms)
+    const hi = highlightIndices
     const n = arr.length
     for (let index = 0; index < n; index++) {
       const atom = arr[index]
       const color = getColor(atom)
-      mesh.setColorAt(index, color)
+      if (hi.size > 0 && hi.has(atom.index)) {
+        _tmpHL.setRGB(
+          Math.min(1, color.r * 1.5 + 0.4),
+          Math.min(1, color.g * 1.5 + 0.4),
+          Math.min(1, color.b * 1.5 + 0.4)
+        )
+        mesh.setColorAt(index, _tmpHL)
+      } else {
+        mesh.setColorAt(index, color)
+      }
     }
     mesh.instanceColor.needsUpdate = true
     invalidate()

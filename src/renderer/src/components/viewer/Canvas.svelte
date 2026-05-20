@@ -13,9 +13,10 @@
    *   children?: import('svelte').Snippet
    *   onAtomClick?: (e: { x:number, y:number, w:number, h:number }) => void
    *   onAtomContextMenu?: (e: { x:number, y:number, w:number, h:number, clientX:number, clientY:number }) => void
+   *   onAtomHover?: (e: { x:number, y:number, w:number, h:number, clientX:number, clientY:number }) => void
    * }}
    */
-  let { children, onAtomClick, onAtomContextMenu } = $props()
+  let { children, onAtomClick, onAtomContextMenu, onAtomHover } = $props()
 
   let wrapEl = $state(null)
   let controls = $state(null)
@@ -52,10 +53,15 @@
   bind:this={wrapEl}
   class="h-full w-full"
   role="presentation"
+  onpointermove={(e) => {
+    if (!onAtomHover || !wrapEl) return
+    onAtomHover({ ..._coords(e), clientX: e.clientX, clientY: e.clientY })
+  }}
   onpointerdown={(e) => {
     dragStart = { x: e.clientX, y: e.clientY }
   }}
   onpointerup={(e) => {
+    if (e.button !== 0) return
     if (!onAtomClick || !wrapEl) return
     if ((e.clientX - dragStart.x) ** 2 + (e.clientY - dragStart.y) ** 2 < 16) {
       onAtomClick(_coords(e))

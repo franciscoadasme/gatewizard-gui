@@ -285,6 +285,15 @@ export function editDeleteAtoms(payload) {
 }
 
 /**
+ * Delete atoms by their MDAnalysis index array.
+ * @param {{ path: string, indices: number[] }} payload
+ * @returns {Promise<EditResult>}
+ */
+export function editDeleteByIndices(payload) {
+  return backendJson('/edit/delete-by-indices', payload)
+}
+
+/**
  * @param {{ path: string, rotate?: { angle: number, axis: string }, translate?: [number, number, number] }} payload
  * @returns {Promise<EditResult>}
  */

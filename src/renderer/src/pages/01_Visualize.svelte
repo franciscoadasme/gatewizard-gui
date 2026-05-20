@@ -11,12 +11,19 @@
     VdwSpheres
   } from '../components/viewer'
   import { mainViewerCamera } from '../components/viewer/CameraRig.svelte'
+  import { mainViewerControls } from '../components/viewer/Canvas.svelte'
   import Axes from '../components/icons/Axes.svelte'
   import AxesLinesIcon from '../components/icons/AxesLines.svelte'
   import { COLOR_PALETTE, cpkScheme, defaultColorScheme, ssScheme } from '../lib/colorSchemes.js'
   import { getCameraForAtoms } from '../lib/viewer/base.js'
   import { pickAtomFromViews } from '../lib/viewer/picking.js'
   import { measureDistance, measureAngle, measureDihedral } from '../lib/viewer/measure.js'
+  import { Color } from 'three'
+  import { untrack } from 'svelte'
+
+  /** Reused Color instance for edit mode selection outline. */
+  const OUTLINE_COLOR = new Color(0xffdd00) // yellow → BackSide outline for selected group
+  const _outlineGetColor = () => OUTLINE_COLOR
   import {
     getStructure,
     detectMolecules,
@@ -24,6 +31,7 @@
     editRenameResidues,
     editRenumberResidues,
     editDeleteAtoms,
+    editDeleteByIndices,
     editSavePdb,
     transformCountSelection,
     transformPreview,
@@ -115,6 +123,52 @@
   let editBusy = $state(false)
   /** @type {HTMLElement | null} */
   let viewerEl = $state(null)
+
+  // ── Interactive Edit Mode ────────────────────────────────────────────
+  let editMode = $state(false)
+  let selectMenuOpen = $state(false)
+  const EDIT_LEVEL_LABEL = { atom: 'Atom', residue: 'Res', chain: 'Chain', molecule: 'Mol.' }
+  /** @type {'atom'|'residue'|'chain'|'molecule'} */
+  let editSelectionLevel = $state('residue')
+  /** @type {{ name:string, element:string, index:number, res_name:string, res_id:number, chain_id:string } | null} */
+  let editHoveredAtom = $state(null)
+  /** @type {Set<number>} */
+  let editHoverGroupIndices = $state(new Set())
+  /** @type {{ clientX:number, clientY:number } | null} */
+  let editTooltip = $state(null)
+  /** @type {Set<number>} — persistent selection locked by left-click */
+  let selectedGroupIndices = $state(new Set())
+  /** @type {{ name:string, element:string, index:number, res_name:string, res_id:number, chain_id:string } | null} */
+  let selectedAtom = $state(null)
+
+  const editSelectedAtoms = $derived(
+    editMode && selectedGroupIndices.size > 0 && structure
+      ? structure.atoms.filter((a) => selectedGroupIndices.has(a.index))
+      : []
+  )
+
+  // When selection LEVEL changes mid-hover: recompute the hover group for the
+  // current atom at the new level, and clear the stale click-locked selection.
+  // Does NOT re-run when only editHoveredAtom changes (hover movement is handled
+  // directly in handleCanvasHover), so the yellow outline persists during hover.
+  $effect(() => {
+    const level = editSelectionLevel
+    const atom = untrack(() => editHoveredAtom)
+    editHoverGroupIndices = atom ? new Set(_editGroupIndices(atom, level)) : new Set()
+    selectedGroupIndices = new Set()
+    selectedAtom = null
+  })
+
+  // Clear hover state when edit mode is turned off
+  $effect(() => {
+    if (!editMode) {
+      editHoveredAtom = null
+      editHoverGroupIndices = new Set()
+      editTooltip = null
+      selectedGroupIndices = new Set()
+      selectedAtom = null
+    }
+  })
   // Edit dialog refs
   /** @type {HTMLDialogElement | null} */
   let dlgRenameChain = $state(null)
@@ -454,8 +508,125 @@
     ctxMenu = null
   }
 
+  // ── Edit Mode helpers ────────────────────────────────────────────────
+
+  /**
+   * Return atom indices belonging to the selection group for the given level.
+   * @param {{ index:number, res_id:number, chain_id:string }} atom
+   * @param {string} level
+   * @returns {number[]}
+   */
+  function _editGroupIndices(atom, level) {
+    if (!structure) return []
+    if (level === 'atom') return [atom.index]
+    if (level === 'residue')
+      return structure.atoms
+        .filter((a) => a.chain_id === atom.chain_id && a.res_id === atom.res_id)
+        .map((a) => a.index)
+    if (level === 'chain')
+      return structure.atoms.filter((a) => a.chain_id === atom.chain_id).map((a) => a.index)
+    // molecule — find the view that contains this atom
+    const v = views.find((v) => v.atoms?.some((a) => a.index === atom.index))
+    return v?.atoms?.map((a) => a.index) ?? []
+  }
+
+  function handleCanvasHover({ x, y, w, h, clientX, clientY }) {
+    if (!editMode || measureMode) return
+    const cam = mainViewerCamera.current
+    if (!cam) return
+    const atom = pickAtomFromViews(views, cam, w, h, x, y, 22)
+    editHoveredAtom = atom
+    editTooltip = atom ? { clientX, clientY } : null
+    editHoverGroupIndices = atom ? new Set(_editGroupIndices(atom, editSelectionLevel)) : new Set()
+  }
+
+  function onEditModeCenterView() {
+    const atoms = structure?.atoms.filter((a) => editHoverGroupIndices.has(a.index))
+    if (!atoms?.length) return
+    centerCameraOnAtoms(atoms)
+    // Also shift rotation pivot to centroid
+    if (mainViewerControls.current) {
+      let cx = 0,
+        cy = 0,
+        cz = 0
+      for (const a of atoms) {
+        cx += a.x
+        cy += a.y
+        cz += a.z
+      }
+      const n = atoms.length
+      mainViewerControls.current.target.set(cx / n, cy / n, cz / n)
+    }
+  }
+
+  /** @param {{ res_id:number, chain_id:string, res_name:string }} atom */
+  function onEditModeRenameRes(atom) {
+    const a = atom ?? selectedAtom ?? editHoveredAtom
+    if (!a) return
+    rrChain = a.chain_id ?? ''
+    rrStart = a.res_id ?? 1
+    rrEnd = a.res_id ?? 9999
+    rrNewName = a.res_name ?? ''
+    dlgRenameRes?.showModal()
+  }
+
+  /** @param {{ chain_id:string }} atom */
+  function onEditModeRenameChain(atom) {
+    const a = atom ?? selectedAtom ?? editHoveredAtom
+    if (!a) return
+    rcOldChain = a.chain_id ?? ''
+    rcNewChain = a.chain_id ?? ''
+    dlgRenameChain?.showModal()
+  }
+
+  /** @param {{ res_id:number, chain_id:string }} atom */
+  function onEditModeRenumberRes(atom) {
+    const a = atom ?? selectedAtom ?? editHoveredAtom
+    if (!a) return
+    rnChain = a.chain_id ?? ''
+    rnStart = a.res_id ?? 1
+    rnEnd = a.res_id ?? 9999
+    rnNewStart = 1
+    dlgRenumberRes?.showModal()
+  }
+
+  async function onEditModeDelete() {
+    const targetIndices =
+      selectedGroupIndices.size > 0 ? [...selectedGroupIndices] : [...editHoverGroupIndices]
+    if (!filePath || targetIndices.length === 0) return
+    if (!confirm(`Delete ${targetIndices.length} atom(s) from the structure?`)) return
+    editBusy = true
+    try {
+      const res = await editDeleteByIndices({ path: filePath, indices: targetIndices })
+      selectedGroupIndices = new Set()
+      selectedAtom = null
+      editHoverGroupIndices = new Set()
+      editHoveredAtom = null
+      editTooltip = null
+      await applyEditResult(res)
+    } catch (ex) {
+      alert(ex instanceof Error ? ex.message : String(ex))
+    } finally {
+      editBusy = false
+    }
+  }
+
   function handleCanvasClick({ x, y, w, h }) {
     ctxMenu = null
+    // In edit mode (not measuring): left-click locks the hovered group as selected
+    if (editMode && !measureMode) {
+      const cam = mainViewerCamera.current
+      if (!cam) return
+      const atom = pickAtomFromViews(views, cam, w, h, x, y)
+      if (atom) {
+        selectedAtom = atom
+        selectedGroupIndices = new Set(_editGroupIndices(atom, editSelectionLevel))
+      } else {
+        selectedAtom = null
+        selectedGroupIndices = new Set()
+      }
+      return
+    }
     if (!measureMode) return
     const cam = mainViewerCamera.current
     if (!cam) return
@@ -492,7 +663,7 @@
     if (!cam) return
     const atom = pickAtomFromViews(views, cam, w, h, x, y)
     if (!atom) return
-    ctxMenu = { x: clientX, y: clientY, atom }
+    ctxMenu = { x: clientX, y: clientY, atom, labelsOpen: false }
   }
 
   function addAtomLabel(atom, text) {
@@ -607,6 +778,8 @@
   }
 
   async function applyEditResult(result) {
+    selectedGroupIndices = new Set()
+    selectedAtom = null
     await loadStructure(result.path, { resetCamera: false })
   }
 
@@ -815,7 +988,11 @@
       bind:clientHeight={canvasHeight}
     >
       {#if structure && camera}
-        <Canvas onAtomClick={handleCanvasClick} onAtomContextMenu={handleCanvasContextMenu}>
+        <Canvas
+          onAtomClick={handleCanvasClick}
+          onAtomContextMenu={handleCanvasContextMenu}
+          onAtomHover={handleCanvasHover}
+        >
           <CameraRig framing={camera} />
           {#each views.filter((v) => v.visible) as view (view.id)}
             {#if view.representation.type === 'ball-stick'}
@@ -829,6 +1006,7 @@
                 metalness={view.material?.metalness ?? 0.08}
                 roughness={view.material?.roughness ?? 0.48}
                 emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
+                highlightIndices={editHoverGroupIndices}
               />
             {:else if view.representation.type === 'cartoon'}
               <Cartoon
@@ -843,6 +1021,7 @@
                 metalness={view.material?.metalness ?? 0.08}
                 roughness={view.material?.roughness ?? 0.48}
                 emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
+                highlightIndices={editHoverGroupIndices}
               />
             {:else if view.representation.type === 'tube'}
               <Tube
@@ -855,6 +1034,7 @@
                 metalness={view.material?.metalness ?? 0.08}
                 roughness={view.material?.roughness ?? 0.48}
                 emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
+                highlightIndices={editHoverGroupIndices}
               />
             {:else if view.representation.type === 'vdw'}
               <VdwSpheres
@@ -865,15 +1045,60 @@
                 metalness={view.material?.metalness ?? 0.12}
                 roughness={view.material?.roughness ?? 0.45}
                 emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
+                highlightIndices={editHoverGroupIndices}
               />
             {/if}
           {/each}
+          <!-- Edit mode selected outline: BackSide yellow spheres slightly larger → outline ring -->
+          {#if editSelectedAtoms.length > 0}
+            <VdwSpheres
+              atoms={editSelectedAtoms}
+              getColor={_outlineGetColor}
+              atomScale={1.14}
+              metalness={0}
+              roughness={0.6}
+              emissiveIntensity={0.05}
+              quality={2}
+              renderOrder={8}
+              opacity={1}
+              outline={true}
+            />
+          {/if}
           {#if axesLinesVisible}
             <AxesLines length={camera.extent * 2} />
           {/if}
         </Canvas>
         {#if axesVisible}
           <AxesGizmo />
+        {/if}
+        <!-- Bottom-right atom info strip (hover/selection info in edit mode) -->
+        {#if editMode}
+          {@const displayAtom = editHoveredAtom ?? selectedAtom}
+          {#if displayAtom}
+            {@const groupCount = editHoveredAtom
+              ? editHoverGroupIndices.size
+              : selectedGroupIndices.size}
+            <div
+              class="pointer-events-none absolute right-2 bottom-2 z-20 rounded-lg border border-neutral-700/60 bg-neutral-950/85 px-3 py-2 text-[11px] shadow-lg"
+              style="backdrop-filter:blur(4px)"
+            >
+              <div class="font-mono font-semibold text-white">
+                {displayAtom.res_name}{displayAtom.res_id}<span
+                  class="mx-1 font-normal text-neutral-500">·</span
+                ><span class="text-neutral-300">Chain {displayAtom.chain_id}</span>
+              </div>
+              <div class="mt-0.5 text-[10px] text-neutral-400">
+                <span class="font-mono">{displayAtom.name}</span>
+                <span class="mx-0.5 text-neutral-600">·</span>
+                {displayAtom.element}
+                <span class="mx-0.5 text-neutral-600">·</span>
+                <span class="font-mono">#{displayAtom.index}</span>
+                {#if groupCount > 1}
+                  <span class="ml-1 text-neutral-500">({groupCount} atoms)</span>
+                {/if}
+              </div>
+            </div>
+          {/if}
         {/if}
         <MeasureOverlay
           {measurements}
@@ -1420,6 +1645,78 @@
       {/if}
     </div>
 
+    <!-- Edit Mode: Select dropdown button -->
+    <div class="relative">
+      {#if selectMenuOpen}
+        <div
+          class="fixed inset-0 z-40"
+          role="presentation"
+          onpointerdown={() => (selectMenuOpen = false)}
+        ></div>
+      {/if}
+      <button
+        type="button"
+        class="flex items-center gap-1 rounded border px-2 py-0.5 text-[11px] transition-colors disabled:opacity-40
+          {editMode
+          ? 'border-orange-500/60 bg-orange-500/15 text-orange-300 hover:bg-orange-500/25'
+          : 'border-neutral-700 bg-neutral-900 text-neutral-400 hover:border-neutral-600 hover:bg-neutral-800 hover:text-neutral-200'}"
+        onclick={() => (selectMenuOpen = !selectMenuOpen)}
+        disabled={!filePath}
+        title="Interactive selection mode"
+      >
+        {editMode ? `Select · ${EDIT_LEVEL_LABEL[editSelectionLevel]}` : 'Select'}
+        <svg viewBox="0 0 10 6" class="size-2 fill-current opacity-60" aria-hidden="true"
+          ><path d="M0 0l5 6 5-6z" /></svg
+        >
+      </button>
+      {#if selectMenuOpen}
+        <div
+          class="absolute bottom-full left-0 z-50 mb-1 min-w-32 overflow-hidden rounded-md border border-neutral-700 bg-neutral-900 py-1 shadow-xl"
+        >
+          {#each [['atom', 'Atom'], ['residue', 'Residue'], ['chain', 'Chain'], ['molecule', 'Molecule']] as [key, label]}
+            <button
+              type="button"
+              class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors
+                {editMode && editSelectionLevel === key
+                ? 'bg-orange-500/15 text-orange-300'
+                : 'text-neutral-200 hover:bg-neutral-800'}"
+              onclick={() => {
+                if (editMode && editSelectionLevel === key) {
+                  editMode = false
+                } else {
+                  editSelectionLevel = key
+                  editMode = true
+                }
+                selectMenuOpen = false
+              }}
+            >
+              {#if editMode && editSelectionLevel === key}
+                <svg viewBox="0 0 16 16" class="size-3 shrink-0 fill-orange-400" aria-hidden="true"
+                  ><path
+                    d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"
+                  /></svg
+                >
+              {:else}
+                <span class="size-3 shrink-0"></span>
+              {/if}
+              {label}
+            </button>
+          {/each}
+          {#if editMode}
+            <div class="my-0.5 border-t border-neutral-800"></div>
+            <button
+              type="button"
+              class="w-full px-3 py-1.5 text-left text-xs text-neutral-400 hover:bg-neutral-800 hover:text-white"
+              onclick={() => {
+                editMode = false
+                selectMenuOpen = false
+              }}>Exit edit mode</button
+            >
+          {/if}
+        </div>
+      {/if}
+    </div>
+
     <!-- Transform -->
     <button
       type="button"
@@ -1477,19 +1774,158 @@
 <!-- Right-click atom label context menu (fixed to viewport) -->
 {#if ctxMenu}
   {@const atom = ctxMenu.atom}
+  <!-- Compute selection group for this right-clicked atom when in edit mode -->
+  {@const ctxGroupIndices = editMode ? new Set(_editGroupIndices(atom, editSelectionLevel)) : null}
   <!-- backdrop — closes menu on outside click -->
-  <div class="fixed inset-0 z-40" role="presentation" onpointerdown={() => (ctxMenu = null)}></div>
   <div
-    class="fixed z-50 min-w-36 overflow-hidden rounded-md border border-neutral-700 bg-neutral-900 py-1 text-xs shadow-xl"
+    class="fixed inset-0 z-40"
+    role="presentation"
+    onpointerdown={(e) => e.button === 0 && (ctxMenu = null)}
+  ></div>
+  <div
+    class="fixed z-50 min-w-44 overflow-hidden rounded-md border border-neutral-700 bg-neutral-900 py-1 text-xs shadow-xl"
     style="left:{ctxMenu.x}px;top:{ctxMenu.y}px"
   >
-    <div class="border-b border-neutral-800 px-2 py-1 text-neutral-500">Add label</div>
-    {#each atomLabelFormats(atom) as fmt}
+    {#if editMode && ctxGroupIndices}
+      <!-- Edit mode section -->
+      <div class="border-b border-neutral-800 bg-orange-500/8 px-2 py-1 text-orange-400/80">
+        {atom.res_name}{atom.res_id} · Chain {atom.chain_id}
+        <span class="ml-1 text-neutral-500">({ctxGroupIndices.size} atoms)</span>
+      </div>
       <button
-        class="w-full px-2 py-1 text-left font-mono hover:bg-neutral-800"
-        onclick={() => addAtomLabel(atom, fmt)}>{fmt}</button
+        class="flex w-full items-center gap-1.5 px-2 py-1 text-left text-neutral-200 hover:bg-neutral-800"
+        onclick={() => {
+          const atoms = structure?.atoms.filter((a) => ctxGroupIndices.has(a.index))
+          if (atoms?.length) centerCameraOnAtoms(atoms)
+          if (mainViewerControls.current && atoms?.length) {
+            let cx = 0,
+              cy = 0,
+              cz = 0
+            for (const a of atoms) {
+              cx += a.x
+              cy += a.y
+              cz += a.z
+            }
+            mainViewerControls.current.target.set(
+              cx / atoms.length,
+              cy / atoms.length,
+              cz / atoms.length
+            )
+          }
+          ctxMenu = null
+        }}
       >
-    {/each}
+        <svg viewBox="0 0 16 16" class="size-3 shrink-0 fill-neutral-400" aria-hidden="true"
+          ><path
+            d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0m0 1a7 7 0 1 1 0 14A7 7 0 0 1 8 1m0 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8m0 1a3 3 0 1 1 0 6 3 3 0 0 1 0-6m0 2a1 1 0 1 0 0 2 1 1 0 0 0 0-2"
+          /></svg
+        >
+        Center view
+      </button>
+      {#if editSelectionLevel === 'residue' || editSelectionLevel === 'atom'}
+        <button
+          class="flex w-full items-center gap-1.5 px-2 py-1 text-left text-neutral-200 hover:bg-neutral-800"
+          onclick={() => {
+            onEditModeRenameRes(atom)
+            ctxMenu = null
+          }}
+        >
+          <svg viewBox="0 0 16 16" class="size-3 shrink-0 fill-neutral-400" aria-hidden="true"
+            ><path
+              d="M12.854.146a.5.5 0 0 0-.707 0L10.5 1.793 14.207 5.5l1.647-1.647a.5.5 0 0 0 0-.707zM4 6v1h1V6zM3 7H2v1h1zm-1 1H1v1h1zm7-7v1h1V1zM9 2H8v1h1zM8 3H7v1h1zM6 4H5v1h1zm-1 1H4v1h1zm-1 1H3v1h1zm-1 1H2v1h1zm-1 1H1v1h1zM1 8v1H0V8z"
+            /><path
+              d="M12.293 2.293a1 1 0 0 1 1.414 0l.5.5a1 1 0 0 1 0 1.414l-9.5 9.5A1 1 0 0 1 4 14H1a1 1 0 0 1-1-1v-3a1 1 0 0 1 .293-.707z"
+            /></svg
+          >
+          Rename residue…
+        </button>
+      {/if}
+      <button
+        class="flex w-full items-center gap-1.5 px-2 py-1 text-left text-neutral-200 hover:bg-neutral-800"
+        onclick={() => {
+          onEditModeRenameChain(atom)
+          ctxMenu = null
+        }}
+      >
+        <svg viewBox="0 0 16 16" class="size-3 shrink-0 fill-neutral-400" aria-hidden="true"
+          ><path
+            d="M12.854.146a.5.5 0 0 0-.707 0L10.5 1.793 14.207 5.5l1.647-1.647a.5.5 0 0 0 0-.707zM4 6v1h1V6zM3 7H2v1h1zm-1 1H1v1h1zm7-7v1h1V1zM9 2H8v1h1zM8 3H7v1h1zM6 4H5v1h1zm-1 1H4v1h1zm-1 1H3v1h1zm-1 1H2v1h1zm-1 1H1v1h1zM1 8v1H0V8z"
+          /><path
+            d="M12.293 2.293a1 1 0 0 1 1.414 0l.5.5a1 1 0 0 1 0 1.414l-9.5 9.5A1 1 0 0 1 4 14H1a1 1 0 0 1-1-1v-3a1 1 0 0 1 .293-.707z"
+          /></svg
+        >
+        Rename chain…
+      </button>
+      <button
+        class="flex w-full items-center gap-1.5 px-2 py-1 text-left text-neutral-200 hover:bg-neutral-800"
+        onclick={() => {
+          onEditModeRenumberRes(atom)
+          ctxMenu = null
+        }}
+      >
+        <svg viewBox="0 0 16 16" class="size-3 shrink-0 fill-neutral-400" aria-hidden="true"
+          ><path
+            d="M5 3a.5.5 0 0 1 .5.5V7H9a.5.5 0 0 1 0 1H5.5A.5.5 0 0 1 5 7.5v-4A.5.5 0 0 1 5.5 3zm5 0a.5.5 0 0 1 .5.5v1.5h1.5a.5.5 0 0 1 0 1H11v1.5a.5.5 0 0 1-1 0V6H8.5a.5.5 0 0 1 0-1H10V3.5A.5.5 0 0 1 10 3"
+          /><path
+            d="M0 2a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2zm15 0a1 1 0 0 0-1-1H2a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1z"
+          /></svg
+        >
+        Renumber residues…
+      </button>
+      <button
+        class="flex w-full items-center gap-1.5 px-2 py-1 text-left text-red-400 hover:bg-red-900/20"
+        onclick={async () => {
+          const indices = [...ctxGroupIndices]
+          if (!confirm(`Delete ${indices.length} atom(s)?`)) return
+          ctxMenu = null
+          editBusy = true
+          try {
+            const res = await editDeleteByIndices({ path: filePath, indices })
+            editHoverGroupIndices = new Set()
+            editHoveredAtom = null
+            await applyEditResult(res)
+          } catch (ex) {
+            alert(ex instanceof Error ? ex.message : String(ex))
+          } finally {
+            editBusy = false
+          }
+        }}
+      >
+        <svg viewBox="0 0 16 16" class="size-3 shrink-0 fill-red-400" aria-hidden="true"
+          ><path
+            d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z"
+          /><path
+            d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4zM2.5 3h11V2h-11z"
+          /></svg
+        >
+        Delete selection
+      </button>
+      <div class="my-0.5 border-t border-neutral-800"></div>
+    {/if}
+    <!-- Labels submenu toggle -->
+    <button
+      class="flex w-full items-center justify-between px-2 py-1 text-left transition-colors hover:bg-neutral-800
+        {ctxMenu.labelsOpen ? 'text-neutral-200' : 'text-neutral-400'}"
+      onclick={() => (ctxMenu.labelsOpen = !ctxMenu.labelsOpen)}
+    >
+      <span class="flex items-center gap-1.5">
+        <svg viewBox="0 0 16 16" class="size-3 shrink-0 fill-current" aria-hidden="true"
+          ><path
+            d="M0 2a2 2 0 0 1 2-2h11.5a.5.5 0 0 1 0 1H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h1.5v1.5a.5.5 0 0 1-.74.439L.819 13.14A2 2 0 0 1 0 11.306zm4 2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2zm1 0v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V4a1 1 0 0 0-1-1H6a1 1 0 0 0-1 1"
+          /></svg
+        >
+        Add label
+      </span>
+      <span class="text-[10px] text-neutral-500">{ctxMenu.labelsOpen ? '▾' : '▸'}</span>
+    </button>
+    {#if ctxMenu.labelsOpen}
+      {#each atomLabelFormats(atom) as fmt}
+        <button
+          class="w-full py-1 pr-2 pl-7 text-left font-mono text-neutral-300 hover:bg-neutral-800"
+          onclick={() => addAtomLabel(atom, fmt)}>{fmt}</button
+        >
+      {/each}
+    {/if}
     <div class="mt-1 border-t border-neutral-800">
       <button
         class="w-full px-2 py-1 text-left text-neutral-500 hover:bg-neutral-800 hover:text-white"

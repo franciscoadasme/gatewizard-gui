@@ -1,6 +1,6 @@
 <script>
   import { T, useThrelte } from '@threlte/core'
-  import { DoubleSide, Mesh, MeshStandardMaterial } from 'three'
+  import { Color, DoubleSide, Mesh, MeshStandardMaterial } from 'three'
   import { buildTubeGeometries } from '../../../lib/viewer/cartoon.js'
   import { defaultColorScheme } from '../../../lib/colorSchemes.js'
 
@@ -33,10 +33,28 @@
     quality = 3,
     metalness = 0.08,
     roughness = 0.48,
-    emissiveIntensity = 0.0
+    emissiveIntensity = 0.0,
+    highlightIndices = new Set()
   } = $props()
 
   const { invalidate } = useThrelte()
+
+  const _tmpHL = new Color()
+  const _effectiveGetColor = $derived(
+    highlightIndices.size === 0
+      ? getColor
+      : (atom) => {
+          const c = getColor(atom)
+          if (highlightIndices.has(atom.index)) {
+            return _tmpHL.setRGB(
+              Math.min(1, c.r * 1.5 + 0.4),
+              Math.min(1, c.g * 1.5 + 0.4),
+              Math.min(1, c.b * 1.5 + 0.4)
+            )
+          }
+          return c
+        }
+  )
 
   const material = new MeshStandardMaterial({
     vertexColors: true,
@@ -60,7 +78,7 @@
       return
     }
 
-    const geometries = buildTubeGeometries(atoms, residues, getColor, {
+    const geometries = buildTubeGeometries(atoms, residues, _effectiveGetColor, {
       tubeRadius,
       ssColors,
       quality

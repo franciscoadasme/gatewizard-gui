@@ -182,7 +182,11 @@ def get_atoms(atoms: mda.AtomGroup | mda.Universe) -> list[dict]:
             index=int(it.index),
             res_name=str(it.resname).strip(),
             res_id=int(it.resid),
-            chain_id=str(it.segid).strip(),
+            chain_id=(
+                str(it.segid).strip()
+                or str(getattr(it, "chainID", "") or "").strip()
+                or "A"
+            ),
         )
         for it in atoms
     ]
@@ -207,6 +211,13 @@ def get_residues(
     residues = []
     for res in u.residues:
         chain = str(res.segid).strip()
+        if not chain:
+            # Standard PDB: chain in chainID (col 22), segid is empty
+            try:
+                chain = str(res.atoms[0].chainID or "").strip()
+            except (AttributeError, IndexError):
+                pass
+        chain = chain or "A"
         ca_atoms = res.atoms.select_atoms("name CA")
         residues.append(
             dict(
@@ -1509,6 +1520,29 @@ def edit_delete_atoms(payload: EditDeleteAtomsRequest) -> dict:
         if len(idx) == u_orig.atoms.n_atoms:
             raise HTTPException(400, "Selection would delete all atoms")
         return _mv_edit(payload.path, lambda mv: mv.delete_atoms(idx))
+    except HTTPException:
+        raise
+    except (ViewerError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
+
+class EditDeleteByIndicesRequest(BaseModel):
+    path: str
+    indices: List[int]
+
+
+@app.post("/edit/delete-by-indices")
+def edit_delete_by_indices(payload: EditDeleteByIndicesRequest) -> dict:
+    """Delete atoms by their MDAnalysis index list and return the updated structure."""
+    try:
+        if not payload.indices:
+            raise HTTPException(400, "No indices provided")
+        u_orig = load_structure(payload.path)
+        if len(payload.indices) >= u_orig.atoms.n_atoms:
+            raise HTTPException(400, "Cannot delete all atoms")
+        return _mv_edit(payload.path, lambda mv: mv.delete_atoms(payload.indices))
     except HTTPException:
         raise
     except (ViewerError, ValueError) as exc:
