@@ -1,3 +1,11 @@
+<script module>
+  /**
+   * View IDs added here will have their next path-change-triggered
+   * updateStructure() call suppressed (used by applyGizmoResult).
+   */
+  export const skipNextPathFetch = new Set()
+</script>
+
 <script>
   import {
     constantScheme,
@@ -109,6 +117,10 @@ Distance:
       return
     }
     if (view._isSelHighlight) return
+    if (skipNextPathFetch.has(view.id)) {
+      skipNextPathFetch.delete(view.id)
+      return
+    }
     const tid = setTimeout(updateStructure, 300)
     return () => clearTimeout(tid)
   })
@@ -273,7 +285,7 @@ Distance:
       </div>
 
       <!-- Repr badge — click to cycle; spinner shown while loading -->
-      <div class="relative shrink-0 flex items-center">
+      <div class="relative flex shrink-0 items-center">
         <button
           type="button"
           class="rounded bg-neutral-800 px-1.5 py-0.5 text-[10px] transition-colors hover:bg-neutral-700"

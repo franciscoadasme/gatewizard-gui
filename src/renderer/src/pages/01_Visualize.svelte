@@ -45,7 +45,7 @@
   import Plus from '../components/icons/Plus.svelte'
   import ResetIcon from '../components/icons/Reset.svelte'
   import Spinner from '../components/ui/Spinner.svelte'
-  import ViewItem from '../components/ViewItem.svelte'
+  import ViewItem, { skipNextPathFetch } from '../components/ViewItem.svelte'
   import RadialMenu from '../components/RadialMenu.svelte'
   import TransformGizmo from '../components/TransformGizmo.svelte'
 
@@ -876,6 +876,49 @@
     }
   }
 
+  /**
+   * Lightweight post-gizmo-transform update:
+   *  - updates atom positions in place from result.atoms
+   *  - preserves view.bonds (topology unchanged for translate/rotate)
+   *  - preserves selectedGroupIndices and showGizmo
+   *  - does NOT call detectMolecules or trigger ViewItem updateStructure
+   */
+  async function applyGizmoResult(result) {
+    // Build index→position map from the returned atoms
+    const posMap = new Map(result.atoms.map((a) => [a.index, a]))
+
+    filePath = result.path
+
+    // Update the top-level structure object (used for exports etc.)
+    if (structure) {
+      structure = {
+        ...structure,
+        path: result.path,
+        atoms: structure.atoms.map((a) => {
+          const p = posMap.get(a.index)
+          return p ? { ...a, x: p.x, y: p.y, z: p.z } : a
+        })
+      }
+    }
+
+    // Update each view's atoms in-place without triggering a full re-fetch
+    for (const v of views) {
+      if (v._isSelHighlight) continue
+      // Mark so the path $effect in ViewItem skips updateStructure for this update
+      skipNextPathFetch.add(v.id)
+      v.path = result.path
+      v.atoms = v.atoms.map((a) => {
+        const p = posMap.get(a.index)
+        return p ? { ...a, x: p.x, y: p.y, z: p.z } : a
+      })
+      // v.bonds intentionally not touched — connectivity unchanged
+    }
+
+    previewPositions = null
+    _gizmoLastOp = null
+    // selectedGroupIndices and showGizmo are preserved deliberately
+  }
+
   async function onEditRenameChain() {
     if (!filePath || !rcOldChain || !rcNewChain) return
     editBusy = true
@@ -995,7 +1038,9 @@
     if (!editMode || selectedGroupIndices.size === 0 || !structure) return null
     const atoms = structure.atoms.filter((a) => selectedGroupIndices.has(a.index))
     if (!atoms.length) return null
-    let cx = 0, cy = 0, cz = 0
+    let cx = 0,
+      cy = 0,
+      cz = 0
     for (const a of atoms) {
       const pos = previewPositions?.[a.index]
       cx += pos ? pos[0] : a.x
@@ -1097,9 +1142,7 @@
     try {
       const sel = _selStringFromEditSelection() || null
       const res = await transformApply({ path: filePath, selection: sel, op })
-      previewPositions = null
-      _gizmoLastOp = null
-      await applyEditResult(res)
+      await applyGizmoResult(res)
     } catch (ex) {
       _undoFilePath = null
       alert(ex instanceof Error ? ex.message : String(ex))
@@ -1118,9 +1161,7 @@
     try {
       const sel = _selStringFromEditSelection() || null
       const res = await transformApply({ path: filePath, selection: sel, op })
-      previewPositions = null
-      _gizmoLastOp = null
-      await applyEditResult(res)
+      await applyGizmoResult(res)
     } catch (ex) {
       _undoFilePath = null
       alert(ex instanceof Error ? ex.message : String(ex))
@@ -1133,8 +1174,15 @@
     if (!_undoFilePath) return
     editBusy = true
     try {
-      await applyEditResult({ path: _undoFilePath })
+      // Fetch atoms from the pre-transform path (already cached, no bond re-guess)
+      const undo = await getStructure({
+        path: _undoFilePath,
+        needs_bonds: false,
+        needs_secondary_structure: false,
+        save_dir: workingDir || null
+      })
       previewPositions = null
+      await applyGizmoResult({ path: _undoFilePath, atoms: undo.atoms })
       _undoFilePath = null
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : String(ex))
@@ -1174,21 +1222,39 @@
       }
     } else if (type === 'rotate') {
       // Centroid from base positions
-      let cx = 0, cy = 0, cz = 0
-      for (const a of selAtoms) { const [bx, by, bz] = base[a.index]; cx += bx; cy += by; cz += bz }
-      cx /= selAtoms.length; cy /= selAtoms.length; cz /= selAtoms.length
-      const rad = angle * (Math.PI / 180)
-      const cos = Math.cos(rad), sin = Math.sin(rad)
+      let cx = 0,
+        cy = 0,
+        cz = 0
       for (const a of selAtoms) {
         const [bx, by, bz] = base[a.index]
-        const dx = bx - cx, dy = by - cy, dz = bz - cz
+        cx += bx
+        cy += by
+        cz += bz
+      }
+      cx /= selAtoms.length
+      cy /= selAtoms.length
+      cz /= selAtoms.length
+      const rad = angle * (Math.PI / 180)
+      const cos = Math.cos(rad),
+        sin = Math.sin(rad)
+      for (const a of selAtoms) {
+        const [bx, by, bz] = base[a.index]
+        const dx = bx - cx,
+          dy = by - cy,
+          dz = bz - cz
         let nx, ny, nz
         if (axis === 'x') {
-          nx = dx; ny = dy * cos - dz * sin; nz = dy * sin + dz * cos
+          nx = dx
+          ny = dy * cos - dz * sin
+          nz = dy * sin + dz * cos
         } else if (axis === 'y') {
-          nx = dx * cos + dz * sin; ny = dy; nz = -dx * sin + dz * cos
+          nx = dx * cos + dz * sin
+          ny = dy
+          nz = -dx * sin + dz * cos
         } else {
-          nx = dx * cos - dy * sin; ny = dx * sin + dy * cos; nz = dz
+          nx = dx * cos - dy * sin
+          ny = dx * sin + dy * cos
+          nz = dz
         }
         newPos[a.index] = [cx + nx, cy + ny, cz + nz]
       }
@@ -1343,7 +1409,7 @@
         label: showGizmo ? 'Move (on)' : 'Move',
         color: showGizmo ? '#facc15' : '#94a3b8',
         bgColor: showGizmo ? 'rgba(60,50,0,0.96)' : undefined,
-        icon: '<path d="M7.646.146a.5.5 0 0 1 .708 0l2 2a.5.5 0 0 1-.708.708L8.5 1.707V5.5a.5.5 0 0 1-1 0V1.707L6.354 2.854a.5.5 0 1 1-.708-.708zm-6 6a.5.5 0 0 1 .708 0L3.5 7.293V4.5a.5.5 0 0 1 1 0v2.793l1.146-1.147a.5.5 0 1 1 .708.708l-2 2a.5.5 0 0 1-.708 0l-2-2a.5.5 0 0 1 0-.708zm9 0a.5.5 0 0 0-.708 0L9.5 7.293V4.5a.5.5 0 0 0-1 0v2.793l-1.146-1.147a.5.5 0 1 0-.708.708l2 2a.5.5 0 0 0 .708 0l2-2a.5.5 0 0 0 0-.708zM8 11a.5.5 0 0 1 .5.5v3.793l1.146-1.147a.5.5 0 0 1 .708.708l-2 2a.5.5 0 0 1-.708 0l-2-2a.5.5 0 1 1 .708-.708L7.5 15.293V11.5A.5.5 0 0 1 8 11"/>',
+        icon: '<path d="M8 1L10.5 4.5L9 4.5L9 7L11.5 7L11.5 5.5L15 8L11.5 10.5L11.5 9L9 9L9 11.5L10.5 11.5L8 15L5.5 11.5L7 11.5L7 9L4.5 9L4.5 10.5L1 8L4.5 5.5L4.5 7L7 7L7 4.5L5.5 4.5Z"/>',
         action: () => {
           showGizmo = !showGizmo
           ctxMenu = null
@@ -1597,17 +1663,27 @@
                     atoms={_svAtoms}
                     getColor={_outlineGetColor}
                     atomScale={(_sv.atomScale ?? 1.0) * 1.06}
-                    metalness={0} roughness={0.6} emissiveIntensity={0.05}
-                    quality={2} renderOrder={8} opacity={1} outline={true}
+                    metalness={0}
+                    roughness={0.6}
+                    emissiveIntensity={0.05}
+                    quality={2}
+                    renderOrder={8}
+                    opacity={1}
+                    outline={true}
                   />
                 {:else if _sv.representation.type === 'ball-stick'}
                   <!-- Match covalent radius: BALL_STICK_ATOM_SCALE=0.5, VDW_C=1.7, coval_C=0.76 → ratio≈0.26 with margin -->
                   <VdwSpheres
                     atoms={_svAtoms}
                     getColor={_outlineGetColor}
-                    atomScale={(_sv.atomScale ?? 1.0) * 0.30}
-                    metalness={0} roughness={0.6} emissiveIntensity={0.05}
-                    quality={2} renderOrder={8} opacity={1} outline={true}
+                    atomScale={(_sv.atomScale ?? 1.0) * 0.3}
+                    metalness={0}
+                    roughness={0.6}
+                    emissiveIntensity={0.05}
+                    quality={2}
+                    renderOrder={8}
+                    opacity={1}
+                    outline={true}
                   />
                 {:else}
                   <!-- Cartoon / tube: small marker spheres at atom positions -->
@@ -1615,8 +1691,13 @@
                     atoms={_svAtoms}
                     getColor={_outlineGetColor}
                     atomScale={(_sv.atomScale ?? 1.0) * 0.24}
-                    metalness={0} roughness={0.6} emissiveIntensity={0.05}
-                    quality={2} renderOrder={8} opacity={1} outline={true}
+                    metalness={0}
+                    roughness={0.6}
+                    emissiveIntensity={0.05}
+                    quality={2}
+                    renderOrder={8}
+                    opacity={1}
+                    outline={true}
                   />
                 {/if}
               {/if}
@@ -2183,8 +2264,13 @@
           {editMode
           ? 'border-orange-500/60 bg-orange-500/15 text-orange-300 hover:bg-orange-500/25'
           : 'border-neutral-700 bg-neutral-900 text-neutral-400 hover:border-neutral-600 hover:bg-neutral-800 hover:text-neutral-200'}"
-        onpointerenter={() => { clearTimeout(_selectHoverTimer); if (filePath) selectMenuOpen = true }}
-        onpointerleave={() => { _selectHoverTimer = setTimeout(() => (selectMenuOpen = false), 280) }}
+        onpointerenter={() => {
+          clearTimeout(_selectHoverTimer)
+          if (filePath) selectMenuOpen = true
+        }}
+        onpointerleave={() => {
+          _selectHoverTimer = setTimeout(() => (selectMenuOpen = false), 280)
+        }}
         onclick={() => (selectMenuOpen = !selectMenuOpen)}
         disabled={!filePath}
         title="Interactive selection mode"
@@ -2199,7 +2285,9 @@
         <div
           class="absolute bottom-full left-0 z-50 mb-0.5 min-w-32 overflow-hidden rounded-md border border-neutral-700 bg-neutral-900 py-1 shadow-xl"
           onpointerenter={() => clearTimeout(_selectHoverTimer)}
-          onpointerleave={() => { _selectHoverTimer = setTimeout(() => (selectMenuOpen = false), 280) }}
+          onpointerleave={() => {
+            _selectHoverTimer = setTimeout(() => (selectMenuOpen = false), 280)
+          }}
         >
           {#each [['atom', 'Atom'], ['residue', 'Residue'], ['chain', 'Chain'], ['molecule', 'Molecule']] as [key, label]}
             <button
@@ -2250,8 +2338,13 @@
       <button
         type="button"
         class="flex items-center gap-0.5 rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-neutral-300 transition-colors hover:border-neutral-600 hover:bg-neutral-800 disabled:opacity-40"
-        onpointerenter={() => { clearTimeout(_editMenuHoverTimer); if (filePath && !editBusy) editMenuOpen = true }}
-        onpointerleave={() => { _editMenuHoverTimer = setTimeout(() => (editMenuOpen = false), 280) }}
+        onpointerenter={() => {
+          clearTimeout(_editMenuHoverTimer)
+          if (filePath && !editBusy) editMenuOpen = true
+        }}
+        onpointerleave={() => {
+          _editMenuHoverTimer = setTimeout(() => (editMenuOpen = false), 280)
+        }}
         onclick={() => (editMenuOpen = !editMenuOpen)}
         disabled={!filePath || editBusy}
         title="Transform / Edit structure">Transform ▾</button
@@ -2261,7 +2354,9 @@
         <div
           class="absolute bottom-full left-0 z-40 mb-0.5 min-w-44 overflow-hidden rounded border border-neutral-700 bg-neutral-900 py-1 text-[11px] shadow-xl"
           onpointerenter={() => clearTimeout(_editMenuHoverTimer)}
-          onpointerleave={() => { _editMenuHoverTimer = setTimeout(() => (editMenuOpen = false), 280) }}
+          onpointerleave={() => {
+            _editMenuHoverTimer = setTimeout(() => (editMenuOpen = false), 280)
+          }}
         >
           <!-- Transform dialog -->
           <button
