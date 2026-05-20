@@ -1434,10 +1434,49 @@ def _mv_edit(pdb_path: str, operation) -> dict:
     mv.save_pdb(tmp_path)
     u = mda.Universe(tmp_path)
     data: dict = {"path": tmp_path, "atoms": get_atoms(u.atoms)}
+
+    # Try to get bonds from the cached source universe first (transforms don't
+    # change connectivity, so re-guessing on the new temp file is wasteful).
+    src_key = str(Path(pdb_path).resolve())
+    bonds: list = []
+    src_had_bonds = False
+    with FILE_CACHE_LOCK:
+        src_entry = FILE_CACHE.get(src_key)
+        if src_entry and src_entry.bond_guessed:
+            try:
+                bonds = src_entry.universe.atoms.bonds.indices.tolist()
+                src_had_bonds = True
+            except mda.exceptions.NoDataError:
+                pass
+
+    if not src_had_bonds:
+        try:
+            bonds = u.atoms.bonds.indices.tolist()
+        except mda.exceptions.NoDataError:
+            bonds = []
+
+    data["bonds"] = bonds
+
+    # Pre-populate the cache for the new temp file so future getStructure calls
+    # with needs_bonds=True don't re-run the expensive guess_bonds().
     try:
-        data["bonds"] = u.atoms.bonds.indices.tolist()
-    except mda.exceptions.NoDataError:
-        data["bonds"] = []
+        tmp_stat = Path(tmp_path).stat()
+        new_entry = FileCacheEntry(
+            mtime=tmp_stat.st_mtime, size=tmp_stat.st_size, universe=u
+        )
+        if src_had_bonds and bonds:
+            # Transfer bond topology so the universe already has bonds
+            try:
+                u.add_TopologyAttr("bonds", [tuple(b) for b in bonds])
+            except Exception:
+                pass
+        new_entry.bond_guessed = src_had_bonds
+        tmp_key = str(Path(tmp_path).resolve())
+        with FILE_CACHE_LOCK:
+            FILE_CACHE[tmp_key] = new_entry
+    except Exception:
+        pass  # Non-critical; cache population is best-effort
+
     return data
 
 
