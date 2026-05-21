@@ -111,6 +111,33 @@ function runProcess(command, args, options = {}) {
   })
 }
 
+function parseVcsRequirements(requirementsText) {
+  return requirementsText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'))
+    .filter((line) => line.includes(' @ git+'))
+}
+
+function forceReinstallVcsRequirements(pyPath, requirementsText, runtimePrefix) {
+  const vcsReqs = parseVcsRequirements(requirementsText)
+  if (vcsReqs.length === 0) return
+
+  for (const req of vcsReqs) {
+    const pipVcs = spawnSync(
+      pyPath,
+      ['-m', 'pip', 'install', '--force-reinstall', '--no-deps', req],
+      {
+        stdio: 'inherit',
+        env: { ...process.env, CONDA_PREFIX: runtimePrefix }
+      }
+    )
+    if (pipVcs.status !== 0) {
+      throw new Error(`pip force reinstall failed for VCS requirement: ${req}`)
+    }
+  }
+}
+
 /**
  * @param {{ requirementsPath: string, onStatus?: (msg: string) => void }} options
  */
@@ -194,6 +221,7 @@ export async function ensureMambaRuntime(options) {
     if (pipReq.status !== 0) {
       throw new Error('pip install -r requirements.txt failed')
     }
+    forceReinstallVcsRequirements(pyPath, requirementsText, runtimePrefix)
     await fs.writeFile(
       statePath,
       JSON.stringify(
@@ -277,6 +305,7 @@ export async function ensureMambaRuntime(options) {
   if (pipReq.status !== 0) {
     throw new Error('pip install -r requirements.txt failed')
   }
+  forceReinstallVcsRequirements(pyResolved, requirementsText, runtimePrefix)
 
   await fs.writeFile(
     statePath,
