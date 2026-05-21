@@ -28,8 +28,6 @@
   let currentId = $state(
     hashId && stages.some((s) => s.id === hashId) ? hashId : (stages[0]?.id ?? '')
   )
-  /** @type {import('svelte').Component | null} */
-  let ActivePage = $state(null)
 
   // ── Working directory (shared with pages) ──
   let workingDir = $state('')
@@ -48,9 +46,6 @@
     if (typeof history !== 'undefined') {
       history.replaceState(null, '', `#${id}`)
     }
-    const mod = pageModules[stage.file]
-    if (!mod?.default) return
-    ActivePage = mod.default
   }
 
   /**
@@ -74,11 +69,12 @@
     <div class="flex items-center gap-2">
       <span class="text-sm font-medium dark:text-neutral-400">Working Directory:</span>
       <input
+        id="working-dir-input"
         type="text"
         readonly
         placeholder="Select a directory..."
         value={workingDir}
-        class="flex-1 rounded-md border border-neutral-300 p-2 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:placeholder-neutral-600"
+        class="flex-1 rounded-md border border-neutral-300 p-2 transition-all dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:placeholder-neutral-600"
       />
       <Button onclick={onBrowseDirectory}>Browse</Button>
     </div>
@@ -99,10 +95,27 @@
     </div>
   </nav>
 
-  <main class="flex min-h-0 flex-1 overflow-hidden">
-    {#if ActivePage}
-      <ActivePage {workingDir} />
-    {/if}
+  <!--
+    All pages are mounted once and kept alive — switching tabs only toggles
+    visibility/pointer-events so no component state is ever lost.
+    `position:absolute; inset:0` ensures every page always has its full
+    dimensions (important for the Three.js / WebGL canvas in Visualize).
+  -->
+  <main class="relative min-h-0 flex-1 overflow-hidden">
+    {#each stages as stage (stage.id)}
+      {@const PageComp = pageModules[stage.file]?.default}
+      {#if PageComp}
+        <div
+          class="absolute inset-0 flex overflow-hidden"
+          style="visibility:{currentId === stage.id
+            ? 'visible'
+            : 'hidden'};pointer-events:{currentId === stage.id ? 'auto' : 'none'}"
+          aria-hidden={currentId !== stage.id}
+        >
+          <PageComp {workingDir} />
+        </div>
+      {/if}
+    {/each}
   </main>
 
   <footer class="px-2 py-1 text-xs dark:text-neutral-500">Status bar</footer>
