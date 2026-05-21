@@ -4,8 +4,19 @@
   import Duration from './icons/Duration.svelte'
   import Spinner from './ui/Spinner.svelte'
 
-  /** @type {{ stage_info: { name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, output: string } }} */
+  /** @type {{ stage_info: { name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, elapsed_time_seconds: number|null, output: string } }} */
   let { stage_info } = $props()
+
+  function formatElapsed(seconds) {
+    if (!Number.isFinite(seconds) || seconds <= 0) return '0s'
+    const s = Math.round(seconds)
+    const h = Math.floor(s / 3600)
+    const m = Math.floor((s % 3600) / 60)
+    const sec = s % 60
+    if (h > 0) return `${h}h ${m}m ${sec}s`
+    if (m > 0) return `${m}m ${sec}s`
+    return `${sec}s`
+  }
 
   let progress = $derived(
     Math.round(((stage_info.simulated_time ?? 0) / (stage_info.total_simulation_time ?? 1)) * 100)
@@ -36,7 +47,10 @@
     {#if stage_info.simulated_time !== null}
       <span class="text-nowrap text-neutral-500">
         ({stage_info.simulated_time.toFixed(stage_info.simulated_time > 1 ? 0 : 3)} ns &middot;
-        {stage_info.performance.toFixed(1)} ns/day)
+        {(stage_info.performance ?? 0).toFixed(1)} ns/day
+        {#if stage_info.elapsed_time_seconds !== null}
+          &middot; {formatElapsed(stage_info.elapsed_time_seconds)}
+        {/if})
       </span>
     {/if}
   </div>
