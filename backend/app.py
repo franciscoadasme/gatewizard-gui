@@ -802,7 +802,13 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
 
     pdb_files = list(input_dir.glob("*.pdb"))
     if pdb_files:
-        shutil.copy2(pdb_files[0], output_dir / "system.pdb")
+        # Prefer system.pdb by name (the full tleap-generated system), because the
+        # input directory may also contain protein-only or intermediate PDB files that
+        # would be selected first by a naive alphabetical glob.
+        selected_pdb = next(
+            (f for f in pdb_files if f.name.lower() == "system.pdb"), pdb_files[0]
+        )
+        shutil.copy2(selected_pdb, output_dir / "system.pdb")
 
     bilayer_pdb_files = list(input_dir.glob("bilayer*_lipid.pdb"))
     if bilayer_pdb_files:
