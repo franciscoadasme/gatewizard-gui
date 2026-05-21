@@ -49,6 +49,38 @@
   import RadialMenu from '../components/RadialMenu.svelte'
   import TransformGizmo from '../components/TransformGizmo.svelte'
 
+  /**
+   * Svelte action for range inputs: sets the initial value on mount and blocks Svelte's
+   * reactive DOM updates while the user is dragging, preventing the "sticky slider" bug.
+   * @param {HTMLInputElement} node
+   * @param {number} value
+   */
+  function setRangeValue(node, value) {
+    node.value = String(value)
+    let dragging = false
+    const onDown = () => {
+      dragging = true
+    }
+    const onUp = () => {
+      dragging = false
+    }
+    node.addEventListener('pointerdown', onDown)
+    node.addEventListener('mousedown', onDown)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('mouseup', onUp)
+    return {
+      update(v) {
+        if (!dragging) node.value = String(v)
+      },
+      destroy() {
+        node.removeEventListener('pointerdown', onDown)
+        node.removeEventListener('mousedown', onDown)
+        window.removeEventListener('pointerup', onUp)
+        window.removeEventListener('mouseup', onUp)
+      }
+    }
+  }
+
   /** @typedef {{ x: number, y: number, z: number, element: string, name: string }} Atom */
   /** @typedef {{ chain: string, resname: string, number: number, atom_indices: number[], ca_index?: number, sec?: string }} Residue */
   /** @typedef {{ type: 'cartoon' | 'ball-stick' | 'vdw' }} Representation */
@@ -66,7 +98,7 @@
 
   // state
   let axesLinesVisible = $state(false)
-  let axesVisible = $state(false)
+  let axesVisible = $state(true)
   /** @type {ViewerFraming | null} */
   let camera = $state(null)
   let loadingPDB = $state(false)
@@ -96,7 +128,7 @@
   let labelsExpanded = $state(true)
 
   // Right panel resize
-  let rightW = $state(240)
+  let rightW = $state(290)
   let _rrX = 0,
     _rrW = 0
   function _startRightResize(e) {
@@ -657,8 +689,9 @@
           type: measureMode,
           atoms: next.slice(0, need),
           color: '#facc15',
-          size: 11,
-          lineWidth: 1.5
+          size: 15,
+          lineWidth: 3.0,
+          visible: true
         }
       ]
       measurePicks = []
@@ -684,7 +717,7 @@
   function addAtomLabel(atom, text) {
     atomLabels = [
       ...atomLabels,
-      { id: crypto.randomUUID(), atom, text, size: labelSize, color: labelColor }
+      { id: crypto.randomUUID(), atom, text, size: labelSize, color: labelColor, visible: true }
     ]
     ctxMenu = null
   }
@@ -1740,9 +1773,9 @@
           {/if}
         {/if}
         <MeasureOverlay
-          {measurements}
+          measurements={measurements.filter((m) => m.visible !== false)}
           picks={measurePicks}
-          {atomLabels}
+          atomLabels={atomLabels.filter((l) => l.visible !== false)}
           width={canvasWidth}
           height={canvasHeight}
         />
@@ -1948,10 +1981,15 @@
             </div>
             {#if measExpanded}
               <div class="max-h-40 space-y-0.5 overflow-y-auto px-1.5 pb-1.5">
-                {#each measurements as m (m.id)}
+                {#each measurements as m, i (m.id)}
                   <div class="flex flex-col rounded hover:bg-neutral-800/40">
                     <div class="flex items-center gap-1.5 px-1 py-0.5">
-                      <span class="shrink-0" style="color:{m.color ?? '#facc15'}">
+                      <span
+                        class="shrink-0"
+                        style="color:{m.color ?? '#facc15'};opacity:{m.visible !== false
+                          ? 1
+                          : 0.35}"
+                      >
                         {#if m.type === 'distance'}
                           <svg
                             viewBox="0 0 16 8"
@@ -2022,17 +2060,56 @@
                           </svg>
                         {/if}
                       </span>
-                      <span class="flex-1 font-mono text-xs" style="color:{m.color ?? '#facc15'}"
-                        >{measurementLabel(m)}</span
+                      <span
+                        class="flex-1 font-mono text-xs"
+                        style="color:{m.color ?? '#facc15'};opacity:{m.visible !== false
+                          ? 1
+                          : 0.35}">{measurementLabel(m)}</span
                       >
                       <button
+                        onclick={() => {
+                          measurements[i].visible = !(m.visible !== false)
+                        }}
+                        class="shrink-0 text-neutral-600 hover:text-neutral-200"
+                        title={m.visible !== false ? 'Hide' : 'Show'}
+                      >
+                        {#if m.visible !== false}
+                          <svg
+                            viewBox="0 0 16 10"
+                            class="size-3.5"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.5"
+                            stroke-linecap="round"
+                            aria-hidden="true"
+                          >
+                            <path d="M1,5 Q8,-1.5 15,5 Q8,11.5 1,5" />
+                            <circle cx="8" cy="5" r="2.5" fill="currentColor" stroke="none" />
+                          </svg>
+                        {:else}
+                          <svg
+                            viewBox="0 0 16 10"
+                            class="size-3.5 opacity-40"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.5"
+                            stroke-linecap="round"
+                            aria-hidden="true"
+                          >
+                            <path d="M1,5 Q8,-1.5 15,5 Q8,11.5 1,5" />
+                            <circle cx="8" cy="5" r="2.5" fill="currentColor" stroke="none" />
+                            <line x1="2" y1="0.5" x2="14" y2="9.5" />
+                          </svg>
+                        {/if}
+                      </button>
+                      <button
                         onclick={() => toggleGear('meas', m.id)}
-                        class="shrink-0 text-xs text-neutral-600 hover:text-neutral-300"
+                        class="shrink-0 text-sm text-neutral-600 hover:text-neutral-300"
                         title="Settings">&#x2699;</button
                       >
                       <button
                         onclick={() => removeMeasurement(m.id)}
-                        class="shrink-0 text-xs text-neutral-600 hover:text-red-400"
+                        class="shrink-0 text-sm text-neutral-600 hover:text-red-400"
                         >&#x2715;</button
                       >
                     </div>
@@ -2051,10 +2128,13 @@
                           <input
                             type="range"
                             min="8"
-                            max="24"
+                            max="40"
                             step="1"
-                            bind:value={m.size}
-                            class="h-1 flex-1 accent-yellow-400"
+                            use:setRangeValue={m.size}
+                            oninput={(e) => {
+                              measurements[i].size = +e.target.value
+                            }}
+                            class="h-3 flex-1 cursor-pointer accent-yellow-400"
                           />
                           <span class="w-5 text-right text-xs text-neutral-400 tabular-nums"
                             >{m.size}</span
@@ -2065,10 +2145,13 @@
                           <input
                             type="range"
                             min="0.5"
-                            max="4"
+                            max="6"
                             step="0.5"
-                            bind:value={m.lineWidth}
-                            class="h-1 flex-1 accent-yellow-400"
+                            use:setRangeValue={m.lineWidth}
+                            oninput={(e) => {
+                              measurements[i].lineWidth = +e.target.value
+                            }}
+                            class="h-3 flex-1 cursor-pointer accent-yellow-400"
                           />
                           <span class="w-5 text-right text-xs text-neutral-400 tabular-nums"
                             >{m.lineWidth}</span
@@ -2107,14 +2190,14 @@
               <input
                 type="range"
                 min="8"
-                max="24"
+                max="40"
                 step="1"
-                value={labelSize}
+                use:setRangeValue={labelSize}
                 oninput={(e) => {
                   labelSize = +e.target.value
                   for (const l of atomLabels) l.size = labelSize
                 }}
-                class="h-1 flex-1 accent-yellow-400"
+                class="h-3 flex-1 cursor-pointer accent-yellow-400"
               />
               <span class="w-5 text-right text-xs text-neutral-400 tabular-nums">{labelSize}</span>
               <span class="ml-1 text-xs text-neutral-500">Color</span>
@@ -2130,25 +2213,62 @@
             </div>
             {#if atomLabels.length > 0}
               <div class="max-h-32 space-y-0.5 overflow-y-auto px-1.5 pb-1.5">
-                {#each atomLabels as l (l.id)}
+                {#each atomLabels as l, j (l.id)}
                   <div class="flex flex-col rounded hover:bg-neutral-800/40">
                     <div class="flex items-center gap-1.5 px-1 py-0.5">
                       <span
                         class="inline-block size-2 shrink-0 rounded-full"
-                        style="background:{l.color}"
+                        style="background:{l.color};opacity:{l.visible !== false ? 1 : 0.35}"
                       ></span>
                       <span
                         class="flex-1 truncate font-mono text-neutral-300"
-                        style="font-size:{l.size}px">{l.text}</span
+                        style="font-size:{l.size}px;opacity:{l.visible !== false ? 1 : 0.35}"
+                        >{l.text}</span
                       >
                       <button
+                        onclick={() => {
+                          atomLabels[j].visible = !(l.visible !== false)
+                        }}
+                        class="shrink-0 text-neutral-600 hover:text-neutral-200"
+                        title={l.visible !== false ? 'Hide' : 'Show'}
+                      >
+                        {#if l.visible !== false}
+                          <svg
+                            viewBox="0 0 16 10"
+                            class="size-3.5"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.5"
+                            stroke-linecap="round"
+                            aria-hidden="true"
+                          >
+                            <path d="M1,5 Q8,-1.5 15,5 Q8,11.5 1,5" />
+                            <circle cx="8" cy="5" r="2.5" fill="currentColor" stroke="none" />
+                          </svg>
+                        {:else}
+                          <svg
+                            viewBox="0 0 16 10"
+                            class="size-3.5 opacity-40"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.5"
+                            stroke-linecap="round"
+                            aria-hidden="true"
+                          >
+                            <path d="M1,5 Q8,-1.5 15,5 Q8,11.5 1,5" />
+                            <circle cx="8" cy="5" r="2.5" fill="currentColor" stroke="none" />
+                            <line x1="2" y1="0.5" x2="14" y2="9.5" />
+                          </svg>
+                        {/if}
+                      </button>
+                      <button
                         onclick={() => toggleGear('label', l.id)}
-                        class="shrink-0 text-xs text-neutral-600 hover:text-neutral-300"
+                        class="shrink-0 text-sm text-neutral-600 hover:text-neutral-300"
                         title="Settings">&#x2699;</button
                       >
                       <button
                         onclick={() => removeAtomLabel(l.id)}
-                        class="shrink-0 text-xs text-neutral-600 hover:text-red-400"
+                        class="shrink-0 text-sm text-neutral-600 hover:text-red-400"
                         >&#x2715;</button
                       >
                     </div>
@@ -2164,10 +2284,13 @@
                           <input
                             type="range"
                             min="8"
-                            max="24"
+                            max="40"
                             step="1"
-                            bind:value={l.size}
-                            class="h-1 flex-1 accent-yellow-400"
+                            use:setRangeValue={l.size}
+                            oninput={(e) => {
+                              atomLabels[j].size = +e.target.value
+                            }}
+                            class="h-3 flex-1 cursor-pointer accent-yellow-400"
                           />
                           <span class="w-5 text-right text-xs text-neutral-400 tabular-nums"
                             >{l.size}</span
