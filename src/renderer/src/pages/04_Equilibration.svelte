@@ -90,6 +90,14 @@
 
   // output
   let equilibrationOutput = $state('')
+  let showWorkingDirHint = $state(false)
+
+  $effect(() => {
+    if (workingDir !== '') {
+      showWorkingDirHint = false
+      highlightWorkingDir(false)
+    }
+  })
 
   $effect(() => {
     unscheduleUpdate()
@@ -255,6 +263,24 @@
     }
   }
 
+  function highlightWorkingDir(on) {
+    const el = document.getElementById('working-dir-input')
+    if (!el) return
+    if (on) {
+      el.style.outline = '2px solid #facc15'
+      el.style.outlineOffset = '2px'
+    } else {
+      el.style.outline = ''
+      el.style.outlineOffset = ''
+    }
+  }
+
+  function toggleWorkingDirHint(show) {
+    if (workingDir !== '') return
+    showWorkingDirHint = show
+    highlightWorkingDir(show)
+  }
+
   async function selectInputDir() {
     const { canceled, dirPath } = await window.api.openDirectoryDialog(
       'Select Input Directory',
@@ -402,7 +428,13 @@
       </div>
       <div class="space-y-1">
         <p class="text-xs">Output directory:</p>
-        <Input type="text" value={outputName} className="w-full" disabled />
+        <Input
+          type="text"
+          bind:value={outputName}
+          className="w-full"
+          placeholder="equilibration"
+          disabled={equilibrationRunning}
+        />
       </div>
     </div>
     <Divider />
@@ -445,27 +477,48 @@
     <Divider />
 
     <div class="space-y-2">
-      <Button className="w-full" onclick={startEquilibration} disabled={!canStartEquilibration}>
-        {#if equilibrationRunning}
-          <Spinner className="mr-1" />
-          Running...
-        {:else}
-          Run Equilibration
-        {/if}
-      </Button>
-      <Button
-        className="w-full"
-        variant="outline"
-        onclick={generateInput}
-        disabled={!canGenerateInput}
+      <div
+        role="group"
+        aria-label="Generate equilibration input files action"
+        onmouseenter={() => toggleWorkingDirHint(true)}
+        onmouseleave={() => toggleWorkingDirHint(false)}
       >
-        {#if generatingInputFiles}
-          <Spinner className="mr-1" />
-          Generating...
-        {:else}
-          Generate Input Files
-        {/if}
-      </Button>
+        <Button
+          className="w-full"
+          variant="outline"
+          onclick={generateInput}
+          disabled={!canGenerateInput}
+        >
+          {#if generatingInputFiles}
+            <Spinner className="mr-1" />
+            Generating...
+          {:else}
+            Generate Input Files
+          {/if}
+        </Button>
+      </div>
+      <div
+        role="group"
+        aria-label="Run equilibration action"
+        onmouseenter={() => toggleWorkingDirHint(true)}
+        onmouseleave={() => toggleWorkingDirHint(false)}
+      >
+        <Button className="w-full" onclick={startEquilibration} disabled={!canStartEquilibration}>
+          {#if equilibrationRunning}
+            <Spinner className="mr-1" />
+            Running...
+          {:else}
+            Run Equilibration
+          {/if}
+        </Button>
+      </div>
+      {#if workingDir === '' && showWorkingDirHint}
+        <p
+          class="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-400"
+        >
+          Set a <strong>Working Directory</strong> in the top bar to enable these actions.
+        </p>
+      {/if}
     </div>
   </aside>
   <div class="flex min-h-0 min-w-0 flex-1 flex-col">
