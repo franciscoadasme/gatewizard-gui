@@ -14,6 +14,7 @@
   let dialog = $state(null)
   /** @type {Constraint} */
   let draft = $state(newConstraint())
+  let backdropPointerDown = $state(false)
 
   let debouncedSelection = $state('all')
 
@@ -55,7 +56,12 @@
   }
 
   function onDialogClick(/** @type {MouseEvent} */ event) {
-    if (event.target === dialog) onDismiss()
+    if (event.target === dialog && backdropPointerDown) onDismiss()
+    backdropPointerDown = false
+  }
+
+  function onDialogPointerDown(/** @type {PointerEvent} */ event) {
+    backdropPointerDown = event.target === dialog
   }
 
   function onSubmit() {
@@ -66,6 +72,7 @@
 <dialog
   bind:this={dialog}
   class="fixed top-1/2 left-1/2 m-0 max-h-[90vh] w-lg max-w-[90vw] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border border-neutral-800 bg-neutral-900 p-0 text-neutral-100 shadow-xl backdrop:bg-black/60 backdrop:backdrop-blur-sm"
+  onpointerdown={onDialogPointerDown}
   onclick={onDialogClick}
   oncancel={onDialogCancel}
 >
