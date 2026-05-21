@@ -105,7 +105,9 @@ Distance:
   $effect(() => {
     const sel = view.selection
     if (sel === '' || view._isSelHighlight) return
-    const tid = setTimeout(updateStructure, 300)
+    // Slow down live selection checks to avoid hammering /get-structure while typing.
+    // The same update still happens, just after a longer pause.
+    const tid = setTimeout(updateStructure, 500)
     return () => clearTimeout(tid)
   })
 

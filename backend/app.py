@@ -1370,7 +1370,14 @@ def get_structure(payload: StructureRequest) -> dict:
 
     if payload.selection:
         sel = NAMED_SELECTIONS.get(payload.selection, payload.selection)
-        atoms = u.select_atoms(sel)
+        try:
+            atoms = u.select_atoms(sel)
+        except mda.exceptions.SelectionError as ex:
+            # Typing a selection in the UI can transiently produce incomplete expressions.
+            # Return a validation-style error instead of an unhandled 500 traceback.
+            raise HTTPException(status_code=422, detail=f"Invalid selection: {ex}")
+        except Exception as ex:
+            raise HTTPException(status_code=400, detail=f"Selection error: {ex}")
     else:
         atoms = u.atoms
 

@@ -25,7 +25,7 @@
     if (sel === debouncedSelection) return
     const tid = window.setTimeout(() => {
       debouncedSelection = sel
-    }, 300)
+    }, 500)
     return () => window.clearTimeout(tid)
   })
 
