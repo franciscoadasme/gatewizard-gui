@@ -4,3 +4,7 @@ out
 .DS_Store
 .eslintcache
 *.log*
+check-env.sh
+run_check.sh
+to-do.txt
+backend/__pycache__
