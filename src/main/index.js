@@ -8,8 +8,57 @@ import icon from '../../resources/icon.png?asset'
 import { ensureMambaRuntime, getLaunchPythonPath } from './runtime-bootstrap.js'
 
 const BACKEND_URL = 'http://127.0.0.1:8765'
+const GPU_SAFE_MODE_FLAG = '--gatewizard-gpu-safe-mode=1'
+const GPU_RELAUNCHED_FLAG = '--gatewizard-gpu-relaunched=1'
 
 let backendProcess = null
+/** @type {BrowserWindow | null} */
+let mainWindow = null
+
+function hasCliFlag(flag) {
+  return process.argv.includes(flag)
+}
+
+function isGpuSafeModeEnabled() {
+  return hasCliFlag(GPU_SAFE_MODE_FLAG) || process.env.GATEWIZARD_GPU_SAFE_MODE === '1'
+}
+
+function hasRelaunchedForGpuFallback() {
+  return hasCliFlag(GPU_RELAUNCHED_FLAG)
+}
+
+function applyGpuStartupMode() {
+  if (!isGpuSafeModeEnabled()) return
+
+  // Must be called before app.ready; this forces a software path for unstable GPU stacks.
+  app.disableHardwareAcceleration()
+  app.commandLine.appendSwitch('use-angle', 'swiftshader')
+  app.commandLine.appendSwitch('enable-unsafe-swiftshader')
+}
+
+function relaunchInGpuSafeMode(reason) {
+  if (isGpuSafeModeEnabled() || hasRelaunchedForGpuFallback()) {
+    process.stderr.write(`[gpu] GPU fallback already attempted, not relaunching again. reason=${reason}\n`)
+    return false
+  }
+
+  const nextArgs = process.argv.slice(1)
+  nextArgs.push(GPU_SAFE_MODE_FLAG, GPU_RELAUNCHED_FLAG)
+  process.stderr.write(`[gpu] Relaunching in software mode. reason=${reason}\n`)
+  app.relaunch({ args: nextArgs })
+  app.exit(0)
+  return true
+}
+
+applyGpuStartupMode()
+
+// On Linux/WSL2, Chromium's GPU blocklist often disables hardware WebGL for Intel Xe.
+// These switches re-enable it when not in safe mode.
+if (process.platform === 'linux' && !isGpuSafeModeEnabled()) {
+  app.commandLine.appendSwitch('ignore-gpu-blocklist')
+  app.commandLine.appendSwitch('enable-gpu-rasterization')
+  app.commandLine.appendSwitch('enable-zero-copy')
+}
 
 function getBackendScriptPath() {
   if (app.isPackaged) {
@@ -110,8 +159,13 @@ function watchBackendFiles() {
 }
 
 function createWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.focus()
+    return mainWindow
+  }
+
   // Create the browser window.
-  const mainWindow = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 900,
     height: 670,
     show: false,
@@ -125,6 +179,48 @@ function createWindow() {
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
+    mainWindow.focus()
+
+    if (isGpuSafeModeEnabled()) {
+      dialog.showMessageBox(mainWindow, {
+        type: 'warning',
+        title: 'Running In Compatibility Mode',
+        message: 'GateWizard detected GPU initialization issues and switched to software rendering.',
+        detail:
+          '3D visualization may be slower. Update GPU/WSL graphics drivers to restore full acceleration.'
+      })
+    }
+  })
+
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (!mainWindow.isVisible()) mainWindow.show()
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.focus()
+    }
+  })
+
+  const forceShowTimer = setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      mainWindow.show()
+    }
+  }, 2000)
+
+  mainWindow.on('closed', () => {
+    clearTimeout(forceShowTimer)
+    mainWindow = null
+  })
+
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, url) => {
+    process.stderr.write(
+      `[renderer] failed to load ${url} (${errorCode}): ${errorDescription}\n`
+    )
+  })
+
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    process.stderr.write(
+      `[renderer] process gone: ${details.reason} (exitCode=${details.exitCode})\n`
+    )
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -139,6 +235,8 @@ function createWindow() {
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+
+  return mainWindow
 }
 
 // This method will be called when Electron has finished
@@ -187,6 +285,14 @@ app.whenReady().then(async () => {
     // dock icon is clicked and there are no other windows open.
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+})
+
+app.on('child-process-gone', (_event, details) => {
+  if (details.type !== 'GPU') return
+  process.stderr.write(
+    `[gpu] child process gone: reason=${details.reason} exitCode=${details.exitCode}\n`
+  )
+  relaunchInGpuSafeMode(`child-process-gone:${details.reason}`)
 })
 
 app.on('before-quit', () => {
