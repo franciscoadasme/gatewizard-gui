@@ -2,7 +2,13 @@
   import { onDestroy, onMount } from 'svelte'
   import Button from './components/ui/Button.svelte'
   import { getProjectStatus } from './lib/backendApi'
-  import { preparationStatus } from './lib/pageStatus.svelte.js'
+  import {
+    analysisStatus,
+    builderStatus,
+    equilibrationPageStatus,
+    preparationStatus,
+    visualizeStatus
+  } from './lib/pageStatus.svelte.js'
 
   const pageModules = import.meta.glob('./pages/*.svelte', { eager: true })
 
@@ -168,7 +174,29 @@
     {#if !workingDir}
       <span>No working directory selected</span>
     {:else}
-      <!-- ── Preparation page status ── -->
+      <!-- ── 01 Visualize ── -->
+      {#if visualizeStatus.loading || visualizeStatus.loaded}
+        <div
+          class="flex shrink-0 items-center gap-1.5 rounded bg-neutral-800 px-2 py-0.5 text-neutral-300"
+        >
+          <span class="font-medium opacity-60">View:</span>
+          {#if visualizeStatus.loading}
+            <span class="animate-pulse text-yellow-400">Loading…</span>
+          {:else}
+            <span class="max-w-48 truncate" title={visualizeStatus.fileName}
+              >{visualizeStatus.fileName}</span
+            >
+            {#if visualizeStatus.viewCount > 0}
+              <span class="opacity-50">·</span>
+              <span class="opacity-70"
+                >{visualizeStatus.viewCount} view{visualizeStatus.viewCount === 1 ? '' : 's'}</span
+              >
+            {/if}
+          {/if}
+        </div>
+      {/if}
+
+      <!-- ── 02 Preparation ── -->
       {#if preparationStatus.propkaDone || preparationStatus.bondsChecked || preparationStatus.prepareDone}
         <div
           class="flex shrink-0 items-center gap-1.5 rounded bg-neutral-800 px-2 py-0.5 text-neutral-300"
@@ -180,7 +208,7 @@
             >
           {/if}
           {#if preparationStatus.bondsChecked}
-            <span class="opacity-60">·</span>
+            <span class="opacity-50">·</span>
             {#if preparationStatus.bondsCount > 0}
               <span title="{preparationStatus.bondsCount} disulfide bond(s) detected"
                 >{preparationStatus.bondsCount} S-S bond{preparationStatus.bondsCount === 1
@@ -192,7 +220,7 @@
             {/if}
           {/if}
           {#if preparationStatus.prepareDone}
-            <span class="opacity-60">·</span>
+            <span class="opacity-50">·</span>
             <span class="text-green-500" title="PDB prepared: {preparationStatus.outputFile}"
               >PDB ready ✓</span
             >
@@ -200,10 +228,103 @@
         </div>
       {/if}
 
-      <!-- ── File-based job tasks (Builder / Equilibration) ── -->
-      {#if statusTasks.length === 0 && !preparationStatus.propkaDone && !preparationStatus.bondsChecked && !preparationStatus.prepareDone}
-        <span class="truncate">Ready — {workingDir}</span>
+      <!-- ── 03 Builder jobs ── -->
+      {#if builderStatus.jobCount > 0}
+        {@const hasRunning = builderStatus.runningCount > 0}
+        {@const hasError = builderStatus.errorCount > 0}
+        <div
+          class="flex shrink-0 items-center gap-1.5 rounded px-2 py-0.5
+          {hasError
+            ? 'bg-red-950 text-red-400'
+            : hasRunning
+              ? 'bg-neutral-800 text-neutral-300'
+              : 'bg-green-950 text-green-500'}"
+        >
+          {#if hasRunning}
+            <span class="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-yellow-400"
+            ></span>
+          {:else if hasError}
+            <span>✕</span>
+          {:else}
+            <span>✓</span>
+          {/if}
+          <span class="font-medium opacity-70">Build:</span>
+          <span class="max-w-32 truncate" title={builderStatus.latestName}
+            >{builderStatus.latestName}</span
+          >
+          {#if hasRunning && builderStatus.latestElapsed}
+            <span class="opacity-60">{builderStatus.latestElapsed}</span>
+          {:else if builderStatus.jobCount > 1}
+            <span class="opacity-50">+{builderStatus.jobCount - 1} more</span>
+          {/if}
+        </div>
       {/if}
+
+      <!-- ── 04 Equilibration ── -->
+      {#if equilibrationPageStatus.status && equilibrationPageStatus.status !== 'not_started' && equilibrationPageStatus.status !== 'empty'}
+        {@const eqRunning = equilibrationPageStatus.status === 'running'}
+        {@const eqDone = equilibrationPageStatus.status === 'completed'}
+        {@const eqError = equilibrationPageStatus.status === 'error'}
+        {@const eqGen = equilibrationPageStatus.generatingInput}
+        <div
+          class="flex shrink-0 items-center gap-1.5 rounded px-2 py-0.5
+          {eqError
+            ? 'bg-red-950 text-red-400'
+            : eqRunning || eqGen
+              ? 'bg-neutral-800 text-neutral-300'
+              : eqDone
+                ? 'bg-green-950 text-green-500'
+                : 'bg-neutral-800 text-neutral-500'}"
+        >
+          {#if eqGen}
+            <span class="animate-pulse text-yellow-400">⚙</span>
+            <span class="font-medium opacity-70">Eq ({equilibrationPageStatus.engine}):</span>
+            <span>generating input…</span>
+          {:else}
+            {#if eqRunning}
+              <span
+                class="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-yellow-400"
+              ></span>
+            {:else if eqDone}
+              <span>✓</span>
+            {:else if eqError}
+              <span>✕</span>
+            {/if}
+            <span class="font-medium opacity-70">Eq ({equilibrationPageStatus.engine}):</span>
+            {#if equilibrationPageStatus.stagesTotal > 0}
+              <span
+                >{equilibrationPageStatus.stagesDone}/{equilibrationPageStatus.stagesTotal} stages</span
+              >
+            {:else}
+              <span class="capitalize">{equilibrationPageStatus.status}</span>
+            {/if}
+          {/if}
+        </div>
+      {/if}
+
+      <!-- ── 05 Analysis ── -->
+      {#if analysisStatus.running || analysisStatus.resultAvailable}
+        <div
+          class="flex shrink-0 items-center gap-1.5 rounded px-2 py-0.5
+          {analysisStatus.running
+            ? 'bg-neutral-800 text-neutral-300'
+            : 'bg-green-950 text-green-500'}"
+        >
+          {#if analysisStatus.running}
+            <span class="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-yellow-400"
+            ></span>
+          {:else}
+            <span>✓</span>
+          {/if}
+          <span class="font-medium opacity-70">Analysis:</span>
+          <span>{analysisStatus.analysisType || analysisStatus.mode}</span>
+          {#if !analysisStatus.running}
+            <span class="opacity-60">ready</span>
+          {/if}
+        </div>
+      {/if}
+
+      <!-- ── File-based job tasks from backend poll ── -->
       {#each statusTasks as task (task.id)}
         {@const isRunning = task.status === 'running'}
         {@const isError = task.status === 'error'}
@@ -232,7 +353,6 @@
             >{task.type === 'equilibration' && task.engine ? task.engine : task.type}</span
           >
           {#if isRunning || isDone}
-            <!-- Progress bar -->
             <div class="h-1 w-16 shrink-0 overflow-hidden rounded-full bg-neutral-700">
               <div
                 class="h-full rounded-full transition-all {isDone ? 'bg-green-500' : 'bg-blue-500'}"
@@ -249,6 +369,11 @@
           {/if}
         </div>
       {/each}
+
+      <!-- ── Idle fallback ── -->
+      {#if !visualizeStatus.loaded && !visualizeStatus.loading && !preparationStatus.propkaDone && !preparationStatus.bondsChecked && !preparationStatus.prepareDone && builderStatus.jobCount === 0 && !equilibrationPageStatus.status && !analysisStatus.resultAvailable && !analysisStatus.running && statusTasks.length === 0}
+        <span class="truncate">Ready — {workingDir}</span>
+      {/if}
     {/if}
   </footer>
 </div>

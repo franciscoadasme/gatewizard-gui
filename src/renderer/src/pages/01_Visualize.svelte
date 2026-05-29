@@ -48,6 +48,7 @@
   import ViewItem, { skipNextPathFetch } from '../components/ViewItem.svelte'
   import RadialMenu from '../components/RadialMenu.svelte'
   import TransformGizmo from '../components/TransformGizmo.svelte'
+  import { visualizeStatus } from '../lib/pageStatus.svelte.js'
 
   /**
    * Svelte action for range inputs: sets the initial value on mount and blocks Svelte's
@@ -163,6 +164,14 @@
 
   // ── Interactive Edit Mode ────────────────────────────────────────────
   let editMode = $state(false)
+
+  // ── Sync to shared status bar store ──
+  $effect(() => {
+    visualizeStatus.loading = loadingPDB
+    visualizeStatus.loaded = structure !== null
+    visualizeStatus.fileName = filePath ? (String(filePath).split(/[/\\]/).pop() ?? '') : ''
+    visualizeStatus.viewCount = views.length
+  })
   let selectMenuOpen = $state(false)
   const EDIT_LEVEL_LABEL = { atom: 'Atom', residue: 'Res', chain: 'Chain', molecule: 'Mol.' }
   /** @type {'atom'|'residue'|'chain'|'molecule'} */

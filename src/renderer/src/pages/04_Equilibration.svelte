@@ -1,6 +1,7 @@
 <script>
   import { onDestroy, untrack } from 'svelte'
   import Button from '../components/ui/Button.svelte'
+  import { equilibrationPageStatus } from '../lib/pageStatus.svelte.js'
   import ConstraintEditor from '../components/ConstraintEditor.svelte'
   import Divider from '../components/ui/Divider.svelte'
   import Empty from '../components/ui/Empty.svelte'
@@ -116,6 +117,18 @@
   let stageStatuses = $state([])
   /** @type {number|undefined} */
   let updateTimeoutId = undefined
+
+  // ── Sync to shared status bar store ──
+  $effect(() => {
+    equilibrationPageStatus.engine = engine
+    equilibrationPageStatus.outputName = outputName
+    equilibrationPageStatus.status = equilibrationStatus
+    equilibrationPageStatus.stagesDone = stageStatuses.filter(
+      (s) => s.status === 'completed'
+    ).length
+    equilibrationPageStatus.stagesTotal = stageStatuses.length
+    equilibrationPageStatus.generatingInput = generatingInputFiles
+  })
 
   // output
   let equilibrationOutput = $state('')

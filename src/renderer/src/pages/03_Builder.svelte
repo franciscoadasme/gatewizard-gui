@@ -2,6 +2,7 @@
   import Button from '../components/ui/Button.svelte'
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Divider from '../components/ui/Divider.svelte'
+  import { builderStatus } from '../lib/pageStatus.svelte.js'
   import {
     getAvailableLipids,
     getAvailableForceFields,
@@ -55,6 +56,18 @@
 
   /** Ref to the poll interval so we can clear it */
   let pollIntervalId = $state(null)
+
+  // ── Sync to shared status bar store ──
+  $effect(() => {
+    builderStatus.jobCount = jobs.length
+    builderStatus.runningCount = jobs.filter((j) => j.status === 'running').length
+    builderStatus.completedCount = jobs.filter((j) => j.status === 'completed').length
+    builderStatus.errorCount = jobs.filter((j) => j.status === 'error').length
+    const latest = jobs[0]
+    builderStatus.latestName = latest?.name ?? ''
+    builderStatus.latestStatus = latest?.status ?? ''
+    builderStatus.latestElapsed = latest?.elapsed ?? ''
+  })
 
   // When workingDir changes from App, scan for existing preparation jobs
   $effect(() => {

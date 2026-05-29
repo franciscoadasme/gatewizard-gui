@@ -2,6 +2,7 @@
   import Button from '../components/ui/Button.svelte'
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Divider from '../components/ui/Divider.svelte'
+  import { analysisStatus } from '../lib/pageStatus.svelte.js'
   import Empty from '../components/ui/Empty.svelte'
   import Input from '../components/ui/Input.svelte'
   import Select from '../components/ui/Select.svelte'
@@ -133,6 +134,15 @@
   const activeStructRes = $derived(
     mode === 'structural' ? (structResults[structuralType] ?? null) : null
   )
+
+  // ── Sync to shared status bar store ──
+  $effect(() => {
+    analysisStatus.running = running
+    analysisStatus.mode = mode
+    analysisStatus.analysisType = mode === 'structural' ? structuralType : 'energetic'
+    analysisStatus.resultAvailable =
+      mode === 'structural' ? activeStructRes !== null : chartSeries.length > 0
+  })
 
   // Unit conversion helpers
   function convertX(xs, fromUnit, toUnit) {
