@@ -189,11 +189,27 @@ export async function preparePDB(props) {
 }
 
 /**
- * @param {{ workingDir: string, outputName: string, ensemble: string, programConfig: object, protocol: object }} props
+ * @param {{ workingDir: string, outputName: string, ensemble: string, programConfig: object, protocol: object, addComRestraint?: boolean, comSelection?: string, comRestraintK?: number, addRotationRestraint?: boolean, rotationRestraintK?: number }} props
  * @returns {Promise<void>}
  */
 export async function generateEquilibration(props) {
   return backendJson('/generate-equilibration', props)
+}
+
+/**
+ * @param {{ engine: string, executable: string }} props
+ * @returns {Promise<{ engine: string, executable: string, exists: boolean, resolved_path: string|null, version: string|null }>}
+ */
+export async function checkExecutable(props) {
+  return backendJson('/check-executable', props)
+}
+
+/**
+ * @param {{ inputDir: string, outputDir: string, programConfig: { engine: string, executable: string }, comSelection?: string, comRestraintK?: number, addRotationRestraint?: boolean, rotationRestraintK?: number }} props
+ * @returns {Promise<{ output: string, engine: string }>}
+ */
+export async function generateComRestraint(props) {
+  return backendJson('/generate-com-restraint', props)
 }
 
 /**
@@ -210,6 +226,13 @@ export async function runEquilibration(props) {
  */
 export async function getEquilibrationStatus(props) {
   return backendJson('/get-equilibration-status', props)
+}
+
+/**
+ * @returns {Promise<{ platforms: { name: string, speed: number }[], error?: string }>}
+ */
+export async function getOpenmmPlatforms() {
+  return backendJson('/get-openmm-platforms')
 }
 
 /**
