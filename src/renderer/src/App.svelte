@@ -1,6 +1,8 @@
 <script>
-  import { onMount } from 'svelte'
+  import { onDestroy, onMount } from 'svelte'
   import Button from './components/ui/Button.svelte'
+  import { getProjectStatus } from './lib/backendApi'
+  import { preparationStatus } from './lib/pageStatus.svelte.js'
 
   const pageModules = import.meta.glob('./pages/*.svelte', { eager: true })
 
@@ -55,6 +57,48 @@
   function onNavClick(e, id) {
     e.preventDefault()
     loadPage(id)
+  }
+
+  // ── Status bar ──
+  /** @type {import('./lib/backendApi').ProjectTask[]} */
+  let statusTasks = $state([])
+  let statusActive = $state(false)
+  /** @type {ReturnType<typeof setInterval> | null} */
+  let statusPollId = null
+
+  async function refreshStatus() {
+    if (!workingDir) return
+    try {
+      const { tasks, active } = await getProjectStatus(workingDir)
+      statusTasks = tasks
+      statusActive = active
+    } catch {
+      // backend not yet ready — silently skip
+    }
+  }
+
+  $effect(() => {
+    if (statusPollId) clearInterval(statusPollId)
+    statusTasks = []
+    statusActive = false
+    if (!workingDir) return
+    refreshStatus()
+    statusPollId = setInterval(refreshStatus, 5000)
+  })
+
+  onDestroy(() => {
+    if (statusPollId) clearInterval(statusPollId)
+  })
+
+  /** @param {string|null} iso */
+  function elapsed(iso) {
+    if (!iso) return ''
+    const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000))
+    const m = Math.floor(s / 60),
+      h = Math.floor(m / 60)
+    if (h > 0) return `${h}h ${m % 60}m`
+    if (m > 0) return `${m}m ${s % 60}s`
+    return `${s}s`
   }
 
   onMount(() => {
@@ -118,5 +162,93 @@
     {/each}
   </main>
 
-  <footer class="px-2 py-1 text-xs dark:text-neutral-500">Status bar</footer>
+  <footer
+    class="flex items-center gap-3 overflow-hidden px-3 py-1 text-xs dark:bg-neutral-900 dark:text-neutral-500"
+  >
+    {#if !workingDir}
+      <span>No working directory selected</span>
+    {:else}
+      <!-- ── Preparation page status ── -->
+      {#if preparationStatus.propkaDone || preparationStatus.bondsChecked || preparationStatus.prepareDone}
+        <div
+          class="flex shrink-0 items-center gap-1.5 rounded bg-neutral-800 px-2 py-0.5 text-neutral-300"
+        >
+          <span class="font-medium opacity-60">Prep:</span>
+          {#if preparationStatus.propkaDone}
+            <span title="PropKa analysis done"
+              >PropKa (pH {preparationStatus.propkaPh?.toFixed(1)}) ✓</span
+            >
+          {/if}
+          {#if preparationStatus.bondsChecked}
+            <span class="opacity-60">·</span>
+            {#if preparationStatus.bondsCount > 0}
+              <span title="{preparationStatus.bondsCount} disulfide bond(s) detected"
+                >{preparationStatus.bondsCount} S-S bond{preparationStatus.bondsCount === 1
+                  ? ''
+                  : 's'}</span
+              >
+            {:else}
+              <span class="text-neutral-500" title="No disulfide bonds found">no S-S bonds</span>
+            {/if}
+          {/if}
+          {#if preparationStatus.prepareDone}
+            <span class="opacity-60">·</span>
+            <span class="text-green-500" title="PDB prepared: {preparationStatus.outputFile}"
+              >PDB ready ✓</span
+            >
+          {/if}
+        </div>
+      {/if}
+
+      <!-- ── File-based job tasks (Builder / Equilibration) ── -->
+      {#if statusTasks.length === 0 && !preparationStatus.propkaDone && !preparationStatus.bondsChecked && !preparationStatus.prepareDone}
+        <span class="truncate">Ready — {workingDir}</span>
+      {/if}
+      {#each statusTasks as task (task.id)}
+        {@const isRunning = task.status === 'running'}
+        {@const isError = task.status === 'error'}
+        {@const isDone = task.status === 'completed'}
+        {@const pct = Math.round(task.progress * 100)}
+        <div
+          class="flex min-w-0 shrink-0 items-center gap-1.5 rounded px-2 py-0.5
+            {isError
+            ? 'bg-red-950 text-red-400'
+            : isRunning
+              ? 'bg-neutral-800 text-neutral-300'
+              : isDone
+                ? 'bg-green-950 text-green-500'
+                : 'bg-neutral-800 text-neutral-500'}"
+        >
+          {#if isRunning}
+            <span class="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-yellow-400"
+            ></span>
+          {:else if isDone}
+            <span class="shrink-0">✓</span>
+          {:else if isError}
+            <span class="shrink-0">✕</span>
+          {/if}
+          <span class="max-w-32 truncate font-medium">{task.name}</span>
+          <span class="shrink-0 capitalize opacity-70"
+            >{task.type === 'equilibration' && task.engine ? task.engine : task.type}</span
+          >
+          {#if isRunning || isDone}
+            <!-- Progress bar -->
+            <div class="h-1 w-16 shrink-0 overflow-hidden rounded-full bg-neutral-700">
+              <div
+                class="h-full rounded-full transition-all {isDone ? 'bg-green-500' : 'bg-blue-500'}"
+                style="width:{pct}%"
+              ></div>
+            </div>
+            <span class="shrink-0 tabular-nums">{pct}%</span>
+          {/if}
+          {#if isRunning && task.start_time}
+            <span class="shrink-0 opacity-60">{elapsed(task.start_time)}</span>
+          {/if}
+          {#if isError && task.error}
+            <span class="max-w-40 truncate opacity-80" title={task.error}>{task.error}</span>
+          {/if}
+        </div>
+      {/each}
+    {/if}
+  </footer>
 </div>

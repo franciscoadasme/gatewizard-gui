@@ -3,6 +3,7 @@
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Divider from '../components/ui/Divider.svelte'
   import { detectDisulfideBonds, preparePDB, runPropKa } from '../lib/backendApi'
+  import { preparationStatus } from '../lib/pageStatus.svelte.js'
 
   /** @type {{ workingDir?: string }} */
   let { workingDir = '' } = $props()
@@ -68,6 +69,8 @@
       const data = await runPropKa(workingFile, parseFloat(targetPh), capProtein)
       protonationStates = data.residues
       residueRenumberingTable = data.residue_renumbering_table
+      preparationStatus.propkaDone = true
+      preparationStatus.propkaPh = targetPh
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
     } finally {
@@ -88,6 +91,8 @@
     try {
       const data = await detectDisulfideBonds(workingFile, maxDisulfideDistance)
       disulfideBonds = data.disulfide_bonds
+      preparationStatus.bondsChecked = true
+      preparationStatus.bondsCount = disulfideBonds.length
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
     }
@@ -104,6 +109,8 @@
         disulfideBonds
       })
       preparationOutput = data.output.trim()
+      preparationStatus.prepareDone = true
+      preparationStatus.outputFile = protonatedFile
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
     } finally {
@@ -130,6 +137,12 @@
     preparationOutput = ''
     protonationStates = []
     residueRenumberingTable = {}
+    preparationStatus.propkaDone = false
+    preparationStatus.propkaPh = null
+    preparationStatus.bondsChecked = false
+    preparationStatus.bondsCount = 0
+    preparationStatus.prepareDone = false
+    preparationStatus.outputFile = ''
   }
 </script>
 
@@ -212,14 +225,20 @@
       </div>
       <Button type="submit" variant="outline" className="w-full">Detect bonds</Button>
     </form>
-    {#if disulfideBonds.length > 0}
+    {#if preparationStatus.bondsChecked}
       <div class="space-y-2">
-        <p>Detected S-S bonds:</p>
-        <ol class="list-inside list-decimal rounded-md border border-neutral-800 p-2">
-          {#each disulfideBonds as bond}
-            <li>{bond[0][0]}{bond[0][1]} → {bond[1][0]}{bond[1][1]}</li>
-          {/each}
-        </ol>
+        {#if disulfideBonds.length > 0}
+          <p>Detected S-S bonds:</p>
+          <ol class="list-inside list-decimal rounded-md border border-neutral-800 p-2">
+            {#each disulfideBonds as bond}
+              <li>{bond[0][0]}{bond[0][1]} → {bond[1][0]}{bond[1][1]}</li>
+            {/each}
+          </ol>
+        {:else}
+          <p class="rounded-md border border-neutral-800 px-2 py-1.5 text-neutral-500">
+            No disulfide bonds detected
+          </p>
+        {/if}
       </div>
     {/if}
     <Divider />

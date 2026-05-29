@@ -64,6 +64,15 @@ export function scanJobs(directory) {
 }
 
 /**
+ * @typedef {{ id: string, name: string, type: 'preparation'|'equilibration', status: string, progress: number, current_step: number, total_steps: number, steps?: string[], steps_completed?: string[], engine?: string, error: string|null, start_time: string|null, end_time: string|null }} ProjectTask
+ * @param {string} directory  Absolute path to the working directory
+ * @returns {Promise<{ tasks: ProjectTask[], active: boolean }>}
+ */
+export function getProjectStatus(directory) {
+  return backendJson(`/project-status?directory=${encodeURIComponent(directory)}`)
+}
+
+/**
  * @param {string} filePath
  * @returns {Promise<{ ligands: {name: string, formula: string, n_atoms: number}[] }>}
  */

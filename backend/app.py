@@ -615,6 +615,151 @@ def scan_jobs(payload: ScanJobsRequest) -> dict:
     return {"jobs": found}
 
 
+@app.get("/project-status")
+def project_status(directory: str) -> dict:
+    """Return a compact project-wide status summary for the status bar.
+
+    Scans the working directory for:
+    - Preparation jobs (sub-dirs with status.json)
+    - Equilibration runs (sub-dirs with run_equilibration.sh + a log/pid file)
+
+    Returns a single dict the status bar can display directly.
+    """
+    import json as _json
+
+    base = Path(os.path.abspath(os.path.expanduser(directory)))
+    if not base.is_dir():
+        return {"tasks": [], "active": False}
+
+    tasks = []
+
+    # ── Preparation jobs ──
+    for status_file in sorted(base.glob("*/status.json")):
+        job_dir = status_file.parent
+        # Skip ligand param sub-dirs (they have ligand_name key, not steps)
+        try:
+            data = _json.loads(status_file.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if "ligand_name" in data:
+            continue
+
+        status = data.get("status", "unknown")
+        steps = data.get("steps", [])
+        steps_completed = data.get("steps_completed", [])
+        current_step = data.get("current_step", 0)
+        total_steps = len(steps) if steps else 1
+        # Normalise progress: steps_completed may just be ["Completed"]
+        if status == "completed":
+            progress = 1.0
+        elif total_steps > 0 and isinstance(current_step, int):
+            progress = min(current_step / total_steps, 0.99)
+        else:
+            progress = 0.0
+
+        tasks.append(
+            {
+                "id": str(job_dir),
+                "name": job_dir.name,
+                "type": "preparation",
+                "status": status,
+                "progress": progress,
+                "current_step": current_step,
+                "total_steps": total_steps,
+                "steps": steps,
+                "steps_completed": steps_completed,
+                "start_time": data.get("start_time"),
+                "end_time": data.get("end_time"),
+                "error": data.get("error"),
+            }
+        )
+
+    # ── Equilibration runs ──
+    for eq_dir in sorted(base.glob("*/run_equilibration.sh")):
+        eq_dir = eq_dir.parent
+        # Detect engine from directory name or files present
+        if list(eq_dir.glob("*.mdp")):
+            engine = "gromacs"
+        elif list(eq_dir.glob("*.inp")):
+            engine = "openmm"
+        else:
+            engine = "namd"
+
+        pid_file = eq_dir / "equilibration.pid"
+        if not pid_file.exists() and not list(eq_dir.glob("*.log")):
+            continue  # never started
+
+        # Collect stage logs to compute progress
+        log_files = sorted(eq_dir.glob("step*.log"))
+        total = len(log_files)
+        if total == 0:
+            # Fall back to counting expected steps from run script
+            run_script = eq_dir / "run_equilibration.sh"
+            try:
+                script = run_script.read_text(encoding="utf-8")
+                total = script.count("Stage ")
+            except Exception:
+                total = 7  # default protocol length
+
+        completed_logs = [f for f in log_files if f.stat().st_size > 0]
+        n_done = len(completed_logs)
+
+        # Determine overall status
+        bg_log = eq_dir / "equilibration_background.log"
+        error_msg = None
+        if bg_log.exists():
+            try:
+                tail = bg_log.read_text(
+                    encoding="utf-8", errors="replace"
+                ).splitlines()[-5:]
+                if any("failed" in l.lower() or "error" in l.lower() for l in tail):
+                    error_msg = next(
+                        (
+                            l
+                            for l in reversed(tail)
+                            if "failed" in l.lower() or "error" in l.lower()
+                        ),
+                        None,
+                    )
+            except Exception:
+                pass
+
+        if error_msg:
+            eq_status = "error"
+        elif pid_file.exists():
+            try:
+                pid = int(pid_file.read_text().strip())
+                import signal
+
+                os.kill(pid, 0)
+                eq_status = "running"
+            except (ValueError, ProcessLookupError, PermissionError):
+                eq_status = "completed" if n_done >= total else "error"
+        elif n_done >= total > 0:
+            eq_status = "completed"
+        else:
+            eq_status = "not_started"
+
+        tasks.append(
+            {
+                "id": str(eq_dir),
+                "name": eq_dir.name,
+                "type": "equilibration",
+                "engine": engine,
+                "status": eq_status,
+                "progress": (n_done / total) if total > 0 else 0.0,
+                "current_step": n_done,
+                "total_steps": total,
+                "error": error_msg,
+                "start_time": None,
+                "end_time": None,
+            }
+        )
+
+    active = any(t["status"] == "running" for t in tasks)
+    return {"tasks": tasks, "active": active}
+
+
 @app.post("/validate-builder")
 def validate_builder(payload: ValidateBuilderRequest) -> dict:
     path = os.path.abspath(os.path.expanduser(payload.path))
