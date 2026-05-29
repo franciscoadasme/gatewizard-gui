@@ -120,7 +120,9 @@ function parseVcsRequirements(requirementsText) {
 }
 
 function forceReinstallVcsRequirements(pyPath, requirementsText, runtimePrefix) {
-  const vcsReqs = parseVcsRequirements(requirementsText)
+  const vcsReqs = parseVcsRequirements(requirementsText).filter((req) =>
+    req.toLowerCase().startsWith('gatewizard @ git+')
+  )
   if (vcsReqs.length === 0) return
 
   for (const req of vcsReqs) {
