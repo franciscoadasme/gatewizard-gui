@@ -1,6 +1,7 @@
 """HTTP API for the GateWizard desktop app (spawned by Electron main process)."""
 
 import base64
+import json
 import os
 import re
 import requests
@@ -14,7 +15,7 @@ from collections import deque
 from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
-from typing import List
+from typing import Any, List
 
 # Ensure CONDA_PREFIX/bin is on PATH (safety net for late-installed tools)
 # Also set AMBERHOME so packmol-memgen can discover packmol/tleap/etc.
@@ -38,7 +39,18 @@ from gatewizard.utils.protein_capping import cap_protein
 from gatewizard.core.viewer import MolecularViewer, ViewerError
 from gatewizard.core.preparation import PreparationManager
 from gatewizard.core.builder import Builder
-from gatewizard.tools.equilibration import NAMDEquilibrationManager
+
+try:
+    from gatewizard.tools.equilibration import (
+        NAMDEquilibrationManager,
+        GROMACSEquilibrationManager,
+        OpenMMEquilibrationManager,
+    )
+except ImportError:
+    from gatewizard.tools.equilibration import NAMDEquilibrationManager
+
+    GROMACSEquilibrationManager = None
+    OpenMMEquilibrationManager = None
 from gatewizard.tools.force_fields import ForceFieldManager
 from gatewizard.tools.ligand_parametrization import (
     detect_ligands,
@@ -47,6 +59,8 @@ from gatewizard.tools.ligand_parametrization import (
     get_ligand_2d_image_from_pdb_lines,
 )
 from gatewizard.utils import namd_analysis
+from gatewizard.utils import gromacs_analysis
+from gatewizard.utils import openmm_analysis
 
 ION_NAMES = [
     "NA",
@@ -724,8 +738,9 @@ def prepare_pdb(payload: PreparePDBRequest) -> None:
         return dict(output=result["stdout"] + "\n" + result["stderr"])
 
 
-class NAMDConfig(BaseModel):
-    executable: str = Field(description="Path to the NAMD executable")
+class ProgramConfig(BaseModel):
+    engine: str = Field(description="Engine name: namd, gromacs, or openmm")
+    executable: str = Field(description="Executable path or command name")
 
 
 class Constraint(BaseModel):
@@ -770,8 +785,188 @@ class GenerateEquilibrationRequest(BaseModel):
     input_dir: str = Field(description="Absolute path to the input directory")
     output_dir: str = Field(description="Name of the output directory")
     ensemble: str = Field(description="Simulation ensemble (NVT, NPT, etc.)")
-    program_config: NAMDConfig = Field(description="Program configuration")
+    program_config: ProgramConfig = Field(description="Program configuration")
     protocol: Protocol = Field(description="Simulation protocol")
+    add_com_restraint: bool = Field(False, description="Generate COM restraint")
+    com_selection: str = Field(
+        "name CA",
+        description="MDAnalysis selection used to define COM/rotation reference atoms",
+    )
+    com_restraint_k: float = Field(
+        10.0, description="COM translation force constant in kcal/mol/A^2"
+    )
+    add_rotation_restraint: bool = Field(
+        False, description="Also generate rotation restraint"
+    )
+    rotation_restraint_k: float = Field(
+        2000.0, description="Rotation force constant in kcal/mol/A^2"
+    )
+    openmm_platform: str | None = Field(
+        None,
+        description="OpenMM platform override: CUDA, OpenCL, CPU, or null for auto",
+    )
+
+
+class ExecutableCheckRequest(BaseModel):
+    engine: str = Field(description="Engine name: namd, gromacs, or openmm")
+    executable: str = Field(description="Executable path or command name")
+
+
+class GenerateComRestraintRequest(BaseModel):
+    input_dir: str = Field(description="Absolute path to the input directory")
+    output_dir: str = Field(description="Absolute path to the output directory")
+    program_config: ProgramConfig = Field(description="Program configuration")
+    com_selection: str = Field(
+        "name CA",
+        description="MDAnalysis selection used to define COM/rotation reference atoms",
+    )
+    com_restraint_k: float = Field(
+        10.0, description="COM translation force constant in kcal/mol/A^2"
+    )
+    add_rotation_restraint: bool = Field(
+        False, description="Also generate rotation restraint"
+    )
+    rotation_restraint_k: float = Field(
+        2000.0, description="Rotation force constant in kcal/mol/A^2"
+    )
+
+
+def _resolve_executable(executable: str) -> str | None:
+    executable = executable.strip()
+    if not executable:
+        return None
+    if os.path.isabs(executable) or os.path.sep in executable:
+        return executable if os.path.isfile(executable) else None
+    return shutil.which(executable)
+
+
+def _run_version_probe(executable: str, engine: str) -> str | None:
+    probe_args = {
+        "namd": ["-version"],
+        "gromacs": ["--version"],
+        "openmm": ["--version"],
+    }
+    try:
+        cmd = [executable] + probe_args.get(engine, ["--version"])
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=4,
+            check=False,
+        )
+        text = (proc.stdout or "").strip()
+        if text:
+            return text.splitlines()[0][:200]
+    except Exception:
+        return None
+    return None
+
+
+def _find_preferred_system_pdb(input_dir: Path) -> Path | None:
+    pdb_files = list(input_dir.glob("*.pdb"))
+    if not pdb_files:
+        return None
+    return next((f for f in pdb_files if f.name.lower() == "system.pdb"), pdb_files[0])
+
+
+def _build_stage_params(stages: list[Stage]) -> list[dict[str, Any]]:
+    params = []
+    for stage in stages:
+        stage_dump = stage.model_dump()
+        stage_dump["constraints"] = {
+            item.name: item.force_constant for item in stage.constraints
+        }
+        params.append(stage_dump)
+    return params
+
+
+def _collect_system_files(input_dir: Path) -> dict[str, str]:
+    files: dict[str, str] = {}
+
+    prmtop_files = list(input_dir.glob("*.prmtop"))
+    if prmtop_files:
+        files["prmtop"] = str(prmtop_files[0])
+
+    inpcrd_files = list(input_dir.glob("*.inpcrd"))
+    if not inpcrd_files:
+        inpcrd_files = list(input_dir.glob("*.rst"))
+    if inpcrd_files:
+        files["inpcrd"] = str(inpcrd_files[0])
+
+    pdb_file = _find_preferred_system_pdb(input_dir)
+    if pdb_file:
+        files["pdb"] = str(pdb_file)
+
+    bilayer_files = list(input_dir.glob("bilayer*_lipid.pdb"))
+    if bilayer_files:
+        files["bilayer_pdb"] = str(bilayer_files[0])
+
+    return files
+
+
+def _write_openmm_com_params(
+    pdb_path: Path,
+    output_dir: Path,
+    com_selection: str = "name CA",
+    com_restraint_k: float = 10.0,
+    add_rotation_restraint: bool = False,
+) -> Path:
+    u = mda.Universe(str(pdb_path))
+    ag = u.select_atoms(com_selection)
+    if len(ag) == 0:
+        raise ValueError(
+            f"No atoms matched selection '{com_selection}' for OpenMM COM restraint"
+        )
+
+    com = ag.center_of_geometry()
+    payload = {
+        "ca_indices": [int(a.index) for a in ag],
+        "centroid_angstrom": [float(com[0]), float(com[1]), float(com[2])],
+        "force_constant_kcal_mol_A2": float(com_restraint_k),
+        "add_rotation_restraint": bool(add_rotation_restraint),
+    }
+
+    out = output_dir / "com_restraint_params.json"
+    out.write_text(json.dumps(payload, indent=2))
+    return out
+
+
+@app.post("/check-executable")
+def check_executable(payload: ExecutableCheckRequest) -> dict:
+    engine = payload.engine.lower().strip()
+    resolved = _resolve_executable(payload.executable)
+    if not resolved:
+        return {
+            "engine": engine,
+            "executable": payload.executable,
+            "exists": False,
+            "resolved_path": None,
+            "version": None,
+        }
+
+    return {
+        "engine": engine,
+        "executable": payload.executable,
+        "exists": True,
+        "resolved_path": resolved,
+        "version": _run_version_probe(resolved, engine),
+    }
+
+
+@app.get("/get-openmm-platforms")
+def get_openmm_platforms() -> dict:
+    try:
+        import openmm
+
+        platforms = []
+        for i in range(openmm.Platform.getNumPlatforms()):
+            p = openmm.Platform.getPlatform(i)
+            platforms.append({"name": p.getName(), "speed": p.getSpeed()})
+        return {"platforms": platforms}
+    except Exception as e:
+        return {"platforms": [], "error": str(e)}
 
 
 @app.post("/generate-equilibration")
@@ -783,101 +978,176 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
 
     input_dir = Path(payload.input_dir)
     output_dir = Path(payload.output_dir)
-    restraint_dir = output_dir / "restraints"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    engine = payload.program_config.engine.lower().strip()
+    executable = payload.program_config.executable.strip()
 
-    restraint_dir.mkdir(parents=True, exist_ok=True)
+    if engine not in {"namd", "gromacs", "openmm"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported engine: {engine}")
 
-    # Copy system files
-    topology_files = list(input_dir.glob("*.prmtop"))
-    topology_files += list(input_dir.glob("*.top"))
-    if not topology_files:
-        raise HTTPException(status_code=404, detail="No topology files found")
-    shutil.copy2(topology_files[0], output_dir / "system.prmtop")
-
-    crd_files = list(input_dir.glob("*.inpcrd"))
-    crd_files += list(input_dir.glob("*.rst"))
-    if not crd_files:
-        raise HTTPException(status_code=404, detail="No coordinates files found")
-    shutil.copy2(crd_files[0], output_dir / "system.inpcrd")
-
-    pdb_files = list(input_dir.glob("*.pdb"))
-    if pdb_files:
-        # Prefer system.pdb by name (the full tleap-generated system), because the
-        # input directory may also contain protein-only or intermediate PDB files that
-        # would be selected first by a naive alphabetical glob.
-        selected_pdb = next(
-            (f for f in pdb_files if f.name.lower() == "system.pdb"), pdb_files[0]
+    resolved_exec = _resolve_executable(executable)
+    if not resolved_exec:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Executable not found: {executable}",
         )
-        shutil.copy2(selected_pdb, output_dir / "system.pdb")
 
-    bilayer_pdb_files = list(input_dir.glob("bilayer*_lipid.pdb"))
-    if bilayer_pdb_files:
-        shutil.copy2(bilayer_pdb_files[0], output_dir)
-
-    system_files = {
-        "prmtop": "system.prmtop",
-        "inpcrd": "system.inpcrd",
-        "pdb": "system.pdb",
-    }
-
-    # Generate NAMD input files
-    namd = NAMDEquilibrationManager(output_dir, payload.program_config.executable)
-    prev_stage_key = None
-    for i, stage in enumerate(payload.protocol.stages):
-        stem = namd._get_config_name(stage.name, i)
-        stem += "_equilibration" if stem != "step7_production" else ""
-
-        stage_dump = stage.model_dump()
-        stage_dump["constraints"] = {
-            it.name: it.force_constant for it in stage.constraints
-        }
-        contents = namd.generate_charmm_gui_config_file(
-            stage.name,
-            stage_dump,
-            i,
-            system_files,
-            payload.ensemble,
-            prev_stage_key,
-            {it.name: it.model_dump() for it in payload.protocol.stages},
-            force_scheme_type=True,
+    if engine == "gromacs" and GROMACSEquilibrationManager is None:
+        raise HTTPException(
+            status_code=501,
+            detail="GROMACS support is not available in this gatewizard installation",
         )
-        if not contents.strip():
+    if engine == "openmm" and OpenMMEquilibrationManager is None:
+        raise HTTPException(
+            status_code=501,
+            detail="OpenMM support is not available in this gatewizard installation",
+        )
+
+    stage_params = _build_stage_params(payload.protocol.stages)
+    system_files = _collect_system_files(input_dir)
+
+    if engine == "gromacs":
+        if "prmtop" not in system_files or "inpcrd" not in system_files:
             raise HTTPException(
-                status_code=500,
-                detail=f"Failed to generate NAMD input file for stage {stage.name}",
+                status_code=404,
+                detail="GROMACS setup requires AMBER files (.prmtop and .inpcrd/.rst) in input directory",
             )
-        with open(output_dir / f"{stem}.conf", "w") as file:
-            file.write(contents)
+        manager = GROMACSEquilibrationManager(input_dir)
+        manager.setup_gromacs_equilibration(
+            system_files=system_files,
+            stage_params_list=stage_params,
+            output_name=str(output_dir),
+            scheme_type=payload.ensemble.upper(),
+            gmx_executable=resolved_exec,
+            add_com_restraint=payload.add_com_restraint,
+            com_selection=payload.com_selection,
+            com_restraint_k=payload.com_restraint_k,
+            add_rotation_restraint=payload.add_rotation_restraint,
+            rotation_restraint_k=payload.rotation_restraint_k,
+        )
+        return
 
-        restraints = [it for it in stage.constraints if it.force_constant > 0]
-        if restraints:
-            namd.generate_restraints_file_mda(
-                output_dir / system_files["pdb"],
-                {it.name: (it.selection, it.force_constant) for it in restraints},
-                restraint_dir / f"{stem}_restraints.pdb",
-                stage.name,
+    if engine == "openmm":
+        if "prmtop" not in system_files or "inpcrd" not in system_files:
+            raise HTTPException(
+                status_code=404,
+                detail="OpenMM setup requires AMBER files (.prmtop and .inpcrd/.rst) in input directory",
             )
+        manager = OpenMMEquilibrationManager(input_dir)
+        manager.setup_openmm_equilibration(
+            system_files=system_files,
+            stage_params_list=stage_params,
+            output_name=str(output_dir),
+            scheme_type=payload.ensemble.upper(),
+            add_com_restraint=payload.add_com_restraint,
+            com_selection=payload.com_selection,
+            com_restraint_k=payload.com_restraint_k,
+            add_rotation_restraint=payload.add_rotation_restraint,
+        )
+        run_script = output_dir / "run_equilibration.sh"
+        if run_script.exists():
+            content = run_script.read_text()
+            content = content.replace(
+                'PYTHON="${PYTHON:-python}"',
+                f'PYTHON="${{PYTHON:-{resolved_exec}}}"',
+            )
+            if payload.openmm_platform:
+                content = content.replace(
+                    'PLATFORM="${PLATFORM:-}"',
+                    f'PLATFORM="${{PLATFORM:-{payload.openmm_platform}}}"',
+                )
+            run_script.write_text(content)
+        return
 
-        prev_stage_key = stage.name
+    if "prmtop" not in system_files or "inpcrd" not in system_files:
+        raise HTTPException(
+            status_code=404,
+            detail="NAMD setup requires AMBER files (.prmtop and .inpcrd/.rst) in input directory",
+        )
 
-    namd.generate_restraints_file_mda(
-        output_dir / system_files["pdb"],
-        {
-            it.name: (it.selection, it.force_constant)
-            for it in payload.protocol.stages[0].constraints
-        },
-        restraint_dir / "restraints.pdb",
-        "General",
+    manager = NAMDEquilibrationManager(input_dir, resolved_exec)
+    manager.setup_namd_equilibration(
+        system_files=system_files,
+        stage_params_list=stage_params,
+        output_name=str(output_dir),
+        scheme_type=payload.ensemble.upper(),
+        namd_executable=resolved_exec,
+        add_com_restraint=payload.add_com_restraint,
+        com_selection=payload.com_selection,
+        com_restraint_k=payload.com_restraint_k,
+        add_rotation_restraint=payload.add_rotation_restraint,
+        rotation_restraint_k=payload.rotation_restraint_k,
     )
 
-    script_file = output_dir / "run_equilibration.sh"
-    with open(script_file, "w") as file:
-        contents = namd.generate_run_script(
-            {it.name: it.model_dump() for it in payload.protocol.stages},
-            payload.program_config.executable,
+
+@app.post("/generate-com-restraint")
+def generate_com_restraint(payload: GenerateComRestraintRequest) -> dict:
+    input_dir = Path(os.path.abspath(os.path.expanduser(payload.input_dir)))
+    output_dir = Path(os.path.abspath(os.path.expanduser(payload.output_dir)))
+    engine = payload.program_config.engine.lower().strip()
+    executable = payload.program_config.executable.strip()
+
+    if not input_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Directory not found: {input_dir}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    resolved_exec = _resolve_executable(executable)
+    if not resolved_exec:
+        raise HTTPException(
+            status_code=400, detail=f"Executable not found: {executable}"
         )
-        file.write(contents)
-    script_file.chmod(0o755)
+
+    pdb_path = output_dir / "system.pdb"
+    if not pdb_path.exists():
+        candidate = _find_preferred_system_pdb(input_dir)
+        if candidate:
+            pdb_path = candidate
+
+    if not pdb_path.exists():
+        raise HTTPException(
+            status_code=404, detail="No PDB file found for COM restraints"
+        )
+
+    if engine == "namd":
+        manager = NAMDEquilibrationManager(output_dir, resolved_exec)
+        out = manager.generate_com_colvars_config(
+            pdb_path=pdb_path,
+            output_file=output_dir / "com_restraint.col",
+            com_restraint_k=payload.com_restraint_k,
+            selection=payload.com_selection,
+            add_rotation_restraint=payload.add_rotation_restraint,
+            rotation_restraint_k=payload.rotation_restraint_k,
+        )
+    elif engine == "gromacs":
+        if GROMACSEquilibrationManager is None:
+            raise HTTPException(
+                status_code=501,
+                detail="GROMACS support is not available in this gatewizard installation",
+            )
+        manager = GROMACSEquilibrationManager(input_dir)
+        out = manager.generate_com_colvars_config(
+            pdb_path=pdb_path,
+            output_file=output_dir / "com_restraint.dat",
+            com_restraint_k=payload.com_restraint_k,
+            selection=payload.com_selection,
+            add_rotation_restraint=payload.add_rotation_restraint,
+            rotation_restraint_k=payload.rotation_restraint_k,
+        )
+    elif engine == "openmm":
+        out = _write_openmm_com_params(
+            pdb_path=pdb_path,
+            output_dir=output_dir,
+            com_selection=payload.com_selection,
+            com_restraint_k=payload.com_restraint_k,
+            add_rotation_restraint=payload.add_rotation_restraint,
+        )
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported engine: {engine}")
+
+    if out is None:
+        raise HTTPException(status_code=400, detail="COM restraint generation failed")
+
+    return {"output": str(out), "engine": engine}
 
 
 def is_equilibration_process_running(workdir: Path) -> bool:
@@ -1153,12 +1423,18 @@ class EnergeticAnalysisRequest(BaseModel):
 @app.post("/get-equilibration-status")
 def get_equilibration_status(payload: EquilibrationRequest) -> dict:
     workdir = Path(os.path.abspath(os.path.expanduser(payload.working_dir)))
+    engine = payload.engine.lower().strip()
 
-    response = dict(status="not_started", stages=[], output="")
+    response: dict[str, Any] = {
+        "status": "not_started",
+        "stages": [],
+        "output": "",
+    }
 
-    if not workdir.is_dir() or not next(workdir.glob("*.conf"), None):
+    if not workdir.is_dir() or not (workdir / "run_equilibration.sh").exists():
         response["status"] = "empty"
         return response
+
     if not next(workdir.glob("*.log"), None):
         return response
 
@@ -1167,20 +1443,25 @@ def get_equilibration_status(payload: EquilibrationRequest) -> dict:
         with open(log_file, "r") as file:
             response["output"] = file.read()
 
-    match payload.engine:
+    match engine:
         case "namd":
             stage_data = namd_analysis.get_equilibration_progress(workdir)
+        case "gromacs":
+            stage_data = gromacs_analysis.get_equilibration_progress(workdir)
+        case "openmm":
+            stage_data = openmm_analysis.get_equilibration_progress(workdir)
         case _:
             raise HTTPException(
                 status_code=400, detail=f"Unsupported engine: {payload.engine}"
             )
 
-    for info in sorted(stage_data.values(), key=lambda it: it.stage_name):
+    for info in stage_data.values():
         # TODO: fix namd timing to ignore minimize in total steps
         data = dict(
             name=info.stage_name.replace("_", " ").title(),
             output="",
             performance=None,
+            elapsed_time_seconds=None,
             simulated_time=None,
             status=info.status,
             total_simulation_time=None,
@@ -1193,6 +1474,11 @@ def get_equilibration_status(payload: EquilibrationRequest) -> dict:
             data["total_simulation_time"] = (
                 timing.total_steps * timing.timestep_fs * 1e-6
             )
+            if timing.ns_per_day and timing.ns_per_day > 0:
+                # Convert simulated ns and throughput (ns/day) to elapsed wall time.
+                data["elapsed_time_seconds"] = (
+                    data["simulated_time"] / timing.ns_per_day
+                ) * 86400
 
         if info.log_file:
             with open(info.log_file, "r") as file:
@@ -1202,10 +1488,20 @@ def get_equilibration_status(payload: EquilibrationRequest) -> dict:
 
     if is_equilibration_process_running(workdir):
         response["status"] = "running"
-    elif any(info["status"] == "error" for info in response["stages"]):
+    elif response["stages"] and any(
+        info["status"] == "error" for info in response["stages"]
+    ):
         response["status"] = "error"
-    elif all(info["status"] == "completed" for info in response["stages"]):
+    elif response["stages"] and all(
+        info["status"] == "completed" for info in response["stages"]
+    ):
         response["status"] = "completed"
+    elif engine in {"gromacs", "openmm"}:
+        output_lower = response["output"].lower()
+        if "failed" in output_lower or "error" in output_lower:
+            response["status"] = "error"
+        elif "complete" in output_lower or "finished" in output_lower:
+            response["status"] = "completed"
 
     return response
 
