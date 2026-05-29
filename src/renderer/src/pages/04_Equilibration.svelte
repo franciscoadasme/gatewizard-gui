@@ -461,9 +461,10 @@
     let status = 'not_started'
     let stages = []
     let output = ''
+    let run_start_time = null
     try {
       const payload = { workingDir: outputDir, engine }
-      ;({ status, stages, output } = await getEquilibrationStatus(payload))
+      ;({ status, stages, output, run_start_time } = await getEquilibrationStatus(payload))
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
     }
@@ -487,6 +488,13 @@
       equilibrationOutput = stages.find((stage) => stage.status === 'error')?.output ?? ''
     }
     stageStatuses = stages
+
+    // Persist start time from the backend so elapsed survives app restart
+    if (run_start_time) {
+      equilibrationPageStatus.runStartedAt = new Date(run_start_time).getTime()
+    } else if (status === 'empty' || status === 'not_started') {
+      equilibrationPageStatus.runStartedAt = null
+    }
 
     if (scheduleNext && autoMonitor && status !== 'empty') {
       clearTimeout(updateTimeoutId)

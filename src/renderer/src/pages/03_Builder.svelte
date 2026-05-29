@@ -53,6 +53,9 @@
   /** @type {Job[]} */
   let jobs = $state([])
   let launching = $state(false)
+  let validating = $state(false)
+  /** @type {{ valid: boolean, warning: boolean, message: string } | null} */
+  let validationResult = $state(null)
 
   /** Ref to the poll interval so we can clear it */
   let pollIntervalId = $state(null)
@@ -312,6 +315,7 @@
       lipidFf,
       preoriented,
       parametrize,
+      addSalt,
       saltConcentration: addSalt ? parseFloat(saltConcentration) : 0,
       cation,
       anion,
@@ -328,14 +332,40 @@
   }
 
   async function onValidate() {
+    if (!workingFile) {
+      validationResult = {
+        valid: false,
+        warning: false,
+        message: 'Please select a working PDB file first.'
+      }
+      return
+    }
+    if (!upperLeaflet.length && !lowerLeaflet.length) {
+      validationResult = {
+        valid: false,
+        warning: false,
+        message: 'Please add at least one lipid to a leaflet.'
+      }
+      return
+    }
     try {
+      validating = true
+      validationResult = null
       const params = buildParams()
       const result = await validateBuilder(params)
-      if (!result.valid) {
-        alert(`Validation failed: ${result.error}`)
+      validationResult = {
+        valid: result.valid,
+        warning: result.warning ?? false,
+        message: result.message ?? result.error ?? ''
       }
     } catch (error) {
-      alert(`Error: ${error instanceof Error ? error.message : String(error)}`)
+      validationResult = {
+        valid: false,
+        warning: false,
+        message: error instanceof Error ? error.message : String(error)
+      }
+    } finally {
+      validating = false
     }
   }
 
@@ -794,8 +824,25 @@
         className="w-full"
         variant="outline"
         onclick={onValidate}
-        disabled={launching || !workingFile}>Validate Inputs</Button
+        disabled={validating || launching}
       >
+        {validating ? 'Validating…' : 'Validate Inputs'}
+      </Button>
+      {#if validationResult !== null}
+        <div
+          class="rounded-md border px-3 py-2 text-xs {validationResult.valid
+            ? validationResult.warning
+              ? 'border-yellow-600 bg-yellow-950 text-yellow-300'
+              : 'border-green-700 bg-green-950 text-green-300'
+            : 'border-red-700 bg-red-950 text-red-300'}"
+        >
+          {#if validationResult.valid && !validationResult.warning}
+            ✓ All inputs are valid.
+          {:else}
+            {validationResult.message}
+          {/if}
+        </div>
+      {/if}
       <Button className="w-full" onclick={onStartPreparation} disabled={launching || !workingFile}>
         {launching ? 'Launching...' : 'Start Preparation'}
       </Button>

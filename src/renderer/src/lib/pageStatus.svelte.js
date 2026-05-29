@@ -61,6 +61,8 @@ export const equilibrationPageStatus = $state({
   stagesTotal: 0,
   /** Whether input files are being generated right now */
   generatingInput: false,
+  /** ms timestamp when equilibration first entered 'running' state (null if not started or reset) */
+  runStartedAt: /** @type {number|null} */ (null),
 })
 
 // ── 05 Analysis ──────────────────────────────────────────────────────────────

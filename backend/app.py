@@ -328,6 +328,13 @@ class ValidateBuilderRequest(BaseModel):
     lipid_ratios: str = Field(
         ..., description="Lipid ratios as upper_ratios//lower_ratios"
     )
+    water_model: str = "opc"
+    protein_ff: str = "ff19SB"
+    lipid_ff: str = "lipid21"
+    salt_concentration: float = 0.15
+    cation: str = "K+"
+    anion: str = "Cl-"
+    add_salt: bool = True
 
 
 class StartPreparationRequest(BaseModel):
@@ -772,8 +779,17 @@ def validate_builder(payload: ValidateBuilderRequest) -> dict:
             upper_lipids=payload.upper_lipids,
             lower_lipids=payload.lower_lipids,
             lipid_ratios=payload.lipid_ratios,
+            water_model=payload.water_model,
+            protein_ff=payload.protein_ff,
+            lipid_ff=payload.lipid_ff,
+            add_salt=payload.add_salt,
+            salt_concentration=payload.salt_concentration,
+            cation=payload.cation,
+            anion=payload.anion,
         )
-        return {"valid": is_valid, "error": error_msg}
+        # Distinguish warning (valid but message present) from clean success
+        is_warning = is_valid and bool(error_msg)
+        return {"valid": is_valid, "warning": is_warning, "message": error_msg or ""}
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
 
@@ -1574,11 +1590,22 @@ def get_equilibration_status(payload: EquilibrationRequest) -> dict:
         "status": "not_started",
         "stages": [],
         "output": "",
+        "run_start_time": None,
     }
 
     if not workdir.is_dir() or not (workdir / "run_equilibration.sh").exists():
         response["status"] = "empty"
         return response
+
+    # Read persisted start time if available
+    start_time_file = workdir / "equilibration_start_time.txt"
+    if start_time_file.exists():
+        try:
+            response["run_start_time"] = start_time_file.read_text(
+                encoding="utf-8"
+            ).strip()
+        except Exception:
+            pass
 
     if not next(workdir.glob("*.log"), None):
         return response
@@ -1681,6 +1708,13 @@ def run_equilibration(payload: EquilibrationRequest) -> None:
     pid_file = workdir / "equilibration.pid"
     with open(pid_file, "w") as file:
         file.write(str(process.pid))
+
+    # Persist wall-clock start time so the GUI can show elapsed time even
+    # after an app restart.
+    from datetime import datetime, timezone
+
+    start_time_file = workdir / "equilibration_start_time.txt"
+    start_time_file.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
 
 
 @app.post("/analysis-structural")

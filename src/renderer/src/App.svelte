@@ -110,6 +110,26 @@
   onMount(() => {
     if (currentId) loadPage(currentId)
   })
+
+  /**
+   * Suppress file-based poll tasks for a type that the reactive store is already
+   * tracking live (avoids the same job appearing twice in the status bar).
+   * After an app restart the reactive stores are empty, so historical file tasks
+   * still appear correctly.
+   */
+  const filteredTasks = $derived(
+    statusTasks.filter((task) => {
+      // Builder preparation jobs are tracked live in builderStatus
+      if (task.type === 'preparation' && builderStatus.jobCount > 0) return false
+      // Equilibration is tracked live in equilibrationPageStatus
+      const eqTracked =
+        equilibrationPageStatus.status &&
+        equilibrationPageStatus.status !== 'not_started' &&
+        equilibrationPageStatus.status !== 'empty'
+      if (task.type === 'equilibration' && eqTracked) return false
+      return true
+    })
+  )
 </script>
 
 <div
@@ -298,6 +318,12 @@
             {:else}
               <span class="capitalize">{equilibrationPageStatus.status}</span>
             {/if}
+            {#if equilibrationPageStatus.runStartedAt}
+              <span class="opacity-50">·</span>
+              <span class="opacity-70"
+                >{elapsed(new Date(equilibrationPageStatus.runStartedAt).toISOString())}</span
+              >
+            {/if}
           {/if}
         </div>
       {/if}
@@ -325,7 +351,7 @@
       {/if}
 
       <!-- ── File-based job tasks from backend poll ── -->
-      {#each statusTasks as task (task.id)}
+      {#each filteredTasks as task (task.id)}
         {@const isRunning = task.status === 'running'}
         {@const isError = task.status === 'error'}
         {@const isDone = task.status === 'completed'}
@@ -371,7 +397,7 @@
       {/each}
 
       <!-- ── Idle fallback ── -->
-      {#if !visualizeStatus.loaded && !visualizeStatus.loading && !preparationStatus.propkaDone && !preparationStatus.bondsChecked && !preparationStatus.prepareDone && builderStatus.jobCount === 0 && !equilibrationPageStatus.status && !analysisStatus.resultAvailable && !analysisStatus.running && statusTasks.length === 0}
+      {#if !visualizeStatus.loaded && !visualizeStatus.loading && !preparationStatus.propkaDone && !preparationStatus.bondsChecked && !preparationStatus.prepareDone && builderStatus.jobCount === 0 && !equilibrationPageStatus.status && !analysisStatus.resultAvailable && !analysisStatus.running && filteredTasks.length === 0}
         <span class="truncate">Ready — {workingDir}</span>
       {/if}
     {/if}
