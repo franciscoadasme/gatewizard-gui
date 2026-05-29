@@ -10,6 +10,16 @@
   let { stage = $bindable(), ensemble, onAddConstraint, onEditConstraint } = $props()
 
   const uid = $props.id()
+
+  /** steps = time_ns (ns) × 1 000 000 / timestep (fs) */
+  function stepsFromTime(time_ns, timestep) {
+    return Math.round((time_ns * 1_000_000) / timestep)
+  }
+
+  /** time_ns = steps × timestep (fs) / 1 000 000; rounded to 9 sig. fig. to avoid float noise */
+  function timeFromSteps(steps, timestep) {
+    return parseFloat(((steps * timestep) / 1_000_000).toPrecision(9))
+  }
 </script>
 
 <div class="rounded-md bg-neutral-900 p-4">
@@ -26,9 +36,12 @@
       size="sm"
       type="number"
       min="0"
-      max="5"
-      step="0.1"
+      step="0.001"
       bind:value={stage.time_ns}
+      oninput={(e) => {
+        const v = e.target.valueAsNumber
+        if (isFinite(v) && v > 0) stage.steps = stepsFromTime(v, stage.timestep)
+      }}
     />
     <p class="text-xs text-neutral-500">ns</p>
 
@@ -37,10 +50,13 @@
       id="{uid}-steps"
       size="sm"
       type="number"
-      min="0"
-      max="1000000"
+      min="1"
       step="1"
       bind:value={stage.steps}
+      oninput={(e) => {
+        const v = e.target.valueAsNumber
+        if (isFinite(v) && v > 0) stage.time_ns = timeFromSteps(v, stage.timestep)
+      }}
     />
     <p class="text-xs text-neutral-500">steps</p>
 
@@ -112,10 +128,14 @@
       id="{uid}-timestep"
       size="sm"
       type="number"
-      min="1"
+      min="0.5"
       max="4"
-      step="1"
+      step="0.5"
       bind:value={stage.timestep}
+      oninput={(e) => {
+        const v = e.target.valueAsNumber
+        if (isFinite(v) && v > 0) stage.steps = stepsFromTime(stage.time_ns, v)
+      }}
     />
     <p class="text-xs text-neutral-500">fs</p>
 

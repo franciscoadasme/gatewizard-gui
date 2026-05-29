@@ -12,26 +12,21 @@
   import Select from '../components/ui/Select.svelte'
   import Spinner from '../components/ui/Spinner.svelte'
   import {
+    checkExecutable,
     generateEquilibration,
     getEquilibrationStatus,
+    getOpenmmPlatforms,
     runEquilibration,
     getStructure
   } from '../lib/backendApi'
 
   /** @typedef {{ id: string, name: string, force_constant: number, selection: string }} Constraint */
 
-  /** @type {Record<string, { default: import('svelte').Component, label?: string }>} */
-  const engineModules = import.meta.glob('./equilibration/engines/*.svelte', { eager: true })
-  const engines = Object.entries(engineModules)
-    .map(([path, mod]) => {
-      const name = path.split('/').pop().replace('.svelte', '')
-      return {
-        id: name.toLowerCase(),
-        label: mod.label ?? name,
-        Component: mod.default
-      }
-    })
-    .sort((a, b) => a.label.localeCompare(b.label))
+  const engines = [
+    { id: 'namd', label: 'NAMD' },
+    { id: 'gromacs', label: 'GROMACS' },
+    { id: 'openmm', label: 'OpenMM' }
+  ]
 
   /** @type {{ workingDir?: string }} */
   let { workingDir = '' } = $props()
@@ -39,17 +34,51 @@
   // form fields
   let autoMonitor = $state(true)
   let engine = $state('namd')
-  let ensemble = $state('nvt')
+  let ensemble = $state('npt')
   let gpuDevice = $state(0)
   let inputDir = $state('')
   let outputName = $state('equilibration')
   let protocol = $state(prepareProtocolForRendering(baseProtocol))
+  let addComRestraint = $state(false)
+  let comSelection = $state('name CA')
+  let comRestraintK = $state(10)
+  let addRotationRestraint = $state(false)
+  let rotationRestraintK = $state(2000)
+  let validatingComSelection = $state(false)
+  let comSelectionValidation = $state(/** @type {{ ok: boolean, message: string } | null} */ (null))
+  let checkingExecutable = $state(false)
+  let executableCheck = $state(/** @type {{ ok: boolean, message: string } | null} */ (null))
+  /** @type {{ name: string, speed: number }[] | null} */
+  let openmmPlatforms = $state(null)
+  /** @type {string | null} null = auto-detect */
+  let openmmPlatform = $state(null)
+  let executableByEngine = $state({
+    namd: 'namd3',
+    gromacs: 'gmx',
+    openmm: 'python'
+  })
   /** @type {number | null} */
   let systemSize = $state(null)
   let totalCpus = $state(4)
   let totalGpus = $state(1)
   let updateInterval = $state(5)
   let useGpu = $state(true)
+
+  const GPU_PLATFORMS = ['CUDA', 'OpenCL', 'Metal']
+
+  $effect(() => {
+    if (!useGpu) {
+      // Force CPU when GPU acceleration is disabled
+      if (openmmPlatform === null || GPU_PLATFORMS.includes(openmmPlatform)) {
+        openmmPlatform = 'CPU'
+      }
+    } else {
+      // Restore auto-detect if we had force-set to CPU
+      if (openmmPlatform === 'CPU') {
+        openmmPlatform = null
+      }
+    }
+  })
 
   // derived values
   const canGenerateInput = $derived(
@@ -65,11 +94,11 @@
       isEngineSupported &&
       !equilibrationRunning
   )
-  const CurrentEngine = $derived(engines.find((e) => e.id === engine)?.Component)
-  const isEngineSupported = $derived(['namd'].includes(engine))
+  const isEngineSupported = $derived(['namd', 'gromacs', 'openmm'].includes(engine))
   const isProtocolValid = $derived(Array.isArray(protocol.stages) && protocol.stages.length > 0)
   const outputDir = $derived([workingDir, outputName].join('/'))
   const equilibrationRunning = $derived(equilibrationStatus === 'running')
+  const selectedExecutable = $derived(executableByEngine[engine] ?? '')
   const resources = $derived({
     cpu_cores: totalCpus,
     gpu_id: gpuDevice,
@@ -83,7 +112,7 @@
   /** @type {'not_started' | 'empty' | 'running' | 'completed' | 'error'} */
   let equilibrationStatus = $state('not_started')
   let generatingInputFiles = $state(false)
-  /** @type {Array<{ name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, output: string }>} */
+  /** @type {Array<{ name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, elapsed_time_seconds: number|null, output: string }>} */
   let stageStatuses = $state([])
   /** @type {number|undefined} */
   let updateTimeoutId = undefined
@@ -101,7 +130,7 @@
 
   $effect(() => {
     unscheduleUpdate()
-    if (workingDir === '') return
+    if (outputDir === '') return
     updateProgress()
   })
 
@@ -148,14 +177,50 @@
     }
   }
 
+  async function validateComSelection() {
+    if (!inputDir) {
+      comSelectionValidation = { ok: false, message: 'Select an input directory first.' }
+      return
+    }
+
+    const selection = comSelection.trim()
+    if (!selection) {
+      comSelectionValidation = { ok: false, message: 'Selection cannot be empty.' }
+      return
+    }
+
+    validatingComSelection = true
+    comSelectionValidation = null
+    try {
+      const { atoms } = await getStructure({
+        path: `${inputDir}/system.inpcrd`,
+        selection,
+        topology: `${inputDir}/system.prmtop`
+      })
+      const n = atoms.length
+      comSelectionValidation = {
+        ok: n > 0,
+        message: n > 0 ? `${n.toLocaleString()} atom(s) matched.` : 'Selection matched 0 atoms.'
+      }
+    } catch (error) {
+      comSelectionValidation = {
+        ok: false,
+        message: error instanceof Error ? error.message : String(error)
+      }
+    } finally {
+      validatingComSelection = false
+    }
+  }
+
   async function generateInput() {
     try {
-      if (equilibrationRunning) {
+      const { status } = await getEquilibrationStatus({ workingDir: outputDir, engine })
+      if (status === 'running') {
         alert('Equilibration is running. Wait for it to finish.')
         return
       }
       if (
-        ['not_started', 'completed', 'error'].includes(equilibrationStatus) &&
+        ['not_started', 'completed', 'error'].includes(status) &&
         !confirm('Overwrite existing equilibration?')
       ) {
         return
@@ -170,9 +235,15 @@
         protocol: currentProtocol,
         ensemble,
         programConfig: {
-          engine: 'namd',
-          executable: 'namd3'
-        }
+          engine,
+          executable: selectedExecutable
+        },
+        addComRestraint,
+        comSelection,
+        comRestraintK,
+        addRotationRestraint,
+        rotationRestraintK,
+        ...(engine === 'openmm' && openmmPlatform !== null ? { openmmPlatform } : {})
       })
       if (equilibrationStatus === 'empty') {
         equilibrationStatus = 'not_started'
@@ -292,6 +363,52 @@
     inputDir = dirPath
   }
 
+  async function checkEngineExecutable() {
+    if (!selectedExecutable.trim()) {
+      executableCheck = { ok: false, message: 'Executable cannot be empty.' }
+      return
+    }
+    checkingExecutable = true
+    openmmPlatforms = null
+    try {
+      const result = await checkExecutable({ engine, executable: selectedExecutable })
+      if (result.exists) {
+        const version = result.version ? ` (${result.version})` : ''
+        executableCheck = {
+          ok: true,
+          message: `Found: ${result.resolved_path}${version}`
+        }
+        if (engine === 'openmm') {
+          try {
+            const { platforms } = await getOpenmmPlatforms()
+            openmmPlatforms = platforms ?? []
+            // Auto-select best available GPU platform, or CPU if GPU disabled
+            if (!useGpu) {
+              openmmPlatform = 'CPU'
+            } else if (openmmPlatform === null) {
+              const best = (platforms ?? []).find((p) => GPU_PLATFORMS.includes(p.name))
+              openmmPlatform = best ? best.name : null
+            }
+          } catch {
+            openmmPlatforms = []
+          }
+        }
+      } else {
+        executableCheck = {
+          ok: false,
+          message: `Executable not found: ${selectedExecutable}`
+        }
+      }
+    } catch (error) {
+      executableCheck = {
+        ok: false,
+        message: error instanceof Error ? error.message : String(error)
+      }
+    } finally {
+      checkingExecutable = false
+    }
+  }
+
   async function startEquilibration() {
     try {
       // TODO: write protocol and compare existing protocol with new one so to enable run button, otherwise disable it
@@ -339,19 +456,26 @@
     }
 
     equilibrationStatus = status
-    if (['not_started', 'empty'].includes(status)) {
+    if (status === 'empty') {
       equilibrationOutput = ''
       stageStatuses = []
       return
     }
-    // TODO: what to do with partial progress? it is not shown in the UI
+
+    // Keep historical progress visible after restart/stop when backend returns
+    // status=not_started but still provides stage snapshots.
+    if (status === 'not_started' && stages.length === 0) {
+      equilibrationOutput = ''
+      stageStatuses = []
+      return
+    }
 
     if (status === 'error') {
       equilibrationOutput = stages.find((stage) => stage.status === 'error')?.output ?? ''
     }
     stageStatuses = stages
 
-    if (scheduleNext && autoMonitor && equilibrationRunning) {
+    if (scheduleNext && autoMonitor && status !== 'empty') {
       clearTimeout(updateTimeoutId)
       updateTimeoutId = setTimeout(updateProgress, updateInterval * 1000)
     }
@@ -428,13 +552,7 @@
       </div>
       <div class="space-y-1">
         <p class="text-xs">Output directory:</p>
-        <Input
-          type="text"
-          bind:value={outputName}
-          className="w-full"
-          placeholder="equilibration"
-          disabled={equilibrationRunning}
-        />
+        <Input type="text" bind:value={outputName} className="w-full" placeholder="equilibration" />
       </div>
     </div>
     <Divider />
@@ -442,14 +560,155 @@
       <h2 class="font-semibold">Molecular Dynamics</h2>
       <div class="space-y-1">
         <p class="text-xs">Engine:</p>
-        <Select className="w-full" bind:value={engine}>
-          {#each engines as engine (engine.id)}
-            <option value={engine.id}>{engine.label}</option>
+        <Select
+          className="w-full"
+          bind:value={engine}
+          onchange={() => {
+            executableCheck = null
+            openmmPlatforms = null
+          }}
+        >
+          {#each engines as item (item.id)}
+            <option value={item.id}>{item.label}</option>
           {/each}
         </Select>
       </div>
-      {#if CurrentEngine}
-        <CurrentEngine />
+      <div class="space-y-1">
+        <p class="text-xs">Executable:</p>
+        <Input
+          type="text"
+          value={selectedExecutable}
+          oninput={(e) => {
+            executableByEngine[engine] = e.target.value
+            executableCheck = null
+            openmmPlatforms = null
+            openmmPlatform = null
+          }}
+          className="w-full"
+          placeholder={engine === 'openmm' ? 'python' : engine === 'gromacs' ? 'gmx' : 'namd3'}
+        />
+        <Button variant="outline" className="w-full" onclick={checkEngineExecutable}>
+          {#if checkingExecutable}
+            <Spinner className="mr-1" />
+            Checking executable...
+          {:else}
+            Check Executable
+          {/if}
+        </Button>
+        {#if executableCheck}
+          <p class={executableCheck.ok ? 'text-xs text-green-400' : 'text-xs text-red-400'}>
+            {executableCheck.message}
+          </p>
+        {/if}
+        {#if engine === 'openmm' && openmmPlatforms !== null}
+          <div class="space-y-1 pt-0.5">
+            <p class="text-xs text-zinc-400">Platform:</p>
+            <div class="flex flex-wrap gap-1">
+              {#each openmmPlatforms.filter((p) => p.name !== 'Reference') as p}
+                {@const isGpu = GPU_PLATFORMS.includes(p.name)}
+                {@const isDisabled = isGpu && !useGpu}
+                {@const isSelected =
+                  openmmPlatform === p.name || (openmmPlatform === null && isGpu)}
+                <button
+                  type="button"
+                  disabled={isDisabled}
+                  onclick={() => {
+                    openmmPlatform = openmmPlatform === p.name ? null : p.name
+                  }}
+                  class="rounded px-1.5 py-0.5 text-xs font-medium transition-colors
+                    {isDisabled
+                    ? 'cursor-not-allowed bg-zinc-800 text-zinc-500 opacity-40'
+                    : isSelected
+                      ? isGpu
+                        ? 'bg-green-700 text-green-100 ring-1 ring-green-400'
+                        : 'bg-blue-700 text-blue-100 ring-1 ring-blue-400'
+                      : isGpu
+                        ? 'bg-green-900 text-green-300 hover:bg-green-800'
+                        : 'bg-zinc-700 text-zinc-300 hover:bg-zinc-600'}"
+                  >{p.name}{isSelected ? ' ✓' : ''}</button
+                >
+              {/each}
+              {#if openmmPlatforms.filter((p) => p.name !== 'Reference').length === 0}
+                <span class="text-xs text-zinc-400">No platforms detected</span>
+              {/if}
+            </div>
+            {#if openmmPlatform === null}
+              <p class="text-xs text-zinc-500">Auto-detect (fastest available)</p>
+            {:else}
+              <p class="text-xs text-zinc-400">
+                Selected: <span class="text-zinc-200">{openmmPlatform}</span>
+              </p>
+            {/if}
+          </div>
+        {/if}
+      </div>
+      <div class="col-span-2 flex items-center gap-2">
+        <Checkbox
+          id="add-com-restraint"
+          bind:checked={addComRestraint}
+          onchange={() => {
+            if (addComRestraint) addRotationRestraint = true
+          }}
+        />
+        <label for="add-com-restraint">Generate COM restraint during input generation</label>
+      </div>
+      {#if addComRestraint}
+        <div class="space-y-1">
+          <p class="text-xs">COM reference selection (MDAnalysis):</p>
+          <Input
+            type="text"
+            bind:value={comSelection}
+            className="w-full"
+            placeholder="name CA"
+            oninput={() => {
+              comSelectionValidation = null
+            }}
+          />
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full"
+            onclick={validateComSelection}
+            disabled={validatingComSelection}
+          >
+            {#if validatingComSelection}
+              <Spinner className="mr-1" />
+              Validating selection...
+            {:else}
+              Validate Selection
+            {/if}
+          </Button>
+          {#if comSelectionValidation}
+            <p
+              class={comSelectionValidation.ok ? 'text-xs text-green-400' : 'text-xs text-red-400'}
+            >
+              {comSelectionValidation.message}
+            </p>
+          {/if}
+          <p class="text-[11px] text-neutral-500">
+            Used to define COM translation target and optional rotation reference atoms.
+          </p>
+        </div>
+        <div class="space-y-1">
+          <p class="text-xs">COM translation k (kcal/mol/A^2):</p>
+          <Input type="number" min="0" step="0.1" bind:value={comRestraintK} className="w-full" />
+        </div>
+        <div class="col-span-2 flex items-center gap-2">
+          <Checkbox id="add-rotation-restraint" bind:checked={addRotationRestraint} />
+          <label for="add-rotation-restraint">Also generate rotation restraint</label>
+        </div>
+        {#if addRotationRestraint}
+          <div class="space-y-1">
+            <p class="text-xs">Rotation k (kcal/mol/A^2):</p>
+            <Input
+              type="number"
+              min="0"
+              step="1"
+              bind:value={rotationRestraintK}
+              className="w-full"
+            />
+          </div>
+        {/if}
       {/if}
     </div>
 
@@ -581,7 +840,7 @@
         </Button>
         <Button variant="outline" size="sm">Process Information</Button>
       </div>
-      {#if ['running', 'completed', 'error'].includes(equilibrationStatus)}
+      {#if ['running', 'completed', 'error'].includes(equilibrationStatus) || stageStatuses.length > 0}
         <div class="grid grid-cols-[auto_1fr] gap-2">
           {#each stageStatuses as stage_info (stage_info.name)}
             <EquilibrationStageStatus {stage_info} />
