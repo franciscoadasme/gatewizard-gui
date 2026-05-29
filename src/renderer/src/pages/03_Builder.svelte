@@ -777,15 +777,15 @@
 
     <!-- Actions -->
     <div class="space-y-2">
-      <Button className="w-full" onclick={onStartPreparation} disabled={launching || !workingFile}>
-        {launching ? 'Launching...' : 'Start Preparation'}
-      </Button>
       <Button
         className="w-full"
         variant="outline"
         onclick={onValidate}
         disabled={launching || !workingFile}>Validate Inputs</Button
       >
+      <Button className="w-full" onclick={onStartPreparation} disabled={launching || !workingFile}>
+        {launching ? 'Launching...' : 'Start Preparation'}
+      </Button>
       <button
         class="w-full text-center dark:text-neutral-500 dark:hover:text-neutral-300"
         onclick={onLoadDefaults}>Reset Defaults</button
