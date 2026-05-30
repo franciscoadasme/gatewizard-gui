@@ -2,7 +2,7 @@
   import Button from '../components/ui/Button.svelte'
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Divider from '../components/ui/Divider.svelte'
-  import { builderStatus } from '../lib/pageStatus.svelte.js'
+  import { builderStatus, logEvent } from '../lib/pageStatus.svelte.js'
   import {
     getAvailableLipids,
     getAvailableForceFields,
@@ -141,6 +141,7 @@
       if (jobs[i].status !== 'running') continue
       try {
         const st = await getJobStatus(jobs[i].jobDir)
+        const prevStatus = jobs[i].status
         jobs[i] = {
           ...jobs[i],
           status: st.status || 'running',
@@ -150,6 +151,20 @@
           startTime: st.start_time || jobs[i].startTime,
           endTime: st.end_time || null,
           elapsed: formatElapsed(st.start_time || jobs[i].startTime, st.end_time || null)
+        }
+        // Log terminal transitions from running
+        const newStatus = st.status || 'running'
+        if (prevStatus === 'running' && newStatus !== 'running') {
+          if (newStatus === 'completed') {
+            logEvent(
+              'info',
+              'build',
+              `Job completed: ${jobs[i].name}`,
+              `Elapsed: ${jobs[i].elapsed}`
+            )
+          } else {
+            logEvent('info', 'build', `Job ${newStatus}: ${jobs[i].name}`, st.error || '')
+          }
         }
         // Also refresh log if visible
         if (jobs[i].showLog) {
@@ -218,6 +233,12 @@
 
       // Check if any ligands were already parametrized in a previous run
       const names = ligands.map((l) => l.name)
+      logEvent(
+        'detail',
+        'build',
+        `Detected ligands`,
+        `${ligands.length} ligand(s): ${names.join(', ') || '—'}`
+      )
       if (names.length > 0) {
         const { parametrized } = await checkLigandParametrization(workingFile, names)
         for (let i = 0; i < ligands.length; i++) {
@@ -256,6 +277,12 @@
         lib: result.lib || '',
         mol2: result.mol2 || ''
       }
+      logEvent(
+        'detail',
+        'build',
+        `Parametrized ligand: ${lig.name}`,
+        `FRCMOD: ${(result.frcmod || '').split('/').pop()}`
+      )
       // Reload image from mol2 (better bond orders)
       await loadLigandImage(index)
     } catch (error) {
@@ -358,6 +385,12 @@
         warning: result.warning ?? false,
         message: result.message ?? result.error ?? ''
       }
+      logEvent(
+        'detail',
+        'build',
+        `Configuration ${result.valid ? 'valid' : result.warning ? 'warning' : 'invalid'}`,
+        validationResult.message
+      )
     } catch (error) {
       validationResult = {
         valid: false,
@@ -399,6 +432,12 @@
         }
         jobs = [newJob, ...jobs]
         startPolling()
+        logEvent(
+          'info',
+          'build',
+          `Started job: ${newJob.name}`,
+          `Steps: ${newJob.steps.join(' → ')}`
+        )
       } else {
         alert(`Failed: ${result.message}`)
       }

@@ -63,6 +63,8 @@ export const equilibrationPageStatus = $state({
   generatingInput: false,
   /** ms timestamp when equilibration first entered 'running' state (null if not started or reset) */
   runStartedAt: /** @type {number|null} */ (null),
+  /** Set to true when the user kills the run; reset when a new run starts */
+  wasKilled: false,
 })
 
 // ── 05 Analysis ──────────────────────────────────────────────────────────────
@@ -76,3 +78,27 @@ export const analysisStatus = $state({
   /** Whether a result is available for the current type */
   resultAvailable: false,
 })
+
+// ── Global history log ────────────────────────────────────────────────────────
+/**
+ * @typedef {{ id: string, level: 'info'|'detail'|'verbose', page: string, label: string, detail: string, timestamp: Date }} HistoryEvent
+ */
+export const historyLog = $state(/** @type {HistoryEvent[]} */ ([]))
+
+/**
+ * Append a timestamped event to the global history log.
+ * Call from any page to record an action at the appropriate detail level.
+ *
+ * Levels:
+ *   'info'    — major actions (file open, structure edit, run start/stop)
+ *   'detail'  — secondary actions (add/remove view, clear measurements)
+ *   'verbose' — micro changes (label added, gizmo drag)
+ *
+ * @param {'info'|'detail'|'verbose'} level
+ * @param {string} page   — page type matching pageTag(): 'view'|'prep'|'build'|'eq'|'analysis'
+ * @param {string} label  — short title shown in the log
+ * @param {string} [detail] — optional longer description
+ */
+export function logEvent(level, page, label, detail = '') {
+  historyLog.push({ id: crypto.randomUUID(), level, page, label, detail, timestamp: new Date() })
+}

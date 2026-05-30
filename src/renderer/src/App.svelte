@@ -6,6 +6,8 @@
     analysisStatus,
     builderStatus,
     equilibrationPageStatus,
+    historyLog,
+    logEvent,
     preparationStatus,
     visualizeStatus
   } from './lib/pageStatus.svelte.js'
@@ -161,14 +163,16 @@
   let statusExpanded = $state(false)
   /** IDs hidden from the collapsed chip bar (Clear button) */
   let barDismissed = $state(/** @type {Set<string>} */ (new Set()))
-  /** IDs removed from the expanded history log (× button) */
+  /** Event IDs manually removed from the expanded history log (× button) */
   let logDismissed = $state(/** @type {Set<string>} */ (new Set()))
   /** @type {Record<string, Date>} */
   let chipTimestamps = $state({})
   /** @type {string[]} */
   let chipSeqOrder = $state([])
-  /** Accumulated history — all chips ever seen, updated live, never auto-cleared */
-  let chipHistory = $state(/** @type {Array<any>} */ ([]))
+  /** Level filter for the history panel: show 'info' only, 'detail', or 'verbose' (all) */
+  let historyLevel = $state('info')
+  /** Tracks previous chip status to detect meaningful state transitions (plain, non-reactive) */
+  const _prevChipStatus = {}
 
   /**
    * Build a unified flat list of all status chips from reactive page stores
@@ -238,15 +242,20 @@
 
     // 04 Equilibration
     const eqStatus = equilibrationPageStatus.status
-    if (eqStatus && eqStatus !== 'not_started' && eqStatus !== 'empty') {
+    const eqKilled = equilibrationPageStatus.wasKilled
+    if ((eqStatus && eqStatus !== 'not_started' && eqStatus !== 'empty') || eqKilled) {
       const eqRunning = eqStatus === 'running'
       const eqDone = eqStatus === 'completed'
       const eqError = eqStatus === 'error'
       const eqGen = equilibrationPageStatus.generatingInput
+      // After a kill the backend may return not_started — show "killed" state instead
+      const killedAndIdle = eqKilled && !eqRunning && !eqGen
       const stageStr =
         equilibrationPageStatus.stagesTotal > 0
           ? `${equilibrationPageStatus.stagesDone}/${equilibrationPageStatus.stagesTotal} stages`
-          : eqStatus
+          : killedAndIdle
+            ? 'killed'
+            : eqStatus
       const elapsedStr = equilibrationPageStatus.runStartedAt
         ? elapsed(new Date(equilibrationPageStatus.runStartedAt).toISOString())
         : ''
@@ -254,10 +263,12 @@
         id: 'equilibration',
         type: 'eq',
         label: `Eq (${equilibrationPageStatus.engine})`,
-        detail: eqGen ? 'generating input…' : stageStr,
+        detail: eqGen ? 'generating input…' : killedAndIdle ? 'killed' : stageStr,
         fullDetail: eqGen
           ? `Generating equilibration input files for "${equilibrationPageStatus.outputName}"…`
-          : `${equilibrationPageStatus.engine.toUpperCase()} equilibration "${equilibrationPageStatus.outputName}" · ${stageStr}${elapsedStr ? ` · elapsed ${elapsedStr}` : ''}`,
+          : killedAndIdle
+            ? `${equilibrationPageStatus.engine.toUpperCase()} equilibration "${equilibrationPageStatus.outputName}" was killed${elapsedStr ? ` · ran ${elapsedStr}` : ''}`
+            : `${equilibrationPageStatus.engine.toUpperCase()} equilibration "${equilibrationPageStatus.outputName}" · ${stageStr}${elapsedStr ? ` · elapsed ${elapsedStr}` : ''}`,
         status: eqError ? 'error' : eqRunning || eqGen ? 'running' : eqDone ? 'done' : 'idle',
         dismissible: !eqRunning && !eqGen
       })
@@ -296,31 +307,21 @@
     return chips
   })
 
-  // Record first-seen timestamp + seq, update live history snapshots
+  // Track first-seen seq/timestamp for chip badges; auto-log chip appearance + status changes
   $effect(() => {
-    // Read allChips reactively (this is the only reactive dependency we want)
     const chips = allChips
-    // All reads+writes of the tracking state are untracked to avoid an
-    // infinite loop (writing to $state inside an effect re-triggers it).
     untrack(() => {
       for (const chip of chips) {
-        if (!chipTimestamps[chip.id]) {
-          // New chip: assign timestamp and seq, then push to history
+        const isNew = !chipTimestamps[chip.id]
+        if (isNew) {
           chipTimestamps[chip.id] = new Date()
           chipSeqOrder.push(chip.id)
-          chipHistory.push({
-            ...chip,
-            seq: chipSeqOrder.length,
-            timestamp: chipTimestamps[chip.id]
-          })
-        } else {
-          // Existing chip: update detail/status in history in-place
-          const seq = chipSeqOrder.indexOf(chip.id) + 1 || '?'
-          const idx = chipHistory.findIndex((h) => h.id === chip.id)
-          if (idx >= 0) {
-            chipHistory[idx] = { ...chip, seq, timestamp: chipTimestamps[chip.id] ?? null }
-          }
+          logEvent('info', chip.type, chip.label, chip.fullDetail)
+        } else if (_prevChipStatus[chip.id] !== chip.status && chip.status !== 'running') {
+          // Only log terminal transitions (done/error), skip repeated 'running' updates
+          logEvent('info', chip.type, `${chip.label} — ${chip.status}`, chip.fullDetail)
         }
+        _prevChipStatus[chip.id] = chip.status
       }
     })
   })
@@ -336,8 +337,15 @@
       }))
   )
 
-  /** All historical chips shown in the expanded log — filtered by logDismissed only */
-  const visibleLogChips = $derived(chipHistory.filter((c) => !logDismissed.has(c.id)))
+  /** History entries shown in the expanded log, filtered by level + manually dismissed */
+  const visibleLogEntries = $derived(
+    historyLog.filter((e) => {
+      if (logDismissed.has(e.id)) return false
+      if (historyLevel === 'info') return e.level === 'info'
+      if (historyLevel === 'detail') return e.level === 'info' || e.level === 'detail'
+      return true // 'verbose' = show everything
+    })
+  )
 
   /** Remove a single entry from the history log */
   function dismissFromLog(id) {
@@ -408,79 +416,89 @@
   </main>
 
   <footer class="relative flex items-stretch text-xs dark:bg-neutral-900 dark:text-neutral-500">
-    <!-- ── Expanded log panel (floats above the footer) ── -->
+    <!-- ── Expanded history panel (floats above the footer) ── -->
     {#if statusExpanded}
       <div
-        class="absolute right-0 bottom-full left-0 z-20 max-h-72 overflow-y-auto border-t border-neutral-800 bg-neutral-950 shadow-lg"
+        class="absolute right-0 bottom-full left-0 z-20 max-h-80 overflow-y-auto border-t border-neutral-800 bg-neutral-950 shadow-xl"
       >
+        <!-- Header: title + level filter + entry count + close -->
         <div
-          class="sticky top-0 flex items-center justify-between border-b border-neutral-800 bg-neutral-950 px-3 py-1.5"
+          class="sticky top-0 z-10 flex items-center gap-2 border-b border-neutral-800 bg-neutral-950 px-3 py-1.5"
         >
-          <span class="font-medium text-neutral-400">Status Log</span>
-          <div class="flex items-center gap-1">
-            <button
-              onclick={() => {
-                statusExpanded = false
-              }}
-              class="rounded px-2 py-0.5 text-[10px] text-neutral-500 hover:bg-neutral-800 hover:text-neutral-300"
-              >✕</button
-            >
+          <span class="shrink-0 font-semibold text-neutral-300">History</span>
+          <!-- Level filter tabs -->
+          <div class="flex gap-0.5 rounded bg-neutral-800 p-0.5">
+            {#each [{ id: 'info', label: 'Info', title: 'Major actions only (file open, edits, runs)' }, { id: 'detail', label: 'Detail', title: 'Info + secondary actions (add/remove view, measurements)' }, { id: 'verbose', label: 'All', title: 'Everything including micro changes (gizmo, labels)' }] as lvl (lvl.id)}
+              {@const activeClass =
+                historyLevel === lvl.id
+                  ? 'bg-neutral-600 text-neutral-100'
+                  : 'text-neutral-500 hover:text-neutral-300'}
+              <button
+                onclick={() => {
+                  historyLevel = lvl.id
+                }}
+                title={lvl.title}
+                class="rounded px-2 py-0.5 text-[10px] transition-colors {activeClass}"
+                >{lvl.label}</button
+              >
+            {/each}
           </div>
+          <span class="ml-auto shrink-0 text-[10px] text-neutral-600"
+            >{visibleLogEntries.length} event{visibleLogEntries.length === 1 ? '' : 's'}</span
+          >
+          <button
+            onclick={() => {
+              statusExpanded = false
+            }}
+            class="shrink-0 rounded px-2 py-0.5 text-[10px] text-neutral-500 hover:bg-neutral-800 hover:text-neutral-300"
+            >✕</button
+          >
         </div>
-        {#if visibleLogChips.length === 0}
-          <p class="px-3 py-2 text-neutral-600">No history yet.</p>
+        <!-- Log entries -->
+        {#if visibleLogEntries.length === 0}
+          <p class="px-3 py-3 text-neutral-600">No events recorded at this level yet.</p>
         {:else}
-          <div class="divide-y divide-neutral-800/60">
-            {#each visibleLogChips as chip (chip.id)}
-              {@const tag = pageTag(chip.type)}
+          <div class="divide-y divide-neutral-800/50">
+            {#each visibleLogEntries as entry (entry.id)}
+              {@const tag = pageTag(entry.page)}
               <div
                 class="flex items-start gap-2 px-3 py-1.5
-                {chip.status === 'error'
-                  ? 'bg-red-950/30'
-                  : chip.status === 'running'
-                    ? 'bg-neutral-800/40'
-                    : chip.status === 'done'
-                      ? 'bg-green-950/20'
-                      : ''}"
+                  {entry.level === 'verbose' ? 'opacity-60' : ''}"
               >
-                <!-- seq number -->
+                <!-- global seq number -->
                 <span
-                  class="mt-0.5 w-4 shrink-0 text-right text-[10px] text-neutral-600 tabular-nums"
-                  >{chip.seq}</span
+                  class="mt-0.5 w-5 shrink-0 text-right text-[10px] text-neutral-600 tabular-nums"
+                  >{historyLog.indexOf(entry) + 1}</span
                 >
                 <!-- page-origin tag -->
                 <span
                   class="mt-0.5 shrink-0 rounded px-1.5 py-px text-[9px] leading-none {tag.bg} {tag.text}"
                   >{tag.name}</span
                 >
-                <!-- icon -->
-                <span class="mt-0.5 shrink-0">
-                  {#if chip.status === 'running'}
-                    <span class="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-yellow-400"
-                    ></span>
-                  {:else if chip.status === 'done'}
-                    <span class="text-[11px] text-green-500">✓</span>
-                  {:else if chip.status === 'error'}
-                    <span class="text-[11px] text-red-400">✕</span>
-                  {:else}
-                    <span class="inline-block h-1.5 w-1.5 rounded-full bg-neutral-600"></span>
-                  {/if}
-                </span>
+                <!-- level indicator dot -->
+                <span
+                  class="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full
+                  {entry.level === 'info'
+                    ? 'bg-blue-400'
+                    : entry.level === 'detail'
+                      ? 'bg-neutral-400'
+                      : 'bg-neutral-600'}"
+                ></span>
                 <!-- content -->
                 <div class="min-w-0 flex-1">
                   <div class="flex items-baseline gap-2">
-                    <span class="font-medium text-neutral-300">{chip.label}</span>
-                    {#if chip.timestamp}
-                      <span class="ml-auto shrink-0 text-[10px] text-neutral-600"
-                        >{chip.timestamp.toLocaleTimeString()}</span
-                      >
-                    {/if}
+                    <span class="font-medium text-neutral-300">{entry.label}</span>
+                    <span class="ml-auto shrink-0 text-[10px] text-neutral-600"
+                      >{entry.timestamp.toLocaleTimeString()}</span
+                    >
                   </div>
-                  <p class="mt-0.5 text-[11px] break-all text-neutral-400">{chip.fullDetail}</p>
+                  {#if entry.detail}
+                    <p class="mt-0.5 text-[11px] break-all text-neutral-400">{entry.detail}</p>
+                  {/if}
                 </div>
-                <!-- dismiss -->
+                <!-- dismiss from history -->
                 <button
-                  onclick={() => dismissFromLog(chip.id)}
+                  onclick={() => dismissFromLog(entry.id)}
                   title="Remove from history"
                   class="mt-0.5 shrink-0 leading-none text-neutral-600 hover:text-neutral-300"
                   >×</button
@@ -531,8 +549,8 @@
       {/if}
     </div>
 
-    <!-- ── Actions (expand + clear) ── -->
-    {#if workingDir && visibleBarChips.length > 0}
+    <!-- ── Actions: always visible when workingDir is set ── -->
+    {#if workingDir}
       <div class="flex shrink-0 items-center gap-1 border-l border-neutral-800 px-2">
         <button
           onclick={clearBar}

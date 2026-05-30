@@ -48,7 +48,7 @@
   import ViewItem, { skipNextPathFetch } from '../components/ViewItem.svelte'
   import RadialMenu from '../components/RadialMenu.svelte'
   import TransformGizmo from '../components/TransformGizmo.svelte'
-  import { visualizeStatus } from '../lib/pageStatus.svelte.js'
+  import { visualizeStatus, logEvent } from '../lib/pageStatus.svelte.js'
 
   /**
    * Svelte action for range inputs: sets the initial value on mount and blocks Svelte's
@@ -406,6 +406,12 @@
         material: { metalness: 0.08, roughness: 0.48, emissiveIntensity: 0.0 }
       })
     }
+    logEvent(
+      'detail',
+      'view',
+      'Auto-generated views',
+      `${views.length} view(s) from detected molecules`
+    )
   }
 
   async function onFetchPDB() {
@@ -427,6 +433,7 @@
   /** @param {string} selection */
   /** @param {Representation} representation */
   function addView(selection = 'all', representation = { type: 'vdw' }) {
+    logEvent('detail', 'view', `Added view: ${selection}`, `Representation: ${representation.type}`)
     views.push({
       id: crypto.randomUUID(),
       selection,
@@ -478,6 +485,12 @@
         save_dir: workingDir || null
       })
       filePath = structure.path
+      logEvent(
+        'info',
+        'view',
+        `Opened ${String(structure.path).split(/[/\\]/).pop()}`,
+        structure.path
+      )
       views.length = 0
       measurements = []
       measurePicks = []
@@ -651,6 +664,7 @@
     editBusy = true
     try {
       const res = await editDeleteByIndices({ path: filePath, indices: targetIndices })
+      logEvent('info', 'view', `Deleted ${targetIndices.length} atom(s)`, filePath)
       selectedGroupIndices = new Set()
       selectedAtom = null
       editHoverGroupIndices = new Set()
@@ -724,6 +738,12 @@
   }
 
   function addAtomLabel(atom, text) {
+    logEvent(
+      'verbose',
+      'view',
+      `Label: ${text}`,
+      `${atom.name} ${atom.res_name}${atom.res_id} :${atom.chain_id}`
+    )
     atomLabels = [
       ...atomLabels,
       { id: crypto.randomUUID(), atom, text, size: labelSize, color: labelColor, visible: true }
@@ -740,12 +760,14 @@
   }
 
   function clearAllMeasurements() {
+    logEvent('detail', 'view', 'Measurements cleared', `${measurements.length} removed`)
     measurements = []
     measurePicks = []
     gearOpen = null
   }
 
   function clearAllLabels() {
+    logEvent('detail', 'view', 'Labels cleared', `${atomLabels.length} removed`)
     atomLabels = []
     gearOpen = null
   }
@@ -758,6 +780,7 @@
 
   /** @param {string} id */
   function removeView(id) {
+    logEvent('detail', 'view', 'Removed view', id)
     views = views.filter((it) => it.id !== id)
   }
 
@@ -775,6 +798,7 @@
   }
 
   function clearWorkspace() {
+    logEvent('detail', 'view', 'Workspace cleared')
     structure = null
     filePath = null
     views = []
@@ -815,6 +839,7 @@
     if (!r || r.canceled || !r.filePath) return
     try {
       await editSavePdb({ source: filePath, dest: r.filePath })
+      logEvent('info', 'view', `Saved PDB: ${String(r.filePath).split(/[/\\]/).pop()}`, r.filePath)
       filePath = r.filePath
       if (structure) structure.path = r.filePath
     } catch (ex) {
@@ -971,6 +996,7 @@
         newChain: rcNewChain
       })
       dlgRenameChain?.close()
+      logEvent('info', 'view', `Renamed chain ${rcOldChain} → ${rcNewChain}`, filePath)
       await applyEditResult(res)
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : String(ex))
@@ -991,6 +1017,12 @@
         newName: rrNewName
       })
       dlgRenameRes?.close()
+      logEvent(
+        'info',
+        'view',
+        `Renamed residues ${rrChain}:${rrStart}-${rrEnd} → ${rrNewName}`,
+        filePath
+      )
       await applyEditResult(res)
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : String(ex))
@@ -1011,6 +1043,12 @@
         newStart: rnNewStart
       })
       dlgRenumberRes?.close()
+      logEvent(
+        'info',
+        'view',
+        `Renumbered residues ${rnChain}:${rnStart}-${rnEnd} → start ${rnNewStart}`,
+        filePath
+      )
       await applyEditResult(res)
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : String(ex))
@@ -1025,6 +1063,7 @@
     try {
       const res = await editDeleteAtoms({ path: filePath, selection: daSelection })
       dlgDeleteAtoms?.close()
+      logEvent('info', 'view', `Deleted atoms: "${daSelection}"`, filePath)
       await applyEditResult(res)
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : String(ex))
@@ -1185,6 +1224,12 @@
       const sel = _selStringFromEditSelection() || null
       const res = await transformApply({ path: filePath, selection: sel, op })
       await applyGizmoResult(res)
+      logEvent(
+        'verbose',
+        'view',
+        `Gizmo translate (${axis})`,
+        `Δ = ${delta.toFixed(2)} Å, sel: ${sel ?? 'all'}`
+      )
     } catch (ex) {
       _undoFilePath = null
       alert(ex instanceof Error ? ex.message : String(ex))
@@ -1204,6 +1249,12 @@
       const sel = _selStringFromEditSelection() || null
       const res = await transformApply({ path: filePath, selection: sel, op })
       await applyGizmoResult(res)
+      logEvent(
+        'verbose',
+        'view',
+        `Gizmo rotate (${axis})`,
+        `angle = ${angle.toFixed(1)}°, sel: ${sel ?? 'all'}`
+      )
     } catch (ex) {
       _undoFilePath = null
       alert(ex instanceof Error ? ex.message : String(ex))

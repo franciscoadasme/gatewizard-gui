@@ -1,7 +1,7 @@
 <script>
   import { onDestroy, untrack } from 'svelte'
   import Button from '../components/ui/Button.svelte'
-  import { equilibrationPageStatus } from '../lib/pageStatus.svelte.js'
+  import { equilibrationPageStatus, logEvent } from '../lib/pageStatus.svelte.js'
   import ConstraintEditor from '../components/ConstraintEditor.svelte'
   import Divider from '../components/ui/Divider.svelte'
   import Empty from '../components/ui/Empty.svelte'
@@ -222,6 +222,7 @@
         ok: n > 0,
         message: n > 0 ? `${n.toLocaleString()} atom(s) matched.` : 'Selection matched 0 atoms.'
       }
+      logEvent('detail', 'eq', `COM selection: "${selection}"`, comSelectionValidation.message)
     } catch (error) {
       comSelectionValidation = {
         ok: false,
@@ -268,6 +269,12 @@
       if (equilibrationStatus === 'empty') {
         equilibrationStatus = 'not_started'
       }
+      logEvent(
+        'info',
+        'eq',
+        `Generated input: "${outputName}"`,
+        `${engine.toUpperCase()} · ${outputDir}`
+      )
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
     } finally {
@@ -398,6 +405,7 @@
           ok: true,
           message: `Found: ${result.resolved_path}${version}`
         }
+        logEvent('detail', 'eq', `Executable OK: ${engine.toUpperCase()}`, executableCheck.message)
         if (engine === 'openmm') {
           try {
             const { platforms } = await getOpenmmPlatforms()
@@ -450,8 +458,15 @@
       }
 
       equilibrationOutput = ''
+      equilibrationPageStatus.wasKilled = false
       await runEquilibration({ workingDir: outputDir, engine })
       equilibrationStatus = 'running'
+      logEvent(
+        'info',
+        'eq',
+        `Started equilibration: "${outputName}"`,
+        `${engine.toUpperCase()} · ${outputDir}`
+      )
       setTimeout(updateProgress, 1000)
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
@@ -486,6 +501,13 @@
       stopping = true
       unscheduleUpdate()
       await stopEquilibration({ workingDir: outputDir, engine })
+      equilibrationPageStatus.wasKilled = true
+      logEvent(
+        'info',
+        'eq',
+        `Killed equilibration: "${outputName}"`,
+        `${engine.toUpperCase()} · ${outputDir}`
+      )
       // Refresh status immediately after killing (no further polling)
       await updateProgress({ scheduleNext: false })
       showProcessInfo = false
