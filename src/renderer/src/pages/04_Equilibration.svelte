@@ -17,7 +17,9 @@
     generateEquilibration,
     getEquilibrationStatus,
     getOpenmmPlatforms,
+    getProcessInfo,
     runEquilibration,
+    stopEquilibration,
     getStructure
   } from '../lib/backendApi'
 
@@ -117,6 +119,11 @@
   let stageStatuses = $state([])
   /** @type {number|undefined} */
   let updateTimeoutId = undefined
+  let showProcessInfo = $state(false)
+  /** @type {{ pid: number|null, running: boolean, command: string|null, start_time: string|null, working_dir: string, engine: string } | null} */
+  let processInfo = $state(null)
+  let loadingProcessInfo = $state(false)
+  let stopping = $state(false)
 
   // ── Sync to shared status bar store ──
   $effect(() => {
@@ -449,6 +456,42 @@
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
       equilibrationStatus = 'not_started'
+    }
+  }
+
+  async function toggleProcessInfo() {
+    if (showProcessInfo) {
+      showProcessInfo = false
+      return
+    }
+    loadingProcessInfo = true
+    showProcessInfo = true
+    try {
+      processInfo = await getProcessInfo({ workingDir: outputDir, engine })
+    } catch (error) {
+      processInfo = null
+    } finally {
+      loadingProcessInfo = false
+    }
+  }
+
+  async function killEquilibration() {
+    if (
+      !confirm(
+        `Stop the running ${engine.toUpperCase()} equilibration in "${outputName}"? This cannot be undone.`
+      )
+    )
+      return
+    try {
+      stopping = true
+      await stopEquilibration({ workingDir: outputDir, engine })
+      // Refresh status immediately after killing
+      await updateProgress({ scheduleNext: false })
+      showProcessInfo = false
+    } catch (error) {
+      alert(error instanceof Error ? error.message : String(error))
+    } finally {
+      stopping = false
     }
   }
 
@@ -866,8 +909,49 @@
         <Button variant="outline" size="sm" onclick={() => updateProgress({ scheduleNext: false })}>
           Refresh
         </Button>
-        <Button variant="outline" size="sm">Process Information</Button>
+        <Button variant="outline" size="sm" onclick={toggleProcessInfo}>
+          {showProcessInfo ? 'Hide Info' : 'Process Information'}
+        </Button>
+        {#if equilibrationRunning}
+          <Button variant="outline" size="sm" onclick={killEquilibration} disabled={stopping}>
+            {stopping ? 'Stopping…' : 'Kill MD'}
+          </Button>
+        {/if}
       </div>
+      {#if showProcessInfo}
+        <div class="rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 text-xs">
+          {#if loadingProcessInfo}
+            <span class="text-neutral-400">Loading…</span>
+          {:else if processInfo}
+            <div class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
+              <span class="text-neutral-500">Engine</span>
+              <span class="uppercase">{processInfo.engine}</span>
+              <span class="text-neutral-500">Directory</span>
+              <span class="truncate font-mono" title={processInfo.working_dir}
+                >{processInfo.working_dir}</span
+              >
+              <span class="text-neutral-500">PID</span>
+              <span>{processInfo.pid ?? '—'}</span>
+              <span class="text-neutral-500">Status</span>
+              <span class={processInfo.running ? 'text-green-400' : 'text-neutral-400'}
+                >{processInfo.running ? 'Running' : 'Not running'}</span
+              >
+              {#if processInfo.start_time}
+                <span class="text-neutral-500">Started</span>
+                <span>{new Date(processInfo.start_time).toLocaleString()}</span>
+              {/if}
+              {#if processInfo.command}
+                <span class="text-neutral-500">Command</span>
+                <span class="truncate font-mono text-neutral-300" title={processInfo.command}
+                  >{processInfo.command}</span
+                >
+              {/if}
+            </div>
+          {:else}
+            <span class="text-neutral-400">No process information available.</span>
+          {/if}
+        </div>
+      {/if}
       {#if ['running', 'completed', 'error'].includes(equilibrationStatus) || stageStatuses.length > 0}
         <div class="grid grid-cols-[auto_1fr] gap-2">
           {#each stageStatuses as stage_info (stage_info.name)}

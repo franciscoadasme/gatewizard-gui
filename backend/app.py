@@ -6,6 +6,7 @@ import os
 import re
 import requests
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -1311,20 +1312,81 @@ def generate_com_restraint(payload: GenerateComRestraintRequest) -> dict:
     return {"output": str(out), "engine": engine}
 
 
-def is_equilibration_process_running(workdir: Path) -> bool:
+_ENGINE_EXECUTABLES: dict[str, list[str]] = {
+    "namd": ["namd3", "namd2", "namd"],
+    "gromacs": ["gmx", "gmx_mpi", "mdrun", "gmx_seq"],
+    "openmm": ["python", "python3"],
+}
+
+
+def _find_engine_pid(workdir: Path, engine: str) -> int | None:
+    """Scan /proc to find a running MD engine process whose cmdline mentions workdir."""
+    targets = set(_ENGINE_EXECUTABLES.get(engine.lower(), []))
+    workdir_str = str(workdir)
+    try:
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            pid = int(entry.name)
+            cmdline_file = entry / "cmdline"
+            try:
+                cmdline = (
+                    cmdline_file.read_bytes()
+                    .replace(b"\x00", b" ")
+                    .decode("utf-8", errors="replace")
+                    .strip()
+                )
+            except OSError:
+                continue
+            if workdir_str not in cmdline:
+                continue
+            # Match executable name
+            exe_file = entry / "exe"
+            try:
+                exe_name = Path(os.readlink(exe_file)).name
+            except OSError:
+                exe_name = Path(cmdline.split()[0]).name if cmdline else ""
+            if any(t == exe_name or exe_name.startswith(t) for t in targets):
+                return pid
+    except OSError:
+        pass
+    return None
+
+
+def _resolve_pid(workdir: Path, engine: str) -> int | None:
+    """Return the best available PID for the given workdir: pid file first, then /proc scan."""
+    pid_file = workdir / "equilibration.pid"
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 0)
+            return pid
+        except (ValueError, OSError):
+            pass  # pid file stale — fall through to scan
+    return _find_engine_pid(workdir, engine)
+
+
+def is_equilibration_process_running(workdir: Path, engine: str = "") -> bool:
+    """Return True if an MD process is running for this workdir.
+
+    NOTE: intentionally does NOT delete the pid file — that avoids a race
+    where repeated polling wipes the file before stop/process-info can read it.
+    """
+    return _pid_file_alive(workdir) or (
+        bool(engine) and _find_engine_pid(workdir, engine) is not None
+    )
+
+
+def _pid_file_alive(workdir: Path) -> bool:
+    """Check only the pid file (any executable)."""
     pid_file = workdir / "equilibration.pid"
     if not pid_file.exists():
         return False
-
-    with open(pid_file, "r") as file:
-        pid = int(file.read().strip())
-
     try:
-        os.kill(pid, 0)  # Send signal 0 to check if process exists
+        pid = int(pid_file.read_text().strip())
+        os.kill(pid, 0)
         return True
-    except OSError:
-        # Process doesn't exist, remove PID file
-        pid_file.unlink()
+    except (ValueError, OSError):
         return False
 
 
@@ -1658,7 +1720,7 @@ def get_equilibration_status(payload: EquilibrationRequest) -> dict:
 
         response["stages"].append(data)
 
-    if is_equilibration_process_running(workdir):
+    if is_equilibration_process_running(workdir, engine):
         response["status"] = "running"
     elif response["stages"] and any(
         info["status"] == "error" for info in response["stages"]
@@ -1717,7 +1779,88 @@ def run_equilibration(payload: EquilibrationRequest) -> None:
     start_time_file.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
 
 
-@app.post("/analysis-structural")
+@app.post("/stop-equilibration")
+def stop_equilibration(payload: EquilibrationRequest) -> dict:
+    workdir = Path(os.path.abspath(os.path.expanduser(payload.working_dir)))
+    engine = payload.engine.lower().strip()
+
+    pid = _resolve_pid(workdir, engine)
+    if pid is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No running equilibration process found (checked pid file and /proc scan)",
+        )
+
+    stopped = False
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            # Kill the whole process group so bash + engine are both terminated
+            pgid = os.getpgid(pid)
+            os.killpg(pgid, sig)
+            stopped = True
+            break
+        except ProcessLookupError:
+            stopped = True  # Already dead
+            break
+        except (OSError, PermissionError):
+            # pgid lookup failed — try killing just the pid
+            try:
+                os.kill(pid, sig)
+                stopped = True
+                break
+            except (ProcessLookupError, PermissionError):
+                stopped = True
+                break
+
+    pid_file = workdir / "equilibration.pid"
+    pid_file.unlink(missing_ok=True)
+    return {"stopped": stopped}
+
+
+@app.post("/process-info")
+def get_process_info(payload: EquilibrationRequest) -> dict:
+    workdir = Path(os.path.abspath(os.path.expanduser(payload.working_dir)))
+    engine = payload.engine.lower().strip()
+    start_time_file = workdir / "equilibration_start_time.txt"
+
+    result: dict[str, Any] = {
+        "pid": None,
+        "running": False,
+        "command": None,
+        "start_time": None,
+        "working_dir": str(workdir),
+        "engine": payload.engine,
+    }
+
+    if start_time_file.exists():
+        try:
+            result["start_time"] = start_time_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+
+    pid = _resolve_pid(workdir, engine)
+    if pid is None:
+        return result
+
+    result["pid"] = pid
+    result["running"] = True
+
+    # Read command line from /proc on Linux
+    cmdline_path = Path(f"/proc/{pid}/cmdline")
+    if cmdline_path.exists():
+        try:
+            result["command"] = (
+                cmdline_path.read_bytes()
+                .replace(b"\x00", b" ")
+                .decode("utf-8", errors="replace")
+                .strip()
+            )
+        except OSError:
+            pass
+
+    return result
+
+
 def run_structural_analysis(payload: StructuralAnalysisRequest) -> dict:
     top = Path(os.path.abspath(os.path.expanduser(payload.topology_path)))
     if not top.is_file():

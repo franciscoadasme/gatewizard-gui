@@ -238,6 +238,22 @@ export async function getEquilibrationStatus(props) {
 }
 
 /**
+ * @param {{ workingDir: string, engine: string }} props
+ * @returns {Promise<{ stopped: boolean }>}
+ */
+export async function stopEquilibration(props) {
+  return backendJson('/stop-equilibration', props)
+}
+
+/**
+ * @param {{ workingDir: string, engine: string }} props
+ * @returns {Promise<{ pid: number|null, running: boolean, command: string|null, start_time: string|null, working_dir: string, engine: string }>}
+ */
+export async function getProcessInfo(props) {
+  return backendJson('/process-info', props)
+}
+
+/**
  * @returns {Promise<{ platforms: { name: string, speed: number }[], error?: string }>}
  */
 export async function getOpenmmPlatforms() {
