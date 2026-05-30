@@ -1,5 +1,5 @@
 <script>
-  import { onDestroy, onMount } from 'svelte'
+  import { onDestroy, onMount, untrack } from 'svelte'
   import Button from './components/ui/Button.svelte'
   import { getProjectStatus } from './lib/backendApi'
   import {
@@ -159,11 +159,16 @@
 
   // ── Enhanced status bar ──
   let statusExpanded = $state(false)
-  let dismissed = $state(/** @type {Set<string>} */ (new Set()))
+  /** IDs hidden from the collapsed chip bar (Clear button) */
+  let barDismissed = $state(/** @type {Set<string>} */ (new Set()))
+  /** IDs removed from the expanded history log (× button) */
+  let logDismissed = $state(/** @type {Set<string>} */ (new Set()))
   /** @type {Record<string, Date>} */
   let chipTimestamps = $state({})
   /** @type {string[]} */
   let chipSeqOrder = $state([])
+  /** Accumulated history — all chips ever seen, updated live, never auto-cleared */
+  let chipHistory = $state(/** @type {Array<any>} */ ([]))
 
   /**
    * Build a unified flat list of all status chips from reactive page stores
@@ -291,19 +296,39 @@
     return chips
   })
 
-  // Record first-seen timestamp and sequence order for each chip ID
+  // Record first-seen timestamp + seq, update live history snapshots
   $effect(() => {
-    for (const chip of allChips) {
-      if (!chipTimestamps[chip.id]) {
-        chipTimestamps[chip.id] = new Date()
-        chipSeqOrder = [...chipSeqOrder, chip.id]
+    // Read allChips reactively (this is the only reactive dependency we want)
+    const chips = allChips
+    // All reads+writes of the tracking state are untracked to avoid an
+    // infinite loop (writing to $state inside an effect re-triggers it).
+    untrack(() => {
+      for (const chip of chips) {
+        if (!chipTimestamps[chip.id]) {
+          // New chip: assign timestamp and seq, then push to history
+          chipTimestamps[chip.id] = new Date()
+          chipSeqOrder.push(chip.id)
+          chipHistory.push({
+            ...chip,
+            seq: chipSeqOrder.length,
+            timestamp: chipTimestamps[chip.id]
+          })
+        } else {
+          // Existing chip: update detail/status in history in-place
+          const seq = chipSeqOrder.indexOf(chip.id) + 1 || '?'
+          const idx = chipHistory.findIndex((h) => h.id === chip.id)
+          if (idx >= 0) {
+            chipHistory[idx] = { ...chip, seq, timestamp: chipTimestamps[chip.id] ?? null }
+          }
+        }
       }
-    }
+    })
   })
 
-  const visibleChips = $derived(
+  /** Chips shown in the collapsed bar — live, filtered by barDismissed */
+  const visibleBarChips = $derived(
     allChips
-      .filter((c) => !dismissed.has(c.id))
+      .filter((c) => !barDismissed.has(c.id))
       .map((c) => ({
         ...c,
         seq: chipSeqOrder.indexOf(c.id) + 1 || '?',
@@ -311,13 +336,18 @@
       }))
   )
 
-  function dismissChip(id) {
-    dismissed = new Set([...dismissed, id])
+  /** All historical chips shown in the expanded log — filtered by logDismissed only */
+  const visibleLogChips = $derived(chipHistory.filter((c) => !logDismissed.has(c.id)))
+
+  /** Remove a single entry from the history log */
+  function dismissFromLog(id) {
+    logDismissed = new Set([...logDismissed, id])
   }
 
-  function clearDone() {
-    const doneDismissible = allChips.filter((c) => c.dismissible).map((c) => c.id)
-    dismissed = new Set([...dismissed, ...doneDismissible])
+  /** Hide all dismissible chips from the collapsed bar; history is preserved */
+  function clearBar() {
+    const ids = allChips.filter((c) => c.dismissible).map((c) => c.id)
+    barDismissed = new Set([...barDismissed, ...ids])
   }
 </script>
 
@@ -389,12 +419,6 @@
           <span class="font-medium text-neutral-400">Status Log</span>
           <div class="flex items-center gap-1">
             <button
-              onclick={clearDone}
-              title="Remove all completed / idle messages"
-              class="rounded px-2 py-0.5 text-[10px] text-neutral-500 hover:bg-neutral-800 hover:text-neutral-300"
-              >Clear done</button
-            >
-            <button
               onclick={() => {
                 statusExpanded = false
               }}
@@ -403,11 +427,11 @@
             >
           </div>
         </div>
-        {#if visibleChips.length === 0}
-          <p class="px-3 py-2 text-neutral-600">No active status messages.</p>
+        {#if visibleLogChips.length === 0}
+          <p class="px-3 py-2 text-neutral-600">No history yet.</p>
         {:else}
           <div class="divide-y divide-neutral-800/60">
-            {#each visibleChips as chip (chip.id)}
+            {#each visibleLogChips as chip (chip.id)}
               {@const tag = pageTag(chip.type)}
               <div
                 class="flex items-start gap-2 px-3 py-1.5
@@ -455,14 +479,12 @@
                   <p class="mt-0.5 text-[11px] break-all text-neutral-400">{chip.fullDetail}</p>
                 </div>
                 <!-- dismiss -->
-                {#if chip.dismissible}
-                  <button
-                    onclick={() => dismissChip(chip.id)}
-                    title="Dismiss"
-                    class="mt-0.5 shrink-0 leading-none text-neutral-600 hover:text-neutral-300"
-                    >×</button
-                  >
-                {/if}
+                <button
+                  onclick={() => dismissFromLog(chip.id)}
+                  title="Remove from history"
+                  class="mt-0.5 shrink-0 leading-none text-neutral-600 hover:text-neutral-300"
+                  >×</button
+                >
               </div>
             {/each}
           </div>
@@ -474,10 +496,10 @@
     <div class="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto px-3 py-2">
       {#if !workingDir}
         <span>No working directory selected</span>
-      {:else if visibleChips.length === 0}
+      {:else if visibleBarChips.length === 0}
         <span class="truncate">Ready — {workingDir}</span>
       {:else}
-        {#each visibleChips as chip (chip.id)}
+        {#each visibleBarChips as chip (chip.id)}
           <div
             class="flex shrink-0 items-center gap-1.5 rounded px-2 py-1
             {chip.status === 'error'
@@ -510,11 +532,11 @@
     </div>
 
     <!-- ── Actions (expand + clear) ── -->
-    {#if workingDir && visibleChips.length > 0}
+    {#if workingDir && visibleBarChips.length > 0}
       <div class="flex shrink-0 items-center gap-1 border-l border-neutral-800 px-2">
         <button
-          onclick={clearDone}
-          title="Clear completed messages"
+          onclick={clearBar}
+          title="Hide completed chips from status bar (history preserved)"
           class="rounded px-1.5 py-0.5 text-[10px] text-neutral-500 hover:bg-neutral-800 hover:text-neutral-300"
           >Clear</button
         >
