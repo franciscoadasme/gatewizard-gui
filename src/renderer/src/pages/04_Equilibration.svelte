@@ -433,7 +433,7 @@
         alert('Equilibration is already running. Wait for it to finish.')
         return
       } else if (status === 'empty') {
-        alert('Generate input files first.')
+        // Shouldn't happen (button is disabled), but guard anyway
         return
       } else if (
         ['completed', 'error'].includes(status) &&
@@ -792,6 +792,13 @@
           {/if}
         </Button>
       </div>
+      {#if equilibrationStatus === 'empty' && workingDir !== ''}
+        <p
+          class="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-400"
+        >
+          Input files have not been generated yet. Click <strong>Generate Input Files</strong> first.
+        </p>
+      {/if}
       {#if workingDir === '' && showWorkingDirHint}
         <p
           class="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-400"
