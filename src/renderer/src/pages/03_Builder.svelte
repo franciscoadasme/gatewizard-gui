@@ -26,7 +26,7 @@
   const lipidsPromise = getAvailableLipids().then((data) => data.lipids)
   const ffPromise = getAvailableForceFields()
 
-  let waterModel = $state('tip3p')
+  let waterModel = $state('opc')
   let proteinFf = $state('ff19SB')
   let lipidFf = $state('lipid21')
 
@@ -415,7 +415,7 @@
   }
 
   function onLoadDefaults() {
-    waterModel = 'tip3p'
+    waterModel = 'opc'
     proteinFf = 'ff19SB'
     lipidFf = 'lipid21'
     preoriented = true

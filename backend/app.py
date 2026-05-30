@@ -342,7 +342,7 @@ class StartPreparationRequest(BaseModel):
     upper_lipids: List[str] = Field(..., description="Upper leaflet lipid names")
     lower_lipids: List[str] = Field(..., description="Lower leaflet lipid names")
     lipid_ratios: str = Field(..., description="Lipid ratios")
-    water_model: str = "tip3p"
+    water_model: str = "opc"
     protein_ff: str = "ff19SB"
     lipid_ff: str = "lipid21"
     preoriented: bool = True
