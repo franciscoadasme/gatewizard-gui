@@ -484,8 +484,9 @@
       return
     try {
       stopping = true
+      unscheduleUpdate()
       await stopEquilibration({ workingDir: outputDir, engine })
-      // Refresh status immediately after killing
+      // Refresh status immediately after killing (no further polling)
       await updateProgress({ scheduleNext: false })
       showProcessInfo = false
     } catch (error) {
@@ -955,7 +956,7 @@
       {#if ['running', 'completed', 'error'].includes(equilibrationStatus) || stageStatuses.length > 0}
         <div class="grid grid-cols-[auto_1fr] gap-2">
           {#each stageStatuses as stage_info (stage_info.name)}
-            <EquilibrationStageStatus {stage_info} />
+            <EquilibrationStageStatus {stage_info} tracking={equilibrationRunning && autoMonitor} />
           {/each}
         </div>
         {#if equilibrationOutput}

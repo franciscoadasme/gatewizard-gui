@@ -4,8 +4,8 @@
   import Duration from './icons/Duration.svelte'
   import Spinner from './ui/Spinner.svelte'
 
-  /** @type {{ stage_info: { name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, elapsed_time_seconds: number|null, output: string } }} */
-  let { stage_info } = $props()
+  /** @type {{ stage_info: { name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, elapsed_time_seconds: number|null, output: string }, tracking?: boolean }} */
+  let { stage_info, tracking = true } = $props()
 
   function formatElapsed(seconds) {
     if (!Number.isFinite(seconds) || seconds <= 0) return '0s'
@@ -39,7 +39,11 @@
     {:else if stage_info.status === 'error'}
       <Danger className="size-4 fill-red-600" />
     {:else if stage_info.status === 'running'}
-      <Spinner className="size-4" />
+      {#if tracking}
+        <Spinner className="size-4" />
+      {:else}
+        <Duration className="size-4 fill-neutral-500" />
+      {/if}
     {:else if stage_info.status === 'not_started'}
       <Duration className="size-4 fill-white" />
     {/if}
