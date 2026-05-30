@@ -130,6 +130,195 @@
       return true
     })
   )
+
+  /**
+   * Maps a chip type to a page label and Tailwind bg colour for the origin badge.
+   * @param {string} type
+   */
+  function pageTag(type) {
+    switch (type) {
+      case 'view':
+        return { name: 'Visualize', bg: 'bg-blue-700', text: 'text-blue-200' }
+      case 'prep':
+        return { name: 'Preparation', bg: 'bg-violet-700', text: 'text-violet-200' }
+      case 'build':
+        return { name: 'Builder', bg: 'bg-orange-700', text: 'text-orange-200' }
+      case 'eq':
+        return { name: 'Equilibration', bg: 'bg-cyan-800', text: 'text-cyan-200' }
+      case 'analysis':
+        return { name: 'Analysis', bg: 'bg-amber-700', text: 'text-amber-200' }
+      // file-based task types
+      case 'preparation':
+        return { name: 'Preparation', bg: 'bg-violet-700', text: 'text-violet-200' }
+      case 'equilibration':
+        return { name: 'Equilibration', bg: 'bg-cyan-800', text: 'text-cyan-200' }
+      default:
+        return { name: type, bg: 'bg-neutral-700', text: 'text-neutral-300' }
+    }
+  }
+
+  // ── Enhanced status bar ──
+  let statusExpanded = $state(false)
+  let dismissed = $state(/** @type {Set<string>} */ (new Set()))
+  /** @type {Record<string, Date>} */
+  let chipTimestamps = $state({})
+  /** @type {string[]} */
+  let chipSeqOrder = $state([])
+
+  /**
+   * Build a unified flat list of all status chips from reactive page stores
+   * and file-based backend poll tasks.
+   */
+  const allChips = $derived.by(() => {
+    /** @type {Array<{id:string, type:string, label:string, detail:string, fullDetail:string, status:'running'|'done'|'error'|'idle', dismissible:boolean}>} */
+    const chips = []
+
+    // 01 Visualize
+    if (visualizeStatus.loading || visualizeStatus.loaded) {
+      chips.push({
+        id: 'visualize',
+        type: 'view',
+        label: 'View',
+        detail: visualizeStatus.loading ? 'Loading…' : visualizeStatus.fileName,
+        fullDetail: visualizeStatus.loading
+          ? 'Loading structure file…'
+          : `Structure loaded: ${visualizeStatus.fileName}${visualizeStatus.viewCount > 0 ? ` · ${visualizeStatus.viewCount} view${visualizeStatus.viewCount === 1 ? '' : 's'}` : ''}`,
+        status: visualizeStatus.loading ? 'running' : 'idle',
+        dismissible: visualizeStatus.loaded && !visualizeStatus.loading
+      })
+    }
+
+    // 02 Preparation
+    if (
+      preparationStatus.propkaDone ||
+      preparationStatus.bondsChecked ||
+      preparationStatus.prepareDone
+    ) {
+      const details = []
+      if (preparationStatus.propkaDone)
+        details.push(`PropKa pH ${preparationStatus.propkaPh?.toFixed(1)} ✓`)
+      if (preparationStatus.bondsChecked)
+        details.push(
+          preparationStatus.bondsCount > 0
+            ? `${preparationStatus.bondsCount} S-S bond${preparationStatus.bondsCount === 1 ? '' : 's'} detected`
+            : 'No S-S bonds'
+        )
+      if (preparationStatus.prepareDone)
+        details.push(`PDB ready ✓ → ${preparationStatus.outputFile}`)
+      chips.push({
+        id: 'preparation',
+        type: 'prep',
+        label: 'Prep',
+        detail: details[details.length - 1] ?? '',
+        fullDetail: details.join(' · '),
+        status: preparationStatus.prepareDone ? 'done' : 'idle',
+        dismissible: true
+      })
+    }
+
+    // 03 Builder
+    if (builderStatus.jobCount > 0) {
+      const hasRunning = builderStatus.runningCount > 0
+      const hasError = builderStatus.errorCount > 0
+      chips.push({
+        id: 'builder',
+        type: 'build',
+        label: 'Build',
+        detail: `${builderStatus.latestName}${builderStatus.jobCount > 1 ? ` +${builderStatus.jobCount - 1} more` : ''}`,
+        fullDetail: `${builderStatus.jobCount} job${builderStatus.jobCount === 1 ? '' : 's'} · ${builderStatus.runningCount} running · ${builderStatus.completedCount} done · ${builderStatus.errorCount} error${builderStatus.errorCount === 1 ? '' : 's'}${builderStatus.latestElapsed ? ` · elapsed ${builderStatus.latestElapsed}` : ''} · latest: ${builderStatus.latestName}`,
+        status: hasError ? 'error' : hasRunning ? 'running' : 'done',
+        dismissible: !hasRunning
+      })
+    }
+
+    // 04 Equilibration
+    const eqStatus = equilibrationPageStatus.status
+    if (eqStatus && eqStatus !== 'not_started' && eqStatus !== 'empty') {
+      const eqRunning = eqStatus === 'running'
+      const eqDone = eqStatus === 'completed'
+      const eqError = eqStatus === 'error'
+      const eqGen = equilibrationPageStatus.generatingInput
+      const stageStr =
+        equilibrationPageStatus.stagesTotal > 0
+          ? `${equilibrationPageStatus.stagesDone}/${equilibrationPageStatus.stagesTotal} stages`
+          : eqStatus
+      const elapsedStr = equilibrationPageStatus.runStartedAt
+        ? elapsed(new Date(equilibrationPageStatus.runStartedAt).toISOString())
+        : ''
+      chips.push({
+        id: 'equilibration',
+        type: 'eq',
+        label: `Eq (${equilibrationPageStatus.engine})`,
+        detail: eqGen ? 'generating input…' : stageStr,
+        fullDetail: eqGen
+          ? `Generating equilibration input files for "${equilibrationPageStatus.outputName}"…`
+          : `${equilibrationPageStatus.engine.toUpperCase()} equilibration "${equilibrationPageStatus.outputName}" · ${stageStr}${elapsedStr ? ` · elapsed ${elapsedStr}` : ''}`,
+        status: eqError ? 'error' : eqRunning || eqGen ? 'running' : eqDone ? 'done' : 'idle',
+        dismissible: !eqRunning && !eqGen
+      })
+    }
+
+    // 05 Analysis
+    if (analysisStatus.running || analysisStatus.resultAvailable) {
+      chips.push({
+        id: 'analysis',
+        type: 'analysis',
+        label: 'Analysis',
+        detail: `${analysisStatus.analysisType || analysisStatus.mode}${analysisStatus.running ? '' : ' ready'}`,
+        fullDetail: `Mode: ${analysisStatus.mode || '—'} · type: ${analysisStatus.analysisType || '—'} · ${analysisStatus.running ? 'running' : 'result available'}`,
+        status: analysisStatus.running ? 'running' : 'done',
+        dismissible: !analysisStatus.running
+      })
+    }
+
+    // File-based backend poll tasks
+    for (const task of filteredTasks) {
+      const pct = Math.round(task.progress * 100)
+      const isRunning = task.status === 'running'
+      const isError = task.status === 'error'
+      const isDone = task.status === 'completed'
+      chips.push({
+        id: `task-${task.id}`,
+        type: task.type,
+        label: task.name,
+        detail: `${task.type === 'equilibration' && task.engine ? task.engine : task.type}${isRunning || isDone ? ` ${pct}%` : ''}`,
+        fullDetail: `${task.name} · ${task.type}${task.engine ? ` (${task.engine})` : ''} · ${task.status} · ${pct}%${task.start_time && isRunning ? ` · running ${elapsed(task.start_time)}` : ''}${task.error ? ` · Error: ${task.error}` : ''}`,
+        status: isError ? 'error' : isRunning ? 'running' : isDone ? 'done' : 'idle',
+        dismissible: !isRunning
+      })
+    }
+
+    return chips
+  })
+
+  // Record first-seen timestamp and sequence order for each chip ID
+  $effect(() => {
+    for (const chip of allChips) {
+      if (!chipTimestamps[chip.id]) {
+        chipTimestamps[chip.id] = new Date()
+        chipSeqOrder = [...chipSeqOrder, chip.id]
+      }
+    }
+  })
+
+  const visibleChips = $derived(
+    allChips
+      .filter((c) => !dismissed.has(c.id))
+      .map((c) => ({
+        ...c,
+        seq: chipSeqOrder.indexOf(c.id) + 1 || '?',
+        timestamp: chipTimestamps[c.id] ?? null
+      }))
+  )
+
+  function dismissChip(id) {
+    dismissed = new Set([...dismissed, id])
+  }
+
+  function clearDone() {
+    const doneDismissible = allChips.filter((c) => c.dismissible).map((c) => c.id)
+    dismissed = new Set([...dismissed, ...doneDismissible])
+  }
 </script>
 
 <div
@@ -188,218 +377,156 @@
     {/each}
   </main>
 
-  <footer
-    class="flex items-center gap-3 overflow-hidden px-3 py-1 text-xs dark:bg-neutral-900 dark:text-neutral-500"
-  >
-    {#if !workingDir}
-      <span>No working directory selected</span>
-    {:else}
-      <!-- ── 01 Visualize ── -->
-      {#if visualizeStatus.loading || visualizeStatus.loaded}
+  <footer class="relative flex items-stretch text-xs dark:bg-neutral-900 dark:text-neutral-500">
+    <!-- ── Expanded log panel (floats above the footer) ── -->
+    {#if statusExpanded}
+      <div
+        class="absolute right-0 bottom-full left-0 z-20 max-h-72 overflow-y-auto border-t border-neutral-800 bg-neutral-950 shadow-lg"
+      >
         <div
-          class="flex shrink-0 items-center gap-1.5 rounded bg-neutral-800 px-2 py-0.5 text-neutral-300"
+          class="sticky top-0 flex items-center justify-between border-b border-neutral-800 bg-neutral-950 px-3 py-1.5"
         >
-          <span class="font-medium opacity-60">View:</span>
-          {#if visualizeStatus.loading}
-            <span class="animate-pulse text-yellow-400">Loading…</span>
-          {:else}
-            <span class="max-w-48 truncate" title={visualizeStatus.fileName}
-              >{visualizeStatus.fileName}</span
+          <span class="font-medium text-neutral-400">Status Log</span>
+          <div class="flex items-center gap-1">
+            <button
+              onclick={clearDone}
+              title="Remove all completed / idle messages"
+              class="rounded px-2 py-0.5 text-[10px] text-neutral-500 hover:bg-neutral-800 hover:text-neutral-300"
+              >Clear done</button
             >
-            {#if visualizeStatus.viewCount > 0}
-              <span class="opacity-50">·</span>
-              <span class="opacity-70"
-                >{visualizeStatus.viewCount} view{visualizeStatus.viewCount === 1 ? '' : 's'}</span
-              >
-            {/if}
-          {/if}
+            <button
+              onclick={() => {
+                statusExpanded = false
+              }}
+              class="rounded px-2 py-0.5 text-[10px] text-neutral-500 hover:bg-neutral-800 hover:text-neutral-300"
+              >✕</button
+            >
+          </div>
         </div>
-      {/if}
-
-      <!-- ── 02 Preparation ── -->
-      {#if preparationStatus.propkaDone || preparationStatus.bondsChecked || preparationStatus.prepareDone}
-        <div
-          class="flex shrink-0 items-center gap-1.5 rounded bg-neutral-800 px-2 py-0.5 text-neutral-300"
-        >
-          <span class="font-medium opacity-60">Prep:</span>
-          {#if preparationStatus.propkaDone}
-            <span title="PropKa analysis done"
-              >PropKa (pH {preparationStatus.propkaPh?.toFixed(1)}) ✓</span
-            >
-          {/if}
-          {#if preparationStatus.bondsChecked}
-            <span class="opacity-50">·</span>
-            {#if preparationStatus.bondsCount > 0}
-              <span title="{preparationStatus.bondsCount} disulfide bond(s) detected"
-                >{preparationStatus.bondsCount} S-S bond{preparationStatus.bondsCount === 1
-                  ? ''
-                  : 's'}</span
+        {#if visibleChips.length === 0}
+          <p class="px-3 py-2 text-neutral-600">No active status messages.</p>
+        {:else}
+          <div class="divide-y divide-neutral-800/60">
+            {#each visibleChips as chip (chip.id)}
+              {@const tag = pageTag(chip.type)}
+              <div
+                class="flex items-start gap-2 px-3 py-1.5
+                {chip.status === 'error'
+                  ? 'bg-red-950/30'
+                  : chip.status === 'running'
+                    ? 'bg-neutral-800/40'
+                    : chip.status === 'done'
+                      ? 'bg-green-950/20'
+                      : ''}"
               >
-            {:else}
-              <span class="text-neutral-500" title="No disulfide bonds found">no S-S bonds</span>
-            {/if}
-          {/if}
-          {#if preparationStatus.prepareDone}
-            <span class="opacity-50">·</span>
-            <span class="text-green-500" title="PDB prepared: {preparationStatus.outputFile}"
-              >PDB ready ✓</span
-            >
-          {/if}
-        </div>
-      {/if}
+                <!-- seq number -->
+                <span
+                  class="mt-0.5 w-4 shrink-0 text-right text-[10px] text-neutral-600 tabular-nums"
+                  >{chip.seq}</span
+                >
+                <!-- page-origin tag -->
+                <span
+                  class="mt-0.5 shrink-0 rounded px-1.5 py-px text-[9px] leading-none {tag.bg} {tag.text}"
+                  >{tag.name}</span
+                >
+                <!-- icon -->
+                <span class="mt-0.5 shrink-0">
+                  {#if chip.status === 'running'}
+                    <span class="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-yellow-400"
+                    ></span>
+                  {:else if chip.status === 'done'}
+                    <span class="text-[11px] text-green-500">✓</span>
+                  {:else if chip.status === 'error'}
+                    <span class="text-[11px] text-red-400">✕</span>
+                  {:else}
+                    <span class="inline-block h-1.5 w-1.5 rounded-full bg-neutral-600"></span>
+                  {/if}
+                </span>
+                <!-- content -->
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-baseline gap-2">
+                    <span class="font-medium text-neutral-300">{chip.label}</span>
+                    {#if chip.timestamp}
+                      <span class="ml-auto shrink-0 text-[10px] text-neutral-600"
+                        >{chip.timestamp.toLocaleTimeString()}</span
+                      >
+                    {/if}
+                  </div>
+                  <p class="mt-0.5 text-[11px] break-all text-neutral-400">{chip.fullDetail}</p>
+                </div>
+                <!-- dismiss -->
+                {#if chip.dismissible}
+                  <button
+                    onclick={() => dismissChip(chip.id)}
+                    title="Dismiss"
+                    class="mt-0.5 shrink-0 leading-none text-neutral-600 hover:text-neutral-300"
+                    >×</button
+                  >
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/if}
 
-      <!-- ── 03 Builder jobs ── -->
-      {#if builderStatus.jobCount > 0}
-        {@const hasRunning = builderStatus.runningCount > 0}
-        {@const hasError = builderStatus.errorCount > 0}
-        <div
-          class="flex shrink-0 items-center gap-1.5 rounded px-2 py-0.5
-          {hasError
-            ? 'bg-red-950 text-red-400'
-            : hasRunning
-              ? 'bg-neutral-800 text-neutral-300'
-              : 'bg-green-950 text-green-500'}"
-        >
-          {#if hasRunning}
-            <span class="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-yellow-400"
-            ></span>
-          {:else if hasError}
-            <span>✕</span>
-          {:else}
-            <span>✓</span>
-          {/if}
-          <span class="font-medium opacity-70">Build:</span>
-          <span class="max-w-32 truncate" title={builderStatus.latestName}
-            >{builderStatus.latestName}</span
+    <!-- ── Collapsed chip row ── -->
+    <div class="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto px-3 py-2">
+      {#if !workingDir}
+        <span>No working directory selected</span>
+      {:else if visibleChips.length === 0}
+        <span class="truncate">Ready — {workingDir}</span>
+      {:else}
+        {#each visibleChips as chip (chip.id)}
+          <div
+            class="flex shrink-0 items-center gap-1.5 rounded px-2 py-1
+            {chip.status === 'error'
+              ? 'bg-red-950 text-red-400'
+              : chip.status === 'running'
+                ? 'bg-neutral-800 text-neutral-300'
+                : chip.status === 'done'
+                  ? 'bg-green-950 text-green-500'
+                  : 'bg-neutral-800 text-neutral-500'}"
           >
-          {#if hasRunning && builderStatus.latestElapsed}
-            <span class="opacity-60">{builderStatus.latestElapsed}</span>
-          {:else if builderStatus.jobCount > 1}
-            <span class="opacity-50">+{builderStatus.jobCount - 1} more</span>
-          {/if}
-        </div>
-      {/if}
-
-      <!-- ── 04 Equilibration ── -->
-      {#if equilibrationPageStatus.status && equilibrationPageStatus.status !== 'not_started' && equilibrationPageStatus.status !== 'empty'}
-        {@const eqRunning = equilibrationPageStatus.status === 'running'}
-        {@const eqDone = equilibrationPageStatus.status === 'completed'}
-        {@const eqError = equilibrationPageStatus.status === 'error'}
-        {@const eqGen = equilibrationPageStatus.generatingInput}
-        <div
-          class="flex shrink-0 items-center gap-1.5 rounded px-2 py-0.5
-          {eqError
-            ? 'bg-red-950 text-red-400'
-            : eqRunning || eqGen
-              ? 'bg-neutral-800 text-neutral-300'
-              : eqDone
-                ? 'bg-green-950 text-green-500'
-                : 'bg-neutral-800 text-neutral-500'}"
-        >
-          {#if eqGen}
-            <span class="animate-pulse text-yellow-400">⚙</span>
-            <span class="font-medium opacity-70">Eq ({equilibrationPageStatus.engine}):</span>
-            <span>generating input…</span>
-          {:else}
-            {#if eqRunning}
+            <!-- seq badge (inline, no absolute so overflow-x-auto can't clip it) -->
+            <span
+              class="rounded bg-neutral-700 px-[4px] py-[1px] text-[9px] leading-none text-neutral-400 tabular-nums"
+              >{chip.seq}</span
+            >
+            {#if chip.status === 'running'}
               <span
                 class="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-yellow-400"
               ></span>
-            {:else if eqDone}
-              <span>✓</span>
-            {:else if eqError}
-              <span>✕</span>
+            {:else if chip.status === 'done'}
+              <span class="shrink-0">✓</span>
+            {:else if chip.status === 'error'}
+              <span class="shrink-0">✕</span>
             {/if}
-            <span class="font-medium opacity-70">Eq ({equilibrationPageStatus.engine}):</span>
-            {#if equilibrationPageStatus.stagesTotal > 0}
-              <span
-                >{equilibrationPageStatus.stagesDone}/{equilibrationPageStatus.stagesTotal} stages</span
-              >
-            {:else}
-              <span class="capitalize">{equilibrationPageStatus.status}</span>
-            {/if}
-            {#if equilibrationPageStatus.runStartedAt}
-              <span class="opacity-50">·</span>
-              <span class="opacity-70"
-                >{elapsed(new Date(equilibrationPageStatus.runStartedAt).toISOString())}</span
-              >
-            {/if}
-          {/if}
-        </div>
+            <span class="font-medium whitespace-nowrap opacity-70">{chip.label}</span>
+            <span class="max-w-32 truncate text-[11px]" title={chip.fullDetail}>{chip.detail}</span>
+          </div>
+        {/each}
       {/if}
+    </div>
 
-      <!-- ── 05 Analysis ── -->
-      {#if analysisStatus.running || analysisStatus.resultAvailable}
-        <div
-          class="flex shrink-0 items-center gap-1.5 rounded px-2 py-0.5
-          {analysisStatus.running
-            ? 'bg-neutral-800 text-neutral-300'
-            : 'bg-green-950 text-green-500'}"
+    <!-- ── Actions (expand + clear) ── -->
+    {#if workingDir && visibleChips.length > 0}
+      <div class="flex shrink-0 items-center gap-1 border-l border-neutral-800 px-2">
+        <button
+          onclick={clearDone}
+          title="Clear completed messages"
+          class="rounded px-1.5 py-0.5 text-[10px] text-neutral-500 hover:bg-neutral-800 hover:text-neutral-300"
+          >Clear</button
         >
-          {#if analysisStatus.running}
-            <span class="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-yellow-400"
-            ></span>
-          {:else}
-            <span>✓</span>
-          {/if}
-          <span class="font-medium opacity-70">Analysis:</span>
-          <span>{analysisStatus.analysisType || analysisStatus.mode}</span>
-          {#if !analysisStatus.running}
-            <span class="opacity-60">ready</span>
-          {/if}
-        </div>
-      {/if}
-
-      <!-- ── File-based job tasks from backend poll ── -->
-      {#each filteredTasks as task (task.id)}
-        {@const isRunning = task.status === 'running'}
-        {@const isError = task.status === 'error'}
-        {@const isDone = task.status === 'completed'}
-        {@const pct = Math.round(task.progress * 100)}
-        <div
-          class="flex min-w-0 shrink-0 items-center gap-1.5 rounded px-2 py-0.5
-            {isError
-            ? 'bg-red-950 text-red-400'
-            : isRunning
-              ? 'bg-neutral-800 text-neutral-300'
-              : isDone
-                ? 'bg-green-950 text-green-500'
-                : 'bg-neutral-800 text-neutral-500'}"
+        <button
+          onclick={() => {
+            statusExpanded = !statusExpanded
+          }}
+          title={statusExpanded ? 'Collapse log' : 'Expand log'}
+          class="rounded px-1.5 py-0.5 text-[10px] text-neutral-500 hover:bg-neutral-800 hover:text-neutral-300"
+          >{statusExpanded ? '▼' : '▲'}</button
         >
-          {#if isRunning}
-            <span class="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-yellow-400"
-            ></span>
-          {:else if isDone}
-            <span class="shrink-0">✓</span>
-          {:else if isError}
-            <span class="shrink-0">✕</span>
-          {/if}
-          <span class="max-w-32 truncate font-medium">{task.name}</span>
-          <span class="shrink-0 capitalize opacity-70"
-            >{task.type === 'equilibration' && task.engine ? task.engine : task.type}</span
-          >
-          {#if isRunning || isDone}
-            <div class="h-1 w-16 shrink-0 overflow-hidden rounded-full bg-neutral-700">
-              <div
-                class="h-full rounded-full transition-all {isDone ? 'bg-green-500' : 'bg-blue-500'}"
-                style="width:{pct}%"
-              ></div>
-            </div>
-            <span class="shrink-0 tabular-nums">{pct}%</span>
-          {/if}
-          {#if isRunning && task.start_time}
-            <span class="shrink-0 opacity-60">{elapsed(task.start_time)}</span>
-          {/if}
-          {#if isError && task.error}
-            <span class="max-w-40 truncate opacity-80" title={task.error}>{task.error}</span>
-          {/if}
-        </div>
-      {/each}
-
-      <!-- ── Idle fallback ── -->
-      {#if !visualizeStatus.loaded && !visualizeStatus.loading && !preparationStatus.propkaDone && !preparationStatus.bondsChecked && !preparationStatus.prepareDone && builderStatus.jobCount === 0 && !equilibrationPageStatus.status && !analysisStatus.resultAvailable && !analysisStatus.running && filteredTasks.length === 0}
-        <span class="truncate">Ready — {workingDir}</span>
-      {/if}
+      </div>
     {/if}
   </footer>
 </div>
