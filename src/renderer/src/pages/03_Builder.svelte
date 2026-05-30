@@ -843,9 +843,20 @@
           {/if}
         </div>
       {/if}
-      <Button className="w-full" onclick={onStartPreparation} disabled={launching || !workingFile}>
+      <Button
+        className="w-full"
+        onclick={onStartPreparation}
+        disabled={launching || !workingFile || validationResult === null}
+      >
         {launching ? 'Launching...' : 'Start Preparation'}
       </Button>
+      {#if validationResult === null && workingFile}
+        <p
+          class="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-400"
+        >
+          Inputs have not been validated. Click <strong>Validate Inputs</strong> before starting.
+        </p>
+      {/if}
       <button
         class="w-full text-center dark:text-neutral-500 dark:hover:text-neutral-300"
         onclick={onLoadDefaults}>Reset Defaults</button
