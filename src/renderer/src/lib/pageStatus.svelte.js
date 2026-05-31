@@ -14,6 +14,15 @@ export const visualizeStatus = $state({
   fileName: '',
   /** Number of active view layers */
   viewCount: 0,
+  // ── MemPro orientation (persisted across app restarts) ──
+  /** Active MemPro job id, or null */
+  memproJobId: /** @type {string|null} */ (null),
+  /** 'running' | 'done' | 'error' | null */
+  memproStatus: /** @type {'running'|'done'|'error'|null} */ (null),
+  /** ISO timestamp when the job was started, or null */
+  memproStartedAt: /** @type {string|null} */ (null),
+  /** Set to true to trigger the results dialog from the status bar */
+  openMemproDialog: false,
 })
 
 // ── 02 Preparation ───────────────────────────────────────────────────────────

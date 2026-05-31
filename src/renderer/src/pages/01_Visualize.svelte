@@ -38,6 +38,7 @@
     transformApply,
     memproRun,
     memproStatus,
+    memproScan,
     memproApply
   } from '../lib/backendApi.js'
   import DetectIcon from '../components/icons/Detect.svelte'
@@ -345,24 +346,77 @@
     return () => clearTimeout(_tfAlignSecTimer)
   })
 
-  // MemPro job polling
+  // ── MemPro: recover persisted job when workingDir is set ──────────────────
+  $effect(() => {
+    const wd = workingDir
+    if (!wd) return
+    memproScan(wd)
+      .then((r) => {
+        if (!r.found) return
+        memproJobId = r.job_id
+        memproJobStatus = r.status
+        if (r.status === 'done') memproResults = r.results ?? []
+        if (r.status === 'error') memproError = r.error
+        visualizeStatus.memproJobId = r.job_id
+        visualizeStatus.memproStatus = r.status
+        visualizeStatus.memproStartedAt = r.start_time ?? null
+        if (r.status === 'done')
+          logEvent(
+            'info',
+            'view',
+            'MemPro done (recovered)',
+            `${(r.results ?? []).length} orientation(s)`
+          )
+        else if (r.status === 'running')
+          logEvent('info', 'view', 'MemPro running (recovered)', r.job_id)
+        else if (r.status === 'error')
+          logEvent('info', 'view', 'MemPro error (recovered)', r.error ?? '')
+      })
+      .catch(() => {})
+  })
+
+  // ── MemPro: open results dialog when status bar chip triggers it ─────────
+  $effect(() => {
+    if (visualizeStatus.openMemproDialog) {
+      visualizeStatus.openMemproDialog = false
+      if (memproJobStatus === 'done') dlgMempro?.showModal()
+    }
+  })
+
+  // ── MemPro job polling ───────────────────────────────────────────────────
   $effect(() => {
     if (!memproJobId || memproJobStatus !== 'running') return
     const interval = setInterval(async () => {
       try {
-        const r = await memproStatus(memproJobId)
-        memproJobStatus = r.status
-        if (r.status === 'done') {
-          memproResults = r.results
-          clearInterval(interval)
-        } else if (r.status === 'error') {
-          memproError = r.error
-          clearInterval(interval)
+        let r
+        if (workingDir) {
+          r = await memproScan(workingDir)
+          if (!r.found) return
+        } else {
+          r = await memproStatus(memproJobId)
+        }
+        if (r.status !== memproJobStatus) {
+          memproJobStatus = r.status
+          visualizeStatus.memproStatus = r.status
+          if (r.status === 'done') {
+            memproResults = r.results ?? []
+            logEvent(
+              'info',
+              'view',
+              'MemPro orientation complete',
+              `${memproResults.length} result(s)`
+            )
+            clearInterval(interval)
+          } else if (r.status === 'error') {
+            memproError = r.error
+            logEvent('info', 'view', 'MemPro failed', r.error ?? '')
+            clearInterval(interval)
+          }
         }
       } catch {
         /* ignore */
       }
-    }, 3000)
+    }, 5000)
     return () => clearInterval(interval)
   })
 
@@ -1643,6 +1697,7 @@
     try {
       const r = await memproRun({
         path: filePath,
+        workingDir: workingDir || undefined,
         nIters: memproNIters,
         gridSize: memproGridSize,
         dualMembrane: memproDualMembrane,
@@ -1655,6 +1710,10 @@
       memproJobStatus = 'running'
       memproResults = []
       memproError = null
+      visualizeStatus.memproJobId = r.job_id
+      visualizeStatus.memproStatus = 'running'
+      visualizeStatus.memproStartedAt = r.start_time ?? new Date().toISOString()
+      logEvent('info', 'view', 'MemPro started', filePath)
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : String(ex))
     } finally {

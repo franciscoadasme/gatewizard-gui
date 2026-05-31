@@ -395,6 +395,15 @@ export function memproRun(payload) {
 }
 
 /**
+ * Scan a working directory for a persisted MemPro job state file.
+ * @param {string} workingDir
+ * @returns {Promise<{ found: boolean, job_id?: string, status?: string, start_time?: string, results?: object[]|null, error?: string|null, pid?: number|null }>}
+ */
+export function memproScan(workingDir) {
+  return backendJson(`/mempro/scan?working_dir=${encodeURIComponent(workingDir)}`)
+}
+
+/**
  * Poll the status of a MemPro job.
  * @param {string} jobId
  * @returns {Promise<{ status: string, results: object[]|null, error: string|null }>}

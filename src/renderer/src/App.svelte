@@ -139,6 +139,8 @@
    */
   function pageTag(type) {
     switch (type) {
+      case 'mempro':
+        return { name: 'MemPro', bg: 'bg-yellow-700', text: 'text-yellow-200' }
       case 'view':
         return { name: 'Visualize', bg: 'bg-blue-700', text: 'text-blue-200' }
       case 'prep':
@@ -194,6 +196,34 @@
           : `Structure loaded: ${visualizeStatus.fileName}${visualizeStatus.viewCount > 0 ? ` · ${visualizeStatus.viewCount} view${visualizeStatus.viewCount === 1 ? '' : 's'}` : ''}`,
         status: visualizeStatus.loading ? 'running' : 'idle',
         dismissible: visualizeStatus.loaded && !visualizeStatus.loading
+      })
+    }
+
+    // 01b MemPro orientation (persisted, may outlive the Visualize session)
+    if (visualizeStatus.memproStatus) {
+      const mpRunning = visualizeStatus.memproStatus === 'running'
+      const mpDone = visualizeStatus.memproStatus === 'done'
+      const mpError = visualizeStatus.memproStatus === 'error'
+      const elapsedStr = visualizeStatus.memproStartedAt
+        ? elapsed(visualizeStatus.memproStartedAt)
+        : ''
+      chips.push({
+        id: 'mempro',
+        type: 'mempro',
+        label: 'MemPro',
+        detail: mpRunning
+          ? `running${elapsedStr ? ` · ${elapsedStr}` : ''}`
+          : mpDone
+            ? 'done — click to view'
+            : 'error',
+        fullDetail: mpRunning
+          ? `MemPro orientation running${elapsedStr ? ` · elapsed ${elapsedStr}` : ''}…`
+          : mpDone
+            ? 'MemPro orientation complete — click to view results'
+            : `MemPro orientation failed`,
+        status: mpError ? 'error' : mpRunning ? 'running' : 'done',
+        dismissible: !mpRunning,
+        clickable: mpDone
       })
     }
 
@@ -518,16 +548,7 @@
         <span class="truncate">Ready — {workingDir}</span>
       {:else}
         {#each visibleBarChips as chip (chip.id)}
-          <div
-            class="flex shrink-0 items-center gap-1.5 rounded px-2 py-1
-            {chip.status === 'error'
-              ? 'bg-red-950 text-red-400'
-              : chip.status === 'running'
-                ? 'bg-neutral-800 text-neutral-300'
-                : chip.status === 'done'
-                  ? 'bg-green-950 text-green-500'
-                  : 'bg-neutral-800 text-neutral-500'}"
-          >
+          {#snippet chipInner()}
             <!-- seq badge (inline, no absolute so overflow-x-auto can't clip it) -->
             <span
               class="rounded bg-neutral-700 px-[4px] py-[1px] text-[9px] leading-none text-neutral-400 tabular-nums"
@@ -544,7 +565,38 @@
             {/if}
             <span class="font-medium whitespace-nowrap opacity-70">{chip.label}</span>
             <span class="max-w-32 truncate text-[11px]" title={chip.fullDetail}>{chip.detail}</span>
-          </div>
+          {/snippet}
+          {#if chip.clickable}
+            <button
+              type="button"
+              class="flex shrink-0 cursor-pointer items-center gap-1.5 rounded border-0 bg-transparent px-2 py-1 hover:opacity-80
+              {chip.status === 'error'
+                ? 'bg-red-950 text-red-400'
+                : chip.status === 'running'
+                  ? 'bg-neutral-800 text-neutral-300'
+                  : chip.status === 'done'
+                    ? 'bg-green-950 text-green-500'
+                    : 'bg-neutral-800 text-neutral-500'}"
+              onclick={() => {
+                if (chip.id === 'mempro') visualizeStatus.openMemproDialog = true
+              }}
+            >
+              {@render chipInner()}
+            </button>
+          {:else}
+            <div
+              class="flex shrink-0 items-center gap-1.5 rounded px-2 py-1
+              {chip.status === 'error'
+                ? 'bg-red-950 text-red-400'
+                : chip.status === 'running'
+                  ? 'bg-neutral-800 text-neutral-300'
+                  : chip.status === 'done'
+                    ? 'bg-green-950 text-green-500'
+                    : 'bg-neutral-800 text-neutral-500'}"
+            >
+              {@render chipInner()}
+            </div>
+          {/if}
         {/each}
       {/if}
     </div>
