@@ -1622,14 +1622,15 @@ def analyze_topology(payload: AnalyzeTopologyRequest) -> dict:
 
 
 class EnergeticColumnsRequest(BaseModel):
-    log_paths: list[str] = Field(..., description="Absolute paths to NAMD log files")
+    log_paths: list[str] = Field(..., description="Absolute paths to log files")
     file_times: dict[str, float] | None = Field(
         None, description="Optional per-file durations in ns"
     )
+    engine: str = Field("namd", description="Engine: namd, openmm, or gromacs")
 
 
 class EnergeticAnalysisRequest(BaseModel):
-    log_paths: list[str] = Field(..., description="Absolute paths to NAMD log files")
+    log_paths: list[str] = Field(..., description="Absolute paths to log files")
     properties: list[str] | None = Field(
         None, description="Properties to analyze (e.g., Total Energy, Temperature)"
     )
@@ -1641,6 +1642,7 @@ class EnergeticAnalysisRequest(BaseModel):
     pressure_units: str = Field("atm", description="Pressure units")
     temperature_units: str = Field("K", description="Temperature units")
     volume_units: str = Field("Å³", description="Volume units")
+    engine: str = Field("namd", description="Engine: namd, openmm, or gromacs")
 
 
 @app.post("/get-equilibration-status")
@@ -1906,10 +1908,20 @@ def list_energetic_properties(payload: EnergeticColumnsRequest) -> dict:
             status_code=404,
             detail=f"Log file(s) not found: {', '.join(missing)}",
         )
+    engine = payload.engine.lower().strip()
     try:
-        props = namd_analysis.list_namd_energy_properties(
-            [str(p) for p in logs], file_times=payload.file_times
-        )
+        if engine == "openmm":
+            props = openmm_analysis.list_openmm_energy_properties(
+                [str(p) for p in logs], file_times=payload.file_times
+            )
+        elif engine == "gromacs":
+            props = gromacs_analysis.list_gromacs_energy_properties(
+                [str(p) for p in logs], file_times=payload.file_times
+            )
+        else:  # namd (default)
+            props = namd_analysis.list_namd_energy_properties(
+                [str(p) for p in logs], file_times=payload.file_times
+            )
         return {"properties": props}
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
@@ -1926,18 +1938,24 @@ def run_energetic_analysis(payload: EnergeticAnalysisRequest) -> dict:
             status_code=404,
             detail=f"Log file(s) not found: {', '.join(missing)}",
         )
-
+    engine = payload.engine.lower().strip()
+    kwargs = dict(
+        log_files=[str(p) for p in logs],
+        properties=payload.properties,
+        file_times=payload.file_times,
+        time_units=payload.time_units,
+        energy_units=payload.energy_units,
+        pressure_units=payload.pressure_units,
+        temperature_units=payload.temperature_units,
+        volume_units=payload.volume_units,
+    )
     try:
-        result = namd_analysis.run_energetic_analysis(
-            log_files=[str(p) for p in logs],
-            properties=payload.properties,
-            file_times=payload.file_times,
-            time_units=payload.time_units,
-            energy_units=payload.energy_units,
-            pressure_units=payload.pressure_units,
-            temperature_units=payload.temperature_units,
-            volume_units=payload.volume_units,
-        )
+        if engine == "openmm":
+            result = openmm_analysis.run_openmm_energetic_analysis(**kwargs)
+        elif engine == "gromacs":
+            result = gromacs_analysis.run_gromacs_energetic_analysis(**kwargs)
+        else:  # namd (default)
+            result = namd_analysis.run_energetic_analysis(**kwargs)
         return sanitize_value(result)
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
@@ -2381,11 +2399,23 @@ def transform_apply(payload: TransformRequest) -> dict:
 
 # ── MemPro orientation ─────────────────────────────────────────────────
 
-_mempro_jobs: dict = {}  # job_id → {status, results, error}
+_mempro_jobs: dict = {}  # job_id → {status, results, error, ...}
+
+
+def _mempro_state_file(working_dir: str) -> str:
+    return os.path.join(working_dir, ".mempro_job.json")
+
+
+def _write_mempro_state(state_file: str, data: dict) -> None:
+    tmp = state_file + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, state_file)
 
 
 class MemProRunRequest(BaseModel):
     path: str
+    working_dir: str | None = None
     n_cpus: int | None = None
     n_iters: int = 150
     grid_size: int = 36
@@ -2399,6 +2429,7 @@ class MemProRunRequest(BaseModel):
 @app.post("/mempro/run")
 def mempro_run(payload: MemProRunRequest) -> dict:
     """Start a MemPro orientation job asynchronously; returns job_id."""
+    from datetime import datetime, timezone  # noqa: PLC0415
     from gatewizard.core.mempro import MemPrO  # noqa: PLC0415
 
     if not MemPrO.is_available():
@@ -2409,41 +2440,112 @@ def mempro_run(payload: MemProRunRequest) -> dict:
         )
 
     job_id = str(uuid.uuid4())
-    _mempro_jobs[job_id] = {"status": "running", "results": None, "error": None}
+    start_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    params = {
+        "path": payload.path,
+        "n_cpus": payload.n_cpus,
+        "n_iters": payload.n_iters,
+        "grid_size": payload.grid_size,
+        "dual_membrane": payload.dual_membrane,
+        "peripheral": payload.peripheral,
+        "use_weights": payload.use_weights,
+        "flip": payload.flip,
+        "membrane_thickness": payload.membrane_thickness,
+    }
 
-    def _run() -> None:
-        try:
-            mp = MemPrO()
-            results = mp.run(
-                payload.path,
-                n_cpus=payload.n_cpus,
-                n_iters=payload.n_iters,
-                grid_size=payload.grid_size,
-                dual_membrane=payload.dual_membrane,
-                peripheral=payload.peripheral,
-                use_weights=payload.use_weights,
-                flip=payload.flip,
-                membrane_thickness=payload.membrane_thickness,
-            )
-            _mempro_jobs[job_id]["results"] = [
-                {
-                    "rank": r.rank,
-                    "relative_potential": r.relative_potential,
-                    "hits_pct": r.hits_pct,
-                    "rerank_potential": r.rerank_potential,
-                    "rerank_depth": r.rerank_depth,
-                    "rerank_value": r.rerank_value,
-                    "pdb_path": r.pdb_path,
-                }
-                for r in results
-            ]
-            _mempro_jobs[job_id]["status"] = "done"
-        except Exception as exc:
-            _mempro_jobs[job_id]["status"] = "error"
-            _mempro_jobs[job_id]["error"] = str(exc)
+    if payload.working_dir:
+        # Persistent path: detached subprocess that survives backend/app close
+        state = {
+            "job_id": job_id,
+            "status": "running",
+            "start_time": start_time,
+            "params": params,
+            "results": None,
+            "error": None,
+            "pid": None,
+        }
+        state_file = _mempro_state_file(payload.working_dir)
+        _write_mempro_state(state_file, state)
+        worker_script = os.path.join(os.path.dirname(__file__), "mempro_worker.py")
+        proc = subprocess.Popen(
+            [sys.executable, worker_script, state_file],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        state["pid"] = proc.pid
+        _write_mempro_state(state_file, state)
+        _mempro_jobs[job_id] = state
+    else:
+        # In-memory fallback (no working_dir — results lost on app close)
+        _mempro_jobs[job_id] = {
+            "job_id": job_id,
+            "status": "running",
+            "start_time": start_time,
+            "results": None,
+            "error": None,
+        }
 
-    threading.Thread(target=_run, daemon=True).start()
-    return {"job_id": job_id}
+        def _run() -> None:
+            try:
+                mp = MemPrO()
+                results = mp.run(
+                    payload.path,
+                    n_cpus=payload.n_cpus,
+                    n_iters=payload.n_iters,
+                    grid_size=payload.grid_size,
+                    dual_membrane=payload.dual_membrane,
+                    peripheral=payload.peripheral,
+                    use_weights=payload.use_weights,
+                    flip=payload.flip,
+                    membrane_thickness=payload.membrane_thickness,
+                )
+                _mempro_jobs[job_id]["results"] = [
+                    {
+                        "rank": r.rank,
+                        "relative_potential": r.relative_potential,
+                        "hits_pct": r.hits_pct,
+                        "rerank_potential": r.rerank_potential,
+                        "rerank_depth": r.rerank_depth,
+                        "rerank_value": r.rerank_value,
+                        "pdb_path": r.pdb_path,
+                    }
+                    for r in results
+                ]
+                _mempro_jobs[job_id]["status"] = "done"
+            except Exception as exc:
+                _mempro_jobs[job_id]["status"] = "error"
+                _mempro_jobs[job_id]["error"] = str(exc)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    return {"job_id": job_id, "start_time": start_time}
+
+
+@app.get("/mempro/scan")
+def mempro_scan(working_dir: str) -> dict:
+    """Return persisted MemPro job state from the working directory, if any."""
+    state_file = _mempro_state_file(working_dir)
+    if not os.path.exists(state_file):
+        return {"found": False}
+    try:
+        with open(state_file) as f:
+            state = json.load(f)
+    except Exception:
+        return {"found": False}
+    # If still marked running, verify the worker PID is actually alive
+    if state.get("status") == "running":
+        pid = state.get("pid")
+        if pid:
+            try:
+                os.kill(pid, 0)
+            except (ProcessLookupError, OSError):
+                # Worker died without updating the state file (crash)
+                state["status"] = "error"
+                state["error"] = "Worker process terminated unexpectedly"
+                _write_mempro_state(state_file, state)
+    return {"found": True, **state}
 
 
 @app.get("/mempro/status/{job_id}")

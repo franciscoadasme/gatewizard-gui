@@ -35,6 +35,7 @@
   // --- Energetic state ---
   /** @type {Array<{ path: string, timeNs: string }>} */
   let logFiles = $state([])
+  let energeticEngine = $state('namd') // 'namd' | 'openmm' | 'gromacs'
   /** @type {string[]} */
   let availableProperties = $state([])
   /** @type {string[]} */
@@ -384,9 +385,11 @@
   }
 
   async function addLogFile() {
+    const engineLabels = { namd: 'NAMD', openmm: 'OpenMM', gromacs: 'GROMACS' }
+    const engineLabel = engineLabels[energeticEngine] || 'Engine'
     const result = await window.api.openFilesDialog(
-      'Add NAMD Log Files',
-      [{ name: 'NAMD Logs', extensions: ['log'] }],
+      `Add ${engineLabel} Log Files`,
+      [{ name: 'Log Files', extensions: ['log', 'txt', 'csv'] }],
       workingDir || undefined
     )
     if (result.canceled) return
@@ -478,7 +481,8 @@
       lastError = ''
       const { properties } = await getEnergeticProperties({
         logPaths: logFiles.map((f) => f.path),
-        fileTimes: makeFileTimes(logFiles)
+        fileTimes: makeFileTimes(logFiles),
+        engine: energeticEngine
       })
       availableProperties = properties || []
       selectedProperties = [...availableProperties]
@@ -543,7 +547,7 @@
           lastAnalysisHasTimeX: xLabelsResult.length === 0
         }
       } else {
-        if (logFiles.length === 0) throw new Error('Add at least one NAMD log file.')
+        if (logFiles.length === 0) throw new Error('Add at least one log file.')
         if (selectedProperties.length === 0) throw new Error('Select at least one property.')
 
         const result = await runEnergeticAnalysis({
@@ -554,7 +558,8 @@
           energyUnits,
           pressureUnits,
           temperatureUnits,
-          volumeUnits
+          volumeUnits,
+          engine: energeticEngine
         })
 
         rawX = result.x || []
@@ -572,7 +577,7 @@
           x: rawX,
           y: s.y
         }))
-        chartTitle = 'NAMD Energetic Analysis'
+        chartTitle = `${{ namd: 'NAMD', openmm: 'OpenMM', gromacs: 'GROMACS' }[energeticEngine] || energeticEngine.toUpperCase()} Energetic Analysis`
         chartXLabel = result.x_label || 'Time'
         chartYLabel = 'Value'
         const first = result.series?.[0]?.key
@@ -838,7 +843,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
       <h2 class="font-semibold">Analysis Mode</h2>
       <Select className="w-full" bind:value={mode}>
         <option value="structural">Structural</option>
-        <option value="energetic">Energetic (NAMD Logs)</option>
+        <option value="energetic">Energetic (Logs)</option>
       </Select>
     </div>
 
@@ -974,8 +979,18 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
       <!-- Energetic Input -->
       <div class="space-y-2">
         <h2 class="font-semibold">Energetic Input</h2>
+        <div class="space-y-1">
+          <p class="text-neutral-500">MD Engine</p>
+          <Select className="w-full" bind:value={energeticEngine}>
+            <option value="namd">NAMD</option>
+            <option value="openmm">OpenMM</option>
+            <option value="gromacs">GROMACS</option>
+          </Select>
+        </div>
         <div class="flex items-center justify-between">
-          <p class="text-neutral-500">NAMD log files</p>
+          <p class="text-neutral-500">
+            {{ namd: 'NAMD', openmm: 'OpenMM', gromacs: 'GROMACS' }[energeticEngine]} log files
+          </p>
           <Button size="sm" variant="outline" onclick={addLogFile}>+ Add</Button>
         </div>
 

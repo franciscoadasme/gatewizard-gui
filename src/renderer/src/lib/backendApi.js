@@ -129,8 +129,8 @@ export function runStructuralAnalysis(payload) {
 }
 
 /**
- * Detect available energetic properties from NAMD log files.
- * @param {{ logPaths: string[], fileTimes?: Record<string, number> }} payload
+ * Detect available energetic properties from log files.
+ * @param {{ logPaths: string[], fileTimes?: Record<string, number>, engine?: 'namd'|'openmm'|'gromacs' }} payload
  * @returns {Promise<{ properties: string[] }>}
  */
 export function getEnergeticProperties(payload) {
@@ -138,8 +138,8 @@ export function getEnergeticProperties(payload) {
 }
 
 /**
- * Run energetic analysis from NAMD logs.
- * @param {{ logPaths: string[], properties?: string[], fileTimes?: Record<string, number>, timeUnits?: string, energyUnits?: string, pressureUnits?: string, temperatureUnits?: string, volumeUnits?: string }} payload
+ * Run energetic analysis from MD engine log files.
+ * @param {{ logPaths: string[], properties?: string[], fileTimes?: Record<string, number>, timeUnits?: string, energyUnits?: string, pressureUnits?: string, temperatureUnits?: string, volumeUnits?: string, engine?: 'namd'|'openmm'|'gromacs' }} payload
  * @returns {Promise<{ x: number[], x_label: string, series: Array<{ name: string, key: string, unit: string, y: number[] }>, statistics: Record<string, Record<string, number>> }>}
  */
 export function runEnergeticAnalysis(payload) {
@@ -388,7 +388,7 @@ export function transformApply(payload) {
 /**
  * Start a MemPro orientation job asynchronously.
  * @param {object} payload
- * @returns {Promise<{ job_id: string }>}
+ * @returns {Promise<{ job_id: string, start_time: string }>}
  */
 export function memproRun(payload) {
   return backendJson('/mempro/run', payload)
