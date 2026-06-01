@@ -1243,6 +1243,11 @@
    * MDAnalysis selection string suitable for the transform dialog.
    * Returns '' when there is no selection.
    */
+  /** Svelte action: focus the element shortly after mount (avoids a11y_autofocus warning). */
+  function focusOnMount(el) {
+    setTimeout(() => el.focus(), 50)
+  }
+
   function _selStringFromEditSelection() {
     if (!structure || selectedGroupIndices.size === 0) return ''
     const selAtoms = structure.atoms.filter((a) => selectedGroupIndices.has(a.index))
@@ -3537,7 +3542,7 @@
           class="w-full rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
           bind:value={customSelInput}
           placeholder="resname HOH"
-          autofocus
+          use:focusOnMount
           required
         />
         <span class="text-neutral-500">Examples: resname HOH · protein · chainID A · name CA</span>
