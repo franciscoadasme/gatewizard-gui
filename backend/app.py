@@ -37,7 +37,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from gatewizard.utils.protein_capping import cap_protein
-from gatewizard.core.viewer import MolecularViewer, ViewerError
+from gatewizard.core.structure_manager import StructureManager, StructureError
 from gatewizard.core.preparation import PreparationManager
 from gatewizard.core.builder import Builder
 
@@ -2074,8 +2074,8 @@ def detect_molecules(payload: DetectMoleculesRequest) -> list[dict]:
 
 
 def _mv_edit(pdb_path: str, operation) -> dict:
-    """Load pdb_path into MolecularViewer, run operation(mv), save temp PDB, return atoms dict."""
-    mv = MolecularViewer()
+    """Load pdb_path into StructureManager, run operation(mv), save temp PDB, return atoms dict."""
+    mv = StructureManager()
     mv.load_structure(pdb_path)
     operation(mv)
     fd, tmp_path = tempfile.mkstemp(suffix=".pdb")
@@ -2144,7 +2144,7 @@ def edit_rename_chain(payload: EditRenameChainRequest) -> dict:
                 payload.old_chain.strip(), payload.new_chain.strip()
             ),
         )
-    except (ViewerError, ValueError) as exc:
+    except (StructureError, ValueError) as exc:
         raise HTTPException(400, str(exc))
 
 
@@ -2165,7 +2165,7 @@ def edit_rename_residues(payload: EditRenameResiduesRequest) -> dict:
                 payload.chain_id, payload.start, payload.end, payload.new_name
             ),
         )
-    except (ViewerError, ValueError) as exc:
+    except (StructureError, ValueError) as exc:
         raise HTTPException(400, str(exc))
 
 
@@ -2186,7 +2186,7 @@ def edit_renumber_residues(payload: EditRenumberResiduesRequest) -> dict:
                 payload.chain_id, payload.start, payload.end, payload.new_start
             ),
         )
-    except (ViewerError, ValueError) as exc:
+    except (StructureError, ValueError) as exc:
         raise HTTPException(400, str(exc))
 
 
@@ -2210,7 +2210,7 @@ def edit_delete_atoms(payload: EditDeleteAtomsRequest) -> dict:
         return _mv_edit(payload.path, lambda mv: mv.delete_atoms(idx))
     except HTTPException:
         raise
-    except (ViewerError, ValueError) as exc:
+    except (StructureError, ValueError) as exc:
         raise HTTPException(400, str(exc))
     except Exception as exc:
         raise HTTPException(400, str(exc))
@@ -2233,7 +2233,7 @@ def edit_delete_by_indices(payload: EditDeleteByIndicesRequest) -> dict:
         return _mv_edit(payload.path, lambda mv: mv.delete_atoms(payload.indices))
     except HTTPException:
         raise
-    except (ViewerError, ValueError) as exc:
+    except (StructureError, ValueError) as exc:
         raise HTTPException(400, str(exc))
     except Exception as exc:
         raise HTTPException(400, str(exc))
@@ -2249,7 +2249,7 @@ class EditTransformRequest(BaseModel):
 def edit_transform(payload: EditTransformRequest) -> dict:
     try:
 
-        def _apply(mv: MolecularViewer) -> None:
+        def _apply(mv: StructureManager) -> None:
             if payload.translate:
                 mv.translate_atoms([float(v) for v in payload.translate])
             if payload.rotate:
@@ -2260,7 +2260,7 @@ def edit_transform(payload: EditTransformRequest) -> dict:
                 )
 
         return _mv_edit(payload.path, _apply)
-    except (ViewerError, ValueError) as exc:
+    except (StructureError, ValueError) as exc:
         raise HTTPException(400, str(exc))
     except Exception as exc:
         raise HTTPException(400, str(exc))
@@ -2281,7 +2281,7 @@ def edit_rename_chain_by_indices(payload: EditRenameChainByIndicesRequest) -> di
                 payload.indices, payload.new_chain.strip()
             ),
         )
-    except (ViewerError, ValueError) as exc:
+    except (StructureError, ValueError) as exc:
         raise HTTPException(400, str(exc))
 
 
@@ -2302,7 +2302,7 @@ def edit_rename_residues_by_indices(
                 payload.indices, payload.new_name.strip()
             ),
         )
-    except (ViewerError, ValueError) as exc:
+    except (StructureError, ValueError) as exc:
         raise HTTPException(400, str(exc))
 
 
@@ -2323,7 +2323,7 @@ def edit_renumber_residues_by_indices(
                 payload.indices, payload.new_start
             ),
         )
-    except (ViewerError, ValueError) as exc:
+    except (StructureError, ValueError) as exc:
         raise HTTPException(400, str(exc))
 
 
@@ -2369,7 +2369,7 @@ class TransformCountRequest(BaseModel):
 def transform_count_selection(payload: TransformCountRequest) -> dict:
     """Return the number of atoms matching a MDAnalysis selection string."""
     try:
-        mv = MolecularViewer()
+        mv = StructureManager()
         mv.load_structure(payload.path)
         sel_str = NAMED_SELECTIONS.get(payload.selection, payload.selection)
         indices = mv.select_atoms(sel_str)
@@ -2402,7 +2402,7 @@ class TransformRequest(BaseModel):
 
 
 def _apply_mv_op(
-    mv: MolecularViewer,
+    mv: StructureManager,
     selection: "str | None",
     op: TransformOperation,
 ) -> "list[int] | None":
@@ -2446,7 +2446,7 @@ def _apply_mv_op(
 def transform_preview(payload: TransformRequest) -> dict:
     """Return new atom positions after a transform without saving."""
     try:
-        mv = MolecularViewer()
+        mv = StructureManager()
         mv.load_structure(payload.path)
         indices = _apply_mv_op(mv, payload.selection, payload.op)
         atoms = mv.structure.atoms
@@ -2455,7 +2455,7 @@ def transform_preview(payload: TransformRequest) -> dict:
         ]
         affected = len(indices) if indices is not None else len(atoms)
         return {"positions": positions, "affected_count": affected}
-    except (ViewerError, ValueError) as exc:
+    except (StructureError, ValueError) as exc:
         raise HTTPException(400, str(exc))
     except Exception as exc:
         raise HTTPException(400, str(exc))
@@ -2468,7 +2468,7 @@ def transform_apply(payload: TransformRequest) -> dict:
         return _mv_edit(
             payload.path, lambda mv: _apply_mv_op(mv, payload.selection, payload.op)
         )
-    except (ViewerError, ValueError) as exc:
+    except (StructureError, ValueError) as exc:
         raise HTTPException(400, str(exc))
     except Exception as exc:
         raise HTTPException(400, str(exc))
