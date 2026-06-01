@@ -359,6 +359,51 @@ export function editSavePdb(payload) {
 }
 
 /**
+ * Rename chain for specific atoms by index list.
+ * @param {{ path: string, indices: number[], newChain: string }} payload
+ */
+export function editRenameChainByIndices(payload) {
+  return backendJson('/edit/rename-chain-by-indices', {
+    path: payload.path,
+    indices: payload.indices,
+    new_chain: payload.newChain,
+  })
+}
+
+/**
+ * Rename residue name for specific atoms by index list.
+ * @param {{ path: string, indices: number[], newName: string }} payload
+ */
+export function editRenameResiduesByIndices(payload) {
+  return backendJson('/edit/rename-residues-by-indices', {
+    path: payload.path,
+    indices: payload.indices,
+    new_name: payload.newName,
+  })
+}
+
+/**
+ * Renumber residues for specific atoms by index list.
+ * @param {{ path: string, indices: number[], newStart?: number }} payload
+ */
+export function editRenumberResiduesByIndices(payload) {
+  return backendJson('/edit/renumber-residues-by-indices', {
+    path: payload.path,
+    indices: payload.indices,
+    new_start: payload.newStart ?? 1,
+  })
+}
+
+/**
+ * Select atoms by MDAnalysis selection string, return indices.
+ * @param {{ path: string, selection: string }} payload
+ * @returns {Promise<{ indices: number[], count: number }>}
+ */
+export function editSelectByString(payload) {
+  return backendJson('/edit/select-by-string', payload)
+}
+
+/**
  * Count atoms matching a MDAnalysis selection.
  * @param {{ path: string, selection: string }} payload
  * @returns {Promise<{ count: number, total: number }>}

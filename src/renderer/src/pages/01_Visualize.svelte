@@ -30,6 +30,10 @@
     editRenameChain,
     editRenameResidues,
     editRenumberResidues,
+    editRenameChainByIndices,
+    editRenameResiduesByIndices,
+    editRenumberResiduesByIndices,
+    editSelectByString,
     editDeleteAtoms,
     editDeleteByIndices,
     editSavePdb,
@@ -235,16 +239,25 @@
   // Rename chain form fields
   let rcOldChain = $state('')
   let rcNewChain = $state('')
+  let rcApplyToSel = $state(false)
   // Rename residues form fields
   let rrChain = $state('')
   let rrStart = $state(1)
   let rrEnd = $state(9999)
   let rrNewName = $state('')
+  let rrApplyToSel = $state(false)
   // Renumber residues form fields
   let rnChain = $state('')
   let rnStart = $state(1)
   let rnEnd = $state(9999)
   let rnNewStart = $state(1)
+  let rnApplyToSel = $state(false)
+  // Custom selection dialog
+  /** @type {HTMLDialogElement | null} */
+  let dlgCustomSel = $state(null)
+  let customSelInput = $state('')
+  let customSelError = $state('')
+  let customSelBusy = $state(false)
   // Delete atoms form field
   let daSelection = $state('water')
   // Transform form fields
@@ -687,6 +700,7 @@
     rrStart = a.res_id ?? 1
     rrEnd = a.res_id ?? 9999
     rrNewName = a.res_name ?? ''
+    rrApplyToSel = selectedGroupIndices.size > 0
     dlgRenameRes?.showModal()
   }
 
@@ -696,6 +710,7 @@
     if (!a) return
     rcOldChain = a.chain_id ?? ''
     rcNewChain = a.chain_id ?? ''
+    rcApplyToSel = selectedGroupIndices.size > 0
     dlgRenameChain?.showModal()
   }
 
@@ -707,6 +722,7 @@
     rnStart = a.res_id ?? 1
     rnEnd = a.res_id ?? 9999
     rnNewStart = 1
+    rnApplyToSel = selectedGroupIndices.size > 0
     dlgRenumberRes?.showModal()
   }
 
@@ -732,7 +748,7 @@
     }
   }
 
-  function handleCanvasClick({ x, y, w, h }) {
+  function handleCanvasClick({ x, y, w, h, ctrlKey = false }) {
     ctxMenu = null
     // In edit mode (not measuring): left-click locks the hovered group as selected
     if (editMode && !measureMode) {
@@ -740,13 +756,29 @@
       if (!cam) return
       const atom = pickAtomFromViews(views, cam, w, h, x, y)
       if (atom) {
-        selectedAtom = atom
-        selectedGroupIndices = new Set(_editGroupIndices(atom, editSelectionLevel))
-        showGizmo = false
+        const groupIndices = new Set(_editGroupIndices(atom, editSelectionLevel))
+        if (ctrlKey) {
+          // Toggle the clicked group in/out of the current selection
+          const allSelected = [...groupIndices].every((i) => selectedGroupIndices.has(i))
+          const newSel = new Set(selectedGroupIndices)
+          if (allSelected) {
+            for (const i of groupIndices) newSel.delete(i)
+          } else {
+            for (const i of groupIndices) newSel.add(i)
+            selectedAtom = atom
+          }
+          selectedGroupIndices = newSel
+        } else {
+          selectedAtom = atom
+          selectedGroupIndices = groupIndices
+          showGizmo = false
+        }
       } else {
-        selectedAtom = null
-        selectedGroupIndices = new Set()
-        showGizmo = false
+        if (!ctrlKey) {
+          selectedAtom = null
+          selectedGroupIndices = new Set()
+          showGizmo = false
+        }
       }
       _syncSelHighlightView()
       return
@@ -1041,16 +1073,28 @@
   }
 
   async function onEditRenameChain() {
-    if (!filePath || !rcOldChain || !rcNewChain) return
+    if (!filePath || !rcNewChain) return
+    if (!rcApplyToSel && !rcOldChain) return
     editBusy = true
     try {
-      const res = await editRenameChain({
-        path: filePath,
-        oldChain: rcOldChain,
-        newChain: rcNewChain
-      })
+      let res
+      if (rcApplyToSel && selectedGroupIndices.size > 0) {
+        res = await editRenameChainByIndices({
+          path: filePath,
+          indices: [...selectedGroupIndices],
+          newChain: rcNewChain
+        })
+        logEvent(
+          'info',
+          'view',
+          `Renamed chain for ${selectedGroupIndices.size} selected atoms → ${rcNewChain}`,
+          filePath
+        )
+      } else {
+        res = await editRenameChain({ path: filePath, oldChain: rcOldChain, newChain: rcNewChain })
+        logEvent('info', 'view', `Renamed chain ${rcOldChain} → ${rcNewChain}`, filePath)
+      }
       dlgRenameChain?.close()
-      logEvent('info', 'view', `Renamed chain ${rcOldChain} → ${rcNewChain}`, filePath)
       await applyEditResult(res)
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : String(ex))
@@ -1060,23 +1104,39 @@
   }
 
   async function onEditRenameResidues() {
-    if (!filePath || !rrChain || !rrNewName) return
+    if (!filePath || !rrNewName) return
+    if (!rrApplyToSel && !rrChain) return
     editBusy = true
     try {
-      const res = await editRenameResidues({
-        path: filePath,
-        chainId: rrChain,
-        start: rrStart,
-        end: rrEnd,
-        newName: rrNewName
-      })
+      let res
+      if (rrApplyToSel && selectedGroupIndices.size > 0) {
+        res = await editRenameResiduesByIndices({
+          path: filePath,
+          indices: [...selectedGroupIndices],
+          newName: rrNewName
+        })
+        logEvent(
+          'info',
+          'view',
+          `Renamed residues for ${selectedGroupIndices.size} selected atoms → ${rrNewName}`,
+          filePath
+        )
+      } else {
+        res = await editRenameResidues({
+          path: filePath,
+          chainId: rrChain,
+          start: rrStart,
+          end: rrEnd,
+          newName: rrNewName
+        })
+        logEvent(
+          'info',
+          'view',
+          `Renamed residues ${rrChain}:${rrStart}-${rrEnd} → ${rrNewName}`,
+          filePath
+        )
+      }
       dlgRenameRes?.close()
-      logEvent(
-        'info',
-        'view',
-        `Renamed residues ${rrChain}:${rrStart}-${rrEnd} → ${rrNewName}`,
-        filePath
-      )
       await applyEditResult(res)
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : String(ex))
@@ -1086,23 +1146,39 @@
   }
 
   async function onEditRenumberResidues() {
-    if (!filePath || !rnChain) return
+    if (!filePath) return
+    if (!rnApplyToSel && !rnChain) return
     editBusy = true
     try {
-      const res = await editRenumberResidues({
-        path: filePath,
-        chainId: rnChain,
-        start: rnStart,
-        end: rnEnd,
-        newStart: rnNewStart
-      })
+      let res
+      if (rnApplyToSel && selectedGroupIndices.size > 0) {
+        res = await editRenumberResiduesByIndices({
+          path: filePath,
+          indices: [...selectedGroupIndices],
+          newStart: rnNewStart
+        })
+        logEvent(
+          'info',
+          'view',
+          `Renumbered residues for ${selectedGroupIndices.size} selected atoms, start → ${rnNewStart}`,
+          filePath
+        )
+      } else {
+        res = await editRenumberResidues({
+          path: filePath,
+          chainId: rnChain,
+          start: rnStart,
+          end: rnEnd,
+          newStart: rnNewStart
+        })
+        logEvent(
+          'info',
+          'view',
+          `Renumbered residues ${rnChain}:${rnStart}-${rnEnd} → start ${rnNewStart}`,
+          filePath
+        )
+      }
       dlgRenumberRes?.close()
-      logEvent(
-        'info',
-        'view',
-        `Renumbered residues ${rnChain}:${rnStart}-${rnEnd} → start ${rnNewStart}`,
-        filePath
-      )
       await applyEditResult(res)
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : String(ex))
@@ -1123,6 +1199,28 @@
       alert(ex instanceof Error ? ex.message : String(ex))
     } finally {
       editBusy = false
+    }
+  }
+
+  async function applyCustomSelection() {
+    if (!filePath || !customSelInput.trim()) return
+    customSelBusy = true
+    customSelError = ''
+    try {
+      const r = await editSelectByString({ path: filePath, selection: customSelInput.trim() })
+      if (r.count === 0) {
+        customSelError = 'Selection matched no atoms'
+        return
+      }
+      selectedGroupIndices = new Set(r.indices)
+      selectedAtom = null
+      editMode = true
+      dlgCustomSel?.close()
+      _syncSelHighlightView()
+    } catch (ex) {
+      customSelError = ex instanceof Error ? ex.message : String(ex)
+    } finally {
+      customSelBusy = false
     }
   }
 
@@ -1413,7 +1511,6 @@
   /** Build radial menu items for the given atom context. */
   function _buildRadialItems(atom, ctxGroupIndices) {
     const hasEditSel = editMode && ctxGroupIndices && ctxGroupIndices.size > 0
-    const isResOrAtom = editSelectionLevel === 'residue' || editSelectionLevel === 'atom'
 
     const items = []
 
@@ -1450,8 +1547,8 @@
     })
 
     if (hasEditSel) {
-      // Slot 1 – top-right: Rename residue (residue/atom level only)
-      if (isResOrAtom) {
+      // Slot 1 – top-right: Rename residue
+      {
         items.push({
           slot: 1,
           label: 'Rename res.',
@@ -1476,8 +1573,8 @@
         }
       })
 
-      // Slot 3 – bottom-right: Renumber residues (residue/atom level only)
-      if (isResOrAtom) {
+      // Slot 3 – bottom-right: Renumber residues
+      {
         items.push({
           slot: 3,
           label: 'Renumber',
@@ -2560,6 +2657,20 @@
               {label}
             </button>
           {/each}
+          <div class="my-0.5 border-t border-neutral-800"></div>
+          <button
+            type="button"
+            class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-white"
+            onclick={() => {
+              selectMenuOpen = false
+              customSelInput = ''
+              customSelError = ''
+              dlgCustomSel?.showModal()
+            }}
+          >
+            <span class="size-3 shrink-0"></span>
+            Custom (MDAnalysis…)
+          </button>
           {#if editMode}
             <div class="my-0.5 border-t border-neutral-800"></div>
             <button
@@ -2702,7 +2813,11 @@
 <!-- Radial context menu (replaces old rectangular right-click menu) -->
 {#if ctxMenu}
   {@const atom = ctxMenu.atom}
-  {@const ctxGroupIndices = editMode ? new Set(_editGroupIndices(atom, editSelectionLevel)) : null}
+  {@const ctxGroupIndices = editMode
+    ? selectedGroupIndices.size > 0
+      ? selectedGroupIndices
+      : new Set(_editGroupIndices(atom, editSelectionLevel))
+    : null}
   {@const infoTitle =
     editMode && ctxGroupIndices
       ? `${atom.res_name}${atom.res_id} · Chain ${atom.chain_id}`
@@ -2734,17 +2849,24 @@
     }}
   >
     <h3 class="mb-3 text-sm font-semibold">Rename Chain</h3>
-    <div class="space-y-2">
-      <label class="flex items-center gap-2 text-xs">
-        <span class="w-24 text-neutral-400">Old chain ID</span>
-        <input
-          type="text"
-          maxlength="1"
-          class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs uppercase ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
-          bind:value={rcOldChain}
-          required
-        />
+    {#if selectedGroupIndices.size > 0}
+      <label class="mb-3 flex items-center gap-2 text-xs">
+        <input type="checkbox" class="accent-yellow-500" bind:checked={rcApplyToSel} />
+        <span class="text-neutral-300">Apply to selection ({selectedGroupIndices.size} atoms)</span>
       </label>
+    {/if}
+    <div class="space-y-2">
+      {#if !rcApplyToSel}
+        <label class="flex items-center gap-2 text-xs">
+          <span class="w-24 text-neutral-400">Old chain ID</span>
+          <input
+            type="text"
+            maxlength="1"
+            class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs uppercase ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+            bind:value={rcOldChain}
+          />
+        </label>
+      {/if}
       <label class="flex items-center gap-2 text-xs">
         <span class="w-24 text-neutral-400">New chain ID</span>
         <input
@@ -2765,7 +2887,7 @@
       <button
         type="submit"
         class="flex items-center gap-1 rounded bg-yellow-600 px-3 py-1 text-xs font-semibold text-black hover:bg-yellow-500 disabled:opacity-40"
-        disabled={editBusy || !rcOldChain || !rcNewChain}
+        disabled={editBusy || !rcNewChain || (!rcApplyToSel && !rcOldChain)}
         >{#if editBusy}<Spinner />{/if} Apply</button
       >
     </div>
@@ -2785,33 +2907,38 @@
     }}
   >
     <h3 class="mb-3 text-sm font-semibold">Rename Residues</h3>
+    {#if selectedGroupIndices.size > 0}
+      <label class="mb-3 flex items-center gap-2 text-xs">
+        <input type="checkbox" class="accent-yellow-500" bind:checked={rrApplyToSel} />
+        <span class="text-neutral-300">Apply to selection ({selectedGroupIndices.size} atoms)</span>
+      </label>
+    {/if}
     <div class="space-y-2">
-      <label class="flex items-center gap-2 text-xs">
-        <span class="w-24 text-neutral-400">Chain ID</span>
-        <input
-          type="text"
-          maxlength="1"
-          class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs uppercase ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
-          bind:value={rrChain}
-          required
-        />
-      </label>
-      <label class="flex items-center gap-2 text-xs">
-        <span class="w-24 text-neutral-400">Residue range</span>
-        <input
-          type="number"
-          class="w-16 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
-          bind:value={rrStart}
-          required
-        />
-        <span class="text-neutral-500">–</span>
-        <input
-          type="number"
-          class="w-16 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
-          bind:value={rrEnd}
-          required
-        />
-      </label>
+      {#if !rrApplyToSel}
+        <label class="flex items-center gap-2 text-xs">
+          <span class="w-24 text-neutral-400">Chain ID</span>
+          <input
+            type="text"
+            maxlength="1"
+            class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs uppercase ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+            bind:value={rrChain}
+          />
+        </label>
+        <label class="flex items-center gap-2 text-xs">
+          <span class="w-24 text-neutral-400">Residue range</span>
+          <input
+            type="number"
+            class="w-16 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+            bind:value={rrStart}
+          />
+          <span class="text-neutral-500">–</span>
+          <input
+            type="number"
+            class="w-16 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+            bind:value={rrEnd}
+          />
+        </label>
+      {/if}
       <label class="flex items-center gap-2 text-xs">
         <span class="w-24 text-neutral-400">New name</span>
         <input
@@ -2832,7 +2959,7 @@
       <button
         type="submit"
         class="flex items-center gap-1 rounded bg-yellow-600 px-3 py-1 text-xs font-semibold text-black hover:bg-yellow-500 disabled:opacity-40"
-        disabled={editBusy || !rrChain || !rrNewName}
+        disabled={editBusy || !rrNewName || (!rrApplyToSel && !rrChain)}
         >{#if editBusy}<Spinner />{/if} Apply</button
       >
     </div>
@@ -2852,33 +2979,38 @@
     }}
   >
     <h3 class="mb-3 text-sm font-semibold">Renumber Residues</h3>
+    {#if selectedGroupIndices.size > 0}
+      <label class="mb-3 flex items-center gap-2 text-xs">
+        <input type="checkbox" class="accent-yellow-500" bind:checked={rnApplyToSel} />
+        <span class="text-neutral-300">Apply to selection ({selectedGroupIndices.size} atoms)</span>
+      </label>
+    {/if}
     <div class="space-y-2">
-      <label class="flex items-center gap-2 text-xs">
-        <span class="w-24 text-neutral-400">Chain ID</span>
-        <input
-          type="text"
-          maxlength="1"
-          class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs uppercase ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
-          bind:value={rnChain}
-          required
-        />
-      </label>
-      <label class="flex items-center gap-2 text-xs">
-        <span class="w-24 text-neutral-400">Residue range</span>
-        <input
-          type="number"
-          class="w-16 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
-          bind:value={rnStart}
-          required
-        />
-        <span class="text-neutral-500">–</span>
-        <input
-          type="number"
-          class="w-16 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
-          bind:value={rnEnd}
-          required
-        />
-      </label>
+      {#if !rnApplyToSel}
+        <label class="flex items-center gap-2 text-xs">
+          <span class="w-24 text-neutral-400">Chain ID</span>
+          <input
+            type="text"
+            maxlength="1"
+            class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs uppercase ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+            bind:value={rnChain}
+          />
+        </label>
+        <label class="flex items-center gap-2 text-xs">
+          <span class="w-24 text-neutral-400">Residue range</span>
+          <input
+            type="number"
+            class="w-16 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+            bind:value={rnStart}
+          />
+          <span class="text-neutral-500">–</span>
+          <input
+            type="number"
+            class="w-16 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+            bind:value={rnEnd}
+          />
+        </label>
+      {/if}
       <label class="flex items-center gap-2 text-xs">
         <span class="w-24 text-neutral-400">New start</span>
         <input
@@ -2898,7 +3030,7 @@
       <button
         type="submit"
         class="flex items-center gap-1 rounded bg-yellow-600 px-3 py-1 text-xs font-semibold text-black hover:bg-yellow-500 disabled:opacity-40"
-        disabled={editBusy || !rnChain}
+        disabled={editBusy || (!rnApplyToSel && !rnChain)}
         >{#if editBusy}<Spinner />{/if} Apply</button
       >
     </div>
@@ -3381,4 +3513,54 @@
       >
     </div>
   </div>
+</dialog>
+
+<!-- Custom MDAnalysis selection dialog -->
+<dialog
+  bind:this={dlgCustomSel}
+  class="rounded-lg border border-neutral-700 bg-neutral-900 p-0 text-neutral-200 shadow-2xl backdrop:bg-black/60"
+>
+  <form
+    method="dialog"
+    class="min-w-80 p-4"
+    onsubmit={(e) => {
+      e.preventDefault()
+      applyCustomSelection()
+    }}
+  >
+    <h3 class="mb-3 text-sm font-semibold">Custom Selection</h3>
+    <div class="space-y-2">
+      <label class="flex flex-col gap-1 text-xs">
+        <span class="text-neutral-400">MDAnalysis selection string</span>
+        <input
+          type="text"
+          class="w-full rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          bind:value={customSelInput}
+          placeholder="resname HOH"
+          autofocus
+          required
+        />
+        <span class="text-neutral-500">Examples: resname HOH · protein · chainID A · name CA</span>
+      </label>
+      {#if customSelError}
+        <p class="text-xs text-red-400">{customSelError}</p>
+      {/if}
+    </div>
+    <div class="mt-4 flex justify-end gap-2">
+      <button
+        type="button"
+        class="rounded border border-neutral-700 px-3 py-1 text-xs hover:bg-neutral-800"
+        onclick={() => {
+          dlgCustomSel?.close()
+          customSelError = ''
+        }}>Cancel</button
+      >
+      <button
+        type="submit"
+        class="flex items-center gap-1 rounded bg-yellow-600 px-3 py-1 text-xs font-semibold text-black hover:bg-yellow-500 disabled:opacity-40"
+        disabled={customSelBusy || !customSelInput.trim()}
+        >{#if customSelBusy}<Spinner />{/if} Select</button
+      >
+    </div>
+  </form>
 </dialog>

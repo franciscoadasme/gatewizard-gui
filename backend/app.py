@@ -2266,6 +2266,83 @@ def edit_transform(payload: EditTransformRequest) -> dict:
         raise HTTPException(400, str(exc))
 
 
+class EditRenameChainByIndicesRequest(BaseModel):
+    path: str
+    indices: List[int]
+    new_chain: str
+
+
+@app.post("/edit/rename-chain-by-indices")
+def edit_rename_chain_by_indices(payload: EditRenameChainByIndicesRequest) -> dict:
+    try:
+        return _mv_edit(
+            payload.path,
+            lambda mv: mv.rename_chain_by_indices(
+                payload.indices, payload.new_chain.strip()
+            ),
+        )
+    except (ViewerError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+
+
+class EditRenameResiduesByIndicesRequest(BaseModel):
+    path: str
+    indices: List[int]
+    new_name: str
+
+
+@app.post("/edit/rename-residues-by-indices")
+def edit_rename_residues_by_indices(
+    payload: EditRenameResiduesByIndicesRequest,
+) -> dict:
+    try:
+        return _mv_edit(
+            payload.path,
+            lambda mv: mv.rename_residues_by_indices(
+                payload.indices, payload.new_name.strip()
+            ),
+        )
+    except (ViewerError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+
+
+class EditRenumberResiduesByIndicesRequest(BaseModel):
+    path: str
+    indices: List[int]
+    new_start: int = 1
+
+
+@app.post("/edit/renumber-residues-by-indices")
+def edit_renumber_residues_by_indices(
+    payload: EditRenumberResiduesByIndicesRequest,
+) -> dict:
+    try:
+        return _mv_edit(
+            payload.path,
+            lambda mv: mv.renumber_residues_by_indices(
+                payload.indices, payload.new_start
+            ),
+        )
+    except (ViewerError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+
+
+class EditSelectByStringRequest(BaseModel):
+    path: str
+    selection: str
+
+
+@app.post("/edit/select-by-string")
+def edit_select_by_string(payload: EditSelectByStringRequest) -> dict:
+    """Return indices of atoms matching an MDAnalysis selection string."""
+    try:
+        u = load_structure(payload.path)
+        ag = u.select_atoms(payload.selection)
+        return {"indices": ag.indices.tolist(), "count": int(ag.n_atoms)}
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
+
 class EditSavePdbRequest(BaseModel):
     source: str
     dest: str

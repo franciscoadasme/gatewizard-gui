@@ -64,7 +64,7 @@
     if (e.button !== 0) return
     if (!onAtomClick || !wrapEl) return
     if ((e.clientX - dragStart.x) ** 2 + (e.clientY - dragStart.y) ** 2 < 16) {
-      onAtomClick(_coords(e))
+      onAtomClick({ ..._coords(e), ctrlKey: e.ctrlKey })
     }
   }}
   oncontextmenu={(e) => {
