@@ -254,6 +254,102 @@ def get_secondary_structure(u: mda.Universe) -> list[psique.SecondaryStructure]:
         return psique.assign(file.name)
 
 
+_TOPOLOGY_ONLY_SUFFIXES = frozenset(
+    {".psf", ".prmtop", ".parm7", ".top", ".itp"}
+)
+_COORDINATE_TRAJECTORY_SUFFIXES = frozenset(
+    {".dcd", ".xtc", ".trr", ".nc", ".mdcrd", ".crd", ".inpcrd", ".dtr", ".lammpstrj", ".h5md"}
+)
+
+
+def _is_topology_only_file(path: Path) -> bool:
+    return path.suffix.lower() in _TOPOLOGY_ONLY_SUFFIXES
+
+
+def _is_coordinate_trajectory_file(path: Path) -> bool:
+    ext = path.suffix.lower()
+    if ext in _COORDINATE_TRAJECTORY_SUFFIXES:
+        return True
+    if ext in _TOPOLOGY_ONLY_SUFFIXES:
+        return False
+    return True
+
+
+def _filter_coordinate_trajectories(
+    topology: Path, trajectories: list[Path]
+) -> list[Path]:
+    """Drop topology files accidentally listed as trajectories."""
+    top_resolved = topology.resolve()
+    filtered: list[Path] = []
+    for traj in trajectories:
+        traj_resolved = traj.resolve()
+        if traj_resolved == top_resolved:
+            continue
+        if _is_topology_only_file(traj):
+            continue
+        filtered.append(traj)
+    return filtered
+
+
+def _load_analysis_universe(topology: Path, trajectories: list[Path]) -> mda.Universe:
+    """Load topology + coordinate trajectory the same way MDAnalysis expects."""
+    coord_trajs = _filter_coordinate_trajectories(topology, trajectories)
+    if not coord_trajs:
+        traj_names = ", ".join(t.name for t in trajectories)
+        raise ValueError(
+            f"No coordinate trajectory found among: {traj_names}. "
+            f"Files like {topology.name!r} are topology only — add DCD, XTC, TRR, "
+            "NC, or similar trajectory files."
+        )
+    top_str = str(topology.resolve())
+    if len(coord_trajs) == 1:
+        return mda.Universe(top_str, str(coord_trajs[0]))
+    return mda.Universe(top_str, [str(t) for t in coord_trajs])
+
+
+def _companion_coordinate_file(topology: Path) -> Path | None:
+    """Find a coordinate file next to the topology (AMBER inpcrd, PDB, etc.)."""
+    directory = topology.parent
+    stem = topology.stem.lower()
+    preferred_names = (
+        topology.name.replace(topology.suffix, ".inpcrd"),
+        topology.name.replace(topology.suffix, ".rst7"),
+        topology.name.replace(topology.suffix, ".pdb"),
+        "system.inpcrd",
+        "system.rst7",
+        "system.pdb",
+    )
+    for name in preferred_names:
+        candidate = directory / name
+        if candidate.is_file() and not _is_topology_only_file(candidate):
+            return candidate
+
+    for pattern in ("*.inpcrd", "*.rst7", "*.pdb", "*.gro"):
+        for candidate in sorted(directory.glob(pattern)):
+            if candidate.resolve() == topology.resolve():
+                continue
+            if _is_topology_only_file(candidate):
+                continue
+            if candidate.stem.lower() == stem:
+                return candidate
+    return None
+
+
+def _load_structure_for_headgroup_detection(
+    topology: Path, trajectories: list[Path] | None = None
+) -> mda.Universe:
+    """Load a universe suitable for inspecting lipid atom names."""
+    if trajectories:
+        coord_trajs = _filter_coordinate_trajectories(topology, trajectories)
+        if coord_trajs:
+            return _load_analysis_universe(topology, trajectories)
+
+    if _is_topology_only_file(topology):
+        companion = _companion_coordinate_file(topology)
+        if companion is not None:
+            return mda.Universe(str(topology.resolve()), str(companion.resolve()))
+
+    return load_structure(str(topology))
 def load_structure(
     path: Path | str, topology: str | None = None, needs_bonds: bool = False
 ) -> mda.Universe:
@@ -266,7 +362,11 @@ def load_structure(
         key = str(path)
         entry = FILE_CACHE.get(key)
         if entry is None or entry.mtime != mtime or entry.size != file_size:
-            u = mda.Universe(topology or path, path)
+            top_path = Path(topology).resolve() if topology else None
+            if top_path and top_path != path:
+                u = mda.Universe(str(top_path), str(path))
+            else:
+                u = mda.Universe(str(path))
             FILE_CACHE[key] = FileCacheEntry(mtime, file_size, u)
         else:
             u = entry.universe
@@ -1033,15 +1133,138 @@ def _find_preferred_system_pdb(input_dir: Path) -> Path | None:
     return next((f for f in pdb_files if f.name.lower() == "system.pdb"), pdb_files[0])
 
 
+def _normalize_constraint_key(name: str) -> str:
+    """Normalize a constraint display name to an API key.
+
+    Maps e.g. "Protein backbone" -> "protein_backbone" so that GUI display
+    names are understood by the equilibration API, which expects lowercase
+    underscore-separated keys such as ``protein_backbone``, ``lipid_head``.
+    """
+    return name.strip().lower().replace(" ", "_")
+
+
+_DEFAULT_CONSTRAINT_SELECTIONS = {
+    **getattr(NAMDEquilibrationManager, "DEFAULT_SELECTIONS", {}),
+    "ion": getattr(NAMDEquilibrationManager, "DEFAULT_SELECTIONS", {}).get(
+        "ions", ION_SELECTION
+    ),
+}
+
+
+def _resolve_constraint_selection(selection: str) -> str:
+    """Resolve known selection aliases to MDAnalysis selection strings.
+
+    The GUI may contain shorthand aliases (e.g. ``protein_backbone``, ``ions``)
+    in protocol constraints. Convert those aliases to concrete MDAnalysis
+    expressions before passing them to equilibration managers.
+    """
+    sel = selection.strip()
+    if not sel:
+        return sel
+
+    # Shorthands used by structure endpoints.
+    if sel in NAMED_SELECTIONS:
+        return NAMED_SELECTIONS[sel]
+
+    # Protocol aliases used by equilibration constraints.
+    key = _normalize_constraint_key(sel)
+    if key in _DEFAULT_CONSTRAINT_SELECTIONS:
+        return _DEFAULT_CONSTRAINT_SELECTIONS[key]
+
+    return sel
+
+
 def _build_stage_params(stages: list[Stage]) -> list[dict[str, Any]]:
     params = []
     for stage in stages:
         stage_dump = stage.model_dump()
         stage_dump["constraints"] = {
-            item.name: item.force_constant for item in stage.constraints
+            _normalize_constraint_key(item.name): item.force_constant
+            for item in stage.constraints
         }
         params.append(stage_dump)
     return params
+
+
+def _build_selections(stages: list[Stage]) -> dict[str, str]:
+    """Build a {normalized_key: mda_selection_string} dict from stage constraints.
+
+    This is used to pass selection strings for custom constraints (e.g.
+    ``ions_sf``) to the equilibration setup functions so that the restraint
+    index files can be generated correctly.
+    """
+    selections: dict[str, str] = {}
+    for stage in stages:
+        for item in stage.constraints:
+            key = _normalize_constraint_key(item.name)
+            if item.selection:
+                selections[key] = _resolve_constraint_selection(item.selection)
+    return selections
+
+
+_GROMACS_SUPPORTED_CONSTRAINT_KEYS = frozenset(
+    {
+        "protein_backbone",
+        "protein_sidechain",
+        "lipid_head",
+        "lipid_tail",
+    }
+)
+
+
+def _validate_constraint_support(
+    engine: str,
+    stage_params: list[dict[str, Any]],
+    selections: dict[str, str],
+) -> None:
+    """Validate constraint support for the selected equilibration engine."""
+    active_keys = {
+        key
+        for stage in stage_params
+        for key, force in stage.get("constraints", {}).items()
+        if float(force) > 0
+    }
+
+    if engine == "gromacs":
+        unsupported = sorted(active_keys - _GROMACS_SUPPORTED_CONSTRAINT_KEYS)
+        if unsupported:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "GROMACS currently supports positional restraints only for "
+                    "protein_backbone, protein_sidechain, lipid_head, and "
+                    "lipid_tail. Unsupported active constraints: "
+                    + ", ".join(unsupported)
+                ),
+            )
+        return
+
+    if engine == "openmm":
+        std_keys = {
+            "protein_backbone",
+            "protein_sidechain",
+            "lipid_head",
+            "lipid_tail",
+        }
+        defaults = {
+            "water",
+            "ions",
+            "ion",
+            "other",
+        }
+        missing = sorted(
+            k
+            for k in active_keys
+            if k not in std_keys and k not in defaults and k not in selections
+        )
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "OpenMM custom constraints require a valid MDAnalysis "
+                    "selection. Missing selection for: " + ", ".join(missing)
+                ),
+            )
 
 
 def _collect_system_files(input_dir: Path) -> dict[str, str]:
@@ -1166,6 +1389,8 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
         )
 
     stage_params = _build_stage_params(payload.protocol.stages)
+    selections = _build_selections(payload.protocol.stages)
+    _validate_constraint_support(engine, stage_params, selections)
     system_files = _collect_system_files(input_dir)
 
     if engine == "gromacs":
@@ -1178,6 +1403,7 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
         manager.setup_gromacs_equilibration(
             system_files=system_files,
             stage_params_list=stage_params,
+            selections=selections,
             output_name=str(output_dir),
             scheme_type=payload.ensemble.upper(),
             gmx_executable=resolved_exec,
@@ -1199,6 +1425,7 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
         manager.setup_openmm_equilibration(
             system_files=system_files,
             stage_params_list=stage_params,
+            selections=selections,
             output_name=str(output_dir),
             scheme_type=payload.ensemble.upper(),
             add_com_restraint=payload.add_com_restraint,
@@ -1406,7 +1633,11 @@ class StructuralAnalysisRequest(BaseModel):
         ..., description="Absolute paths to trajectory files"
     )
     analysis_type: str = Field(
-        ..., description="rmsd, rmsf, distance, radius_of_gyration"
+        ...,
+        description=(
+            "rmsd, rmsf, distance, radius_of_gyration, "
+            "area_per_lipid, membrane_thickness"
+        ),
     )
     selection: str = Field("protein and backbone", description="MDAnalysis selection")
     selection2: str = Field("", description="Second selection for distance analysis")
@@ -1419,6 +1650,20 @@ class StructuralAnalysisRequest(BaseModel):
         "residue_number",
         description="residue_number, residue_type_number, or atom_index",
     )
+    leaflet_lipid_sel: str | None = Field(
+        None, description="Leaflet assignment selection for bilayer analysis"
+    )
+    leaflet_filter_sel: str | None = Field(
+        None,
+        description="Optional leaflet filter selection (membrane thickness only)",
+    )
+    n_bins: int = Field(1, description="Grid bins for membrane thickness analysis")
+    interpolate: bool = Field(
+        False, description="Interpolate missing grid values (membrane thickness)"
+    )
+    start: int | None = Field(None, description="First trajectory frame (inclusive)")
+    stop: int | None = Field(None, description="Last trajectory frame (exclusive)")
+    step: int | None = Field(None, description="Trajectory frame stride")
 
 
 class AnalyzeTopologyRequest(BaseModel):
@@ -1550,9 +1795,7 @@ def analyze_topology(payload: AnalyzeTopologyRequest) -> dict:
     if not top.is_file():
         raise HTTPException(status_code=404, detail=f"Topology file not found: {top}")
     try:
-        u = load_structure(str(top))
-
-        # Per-segment summary
+        u = _load_structure_for_headgroup_detection(top)
         segments = []
         for seg in u.segments:
             segments.append(
@@ -1616,7 +1859,31 @@ def analyze_topology(payload: AnalyzeTopologyRequest) -> dict:
             "segments": segments,
             "residue_types": residue_types,
             "categories": category_summary,
+            **_detect_lipid_headgroup_selection(u),
         }
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+class DetectLipidHeadgroupsRequest(BaseModel):
+    topology_path: str = Field(..., description="Absolute path to topology file")
+    trajectory_paths: list[str] | None = Field(
+        None, description="Optional trajectory paths (recommended for prmtop/psf)"
+    )
+
+
+@app.post("/detect-lipid-headgroups")
+def detect_lipid_headgroups(payload: DetectLipidHeadgroupsRequest) -> dict:
+    top = Path(os.path.abspath(os.path.expanduser(payload.topology_path)))
+    if not top.is_file():
+        raise HTTPException(status_code=404, detail=f"Topology file not found: {top}")
+    trajs = [
+        Path(os.path.abspath(os.path.expanduser(p)))
+        for p in (payload.trajectory_paths or [])
+    ]
+    try:
+        u = _load_structure_for_headgroup_detection(top, trajs or None)
+        return _detect_lipid_headgroup_selection(u)
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
 
@@ -1863,6 +2130,170 @@ def get_process_info(payload: EquilibrationRequest) -> dict:
     return result
 
 
+_BILAYER_ANALYSIS_TYPES = {
+    "area_per_lipid",
+    "apl",
+    "membrane_thickness",
+    "memb_thickness",
+    "thickness",
+}
+
+
+def _normalize_analysis_type(analysis_type: str) -> str:
+    return analysis_type.strip().lower().replace(" ", "_").replace("-", "_")
+
+
+_PHOSPHATE_ATOM_NAME_RE = re.compile(r"^(PO4|P\d*)$", re.IGNORECASE)
+
+_KNOWN_LIPID_HEADGROUP_NAMES = frozenset(
+    {
+        "PO4",
+        "P",
+        "P31",
+        "P32",
+        "P1",
+        "P2",
+        "P3",
+        "GL1",
+        "GL2",
+        "ROH",
+        "NC3",
+        "C4B",
+    }
+)
+
+
+def _is_lipid_headgroup_atom_name(name: str) -> bool:
+    cleaned = str(name).strip()
+    if not cleaned:
+        return False
+    if cleaned.upper() in _KNOWN_LIPID_HEADGROUP_NAMES:
+        return True
+    return bool(_PHOSPHATE_ATOM_NAME_RE.match(cleaned))
+
+
+def _select_lipid_atoms(u: mda.Universe) -> mda.AtomGroup:
+    """Return atoms belonging to lipids, using a broad fallback when names differ."""
+    lipid_atoms = u.select_atoms(LIPID_SELECTION)
+    if len(lipid_atoms) > 0:
+        return lipid_atoms
+    broad_sel = f"not (protein or nucleic or water or ({ION_SELECTION}))"
+    return u.select_atoms(broad_sel)
+
+
+def _headgroup_name_counts(atoms: mda.AtomGroup) -> list[dict[str, Any]]:
+    from collections import Counter
+
+    counts = Counter(str(name).strip() for name in atoms.names)
+    detected: list[dict[str, Any]] = []
+    for name, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+        if _is_lipid_headgroup_atom_name(name):
+            detected.append({"name": name, "atom_count": int(count)})
+    return detected
+
+
+def _detect_lipid_headgroup_atoms(u: mda.Universe) -> list[dict[str, Any]]:
+    """Detect phosphate/headgroup atom names present in lipid residues."""
+    lipid_atoms = _select_lipid_atoms(u)
+    if len(lipid_atoms) == 0:
+        return []
+
+    detected = _headgroup_name_counts(lipid_atoms)
+    if detected:
+        return detected
+
+    try:
+        phosphorus = lipid_atoms.select_atoms("element P")
+    except Exception:
+        phosphorus = lipid_atoms[[str(e).upper() == "P" for e in lipid_atoms.elements]]
+
+    if len(phosphorus) > 0:
+        from collections import Counter
+
+        counts = Counter(str(name).strip() for name in phosphorus.names)
+        return [
+            {"name": name, "atom_count": int(count)}
+            for name, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        ]
+
+    return []
+
+
+def _headgroup_selection_from_atom_names(names: list[str]) -> str:
+    cleaned = [name.strip() for name in names if name.strip()]
+    if not cleaned:
+        return ""
+    return "name " + " ".join(cleaned)
+
+
+def _detect_lipid_headgroup_selection(u: mda.Universe) -> dict[str, Any]:
+    atoms = _detect_lipid_headgroup_atoms(u)
+    names = [entry["name"] for entry in atoms]
+    return {
+        "lipid_headgroup_atoms": atoms,
+        "lipid_headgroup_selection": _headgroup_selection_from_atom_names(names),
+    }
+
+
+def _count_selection_atoms(u: mda.Universe, sel: str) -> int:
+    try:
+        return len(u.select_atoms(sel))
+    except Exception as ex:
+        raise ValueError(f"Invalid MDAnalysis selection '{sel}': {ex}") from ex
+
+
+def _validate_bilayer_selections(
+    topology: Path,
+    trajectories: list[Path],
+    lipid_sel: str,
+    leaflet_lipid_sel: str | None = None,
+    leaflet_filter_sel: str | None = None,
+) -> None:
+    """Ensure bilayer selections match atoms before calling lipyphilic."""
+    u = _load_analysis_universe(topology, trajectories)
+
+    n_lipid = _count_selection_atoms(u, lipid_sel)
+    if n_lipid == 0:
+        detected = _detect_lipid_headgroup_selection(u)
+        combined = detected["lipid_headgroup_selection"]
+        hint = (
+            f" Detected from lipids: {combined!r}."
+            if combined
+            else " No phosphate/headgroup atom names were found in lipid residues."
+        )
+        raise ValueError(
+            f"Lipid headgroup selection {lipid_sel!r} matched 0 atoms.{hint}"
+        )
+
+    if leaflet_lipid_sel:
+        n_leaflet = _count_selection_atoms(u, leaflet_lipid_sel)
+        if n_leaflet == 0:
+            raise ValueError(
+                f"Leaflet assignment selection {leaflet_lipid_sel!r} matched 0 atoms."
+            )
+
+    if leaflet_filter_sel:
+        n_filter = _count_selection_atoms(u, leaflet_filter_sel)
+        if n_filter == 0:
+            raise ValueError(
+                f"Leaflet filter selection {leaflet_filter_sel!r} matched 0 atoms."
+            )
+
+
+def _bilayer_analysis_error_message(exc: Exception, lipid_sel: str) -> str:
+    msg = str(exc).strip()
+    if "matched 0 atoms" in msg or "Invalid MDAnalysis selection" in msg:
+        return msg
+    if "zero-size array" in msg or "minimum which has no identity" in msg:
+        return (
+            "Bilayer analysis produced no usable data. Check the enabled phosphate "
+            f"headgroup atom names (current selection: {lipid_sel!r}). The trajectory "
+            "may not contain an equilibrated bilayer."
+        )
+    return msg or "Bilayer analysis failed."
+
+
+@app.post("/analysis-structural")
 def run_structural_analysis(payload: StructuralAnalysisRequest) -> dict:
     top = Path(os.path.abspath(os.path.expanduser(payload.topology_path)))
     if not top.is_file():
@@ -1879,19 +2310,63 @@ def run_structural_analysis(payload: StructuralAnalysisRequest) -> dict:
             status_code=404,
             detail=f"Trajectory file(s) not found: {', '.join(missing)}",
         )
+    coord_trajs = _filter_coordinate_trajectories(top, trajs)
+    if not coord_trajs:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No coordinate trajectory files found. Topology {top.name!r} cannot "
+                "be used as a trajectory. Add DCD, XTC, TRR, NC, or similar files."
+            ),
+        )
 
     try:
-        result = namd_analysis.run_structural_analysis(
-            topology_file=str(top),
-            trajectory_files=[str(p) for p in trajs],
-            analysis_type=payload.analysis_type,
-            selection=payload.selection,
-            selection2=payload.selection2,
-            reference_frame=payload.reference_frame,
-            align=payload.align,
-            file_times=payload.file_times,
-            rmsf_xaxis_type=payload.rmsf_xaxis_type,
-        )
+        atype = _normalize_analysis_type(payload.analysis_type)
+        if atype in _BILAYER_ANALYSIS_TYPES:
+            lipid_sel = (payload.selection or "").strip()
+            if not lipid_sel:
+                u = _load_analysis_universe(top, trajs)
+                lipid_sel = _detect_lipid_headgroup_selection(u)[
+                    "lipid_headgroup_selection"
+                ] or "name PO4"
+            _validate_bilayer_selections(
+                top,
+                trajs,
+                lipid_sel,
+                payload.leaflet_lipid_sel,
+                payload.leaflet_filter_sel,
+            )
+            try:
+                result = namd_analysis.run_bilayer_analysis(
+                    topology_file=str(top),
+                    trajectory_files=[str(p) for p in coord_trajs],
+                    analysis_type=payload.analysis_type,
+                    lipid_sel=lipid_sel,
+                    leaflet_lipid_sel=payload.leaflet_lipid_sel,
+                    leaflet_filter_sel=payload.leaflet_filter_sel,
+                    n_bins=payload.n_bins,
+                    interpolate=payload.interpolate,
+                    file_times=payload.file_times,
+                    start=payload.start,
+                    stop=payload.stop,
+                    step=payload.step,
+                )
+            except Exception as bilayer_ex:
+                raise ValueError(
+                    _bilayer_analysis_error_message(bilayer_ex, lipid_sel)
+                ) from bilayer_ex
+        else:
+            result = namd_analysis.run_structural_analysis(
+                topology_file=str(top),
+                trajectory_files=[str(p) for p in coord_trajs],
+                analysis_type=payload.analysis_type,
+                selection=payload.selection,
+                selection2=payload.selection2,
+                reference_frame=payload.reference_frame,
+                align=payload.align,
+                file_times=payload.file_times,
+                rmsf_xaxis_type=payload.rmsf_xaxis_type,
+            )
         return sanitize_value(result)
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex

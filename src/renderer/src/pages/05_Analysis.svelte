@@ -10,6 +10,7 @@
   import LineChart from '../components/LineChart.svelte'
   import {
     analyzeTopology,
+    detectLipidHeadgroups,
     getEnergeticProperties,
     runEnergeticAnalysis,
     runStructuralAnalysis
@@ -31,6 +32,16 @@
   let referenceFrame = $state('0')
   let align = $state(true)
   let rmsfXaxisType = $state('residue_number')
+  let leafletLipidSel = $state('')
+  let leafletFilterSel = $state('')
+  let nBins = $state('1')
+  let interpolate = $state(false)
+  /** @type {Array<{ name: string, atomCount: number, enabled: boolean }>} */
+  let lipidHeadgroupAtoms = $state([])
+  let headgroupDetecting = $state(false)
+  let headgroupDetectAttempted = $state(false)
+  let manualHeadgroupName = $state('')
+  let bilayerAdvancedOpen = $state(false)
 
   // --- Energetic state ---
   /** @type {Array<{ path: string, timeNs: string }>} */
@@ -121,13 +132,22 @@
     rmsd: { ...structDefaults },
     rmsf: { ...structDefaults },
     distance: { ...structDefaults },
-    radius_of_gyration: { ...structDefaults }
+    radius_of_gyration: { ...structDefaults },
+    area_per_lipid: { ...structDefaults, yUnit: 'Å²' },
+    membrane_thickness: { ...structDefaults }
   })
   let ePlot = $state({ ...energDefaults })
 
   // Per-type stored structural results (null = not yet run for that type)
   /** @type {Record<string,{rawX:number[],rawY:number[],xLabels:string[],seriesName:string,primaryStats:any,chartXLabel:string,chartYLabel:string,chartTitle:string,lastAnalysisHasTimeX:boolean}|null>} */
-  let structResults = $state({ rmsd: null, rmsf: null, distance: null, radius_of_gyration: null })
+  let structResults = $state({
+    rmsd: null,
+    rmsf: null,
+    distance: null,
+    radius_of_gyration: null,
+    area_per_lipid: null,
+    membrane_thickness: null
+  })
 
   // Derived: active plot settings for current mode+type
   const ps = $derived(mode === 'structural' ? sPlots[structuralType] : ePlot)
@@ -145,14 +165,20 @@
       mode === 'structural' ? activeStructRes !== null : chartSeries.length > 0
   })
 
-  // Unit conversion helpers
+  const BILAYER_TYPES = new Set(['area_per_lipid', 'membrane_thickness'])
+  const isBilayerType = (type) => BILAYER_TYPES.has(type)
   function convertX(xs, fromUnit, toUnit) {
     if (fromUnit === toUnit) return xs
     const factors = { ns: 1, ps: 1000, µs: 0.001 }
     const f = factors[toUnit] / factors[fromUnit]
     return xs.map((v) => v * f)
   }
-  function convertStructY(ys, toUnit) {
+  function convertStructY(ys, toUnit, analysisType = structuralType) {
+    if (analysisType === 'area_per_lipid') {
+      if (toUnit === 'Å²' || toUnit === '') return ys
+      if (toUnit === 'nm²') return ys.map((v) => v * 0.01)
+      return ys
+    }
     // API returns Å; convert to nm if needed
     if (toUnit === 'Å' || toUnit === '') return ys
     if (toUnit === 'nm') return ys.map((v) => v * 0.1)
@@ -259,8 +285,20 @@
       const xs = activeStructRes.lastAnalysisHasTimeX
         ? convertX(activeStructRes.rawX, 'ns', sp.xUnit)
         : activeStructRes.rawX
-      const ys = convertStructY(activeStructRes.rawY, sp.yUnit)
-      return [{ name: activeStructRes.seriesName, x: xs, y: ys, color: sp.lineColor }]
+      const mainSeries = {
+        name: activeStructRes.seriesName,
+        x: xs,
+        y: convertStructY(activeStructRes.rawY, sp.yUnit, structuralType),
+        color: sp.lineColor
+      }
+      const extraColors = ['#3b82f6', '#22c55e']
+      const extraSeries = (activeStructRes.extraSeries || []).map((s, i) => ({
+        name: s.name,
+        x: xs,
+        y: convertStructY(s.rawY, sp.yUnit, structuralType),
+        color: extraColors[i % extraColors.length]
+      }))
+      return [mainSeries, ...extraSeries]
     }
     // Energetic: filter by selectedProperties, full reactive unit conversion
     if (rawSeries.length === 0) return []
@@ -292,6 +330,11 @@
     }
     if (!activeStructRes) return 'Y'
     const sp = sPlots[structuralType]
+    if (structuralType === 'area_per_lipid') {
+      return sp.yUnit !== 'Å²'
+        ? activeStructRes.chartYLabel.replace(/\(Å²\)/, `(${sp.yUnit})`)
+        : activeStructRes.chartYLabel
+    }
     return sp.yUnit !== 'Å'
       ? activeStructRes.chartYLabel.replace(/\(Å\)/, `(${sp.yUnit})`)
       : activeStructRes.chartYLabel
@@ -324,6 +367,67 @@
   let svgEl = $state(null)
 
   // ---- Helpers ----
+  function applyHeadgroupDetection(data) {
+    const atoms = data?.lipid_headgroup_atoms || []
+    lipidHeadgroupAtoms = atoms.map((a) => ({
+      name: a.name,
+      atomCount: a.atom_count ?? a.atomCount ?? 0,
+      enabled: true
+    }))
+    syncHeadgroupSelection()
+  }
+
+  function addManualHeadgroupName() {
+    const name = manualHeadgroupName.trim()
+    if (!name) return
+    if (lipidHeadgroupAtoms.some((a) => a.name === name)) {
+      lipidHeadgroupAtoms = lipidHeadgroupAtoms.map((a) =>
+        a.name === name ? { ...a, enabled: true } : a
+      )
+    } else {
+      lipidHeadgroupAtoms = [
+        ...lipidHeadgroupAtoms,
+        { name, atomCount: 0, enabled: true }
+      ]
+    }
+    manualHeadgroupName = ''
+    syncHeadgroupSelection()
+  }
+
+  function removeHeadgroupAtom(name) {
+    lipidHeadgroupAtoms = lipidHeadgroupAtoms.filter((a) => a.name !== name)
+    syncHeadgroupSelection()
+  }
+
+  function syncHeadgroupSelection() {
+    const names = lipidHeadgroupAtoms.filter((a) => a.enabled).map((a) => a.name)
+    selection = names.length ? `name ${names.join(' ')}` : ''
+  }
+
+  function toggleHeadgroupAtom(name, enabled) {
+    lipidHeadgroupAtoms = lipidHeadgroupAtoms.map((a) =>
+      a.name === name ? { ...a, enabled } : a
+    )
+    syncHeadgroupSelection()
+  }
+
+  async function refreshHeadgroupAtoms() {
+    if (!topologyPath) return
+    headgroupDetecting = true
+    headgroupDetectAttempted = true
+    try {
+      const data = await detectLipidHeadgroups({
+        topologyPath,
+        trajectoryPaths: trajectoryFiles.map((f) => f.path)
+      })
+      applyHeadgroupDetection(data)
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e))
+    } finally {
+      headgroupDetecting = false
+    }
+  }
+
   function basename(path) {
     return path.split(/[\\/]/).pop() || path
   }
@@ -355,7 +459,14 @@
       [{ name: 'Topology', extensions: ['pdb', 'psf', 'prmtop', 'parm7', 'gro'] }],
       workingDir || undefined
     )
-    if (!result.canceled) topologyPath = result.filePath
+    if (!result.canceled) {
+      topologyPath = result.filePath
+      lipidHeadgroupAtoms = []
+      headgroupDetectAttempted = false
+      if (isBilayerType(structuralType)) {
+        await refreshHeadgroupAtoms()
+      }
+    }
   }
 
   async function addTrajectoryFile() {
@@ -371,16 +482,23 @@
       ...result.filePaths.filter((p) => !existing.has(p)).map((p) => ({ path: p, timeNs: '' }))
     ]
     trajectoryFiles = sortByName(trajectoryFiles)
+    if (isBilayerType(structuralType) && topologyPath) {
+      await refreshHeadgroupAtoms()
+    }
   }
 
   function removeTrajectory(index) {
     trajectoryFiles = trajectoryFiles.filter((_, i) => i !== index)
   }
 
-  function onStructuralTypeChange(nextType) {
+  async function onStructuralTypeChange(nextType) {
     structuralType = nextType
     if (nextType === 'rmsf' && (!selection || selection === 'protein and backbone')) {
       selection = 'protein and name CA'
+    } else if (isBilayerType(nextType)) {
+      if (topologyPath) {
+        await refreshHeadgroupAtoms()
+      }
     }
   }
 
@@ -435,7 +553,14 @@
     trajectoryFiles = arr
     onDragEnd()
     // Clear all structural results — order changed, must re-run
-    structResults = { rmsd: null, rmsf: null, distance: null, radius_of_gyration: null }
+    structResults = {
+      rmsd: null,
+      rmsf: null,
+      distance: null,
+      radius_of_gyration: null,
+      area_per_lipid: null,
+      membrane_thickness: null
+    }
   }
 
   function onDropLog(e, index) {
@@ -462,6 +587,9 @@
     topoLoading = true
     try {
       topoInfo = await analyzeTopology({ topologyPath })
+      if (isBilayerType(structuralType)) {
+        applyHeadgroupDetection(topoInfo)
+      }
       showTopoInfo = true
     } catch (e) {
       alert(e instanceof Error ? e.message : String(e))
@@ -521,6 +649,8 @@
         if (trajectoryFiles.length === 0) throw new Error('Add at least one trajectory file.')
         if (structuralType === 'distance' && (!selection || !selection2))
           throw new Error('Distance analysis requires two atom selections.')
+        if (isBilayerType(structuralType) && !selection.trim())
+          throw new Error('Enable at least one phosphate/headgroup atom name.')
 
         const result = await runStructuralAnalysis({
           topologyPath,
@@ -531,19 +661,31 @@
           referenceFrame: Number(referenceFrame || 0),
           align,
           fileTimes: makeFileTimes(trajectoryFiles),
-          rmsfXaxisType: rmsfXaxisType
+          rmsfXaxisType: rmsfXaxisType,
+          leafletLipidSel: leafletLipidSel.trim() || null,
+          leafletFilterSel: leafletFilterSel.trim() || null,
+          nBins: Number(nBins) || 1,
+          interpolate
         })
 
         const xLabelsResult = result.x_labels || []
+        const extraSeries =
+          structuralType === 'area_per_lipid'
+            ? [
+                { name: 'Upper leaflet', rawY: result.mean_upper_leaflet || [] },
+                { name: 'Lower leaflet', rawY: result.mean_lower_leaflet || [] }
+              ]
+            : []
         structResults[structuralType] = {
           rawX: result.x || [],
           rawY: result.y || [],
           xLabels: xLabelsResult,
+          extraSeries,
           seriesName: result.series_name,
           primaryStats: result.stats || null,
           chartXLabel: result.x_label || 'X',
           chartYLabel: result.y_label || 'Y',
-          chartTitle: `${(result.analysis_type || structuralType).toUpperCase()} Analysis`,
+          chartTitle: `${(result.analysis_type || structuralType).replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())} Analysis`,
           lastAnalysisHasTimeX: xLabelsResult.length === 0
         }
       } else {
@@ -827,6 +969,24 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
         </table>
       {/if}
 
+      {#if topoInfo.lipid_headgroup_atoms?.length}
+        <p class="mb-1 font-medium">Phosphate / headgroup atom names</p>
+        <p class="mb-2 leading-relaxed text-neutral-500">
+          Detected in lipid residues. All names are enabled by default for bilayer analysis:
+        </p>
+        <div class="mb-4 flex flex-wrap gap-1">
+          {#each topoInfo.lipid_headgroup_atoms as atom (atom.name)}
+            <span class="rounded border border-amber-700/50 bg-amber-950/30 px-2 py-1 font-mono text-amber-200">
+              {atom.name}
+              <span class="text-amber-400/70">×{atom.atom_count}</span>
+            </span>
+          {/each}
+        </div>
+        {#if topoInfo.lipid_headgroup_selection}
+          <p class="mb-4 font-mono text-neutral-400">{topoInfo.lipid_headgroup_selection}</p>
+        {/if}
+      {/if}
+
       <!-- Residue types -->
       <p class="mb-1 font-medium">All residue types ({topoInfo.residue_types.length})</p>
       <p class="leading-relaxed text-neutral-400">{topoInfo.residue_types.join('  ')}</p>
@@ -933,21 +1093,148 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           <option value="rmsf">RMSF</option>
           <option value="distance">Distance</option>
           <option value="radius_of_gyration">Radius of Gyration</option>
+          <option value="membrane_thickness">Membrane Thickness</option>
+          <option value="area_per_lipid">Area per Lipid</option>
         </Select>
 
-        <!-- Selection 1 row with help button -->
-        <div class="flex gap-1">
-          <Input
-            bind:value={selection}
-            placeholder={structuralType === 'distance' ? 'Atom group 1' : 'MDAnalysis selection'}
-            className="min-w-0 flex-1"
-          />
-          <button
-            class="shrink-0 rounded border border-neutral-700 px-2 text-neutral-400 hover:text-neutral-200"
-            onclick={() => (showSelectionHelp = true)}
-            title="Selection syntax help">?</button
-          >
-        </div>
+        {#if isBilayerType(structuralType)}
+          <div class="space-y-2">
+            <div class="flex items-center justify-between gap-2">
+              <p class="text-neutral-500">Headgroup atoms</p>
+              <Button
+                size="sm"
+                variant="ghost"
+                onclick={refreshHeadgroupAtoms}
+                disabled={!topologyPath || headgroupDetecting}
+              >
+                {headgroupDetecting ? 'Detecting…' : 'Refresh'}
+              </Button>
+            </div>
+
+            {#if headgroupDetecting}
+              <div class="flex items-center gap-2 rounded border p-2 dark:border-neutral-800">
+                <Spinner />
+                <span class="text-neutral-500">Detecting…</span>
+              </div>
+            {:else if lipidHeadgroupAtoms.length === 0}
+              <p class="text-xs text-neutral-600">
+                {#if headgroupDetectAttempted}
+                  None detected — use Advanced settings to add atom names.
+                {:else if !topologyPath}
+                  Select a topology file, then click Refresh.
+                {:else}
+                  Click Refresh after loading topology and trajectory.
+                {/if}
+              </p>
+            {:else}
+              <div
+                class="max-h-36 space-y-1 overflow-y-auto rounded border p-2 dark:border-neutral-800"
+              >
+                {#each lipidHeadgroupAtoms as atom (atom.name)}
+                  {@const checked = atom.enabled}
+                  <label class="flex items-center gap-2">
+                    <Checkbox
+                      name={`headgroup-${atom.name}`}
+                      {checked}
+                      onchange={(e) => toggleHeadgroupAtom(atom.name, e.currentTarget.checked)}
+                    />
+                    <span class="font-mono text-neutral-300">{atom.name}</span>
+                    {#if atom.atomCount > 0}
+                      <span class="text-neutral-600">({atom.atomCount.toLocaleString()})</span>
+                    {/if}
+                  </label>
+                {/each}
+              </div>
+            {/if}
+
+            <button
+              type="button"
+              class="flex w-full items-center justify-between rounded border px-2 py-1.5 text-left dark:border-neutral-800 hover:bg-neutral-900"
+              onclick={() => (bilayerAdvancedOpen = !bilayerAdvancedOpen)}
+            >
+              <span class="text-neutral-400">Advanced settings</span>
+              <span class="text-neutral-600">{bilayerAdvancedOpen ? '▲' : '▼'}</span>
+            </button>
+
+            {#if bilayerAdvancedOpen}
+              <div class="space-y-2 rounded border p-2 dark:border-neutral-800">
+                <div class="flex gap-1">
+                  <Input
+                    bind:value={manualHeadgroupName}
+                    placeholder="Add atom name"
+                    className="min-w-0 flex-1"
+                    onkeydown={(e) => e.key === 'Enter' && addManualHeadgroupName()}
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onclick={addManualHeadgroupName}
+                    disabled={!manualHeadgroupName.trim()}
+                  >
+                    Add
+                  </Button>
+                </div>
+
+                {#if lipidHeadgroupAtoms.length > 0}
+                  <div class="space-y-1">
+                    {#each lipidHeadgroupAtoms as atom (atom.name)}
+                      <div class="flex items-center justify-between gap-2 text-xs">
+                        <span class="font-mono text-neutral-500">{atom.name}</span>
+                        <button
+                          type="button"
+                          class="text-neutral-600 hover:text-red-400"
+                          onclick={() => removeHeadgroupAtom(atom.name)}>Remove</button
+                        >
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+
+                {#if selection}
+                  <p class="text-xs text-neutral-600">
+                    Selection: <span class="font-mono text-neutral-500">{selection}</span>
+                  </p>
+                {/if}
+
+                <Input
+                  bind:value={leafletLipidSel}
+                  placeholder="Leaflet assignment (optional)"
+                  className="w-full"
+                />
+
+                {#if structuralType === 'membrane_thickness'}
+                  <Input
+                    bind:value={leafletFilterSel}
+                    placeholder="Leaflet filter (optional)"
+                    className="w-full"
+                  />
+                  <div class="flex items-center gap-2">
+                    <span class="shrink-0 text-neutral-500">Grid bins</span>
+                    <Input size="sm" type="number" min="1" step="1" bind:value={nBins} className="w-20" />
+                  </div>
+                  <label class="flex items-center gap-2">
+                    <Checkbox name="interpolate-thickness" bind:checked={interpolate} />
+                    <span>Interpolate missing grid values</span>
+                  </label>
+                {/if}
+              </div>
+            {/if}
+          </div>
+        {:else}
+          <!-- Selection 1 row with help button -->
+          <div class="flex gap-1">
+            <Input
+              bind:value={selection}
+              placeholder={structuralType === 'distance' ? 'Atom group 1' : 'MDAnalysis selection'}
+              className="min-w-0 flex-1"
+            />
+            <button
+              class="shrink-0 rounded border border-neutral-700 px-2 text-neutral-400 hover:text-neutral-200"
+              onclick={() => (showSelectionHelp = true)}
+              title="Selection syntax help">?</button
+            >
+          </div>
+        {/if}
 
         {#if structuralType === 'distance'}
           <Input bind:value={selection2} placeholder="Atom group 2" className="w-full" />
@@ -1146,8 +1433,13 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               <div>
                 <p class="mb-0.5 text-neutral-500">Y units</p>
                 <Select bind:value={ps.yUnit} className="w-full">
-                  <option value="Å">Å</option>
-                  <option value="nm">nm</option>
+                  {#if structuralType === 'area_per_lipid'}
+                    <option value="Å²">Å²</option>
+                    <option value="nm²">nm²</option>
+                  {:else}
+                    <option value="Å">Å</option>
+                    <option value="nm">nm</option>
+                  {/if}
                 </Select>
               </div>
             {/if}
@@ -1387,7 +1679,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
       <h1 class="text-lg font-semibold">{displayTitle || 'Analysis'}</h1>
       <p class="text-xs text-neutral-500">
         {mode === 'structural'
-          ? 'RMSD, RMSF, Distance and Radius of Gyration from trajectories.'
+          ? 'RMSD, RMSF, distance, radius of gyration, membrane thickness, and area per lipid from trajectories.'
           : 'NAMD energetic properties from ENERGY log records.'}
       </p>
     </div>

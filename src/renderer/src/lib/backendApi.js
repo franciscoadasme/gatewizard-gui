@@ -120,9 +120,9 @@ export function checkLigandParametrization(pdbPath, ligandNames) {
 }
 
 /**
- * Run structural trajectory analysis (RMSD/RMSF/Distance/Rg).
- * @param {{ topologyPath: string, trajectoryPaths: string[], analysisType: string, selection?: string, selection2?: string, referenceFrame?: number, align?: boolean, fileTimes?: Record<string, number> }} payload
- * @returns {Promise<{ analysis_type: string, x: number[], y: number[], x_label: string, y_label: string, series_name: string, x_labels?: string[], stats?: Record<string, number> }>}
+ * Run structural trajectory analysis (RMSD/RMSF/Distance/Rg/bilayer).
+ * @param {{ topologyPath: string, trajectoryPaths: string[], analysisType: string, selection?: string, selection2?: string, referenceFrame?: number, align?: boolean, fileTimes?: Record<string, number>, rmsfXaxisType?: string, leafletLipidSel?: string|null, leafletFilterSel?: string|null, nBins?: number, interpolate?: boolean, start?: number|null, stop?: number|null, step?: number|null }} payload
+ * @returns {Promise<{ analysis_type: string, x: number[], y: number[], x_label: string, y_label: string, series_name: string, x_labels?: string[], stats?: Record<string, number>, mean_upper_leaflet?: number[], mean_lower_leaflet?: number[] }>}
  */
 export function runStructuralAnalysis(payload) {
   return backendJson('/analysis-structural', payload)
@@ -149,10 +149,19 @@ export function runEnergeticAnalysis(payload) {
 /**
  * Analyze a topology file and return structural summary.
  * @param {{ topologyPath: string }} payload
- * @returns {Promise<{ n_atoms: number, n_residues: number, n_segments: number, segments: Array<{ segid: string, n_residues: number, n_atoms: number }>, residue_types: string[] }>}
+ * @returns {Promise<{ n_atoms: number, n_residues: number, n_segments: number, segments: Array<{ segid: string, n_residues: number, n_atoms: number }>, residue_types: string[], lipid_headgroup_atoms?: Array<{ name: string, atom_count: number }>, lipid_headgroup_selection?: string }>}
  */
 export function analyzeTopology(payload) {
   return backendJson('/analyze-topology', payload)
+}
+
+/**
+ * Detect phosphate/headgroup atom names in lipid residues from a topology file.
+ * @param {{ topologyPath: string, trajectoryPaths?: string[] }} payload
+ * @returns {Promise<{ lipid_headgroup_atoms: Array<{ name: string, atom_count: number }>, lipid_headgroup_selection: string }>}
+ */
+export function detectLipidHeadgroups(payload) {
+  return backendJson('/detect-lipid-headgroups', payload)
 }
 
 /**

@@ -82,7 +82,7 @@ export const analysisStatus = $state({
   running: false,
   /** 'structural' | 'energetic' */
   mode: '',
-  /** Structural type (rmsd, rmsf, distance, radius_of_gyration) or '' */
+  /** Structural type (rmsd, rmsf, distance, radius_of_gyration, area_per_lipid, membrane_thickness) or '' */
   analysisType: '',
   /** Whether a result is available for the current type */
   resultAvailable: false,
