@@ -6,6 +6,10 @@ import path, { join } from 'path'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import icon from '../../resources/window_icon.png?asset'
 import { ensureMambaRuntime, getLaunchPythonPath } from './runtime-bootstrap.js'
+import {
+  applyWorkAreaMaximize,
+  clearWorkAreaMaximizeLimits
+} from './window-work-area.js'
 
 const BACKEND_URL = 'http://127.0.0.1:8765'
 const GPU_SAFE_MODE_FLAG = '--gatewizard-gpu-safe-mode=1'
@@ -28,68 +32,102 @@ const MIN_WINDOW_WIDTH = 640
 const MIN_WINDOW_HEIGHT = 480
 
 /** @type {WeakMap<BrowserWindow, { maximized: boolean, restoreBounds?: Electron.Rectangle, applyingBounds: boolean, blockNativeMaximize: boolean }>} */
-const linuxWindowStates = new WeakMap()
+const workAreaWindowStates = new WeakMap()
 
-function getLinuxWindowState(win) {
-  let state = linuxWindowStates.get(win)
+function usesWorkAreaMaximize() {
+  // Frameless native maximize can crash on X11/WSL and covers the Windows taskbar.
+  return process.platform === 'linux' || process.platform === 'win32'
+}
+
+function getWorkAreaWindowState(win) {
+  let state = workAreaWindowStates.get(win)
   if (!state) {
     state = { maximized: false, applyingBounds: false, blockNativeMaximize: false }
-    linuxWindowStates.set(win, state)
+    workAreaWindowStates.set(win, state)
   }
   return state
 }
 
-function setupLinuxFramelessWindow(win) {
-  if (process.platform !== 'linux') return
+function setupWorkAreaFramelessWindow(win) {
+  if (!usesWorkAreaMaximize()) return
 
   win.on('will-resize', () => {
-    const state = getLinuxWindowState(win)
+    const state = getWorkAreaWindowState(win)
     if (!state.applyingBounds) state.maximized = false
   })
 
-  // Native maximize on frameless X11/WSL can crash Chromium — reroute to setBounds.
+  // Reroute native maximize to work-area bounds (keeps taskbar/dock visible).
   win.on('maximize', () => {
-    const state = getLinuxWindowState(win)
+    const state = getWorkAreaWindowState(win)
     if (state.applyingBounds || state.blockNativeMaximize) return
 
     state.blockNativeMaximize = true
-    setImmediate(() => {
-      try {
-        if (!win.isDestroyed() && win.isMaximized()) win.unmaximize()
-        if (!state.maximized) toggleLinuxMaximize(win)
-      } finally {
-        state.blockNativeMaximize = false
-      }
-    })
-  })
-}
-
-function toggleLinuxMaximize(win) {
-  const state = getLinuxWindowState(win)
-  setImmediate(() => {
-    state.applyingBounds = true
     try {
-      if (state.maximized) {
-        if (state.restoreBounds) win.setBounds(state.restoreBounds)
-        state.maximized = false
-        return
-      }
-
-      state.restoreBounds = win.getBounds()
-      const display = screen.getDisplayMatching(state.restoreBounds)
-      win.setBounds(display.workArea)
-      state.maximized = true
-    } finally {
-      setImmediate(() => {
+      if (!win.isDestroyed() && win.isMaximized()) win.unmaximize()
+      if (!state.maximized) {
+        state.restoreBounds = win.getNormalBounds()
+        state.applyingBounds = true
+        applyWorkAreaMaximize(win)
+        state.maximized = true
         state.applyingBounds = false
-      })
+        sendWindowChromeStyle(win)
+      }
+    } finally {
+      state.blockNativeMaximize = false
     }
   })
+
+  if (process.platform === 'win32') {
+    screen.on('display-metrics-changed', () => {
+      const state = getWorkAreaWindowState(win)
+      if (win.isDestroyed() || !state.maximized) return
+      state.applyingBounds = true
+      try {
+        applyWorkAreaMaximize(win)
+      } finally {
+        state.applyingBounds = false
+      }
+    })
+  }
+}
+
+function toggleWorkAreaMaximize(win) {
+  const state = getWorkAreaWindowState(win)
+
+  if (state.maximized) {
+    state.applyingBounds = true
+    try {
+      clearWorkAreaMaximizeLimits(win)
+      if (state.restoreBounds) win.setBounds(state.restoreBounds)
+      state.maximized = false
+    } finally {
+      state.applyingBounds = false
+      if (!win.isDestroyed()) {
+        win.webContents.send('window:bounds-changed')
+        sendWindowChromeStyle(win)
+      }
+    }
+    return
+  }
+
+  state.restoreBounds = win.getNormalBounds()
+  state.applyingBounds = true
+  try {
+    applyWorkAreaMaximize(win)
+    state.maximized = true
+  } finally {
+    state.applyingBounds = false
+    if (!win.isDestroyed()) {
+      win.webContents.send('window:bounds-changed')
+      sendWindowChromeStyle(win)
+    }
+  }
 }
 
 function sendWindowChromeStyle(win) {
   if (process.platform !== 'win32' || win.isDestroyed()) return
-  const maximized = win.isMaximized() || win.isFullScreen()
+  const state = getWorkAreaWindowState(win)
+  const maximized = state.maximized || win.isMaximized() || win.isFullScreen()
   win.webContents.send('window:chrome-style', maximized ? 'maximized' : 'normal')
 }
 
@@ -118,11 +156,13 @@ function registerWindowResizeIpc() {
     const win = BrowserWindow.fromWebContents(event.sender)
     if (!win || typeof edge !== 'string') return
 
-    if (process.platform === 'linux') {
-      const state = getLinuxWindowState(win)
+    if (usesWorkAreaMaximize()) {
+      const state = getWorkAreaWindowState(win)
       if (state.maximized) {
+        clearWorkAreaMaximizeLimits(win)
         if (state.restoreBounds) win.setBounds(state.restoreBounds)
         state.maximized = false
+        sendWindowChromeStyle(win)
       }
     } else if (win.isMaximized()) {
       win.unmaximize()
@@ -183,8 +223,8 @@ function registerWindowControlsIpc() {
     } else if (action === 'min') {
       win.minimize()
     } else if (action === 'max') {
-      if (process.platform === 'linux') {
-        toggleLinuxMaximize(win)
+      if (usesWorkAreaMaximize()) {
+        toggleWorkAreaMaximize(win)
       } else if (win.isMaximized()) {
         win.unmaximize()
       } else {
@@ -455,7 +495,7 @@ function createWindow() {
     autoHideMenuBar: true,
     backgroundColor: '#0a0a0a',
     ...(process.platform === 'win32' ? { roundedCorners: true } : {}),
-    ...(process.platform === 'linux' ? { maximizable: false } : {}),
+    ...(usesWorkAreaMaximize() ? { maximizable: false } : {}),
     ...(process.platform === 'linux' || process.platform === 'win32' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -463,7 +503,7 @@ function createWindow() {
     }
   })
 
-  setupLinuxFramelessWindow(mainWindow)
+  setupWorkAreaFramelessWindow(mainWindow)
   attachWindowStateHandlers(mainWindow)
 
   mainWindow.on('ready-to-show', async () => {
