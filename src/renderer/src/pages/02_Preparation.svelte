@@ -146,8 +146,8 @@
   }
 </script>
 
-<div class="flex flex-1 divide-x divide-neutral-800 select-none">
-  <aside class="w-70 space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs">
+<div class="flex min-w-0 flex-1 divide-x divide-neutral-800 overflow-hidden select-none">
+  <aside class="w-80 shrink-0 space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs">
     <div class="space-y-2">
       <p class="mb-1">Working file:</p>
       {#if workingFile}
@@ -249,7 +249,7 @@
       <Button className="w-full" variant="ghost" onclick={onReset}>Reset</Button>
     </div>
   </aside>
-  <div class="relative flex flex-1 flex-col overflow-hidden">
+  <div class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
     <h1 class="m-4 text-xl font-semibold">Protonation states</h1>
     {#if protonationStates.length > 0}
       {@const sortIndicator = sortDirection === 'asc' ? '▲' : '▼'}

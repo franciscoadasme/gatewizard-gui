@@ -498,9 +498,9 @@
   }
 </script>
 
-<div class="flex flex-1 divide-x divide-neutral-800 overflow-hidden select-none">
+<div class="flex min-w-0 flex-1 divide-x divide-neutral-800 overflow-hidden select-none">
   <!-- ── Left: Options (scrollable) ── -->
-  <aside class="w-80 shrink-0 space-y-4 overflow-y-auto p-4 text-xs">
+  <aside class="w-80 shrink-0 space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs">
     <!-- Input -->
     <div class="space-y-2">
       <h2 class="font-semibold">Input</h2>
@@ -904,10 +904,10 @@
   </aside>
 
   <!-- ── Right: Ligand Preview & Job Tracker ── -->
-  <main class="flex flex-1 flex-col overflow-hidden p-4">
+  <div class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
     <!-- Ligand 2D images -->
     {#if ligands.some((l) => l.imageBase64)}
-      <div class="mb-3 shrink-0">
+      <div class="mx-4 mt-4 shrink-0">
         <h2 class="mb-2 text-xs font-semibold dark:text-neutral-400">Ligand Structures</h2>
         <div class="flex flex-wrap gap-3">
           {#each ligands as lig (lig.name)}
@@ -936,14 +936,15 @@
       </div>
     {/if}
 
-    <!-- Preparation Jobs -->
-    <h2 class="mb-2 text-xs font-semibold dark:text-neutral-400">Preparation Jobs</h2>
-    <div class="flex-1 space-y-3 overflow-y-auto">
-      {#if jobs.length === 0}
-        <div class="flex h-full items-center justify-center text-xs dark:text-neutral-600">
-          No preparations started yet. Configure options and click "Start Preparation".
-        </div>
-      {/if}
+    <h1 class="m-4 text-xl font-semibold">Preparation Jobs</h1>
+    {#if jobs.length === 0}
+      <p
+        class="mx-4 mb-4 flex flex-1 items-center justify-center rounded-lg border border-dashed border-neutral-800 text-neutral-700"
+      >
+        No preparations started yet. Configure options and click "Start Preparation".
+      </p>
+    {:else}
+      <div class="mx-4 mb-4 min-h-0 flex-1 space-y-3 overflow-y-auto">
       {#each jobs as job, ji (job.jobDir)}
         <div
           class="rounded-lg border p-3 text-xs dark:border-neutral-700"
@@ -1042,6 +1043,7 @@
           {/if}
         </div>
       {/each}
-    </div>
-  </main>
+      </div>
+    {/if}
+  </div>
 </div>

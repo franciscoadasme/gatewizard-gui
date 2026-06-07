@@ -613,8 +613,8 @@
   }
 </script>
 
-<div class="flex min-w-0 flex-1 divide-x divide-neutral-800 select-none">
-  <aside class="w-70 space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs">
+<div class="flex min-w-0 flex-1 divide-x divide-neutral-800 overflow-hidden select-none">
+  <aside class="w-80 shrink-0 space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs">
     <div class="space-y-2">
       <div class="space-y-1">
         <p class="text-xs">Input directory:</p>

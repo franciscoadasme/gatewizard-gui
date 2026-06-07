@@ -3,7 +3,6 @@
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Divider from '../components/ui/Divider.svelte'
   import { analysisStatus } from '../lib/pageStatus.svelte.js'
-  import Empty from '../components/ui/Empty.svelte'
   import Input from '../components/ui/Input.svelte'
   import Select from '../components/ui/Select.svelte'
   import Spinner from '../components/ui/Spinner.svelte'
@@ -996,9 +995,9 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
   </div>
 {/if}
 
-<div class="flex min-w-0 flex-1 divide-x divide-neutral-800 select-none">
+<div class="flex min-w-0 flex-1 divide-x divide-neutral-800 overflow-hidden select-none">
   <!-- ===== SIDEBAR ===== -->
-  <aside class="w-[22rem] space-y-3 overflow-x-clip overflow-y-auto p-4 text-xs">
+  <aside class="w-80 shrink-0 space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs">
     <div class="space-y-2">
       <h2 class="font-semibold">Analysis Mode</h2>
       <Select className="w-full" bind:value={mode}>
@@ -1674,28 +1673,23 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
   </aside>
 
   <!-- ===== CHART AREA ===== -->
-  <section class="flex min-h-0 min-w-0 flex-1 flex-col p-4">
-    <div class="mb-2">
-      <h1 class="text-lg font-semibold">{displayTitle || 'Analysis'}</h1>
-      <p class="text-xs text-neutral-500">
-        {mode === 'structural'
-          ? 'RMSD, RMSF, distance, radius of gyration, membrane thickness, and area per lipid from trajectories.'
-          : 'NAMD energetic properties from ENERGY log records.'}
-      </p>
-    </div>
+  <div class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+    <h1 class="m-4 text-xl font-semibold">{displayTitle || 'Analysis'}</h1>
 
     {#if lastError}
-      <div class="mb-3 rounded-md border border-red-700/50 bg-red-950/30 p-2 text-xs text-red-300">
+      <div class="mx-4 mb-3 rounded-md border border-red-700/50 bg-red-950/30 p-2 text-xs text-red-300">
         {lastError}
       </div>
     {/if}
 
     {#if displaySeries.length === 0}
-      <div class="flex min-h-0 flex-1 items-center justify-center">
-        <Empty message="Run an analysis to see results" />
-      </div>
+      <p
+        class="mx-4 mb-4 flex flex-1 items-center justify-center rounded-lg border border-dashed border-neutral-800 text-neutral-700"
+      >
+        Run an analysis to see results.
+      </p>
     {:else}
-      <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+      <div class="mx-4 mb-4 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
         <LineChart
           series={displaySeries}
           xLabel={displayXLabel}
@@ -1745,5 +1739,5 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
         {/if}
       </div>
     {/if}
-  </section>
+  </div>
 </div>
