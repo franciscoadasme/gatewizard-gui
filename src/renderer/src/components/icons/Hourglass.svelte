@@ -17,15 +17,40 @@
 >
   {#if title}<title>{title}</title>{/if}
 
-  <!-- top bar -->
-  <rect fill="currentColor" stroke="none" x="2.5" y="1.5" width="19" height="3" rx="1.5" />
+  <defs>
+    <mask id="hg-bite">
+      <rect width="24" height="24" fill="white"/>
+      <circle cx="19" cy="18" r="5.2" fill="black"/>
+    </mask>
+    <clipPath id="top-clip">
+      <rect x="0" y="0" width="24" height="13"/>
+    </clipPath>
+  </defs>
 
-  <!-- bottom bar -->
-  <rect fill="currentColor" stroke="none" x="2.5" y="19.5" width="19" height="3" rx="1.5" />
+  <!-- hourglass lines with bite -->
+  <g mask="url(#hg-bite)">
+    <line x1="3.5" y1="2.5" x2="18.5" y2="2.5" />
+    <line x1="3.5" y1="21.5" x2="18.5" y2="21.5" />
+    <path d="M4.5 2.5 C 4.5 8, 10.5 11.5, 11 13 C 11.5 14.5, 4.5 18, 4.5 21.5" fill="none" />
+    <path d="M17.5 2.5 C 17.5 8, 11.5 11.5, 11 13 C 10.5 14.5, 17.5 18, 17.5 21.5" fill="none" />
+  </g>
 
-  <!-- left edge -->
-  <path d="M3.5 3 C 3.5 9, 11 12, 12 13 C 13 14, 3.5 17, 3.5 21" fill="none" />
+  <!-- sand fill — small mound in upper portion -->
+  <path
+    fill="currentColor"
+    stroke="none"
+    clip-path="url(#top-clip)"
+    d="
+      M5.2 3.5
+      C 5.2 7, 9.5 9.5, 11 11.5
+      C 12.5 9.5, 16.8 7, 16.8 3.5
+      Q 11 6.5, 5.2 3.5 Z
+    "
+  />
 
-  <!-- right edge -->
-  <path d="M20.5 3 C 20.5 9, 13 12, 12 13 C 11 14, 20.5 17, 20.5 21" fill="none" />
+  <!-- play button circle -->
+  <circle cx="19" cy="18" r="4.5" />
+
+  <!-- play triangle -->
+  <path fill="currentColor" stroke="none" d="M17.4 15.8 L17.4 20.2 L21.4 18 Z" />
 </svg>
