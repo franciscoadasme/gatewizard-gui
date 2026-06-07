@@ -21,6 +21,26 @@ const api = {
   writeBinary: (filePath, base64) => ipcRenderer.invoke('fs:writeBinary', filePath, base64)
 }
 
+function installTitlebarDoubleClickHandler() {
+  document.addEventListener(
+    'dblclick',
+    (event) => {
+      const target = event.target
+      if (!(target instanceof Element) || !target.closest('.titlebar-drag-zone')) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      ipcRenderer.send('win:invoke', 'max')
+    },
+    true
+  )
+}
+
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', installTitlebarDoubleClickHandler)
+} else {
+  installTitlebarDoubleClickHandler()
+}
+
 // Use `contextBridge` APIs to expose Electron APIs to
 // renderer only if context isolation is enabled, otherwise
 // just add to the DOM global.

@@ -27,13 +27,13 @@ let activeResize = null
 const MIN_WINDOW_WIDTH = 640
 const MIN_WINDOW_HEIGHT = 480
 
-/** @type {WeakMap<BrowserWindow, { maximized: boolean, restoreBounds?: Electron.Rectangle, applyingBounds: boolean }>} */
+/** @type {WeakMap<BrowserWindow, { maximized: boolean, restoreBounds?: Electron.Rectangle, applyingBounds: boolean, blockNativeMaximize: boolean }>} */
 const linuxWindowStates = new WeakMap()
 
 function getLinuxWindowState(win) {
   let state = linuxWindowStates.get(win)
   if (!state) {
-    state = { maximized: false, applyingBounds: false }
+    state = { maximized: false, applyingBounds: false, blockNativeMaximize: false }
     linuxWindowStates.set(win, state)
   }
   return state
@@ -45,6 +45,22 @@ function setupLinuxFramelessWindow(win) {
   win.on('will-resize', () => {
     const state = getLinuxWindowState(win)
     if (!state.applyingBounds) state.maximized = false
+  })
+
+  // Native maximize on frameless X11/WSL can crash Chromium — reroute to setBounds.
+  win.on('maximize', () => {
+    const state = getLinuxWindowState(win)
+    if (state.applyingBounds || state.blockNativeMaximize) return
+
+    state.blockNativeMaximize = true
+    setImmediate(() => {
+      try {
+        if (!win.isDestroyed() && win.isMaximized()) win.unmaximize()
+        if (!state.maximized) toggleLinuxMaximize(win)
+      } finally {
+        state.blockNativeMaximize = false
+      }
+    })
   })
 }
 
@@ -71,14 +87,30 @@ function toggleLinuxMaximize(win) {
   })
 }
 
+function sendWindowChromeStyle(win) {
+  if (process.platform !== 'win32' || win.isDestroyed()) return
+  const maximized = win.isMaximized() || win.isFullScreen()
+  win.webContents.send('window:chrome-style', maximized ? 'maximized' : 'normal')
+}
+
 function attachWindowStateHandlers(win) {
   const notify = () => {
     if (!win.isDestroyed()) win.webContents.send('window:bounds-changed')
   }
-  win.on('maximize', notify)
-  win.on('unmaximize', notify)
-  win.on('restore', notify)
+  win.on('maximize', () => {
+    notify()
+    sendWindowChromeStyle(win)
+  })
+  win.on('unmaximize', () => {
+    notify()
+    sendWindowChromeStyle(win)
+  })
+  win.on('restore', () => {
+    notify()
+    sendWindowChromeStyle(win)
+  })
   win.on('resize', notify)
+  win.on('ready-to-show', () => sendWindowChromeStyle(win))
 }
 
 function registerWindowResizeIpc() {
@@ -422,7 +454,7 @@ function createWindow() {
     thickFrame: true,
     autoHideMenuBar: true,
     backgroundColor: '#0a0a0a',
-    ...(process.platform === 'win32' ? { roundedCorners: false } : {}),
+    ...(process.platform === 'win32' ? { roundedCorners: true } : {}),
     ...(process.platform === 'linux' ? { maximizable: false } : {}),
     ...(process.platform === 'linux' || process.platform === 'win32' ? { icon } : {}),
     webPreferences: {
@@ -451,6 +483,7 @@ function createWindow() {
 
   mainWindow.webContents.on('did-finish-load', () => {
     revealMainWindow()
+    sendWindowChromeStyle(mainWindow)
   })
 
   const forceShowTimer = setTimeout(() => {

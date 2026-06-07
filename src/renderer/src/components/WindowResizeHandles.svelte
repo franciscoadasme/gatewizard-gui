@@ -25,51 +25,75 @@
 </script>
 
 {#if enabled}
-  <div class="window-resize-handles pointer-events-none fixed inset-0 z-40" aria-hidden="true">
-    <div
+  <div class="window-resize-handles pointer-events-none fixed inset-0 z-40">
+    <button
+      type="button"
+      tabindex="-1"
       class="resize-handle resize-n"
       style:height="{border}px"
+      aria-label="Resize top edge"
       onmousedown={(e) => onPointerDown('n', e)}
-    ></div>
-    <div
+    ></button>
+    <button
+      type="button"
+      tabindex="-1"
       class="resize-handle resize-s"
       style:height="{border}px"
+      aria-label="Resize bottom edge"
       onmousedown={(e) => onPointerDown('s', e)}
-    ></div>
-    <div
+    ></button>
+    <button
+      type="button"
+      tabindex="-1"
       class="resize-handle resize-w"
       style:width="{border}px"
+      aria-label="Resize left edge"
       onmousedown={(e) => onPointerDown('w', e)}
-    ></div>
-    <div
+    ></button>
+    <button
+      type="button"
+      tabindex="-1"
       class="resize-handle resize-e"
       style:width="{border}px"
+      aria-label="Resize right edge"
       onmousedown={(e) => onPointerDown('e', e)}
-    ></div>
-    <div
+    ></button>
+    <button
+      type="button"
+      tabindex="-1"
       class="resize-handle resize-nw"
       style:width="{border}px"
       style:height="{border}px"
+      aria-label="Resize top-left corner"
       onmousedown={(e) => onPointerDown('nw', e)}
-    ></div>
-    <div
+    ></button>
+    <button
+      type="button"
+      tabindex="-1"
       class="resize-handle resize-ne"
       style:width="{border}px"
       style:height="{border}px"
+      aria-label="Resize top-right corner"
       onmousedown={(e) => onPointerDown('ne', e)}
-    ></div>
-    <div
+    ></button>
+    <button
+      type="button"
+      tabindex="-1"
       class="resize-handle resize-sw"
       style:width="{border}px"
       style:height="{border}px"
+      aria-label="Resize bottom-left corner"
       onmousedown={(e) => onPointerDown('sw', e)}
-    ></div>
-    <div
+    ></button>
+    <button
+      type="button"
+      tabindex="-1"
       class="resize-handle resize-se"
       style:width="{border}px"
       style:height="{border}px"
+      aria-label="Resize bottom-right corner"
       onmousedown={(e) => onPointerDown('se', e)}
-    ></div>
+    ></button>
   </div>
 {/if}
 
@@ -78,7 +102,14 @@
     position: absolute;
     pointer-events: auto;
     -webkit-app-region: no-drag;
+    margin: 0;
+    padding: 0;
+    border: none;
     background: transparent;
+  }
+
+  .resize-handle:focus {
+    outline: none;
   }
 
   .resize-n {

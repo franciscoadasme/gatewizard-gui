@@ -16,6 +16,19 @@
     background-color: #0a0a0a;
   }
 
+  /* Win11-style rounded window (native DWM + content clip when frameless). */
+  html.platform-win32,
+  html.platform-win32 body,
+  html.platform-win32 #app {
+    border-radius: 8px;
+  }
+
+  html.platform-win32.window-maximized,
+  html.platform-win32.window-maximized body,
+  html.platform-win32.window-maximized #app {
+    border-radius: 0;
+  }
+
   /* Inset from top so native resize bands stay clear; flex centers logo vertically. */
   .titlebar-drag-zone {
     -webkit-app-region: drag;
@@ -24,7 +37,18 @@
     align-self: stretch;
   }
 
+  .titlebar-logo-slot {
+    -webkit-app-region: drag;
+    cursor: default !important;
+    align-self: stretch;
+  }
+
   .titlebar-no-drag {
     -webkit-app-region: no-drag;
+  }
+
+  .titlebar-label {
+    user-select: none;
+    -webkit-user-select: none;
   }
 }

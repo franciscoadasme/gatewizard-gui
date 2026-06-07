@@ -1,7 +1,7 @@
 <script>
   import { onDestroy, onMount, untrack } from 'svelte'
   import Button from './components/ui/Button.svelte'
-  import Info from './components/icons/Info.svelte'
+  import ActivitySidebar from './components/ActivitySidebar.svelte'
   import Spinner from './components/ui/Spinner.svelte'
   import TitleBarControls from './components/TitleBarControls.svelte'
   import WindowResizeHandles from './components/WindowResizeHandles.svelte'
@@ -64,14 +64,6 @@
     }
   }
 
-  /**
-   * @param {MouseEvent} e
-   * @param {string} id
-   */
-  function onNavClick(e, id) {
-    e.preventDefault()
-    loadPage(id)
-  }
 
   // ── Status bar ──
   /** @type {import('./lib/backendApi').ProjectTask[]} */
@@ -449,39 +441,41 @@
 </script>
 
 <div
-  class="flex h-full flex-col divide-y overflow-hidden dark:divide-neutral-800 dark:bg-neutral-950 dark:text-white"
+  class="flex h-full flex-col overflow-hidden dark:bg-neutral-950 dark:text-white"
 >
-  <header class="flex h-9 shrink-0 items-stretch bg-neutral-950 pl-1.5 dark:bg-neutral-950">
-    <div class="titlebar-drag-zone flex shrink-0 items-center px-1" title="Drag to move">
+  <header class="flex h-9 shrink-0 items-stretch bg-neutral-950 dark:bg-neutral-950">
+    <div
+      class="titlebar-logo-slot flex w-14 shrink-0 items-center justify-center"
+      title="Drag to move"
+    >
       <img
         src={windowIcon}
         alt="GateWizard"
-        class="pointer-events-none size-6 object-contain"
+        class="pointer-events-none size-8 object-contain"
       />
     </div>
-    <div class="titlebar-no-drag flex min-w-0 flex-1 items-center gap-2">
-      <span class="shrink-0 text-sm font-medium dark:text-neutral-400">Working Directory:</span>
+    <div class="flex min-w-0 flex-1 items-stretch border-b border-neutral-800">
+      <div class="titlebar-drag-zone min-w-8 flex-1" aria-hidden="true"></div>
+      <div class="titlebar-no-drag flex shrink-0 items-center gap-2 self-center">
+      <span class="titlebar-label shrink-0 text-xs font-medium dark:text-neutral-400"
+        >Working Directory:</span
+      >
       <input
         id="working-dir-input"
         type="text"
         readonly
         placeholder="Select a directory..."
         value={workingDir}
-        class="my-1 min-w-0 flex-1 rounded-md border border-neutral-300 px-2 py-0.5 text-sm transition-all dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:placeholder-neutral-600"
+        title={workingDir || undefined}
+        class="h-6 w-52 shrink-0 truncate rounded border border-neutral-300 px-2 text-xs transition-all dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:placeholder-neutral-600"
       />
-      <Button className="my-1 shrink-0" onclick={onBrowseDirectory}>Browse</Button>
-      <button
-        type="button"
-        onclick={openVersionsDialog}
-        class="shrink-0 rounded-md p-1.5 text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-200 focus-visible:outline-none"
-        title="Dependency versions"
-        aria-label="Show dependency versions"
+      <Button size="sm" className="h-6 shrink-0 px-2.5 py-0 text-xs" onclick={onBrowseDirectory}
+        >Browse</Button
       >
-        <Info className="size-4" />
-      </button>
     </div>
-    <div class="titlebar-drag-zone min-w-4 max-w-14 flex-1" aria-hidden="true"></div>
+    <div class="titlebar-drag-zone min-w-8 flex-1" aria-hidden="true"></div>
     <TitleBarControls />
+    </div>
   </header>
 
   <WindowResizeHandles />
@@ -622,45 +616,39 @@
     </div>
   {/if}
 
-  <nav class="flex items-center gap-2 p-4 text-sm">
-    <p class="dark:text-neutral-200">Stages:</p>
-    <div class="flex divide-x divide-neutral-300 overflow-clip rounded-md dark:divide-neutral-700">
+  <div class="flex min-h-0 flex-1 overflow-hidden">
+    <ActivitySidebar
+      {stages}
+      {currentId}
+      onNavigate={loadPage}
+      onVersions={openVersionsDialog}
+    />
+
+    <!--
+      All pages are mounted once and kept alive — switching tabs only toggles
+      visibility/pointer-events so no component state is ever lost.
+      `position:absolute; inset:0` ensures every page always has its full
+      dimensions (important for the Three.js / WebGL canvas in Visualize).
+    -->
+    <main class="relative min-h-0 min-w-0 flex-1 overflow-hidden">
       {#each stages as stage (stage.id)}
-        <a
-          href="#{stage.id}"
-          class="bg-neutral-200 px-4 py-2 text-neutral-900 no-underline transition-colors hover:bg-neutral-300 dark:bg-neutral-800 dark:text-neutral-100 dark:hover:bg-neutral-600"
-          class:!bg-neutral-200={currentId === stage.id}
-          class:!text-black={currentId === stage.id}
-          onclick={(e) => onNavClick(e, stage.id)}>{stage.label}</a
-        >
+        {@const PageComp = pageModules[stage.file]?.default}
+        {#if PageComp}
+          <div
+            class="absolute inset-0 flex overflow-hidden"
+            style="visibility:{currentId === stage.id
+              ? 'visible'
+              : 'hidden'};pointer-events:{currentId === stage.id ? 'auto' : 'none'}"
+            aria-hidden={currentId !== stage.id}
+          >
+            <PageComp {workingDir} />
+          </div>
+        {/if}
       {/each}
-    </div>
-  </nav>
+    </main>
+  </div>
 
-  <!--
-    All pages are mounted once and kept alive — switching tabs only toggles
-    visibility/pointer-events so no component state is ever lost.
-    `position:absolute; inset:0` ensures every page always has its full
-    dimensions (important for the Three.js / WebGL canvas in Visualize).
-  -->
-  <main class="relative min-h-0 flex-1 overflow-hidden">
-    {#each stages as stage (stage.id)}
-      {@const PageComp = pageModules[stage.file]?.default}
-      {#if PageComp}
-        <div
-          class="absolute inset-0 flex overflow-hidden"
-          style="visibility:{currentId === stage.id
-            ? 'visible'
-            : 'hidden'};pointer-events:{currentId === stage.id ? 'auto' : 'none'}"
-          aria-hidden={currentId !== stage.id}
-        >
-          <PageComp {workingDir} />
-        </div>
-      {/if}
-    {/each}
-  </main>
-
-  <footer class="relative flex items-stretch text-xs dark:bg-neutral-900 dark:text-neutral-500">
+  <footer class="relative flex items-stretch border-t border-neutral-800 text-xs dark:bg-neutral-900 dark:text-neutral-500">
     <!-- ── Expanded history panel (floats above the footer) ── -->
     {#if statusExpanded}
       <div
