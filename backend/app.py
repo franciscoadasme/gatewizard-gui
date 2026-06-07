@@ -433,6 +433,10 @@ class ValidateBuilderRequest(BaseModel):
     water_model: str = "opc"
     protein_ff: str = "ff19SB"
     lipid_ff: str = "lipid21"
+    md_engine: str | None = Field(
+        None,
+        description="Target MD engine (namd, gromacs, openmm). Enables NAMD-specific OPC tleap when namd+opc.",
+    )
     salt_concentration: float = 0.15
     cation: str = "K+"
     anion: str = "Cl-"
@@ -456,6 +460,13 @@ class StartPreparationRequest(BaseModel):
     dims: List[float] | None = None
     output_folder_name: str | None = None
     ligand_params: list | None = None
+    nloop: int = Field(20, description="GENCAN loops for PACKMOL (--nloop)")
+    nloop_all: int = Field(
+        100, description="GENCAN loops for all-together packing (--nloop_all)"
+    )
+    tolerance: float = Field(
+        2.0, description="PACKMOL clash tolerance, radius1+radius2 (--tolerance)"
+    )
 
 
 @app.get("/health")
@@ -945,6 +956,9 @@ def _configure_builder(payload: StartPreparationRequest) -> Builder:
             lp["name"]: {"frcmod": lp["frcmod"], "lib": lp["lib"]}
             for lp in (payload.ligand_params or [])
         },
+        nloop=payload.nloop,
+        nloop_all=payload.nloop_all,
+        tolerance=payload.tolerance,
     )
     return builder
 

@@ -34,6 +34,10 @@
 
   let preoriented = $state(true)
   let parametrize = $state(true)
+  let nloop = $state(20)
+  let nloopAll = $state(100)
+  let tolerance = $state(2.0)
+  let advancedOpen = $state(false)
   let addSalt = $state(true)
   let saltConcentration = $state(0.15)
   let cation = $state('K+')
@@ -357,6 +361,9 @@
       lipidFf,
       preoriented,
       parametrize,
+      nloop: parseInt(String(nloop), 10),
+      nloopAll: parseInt(String(nloopAll), 10),
+      tolerance: parseFloat(String(tolerance)),
       addSalt,
       saltConcentration: addSalt ? parseFloat(saltConcentration) : 0,
       cation,
@@ -511,6 +518,9 @@
     lipidFf = 'lipid21'
     preoriented = true
     parametrize = true
+    nloop = 20
+    nloopAll = 100
+    tolerance = 2.0
     addSalt = true
     saltConcentration = 0.15
     cation = 'K+'
@@ -828,10 +838,6 @@
         <span class="dark:text-neutral-400">Pre-oriented in membrane</span>
       </div>
       <div class="flex items-center gap-2">
-        <Checkbox name="parametrize" bind:checked={parametrize} />
-        <span class="dark:text-neutral-400">Parametrize with tleap</span>
-      </div>
-      <div class="flex items-center gap-2">
         <Checkbox name="add-salt" bind:checked={addSalt} />
         <span class="dark:text-neutral-400">Add salt</span>
       </div>
@@ -907,6 +913,66 @@
         </div>
       {/if}
     </div>
+    <Divider />
+
+    <!-- Advanced settings -->
+    <details
+      bind:open={advancedOpen}
+      class="group rounded-md border dark:border-neutral-700 [&>summary::-webkit-details-marker]:hidden"
+    >
+      <summary
+        class="cursor-pointer list-none px-3 py-2 text-sm font-semibold dark:text-neutral-300 dark:hover:text-neutral-100"
+      >
+        <span class="flex items-center justify-between gap-2">
+          Advanced settings
+          <span class="text-xs font-normal dark:text-neutral-500 group-open:rotate-180">▾</span>
+        </span>
+      </summary>
+      <div class="space-y-3 border-t px-3 py-3 dark:border-neutral-700">
+        <div class="flex items-center gap-2">
+          <Checkbox name="parametrize" bind:checked={parametrize} />
+          <span class="dark:text-neutral-400">Parametrize with tleap</span>
+        </div>
+
+        <div class="space-y-2">
+          <h3 class="text-xs font-semibold uppercase tracking-wide dark:text-neutral-500">
+            PACKMOL options
+          </h3>
+          <div class="space-y-2 pl-1">
+            <label class="flex items-center justify-between gap-2 text-xs dark:text-neutral-400">
+              <span title="GENCAN loops for PACKMOL; increase to improve packing">--nloop</span>
+              <input
+                type="number"
+                min="1"
+                step="1"
+                class="w-20 rounded-md border p-1 text-right dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+                bind:value={nloop}
+              />
+            </label>
+            <label class="flex items-center justify-between gap-2 text-xs dark:text-neutral-400">
+              <span title="GENCAN loops for all-together packing">--nloop_all</span>
+              <input
+                type="number"
+                min="1"
+                step="1"
+                class="w-20 rounded-md border p-1 text-right dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+                bind:value={nloopAll}
+              />
+            </label>
+            <label class="flex items-center justify-between gap-2 text-xs dark:text-neutral-400">
+              <span title="Clash tolerance (radius1 + radius2)">--tolerance</span>
+              <input
+                type="number"
+                min="0"
+                step="0.1"
+                class="w-20 rounded-md border p-1 text-right dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+                bind:value={tolerance}
+              />
+            </label>
+          </div>
+        </div>
+      </div>
+    </details>
     <Divider />
 
     <!-- Actions -->
