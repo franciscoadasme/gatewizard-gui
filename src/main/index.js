@@ -1,10 +1,10 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, screen, shell } from 'electron'
 import { spawn } from 'child_process'
 import { watch } from 'fs'
 import { readFile, writeFile } from 'fs/promises'
 import path, { join } from 'path'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
-import icon from '../../resources/icon.png?asset'
+import icon from '../../resources/window_icon.png?asset'
 import { ensureMambaRuntime, getLaunchPythonPath } from './runtime-bootstrap.js'
 
 const BACKEND_URL = 'http://127.0.0.1:8765'
@@ -20,6 +20,85 @@ let mainWindow = null
 let splashWindow = null
 let splashShownAt = 0
 let splashClosing = false
+
+/** @type {WeakMap<BrowserWindow, { maximized: boolean, restoreBounds?: Electron.Rectangle, applyingBounds: boolean }>} */
+const linuxWindowStates = new WeakMap()
+
+function getLinuxWindowState(win) {
+  let state = linuxWindowStates.get(win)
+  if (!state) {
+    state = { maximized: false, applyingBounds: false }
+    linuxWindowStates.set(win, state)
+  }
+  return state
+}
+
+function setupLinuxFramelessWindow(win) {
+  if (process.platform !== 'linux') return
+
+  win.on('will-resize', () => {
+    const state = getLinuxWindowState(win)
+    if (!state.applyingBounds) state.maximized = false
+  })
+}
+
+function toggleLinuxMaximize(win) {
+  const state = getLinuxWindowState(win)
+  setImmediate(() => {
+    state.applyingBounds = true
+    try {
+      if (state.maximized) {
+        if (state.restoreBounds) win.setBounds(state.restoreBounds)
+        state.maximized = false
+        return
+      }
+
+      state.restoreBounds = win.getBounds()
+      const display = screen.getDisplayMatching(state.restoreBounds)
+      win.setBounds(display.workArea)
+      state.maximized = true
+    } finally {
+      setImmediate(() => {
+        state.applyingBounds = false
+      })
+    }
+  })
+}
+
+function attachWindowStateHandlers(win) {
+  const notify = () => {
+    if (!win.isDestroyed()) win.webContents.send('window:bounds-changed')
+  }
+  win.on('maximize', notify)
+  win.on('unmaximize', notify)
+  win.on('restore', notify)
+  win.on('resize', notify)
+}
+
+function registerWindowControlsIpc() {
+  ipcMain.on('win:invoke', (event, action) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win) return
+
+    if (action === 'show') {
+      win.show()
+    } else if (action === 'showInactive') {
+      win.showInactive()
+    } else if (action === 'min') {
+      win.minimize()
+    } else if (action === 'max') {
+      if (process.platform === 'linux') {
+        toggleLinuxMaximize(win)
+      } else if (win.isMaximized()) {
+        win.unmaximize()
+      } else {
+        win.maximize()
+      }
+    } else if (action === 'close') {
+      win.close()
+    }
+  })
+}
 
 function getResourcesDir() {
   if (app.isPackaged) {
@@ -275,13 +354,20 @@ function createWindow() {
     width: 900,
     height: 670,
     show: false,
+    frame: false,
     autoHideMenuBar: true,
-    ...(process.platform === 'linux' ? { icon } : {}),
+    backgroundColor: '#0a0a0a',
+    ...(process.platform === 'win32' ? { roundedCorners: false } : {}),
+    ...(process.platform === 'linux' ? { maximizable: false } : {}),
+    ...(process.platform === 'linux' || process.platform === 'win32' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
     }
   })
+
+  setupLinuxFramelessWindow(mainWindow)
+  attachWindowStateHandlers(mainWindow)
 
   mainWindow.on('ready-to-show', async () => {
     await closeSplashWindowWhenReady()
@@ -347,6 +433,8 @@ app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.electron')
 
   createSplashWindow()
+
+  registerWindowControlsIpc()
 
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.

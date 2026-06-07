@@ -3,6 +3,7 @@
   import Button from './components/ui/Button.svelte'
   import Info from './components/icons/Info.svelte'
   import Spinner from './components/ui/Spinner.svelte'
+  import TitleBarControls from './components/TitleBarControls.svelte'
   import { getDependencyVersions, getProjectStatus } from './lib/backendApi'
   import pkg from '../../../package.json'
   import windowIcon from '../../../resources/window_icon.png'
@@ -115,6 +116,12 @@
 
   onMount(() => {
     if (currentId) loadPage(currentId)
+
+    const removeBoundsListener = window.electron?.ipcRenderer?.on('window:bounds-changed', () => {
+      window.dispatchEvent(new Event('resize'))
+    })
+
+    return () => removeBoundsListener?.()
   })
 
   /**
@@ -441,36 +448,41 @@
 </script>
 
 <div
-  class="flex h-screen flex-col divide-y overflow-hidden dark:divide-neutral-800 dark:bg-neutral-950 dark:text-white"
+  class="flex h-full flex-col divide-y overflow-hidden dark:divide-neutral-800 dark:bg-neutral-950 dark:text-white"
 >
-  <header class="px-4 py-2 dark:bg-neutral-800">
-    <div class="flex items-center gap-2">
+  <header
+    class="flex h-9 shrink-0 items-stretch gap-2 bg-neutral-950 pl-3 dark:bg-neutral-950"
+  >
+    <div class="titlebar-drag flex shrink-0 items-center self-stretch pr-1" title="Drag to move">
       <img
         src={windowIcon}
         alt="GateWizard"
-        class="size-8 shrink-0 object-contain"
-        title="GateWizard"
+        class="size-6 pointer-events-none object-contain"
       />
-      <span class="text-sm font-medium dark:text-neutral-400">Working Directory:</span>
+    </div>
+    <div class="titlebar-no-drag flex min-w-0 flex-1 items-center gap-2">
+      <span class="shrink-0 text-sm font-medium dark:text-neutral-400">Working Directory:</span>
       <input
         id="working-dir-input"
         type="text"
         readonly
         placeholder="Select a directory..."
         value={workingDir}
-        class="flex-1 rounded-md border border-neutral-300 p-2 transition-all dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:placeholder-neutral-600"
+        class="my-1 min-w-0 flex-1 rounded-md border border-neutral-300 px-2 py-0.5 text-sm transition-all dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:placeholder-neutral-600"
       />
-      <Button onclick={onBrowseDirectory}>Browse</Button>
+      <Button className="my-1 shrink-0" onclick={onBrowseDirectory}>Browse</Button>
       <button
         type="button"
         onclick={openVersionsDialog}
-        class="rounded-md p-2 text-neutral-400 transition-colors hover:bg-neutral-700 hover:text-neutral-200 focus-visible:outline-none"
+        class="shrink-0 rounded-md p-1.5 text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-200 focus-visible:outline-none"
         title="Dependency versions"
         aria-label="Show dependency versions"
       >
         <Info className="size-4" />
       </button>
     </div>
+    <div class="titlebar-drag w-10 shrink-0 self-stretch" aria-hidden="true"></div>
+    <TitleBarControls />
   </header>
 
   {#if showVersions}

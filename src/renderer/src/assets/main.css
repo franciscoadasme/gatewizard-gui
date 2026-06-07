@@ -7,4 +7,22 @@
     scrollbar-color: var(--color-neutral-700) transparent;
     scrollbar-width: auto;
   }
+
+  html,
+  body,
+  #app {
+    height: 100%;
+    overflow: hidden;
+    background-color: #0a0a0a;
+  }
+
+  /* Drag only on dedicated title-bar strips (logo + spacer), not the whole header. */
+  .titlebar-drag {
+    -webkit-app-region: drag;
+    cursor: default !important;
+  }
+
+  .titlebar-no-drag {
+    -webkit-app-region: no-drag;
+  }
 }
