@@ -12,6 +12,35 @@ export function getAvailableLipids() {
 }
 
 /**
+ * @typedef {Object} DependencyInfo
+ * @property {boolean} available
+ * @property {boolean} required
+ * @property {string} install_group
+ * @property {string} description
+ * @property {string|null} version
+ */
+
+/**
+ * @typedef {Object} ExecutableInfo
+ * @property {string} name
+ * @property {string|null} path
+ * @property {string|null} version
+ * @property {boolean} available
+ * @property {string} [description]
+ */
+
+/**
+ * @returns {Promise<{
+ *   dependencies: Record<string, DependencyInfo>,
+ *   platform?: { python_version?: string, platform?: string, system?: string },
+ *   executables?: ExecutableInfo[]
+ * }>}
+ */
+export function getDependencyVersions() {
+  return backendJson('/dependency-versions')
+}
+
+/**
  * @returns {Promise<{ water_models: string[], protein_ffs: string[], lipid_ffs: string[] }>}
  */
 export function getAvailableForceFields() {

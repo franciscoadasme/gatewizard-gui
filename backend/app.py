@@ -62,6 +62,7 @@ from gatewizard.tools.ligand_parametrization import (
 from gatewizard.utils import namd_analysis
 from gatewizard.utils import gromacs_analysis
 from gatewizard.utils import openmm_analysis
+from gatewizard.utils.optional_deps import get_dependency_versions
 
 ION_NAMES = [
     "NA",
@@ -485,6 +486,37 @@ def ping() -> dict:
     except metadata.PackageNotFoundError:
         gw_version = None
     return {"message": "pong", "gatewizard_version": gw_version}
+
+
+@app.get("/dependency-versions")
+def dependency_versions() -> dict:
+    """Return installed dependency versions for reproducibility and citation."""
+    report = get_dependency_versions(
+        include_optional=True,
+        include_platform=True,
+        include_external_tools=True,
+    )
+
+    backend_packages = {
+        "fastapi": "GateWizard GUI HTTP API",
+        "uvicorn": "GateWizard GUI backend server",
+    }
+    for name, description in backend_packages.items():
+        try:
+            version = metadata.version(name)
+            available = True
+        except metadata.PackageNotFoundError:
+            version = None
+            available = False
+        report["dependencies"][name] = {
+            "available": available,
+            "required": True,
+            "install_group": "gui",
+            "description": description,
+            "version": version,
+        }
+
+    return report
 
 
 @app.post("/run-propka")

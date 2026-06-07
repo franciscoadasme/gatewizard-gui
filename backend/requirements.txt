@@ -1,7 +1,7 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
-# DEV: install from main branch instead of a fixed release
-gatewizard @ git+https://github.com/maurobedoya/gatewizard.git@main
-# gatewizard>=1.0.34
-mempro @ git+https://github.com/pstansfeld/MemPrO.git
-MDAnalysis>=2.0.0
+# DEV: editable local gatewizard with all optional API extras (md, orientation)
+-e /mnt/d/Dropbox/comandos_2/github/gatewizard[full]
+#-e /mnt/c/Dropbox/comandos_2/github/gatewizard[full]
+# Release: pin gatewizard from PyPI with optional extras
+# gatewizard[full]>=1.0.34
