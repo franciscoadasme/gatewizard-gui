@@ -54,12 +54,13 @@
 <style>
   .titlebar-controls {
     -webkit-app-region: no-drag;
+    align-self: stretch;
   }
 
   .titlebar-btn {
     display: flex;
     width: 2.875rem;
-    height: 2.25rem;
+    height: 100%;
     align-items: center;
     justify-content: center;
     border: none;

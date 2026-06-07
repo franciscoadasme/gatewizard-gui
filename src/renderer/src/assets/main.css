@@ -16,10 +16,12 @@
     background-color: #0a0a0a;
   }
 
-  /* Drag only on dedicated title-bar strips (logo + spacer), not the whole header. */
-  .titlebar-drag {
+  /* Inset from top so native resize bands stay clear; flex centers logo vertically. */
+  .titlebar-drag-zone {
     -webkit-app-region: drag;
     cursor: default !important;
+    margin-top: 6px;
+    align-self: stretch;
   }
 
   .titlebar-no-drag {

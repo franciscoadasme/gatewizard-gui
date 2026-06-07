@@ -4,6 +4,7 @@
   import Info from './components/icons/Info.svelte'
   import Spinner from './components/ui/Spinner.svelte'
   import TitleBarControls from './components/TitleBarControls.svelte'
+  import WindowResizeHandles from './components/WindowResizeHandles.svelte'
   import { getDependencyVersions, getProjectStatus } from './lib/backendApi'
   import pkg from '../../../package.json'
   import windowIcon from '../../../resources/window_icon.png'
@@ -450,14 +451,12 @@
 <div
   class="flex h-full flex-col divide-y overflow-hidden dark:divide-neutral-800 dark:bg-neutral-950 dark:text-white"
 >
-  <header
-    class="flex h-9 shrink-0 items-stretch gap-2 bg-neutral-950 pl-3 dark:bg-neutral-950"
-  >
-    <div class="titlebar-drag flex shrink-0 items-center self-stretch pr-1" title="Drag to move">
+  <header class="flex h-9 shrink-0 items-stretch bg-neutral-950 pl-1.5 dark:bg-neutral-950">
+    <div class="titlebar-drag-zone flex shrink-0 items-center px-1" title="Drag to move">
       <img
         src={windowIcon}
         alt="GateWizard"
-        class="size-6 pointer-events-none object-contain"
+        class="pointer-events-none size-6 object-contain"
       />
     </div>
     <div class="titlebar-no-drag flex min-w-0 flex-1 items-center gap-2">
@@ -481,9 +480,11 @@
         <Info className="size-4" />
       </button>
     </div>
-    <div class="titlebar-drag w-10 shrink-0 self-stretch" aria-hidden="true"></div>
+    <div class="titlebar-drag-zone min-w-4 max-w-14 flex-1" aria-hidden="true"></div>
     <TitleBarControls />
   </header>
+
+  <WindowResizeHandles />
 
   {#if showVersions}
     <div

@@ -21,6 +21,12 @@ let splashWindow = null
 let splashShownAt = 0
 let splashClosing = false
 
+/** @type {{ win: BrowserWindow, edge: string, startBounds: Electron.Rectangle, startPoint: { x: number, y: number } } | null} */
+let activeResize = null
+
+const MIN_WINDOW_WIDTH = 640
+const MIN_WINDOW_HEIGHT = 480
+
 /** @type {WeakMap<BrowserWindow, { maximized: boolean, restoreBounds?: Electron.Rectangle, applyingBounds: boolean }>} */
 const linuxWindowStates = new WeakMap()
 
@@ -73,6 +79,64 @@ function attachWindowStateHandlers(win) {
   win.on('unmaximize', notify)
   win.on('restore', notify)
   win.on('resize', notify)
+}
+
+function registerWindowResizeIpc() {
+  ipcMain.on('window:resize-start', (event, edge) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win || typeof edge !== 'string') return
+
+    if (process.platform === 'linux') {
+      const state = getLinuxWindowState(win)
+      if (state.maximized) {
+        if (state.restoreBounds) win.setBounds(state.restoreBounds)
+        state.maximized = false
+      }
+    } else if (win.isMaximized()) {
+      win.unmaximize()
+    }
+
+    activeResize = {
+      win,
+      edge,
+      startBounds: win.getBounds(),
+      startPoint: screen.getCursorScreenPoint()
+    }
+  })
+
+  ipcMain.on('window:resize-move', () => {
+    if (!activeResize) return
+    const { win, edge, startBounds, startPoint } = activeResize
+    if (win.isDestroyed()) {
+      activeResize = null
+      return
+    }
+
+    const point = screen.getCursorScreenPoint()
+    const dx = point.x - startPoint.x
+    const dy = point.y - startPoint.y
+
+    let { x, y, width, height } = startBounds
+
+    if (edge.includes('e')) width = Math.max(MIN_WINDOW_WIDTH, startBounds.width + dx)
+    if (edge.includes('s')) height = Math.max(MIN_WINDOW_HEIGHT, startBounds.height + dy)
+    if (edge.includes('w')) {
+      const nextWidth = Math.max(MIN_WINDOW_WIDTH, startBounds.width - dx)
+      x = startBounds.x + (startBounds.width - nextWidth)
+      width = nextWidth
+    }
+    if (edge.includes('n')) {
+      const nextHeight = Math.max(MIN_WINDOW_HEIGHT, startBounds.height - dy)
+      y = startBounds.y + (startBounds.height - nextHeight)
+      height = nextHeight
+    }
+
+    win.setBounds({ x, y, width, height })
+  })
+
+  ipcMain.on('window:resize-end', () => {
+    activeResize = null
+  })
 }
 
 function registerWindowControlsIpc() {
@@ -355,6 +419,7 @@ function createWindow() {
     height: 670,
     show: false,
     frame: false,
+    thickFrame: true,
     autoHideMenuBar: true,
     backgroundColor: '#0a0a0a',
     ...(process.platform === 'win32' ? { roundedCorners: false } : {}),
@@ -435,6 +500,7 @@ app.whenReady().then(async () => {
   createSplashWindow()
 
   registerWindowControlsIpc()
+  registerWindowResizeIpc()
 
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.
