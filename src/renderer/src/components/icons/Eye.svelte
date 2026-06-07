@@ -8,17 +8,21 @@
   viewBox="0 0 24 24"
   fill="none"
   stroke="currentColor"
-  stroke-width="2"
+  stroke-width="1.6"
+  stroke-linecap="round"
+  stroke-linejoin="round"
   class={className}
   role={title ? 'img' : 'presentation'}
   aria-hidden={title ? undefined : true}
 >
   {#if title}<title>{title}</title>{/if}
-  <path
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    d="M3.5 12s4-6.5 8.5-6.5S20.5 12 20.5 12s-4 6.5-8.5 6.5S3.5 12 3.5 12Z"
-  />
-  <circle cx="12" cy="12" r="2.75" />
+
+  <!-- outer eye shape — tighter, more almond-like with breathing room -->
+  <path d="M4.5 12 C 6.5 8, 9 6.5 12 6.5 C 15 6.5 17.5 8 19.5 12 C 17.5 16 15 17.5 12 17.5 C 9 17.5 6.5 16 4.5 12 Z" />
+
+  <!-- iris ring -->
+  <circle cx="12" cy="12" r="2.6" />
+
+  <!-- pupil -->
   <circle cx="12" cy="12" r="1.1" fill="currentColor" stroke="none" />
 </svg>

@@ -18,26 +18,26 @@
   {#if title}<title>{title}</title>{/if}
 
   <!-- small bubble, left -->
-  <circle fill="currentColor" stroke="none" cx="9.5" cy="3.5" r="1.3" />
+  <circle fill="currentColor" stroke="none" cx="9.2" cy="3.8" r="1.1" />
 
   <!-- large bubble, right -->
-  <circle fill="currentColor" stroke="none" cx="14.5" cy="1.8" r="1.9" />
+  <circle fill="currentColor" stroke="none" cx="14.2" cy="2.4" r="1.6" />
 
   <!-- single rim line -->
-  <line x1="2" y1="8.5" x2="22" y2="8.5" />
+  <line x1="3" y1="8.5" x2="21" y2="8.5" />
 
-  <!-- cauldron body: bottom ends at ~19.5 to leave room for legs -->
+  <!-- cauldron body: control points pulled in to stay well within viewBox -->
   <path d="
-    M3.8 8.5
-    C 0.5 11, 0.2 17.5, 4.8 20.2
-    C 7 21.5, 9.5 22, 12 22
-    C 14.5 22, 17 21.5, 19.2 20.2
-    C 23.8 17.5, 23.5 11, 20.2 8.5
+    M4.5 8.5
+    C 2 11, 2 17, 6 20
+    C 8 21.2, 10 21.8, 12 21.8
+    C 14 21.8, 16 21.2, 18 20
+    C 22 17, 22 11, 19.5 8.5
   " fill="none" />
 
-  <!-- left leg -->
-  <line x1="6.2" y1="21" x2="6.2" y2="23.2" />
+  <!-- left leg — clearly visible with enough length -->
+  <line x1="7" y1="20.5" x2="7" y2="22.8" />
 
   <!-- right leg -->
-  <line x1="17.8" y1="21" x2="17.8" y2="23.2" />
+  <line x1="17" y1="20.5" x2="17" y2="22.8" />
 </svg>
