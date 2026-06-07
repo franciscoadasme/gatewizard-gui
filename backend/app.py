@@ -927,6 +927,65 @@ def validate_builder(payload: ValidateBuilderRequest) -> dict:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
 
 
+def _configure_builder(payload: StartPreparationRequest) -> Builder:
+    builder = Builder()
+    builder.set_configuration(
+        water_model=payload.water_model,
+        protein_ff=payload.protein_ff,
+        lipid_ff=payload.lipid_ff,
+        preoriented=payload.preoriented,
+        parametrize=payload.parametrize,
+        salt_concentration=payload.salt_concentration,
+        cation=payload.cation,
+        anion=payload.anion,
+        dist_wat=payload.dist_wat,
+        dims=payload.dims,
+        output_folder_name=payload.output_folder_name or None,
+        ligand_params={
+            lp["name"]: {"frcmod": lp["frcmod"], "lib": lp["lib"]}
+            for lp in (payload.ligand_params or [])
+        },
+    )
+    return builder
+
+
+@app.post("/generate-preparation")
+def generate_preparation(payload: StartPreparationRequest) -> dict:
+    path = os.path.abspath(os.path.expanduser(payload.path))
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    working_dir = os.path.dirname(path)
+    try:
+        builder = _configure_builder(payload)
+        success, message, job_dir = builder.generate_preparation_inputs(
+            pdb_file=path,
+            working_dir=working_dir,
+            upper_lipids=payload.upper_lipids,
+            lower_lipids=payload.lower_lipids,
+            lipid_ratios=payload.lipid_ratios,
+        )
+        return {"success": success, "message": message, "job_dir": str(job_dir)}
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+class RunPreparationRequest(BaseModel):
+    job_dir: str = Field(..., description="Absolute path to the preparation job directory")
+
+
+@app.post("/run-preparation")
+def run_preparation(payload: RunPreparationRequest) -> dict:
+    job_dir = Path(os.path.abspath(os.path.expanduser(payload.job_dir)))
+    if not job_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Directory not found: {job_dir}")
+    try:
+        builder = Builder()
+        success, message = builder.run_preparation(job_dir)
+        return {"success": success, "message": message, "job_dir": str(job_dir)}
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
 @app.post("/start-preparation")
 def start_preparation(payload: StartPreparationRequest) -> dict:
     path = os.path.abspath(os.path.expanduser(payload.path))
@@ -934,24 +993,7 @@ def start_preparation(payload: StartPreparationRequest) -> dict:
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
     working_dir = os.path.dirname(path)
     try:
-        builder = Builder()
-        builder.set_configuration(
-            water_model=payload.water_model,
-            protein_ff=payload.protein_ff,
-            lipid_ff=payload.lipid_ff,
-            preoriented=payload.preoriented,
-            parametrize=payload.parametrize,
-            salt_concentration=payload.salt_concentration,
-            cation=payload.cation,
-            anion=payload.anion,
-            dist_wat=payload.dist_wat,
-            dims=payload.dims,
-            output_folder_name=payload.output_folder_name or None,
-            ligand_params={
-                lp["name"]: {"frcmod": lp["frcmod"], "lib": lp["lib"]}
-                for lp in (payload.ligand_params or [])
-            },
-        )
+        builder = _configure_builder(payload)
         success, message, job_dir = builder.prepare_system(
             pdb_file=path,
             working_dir=working_dir,

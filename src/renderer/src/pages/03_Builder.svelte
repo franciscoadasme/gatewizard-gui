@@ -2,12 +2,14 @@
   import Button from '../components/ui/Button.svelte'
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Divider from '../components/ui/Divider.svelte'
+  import Spinner from '../components/ui/Spinner.svelte'
   import { builderStatus, logEvent } from '../lib/pageStatus.svelte.js'
   import {
     getAvailableLipids,
     getAvailableForceFields,
     validateBuilder,
-    startPreparation,
+    generatePreparation,
+    runPreparation,
     detectLigands,
     parametrizeLigand,
     getLigandImage,
@@ -53,6 +55,7 @@
   /** @type {Job[]} */
   let jobs = $state([])
   let launching = $state(false)
+  let generatingInputFiles = $state(false)
   let validating = $state(false)
   /** @type {{ valid: boolean, warning: boolean, message: string } | null} */
   let validationResult = $state(null)
@@ -60,12 +63,24 @@
   /** Ref to the poll interval so we can clear it */
   let pollIntervalId = $state(null)
 
+  const canGenerateInput = $derived(
+    workingFile !== '' &&
+      validationResult?.valid === true &&
+      !generatingInputFiles &&
+      !launching
+  )
+  const pendingJob = $derived(jobs.find((j) => j.status === 'not_started'))
+  const canStartPreparation = $derived(
+    pendingJob !== undefined && !launching && !generatingInputFiles
+  )
+
   // ── Sync to shared status bar store ──
   $effect(() => {
     builderStatus.jobCount = jobs.length
     builderStatus.runningCount = jobs.filter((j) => j.status === 'running').length
     builderStatus.completedCount = jobs.filter((j) => j.status === 'completed').length
     builderStatus.errorCount = jobs.filter((j) => j.status === 'error').length
+    builderStatus.generatingInput = generatingInputFiles
     const latest = jobs[0]
     builderStatus.latestName = latest?.name ?? ''
     builderStatus.latestStatus = latest?.status ?? ''
@@ -402,41 +417,78 @@
     }
   }
 
-  async function onStartPreparation() {
+  function buildJobSteps() {
+    return parametrize
+      ? preoriented
+        ? ['Packmol', 'pdb4amber', 'tleap']
+        : ['MEMEMBED', 'Packmol', 'pdb4amber', 'tleap']
+      : preoriented
+        ? ['Packmol']
+        : ['MEMEMBED', 'Packmol']
+  }
+
+  async function onGenerateInput() {
+    if (!workingFile) return
     try {
-      launching = true
+      generatingInputFiles = true
       const params = buildParams()
-      const result = await startPreparation(params)
+      const result = await generatePreparation(params)
       if (result.success && result.job_dir) {
         const dirName = result.job_dir.split('/').pop() || result.job_dir
         /** @type {Job} */
         const newJob = {
           jobDir: result.job_dir,
           name: dirName,
-          status: 'running',
+          status: 'not_started',
           currentStep: 0,
-          steps: parametrize
-            ? preoriented
-              ? ['Packmol', 'pdb4amber', 'tleap']
-              : ['MEMEMBED', 'Packmol', 'pdb4amber', 'tleap']
-            : preoriented
-              ? ['Packmol']
-              : ['MEMEMBED', 'Packmol'],
+          steps: buildJobSteps(),
           stepsCompleted: [],
           error: null,
-          startTime: new Date().toISOString(),
+          startTime: '',
           endTime: null,
-          elapsed: '0s',
+          elapsed: '',
           logLines: [],
           showLog: false
         }
         jobs = [newJob, ...jobs]
+        logEvent(
+          'info',
+          'build',
+          `Generated input: "${newJob.name}"`,
+          result.job_dir
+        )
+      } else {
+        alert(`Failed: ${result.message}`)
+      }
+    } catch (error) {
+      alert(`Error: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      generatingInputFiles = false
+    }
+  }
+
+  async function onStartPreparation() {
+    const job = pendingJob
+    if (!job) return
+    try {
+      launching = true
+      const result = await runPreparation(job.jobDir)
+      if (result.success) {
+        const index = jobs.findIndex((j) => j.jobDir === job.jobDir)
+        if (index >= 0) {
+          jobs[index] = {
+            ...jobs[index],
+            status: 'running',
+            startTime: new Date().toISOString(),
+            elapsed: '0s'
+          }
+        }
         startPolling()
         logEvent(
           'info',
           'build',
-          `Started job: ${newJob.name}`,
-          `Steps: ${newJob.steps.join(' → ')}`
+          `Started job: ${job.name}`,
+          `Steps: ${job.steps.join(' → ')}`
         )
       } else {
         alert(`Failed: ${result.message}`)
@@ -863,7 +915,7 @@
         className="w-full"
         variant="outline"
         onclick={onValidate}
-        disabled={validating || launching}
+        disabled={validating || launching || generatingInputFiles}
       >
         {validating ? 'Validating…' : 'Validate Inputs'}
       </Button>
@@ -882,18 +934,43 @@
           {/if}
         </div>
       {/if}
-      <Button
-        className="w-full"
-        onclick={onStartPreparation}
-        disabled={launching || !workingFile || validationResult === null}
-      >
-        {launching ? 'Launching...' : 'Start Preparation'}
-      </Button>
+      <div role="group" aria-label="Generate preparation input files action">
+        <Button
+          className="w-full"
+          variant="outline"
+          onclick={onGenerateInput}
+          disabled={!canGenerateInput}
+        >
+          {#if generatingInputFiles}
+            <Spinner className="mr-1" />
+            Generating...
+          {:else}
+            Generate Input Files
+          {/if}
+        </Button>
+      </div>
+      <div role="group" aria-label="Run preparation action">
+        <Button className="w-full" onclick={onStartPreparation} disabled={!canStartPreparation}>
+          {#if launching}
+            <Spinner className="mr-1" />
+            Launching...
+          {:else}
+            Start Preparation
+          {/if}
+        </Button>
+      </div>
       {#if validationResult === null && workingFile}
         <p
           class="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-400"
         >
-          Inputs have not been validated. Click <strong>Validate Inputs</strong> before starting.
+          Inputs have not been validated. Click <strong>Validate Inputs</strong> before generating.
+        </p>
+      {/if}
+      {#if validationResult?.valid && !pendingJob}
+        <p
+          class="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-400"
+        >
+          Input files have not been generated yet. Click <strong>Generate Input Files</strong> first.
         </p>
       {/if}
       <button
@@ -941,7 +1018,7 @@
       <p
         class="mx-4 mb-4 flex flex-1 items-center justify-center rounded-lg border border-dashed border-neutral-800 text-neutral-700"
       >
-        No preparations started yet. Configure options and click "Start Preparation".
+        No preparations yet. Configure options, generate input files, then click "Start Preparation".
       </p>
     {:else}
       <div class="mx-4 mb-4 min-h-0 flex-1 space-y-3 overflow-y-auto">
@@ -962,6 +1039,8 @@
                 <span class="inline-block h-2 w-2 rounded-full bg-green-500"></span>
               {:else if job.status === 'error'}
                 <span class="inline-block h-2 w-2 rounded-full bg-red-500"></span>
+              {:else if job.status === 'not_started'}
+                <span class="inline-block h-2 w-2 rounded-full bg-blue-500"></span>
               {:else}
                 <span class="inline-block h-2 w-2 rounded-full bg-neutral-500"></span>
               {/if}

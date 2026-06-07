@@ -64,6 +64,24 @@ export function startPreparation(params) {
 }
 
 /**
+ * Generate preparation input files without launching the job.
+ * @param {object} params
+ * @returns {Promise<{ success: boolean, message: string, job_dir: string }>}
+ */
+export function generatePreparation(params) {
+  return backendJson('/generate-preparation', params)
+}
+
+/**
+ * Launch a previously generated preparation job.
+ * @param {string} jobDir  Absolute path to the job directory
+ * @returns {Promise<{ success: boolean, message: string, job_dir: string }>}
+ */
+export function runPreparation(jobDir) {
+  return backendJson('/run-preparation', { jobDir })
+}
+
+/**
  * Poll the status.json for a running/completed job.
  * @param {string} jobDir  Absolute path to the job directory
  * @returns {Promise<{ status: string, current_step: number, steps_completed: string[], error: string|null, start_time: string, end_time: string|null }>}

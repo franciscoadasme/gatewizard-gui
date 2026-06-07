@@ -54,6 +54,8 @@ export const builderStatus = $state({
   latestStatus: '',
   /** Elapsed string for the most recent job */
   latestElapsed: '',
+  /** Whether input files are being generated right now */
+  generatingInput: false,
 })
 
 // ── 04 Equilibration ─────────────────────────────────────────────────────────
