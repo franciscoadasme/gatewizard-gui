@@ -1,7 +1,11 @@
 <script>
   import { onDestroy, onMount, untrack } from 'svelte'
   import Button from './components/ui/Button.svelte'
-  import { getProjectStatus } from './lib/backendApi'
+  import Info from './components/icons/Info.svelte'
+  import Spinner from './components/ui/Spinner.svelte'
+  import { getDependencyVersions, getProjectStatus } from './lib/backendApi'
+  import pkg from '../../../package.json'
+  import windowIcon from '../../../resources/window_icon.png'
   import {
     analysisStatus,
     builderStatus,
@@ -387,6 +391,53 @@
     const ids = allChips.filter((c) => c.dismissible).map((c) => c.id)
     barDismissed = new Set([...barDismissed, ...ids])
   }
+
+  // ── Dependency versions dialog ──
+  let showVersions = $state(false)
+  let versionsLoading = $state(false)
+  /** @type {string | null} */
+  let versionsError = $state(null)
+  /** @type {Awaited<ReturnType<typeof getDependencyVersions>> | null} */
+  let versionsData = $state(null)
+
+  async function openVersionsDialog() {
+    showVersions = true
+    versionsLoading = true
+    versionsError = null
+    try {
+      versionsData = await getDependencyVersions()
+    } catch (err) {
+      versionsData = null
+      versionsError = err instanceof Error ? err.message : 'Failed to load dependency versions'
+    } finally {
+      versionsLoading = false
+    }
+  }
+
+  /** @param {Record<string, import('./lib/backendApi').DependencyInfo>} dependencies */
+  function sortedDependencies(dependencies) {
+    return Object.entries(dependencies).sort(([aName, aInfo], [bName, bInfo]) => {
+      const groupOrder = { core: 0, md: 1, orientation: 2, gui: 3 }
+      const aGroup = groupOrder[aInfo.install_group] ?? 9
+      const bGroup = groupOrder[bInfo.install_group] ?? 9
+      if (aGroup !== bGroup) return aGroup - bGroup
+      return aName.localeCompare(bName)
+    })
+  }
+
+  /** @param {string} group */
+  function installGroupLabel(group) {
+    switch (group) {
+      case 'md':
+        return 'MD extra'
+      case 'orientation':
+        return 'Orientation extra'
+      case 'gui':
+        return 'GUI'
+      default:
+        return 'Core'
+    }
+  }
 </script>
 
 <div
@@ -394,6 +445,12 @@
 >
   <header class="px-4 py-2 dark:bg-neutral-800">
     <div class="flex items-center gap-2">
+      <img
+        src={windowIcon}
+        alt="GateWizard"
+        class="size-8 shrink-0 object-contain"
+        title="GateWizard"
+      />
       <span class="text-sm font-medium dark:text-neutral-400">Working Directory:</span>
       <input
         id="working-dir-input"
@@ -404,8 +461,153 @@
         class="flex-1 rounded-md border border-neutral-300 p-2 transition-all dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:placeholder-neutral-600"
       />
       <Button onclick={onBrowseDirectory}>Browse</Button>
+      <button
+        type="button"
+        onclick={openVersionsDialog}
+        class="rounded-md p-2 text-neutral-400 transition-colors hover:bg-neutral-700 hover:text-neutral-200 focus-visible:outline-none"
+        title="Dependency versions"
+        aria-label="Show dependency versions"
+      >
+        <Info className="size-4" />
+      </button>
     </div>
   </header>
+
+  {#if showVersions}
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="dependency-versions-title"
+      tabindex="-1"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+      onmousedown={(e) => {
+        if (e.target === e.currentTarget) showVersions = false
+      }}
+    >
+      <div
+        class="mx-4 flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg border border-neutral-700 bg-neutral-900 text-xs"
+      >
+        <div class="border-b border-neutral-800 px-5 py-4">
+          <h2 id="dependency-versions-title" class="text-base font-semibold text-neutral-100">
+            Dependency Versions
+          </h2>
+          <p class="mt-1 text-neutral-500">
+            Record these versions for reproducibility, compatibility checks, or citations.
+          </p>
+        </div>
+
+        <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          {#if versionsLoading}
+            <div class="flex items-center justify-center gap-2 py-10 text-neutral-400">
+              <Spinner />
+              Loading dependency versions...
+            </div>
+          {:else if versionsError}
+            <p class="rounded-md border border-red-700/50 bg-red-950/30 p-3 text-red-300">
+              {versionsError}
+            </p>
+          {:else if versionsData}
+            <div class="space-y-4">
+              <div class="grid grid-cols-2 gap-2 md:grid-cols-3">
+                <div class="rounded-md border border-neutral-800 p-2">
+                  <p class="text-neutral-500">GUI</p>
+                  <p class="font-semibold text-neutral-200">{pkg.version}</p>
+                </div>
+                {#if versionsData.platform?.python_version}
+                  <div class="rounded-md border border-neutral-800 p-2">
+                    <p class="text-neutral-500">Python</p>
+                    <p class="font-semibold text-neutral-200">
+                      {versionsData.platform.python_version}
+                    </p>
+                  </div>
+                {/if}
+                {#if versionsData.platform?.platform}
+                  <div class="rounded-md border border-neutral-800 p-2 md:col-span-1">
+                    <p class="text-neutral-500">Platform</p>
+                    <p class="truncate font-semibold text-neutral-200" title={versionsData.platform.platform}>
+                      {versionsData.platform.platform}
+                    </p>
+                  </div>
+                {/if}
+              </div>
+
+              <div>
+                <h3 class="mb-2 font-semibold text-neutral-300">Python packages</h3>
+                <div class="overflow-hidden rounded-md border border-neutral-800">
+                  <table class="w-full">
+                    <thead class="bg-neutral-950 text-neutral-500">
+                      <tr>
+                        <th class="px-3 py-2 text-left font-medium">Package</th>
+                        <th class="px-3 py-2 text-left font-medium">Version</th>
+                        <th class="px-3 py-2 text-left font-medium">Install set</th>
+                        <th class="px-3 py-2 text-left font-medium">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody class="divide-y divide-neutral-800">
+                      {#each sortedDependencies(versionsData.dependencies) as [name, info] (name)}
+                        <tr>
+                          <td class="px-3 py-2 font-medium text-neutral-200">{name}</td>
+                          <td class="px-3 py-2 font-mono text-neutral-300">
+                            {info.version ?? '—'}
+                          </td>
+                          <td class="px-3 py-2 text-neutral-400">
+                            {installGroupLabel(info.install_group ?? 'core')}
+                          </td>
+                          <td class="px-3 py-2">
+                            {#if info.available}
+                              <span class="text-green-400">installed</span>
+                            {:else}
+                              <span class="text-neutral-500">not installed</span>
+                            {/if}
+                          </td>
+                        </tr>
+                      {/each}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {#if versionsData.executables?.length}
+                <div>
+                  <h3 class="mb-2 font-semibold text-neutral-300">External tools</h3>
+                  <div class="overflow-hidden rounded-md border border-neutral-800">
+                    <table class="w-full">
+                      <thead class="bg-neutral-950 text-neutral-500">
+                        <tr>
+                          <th class="px-3 py-2 text-left font-medium">Engine</th>
+                          <th class="px-3 py-2 text-left font-medium">Version</th>
+                          <th class="px-3 py-2 text-left font-medium">Path</th>
+                        </tr>
+                      </thead>
+                      <tbody class="divide-y divide-neutral-800">
+                        {#each versionsData.executables as exe (exe.name)}
+                          <tr>
+                            <td class="px-3 py-2 font-medium uppercase text-neutral-200">
+                              {exe.name}
+                            </td>
+                            <td class="px-3 py-2 font-mono text-neutral-300">
+                              {exe.version ?? '—'}
+                            </td>
+                            <td class="max-w-48 truncate px-3 py-2 text-neutral-500" title={exe.path ?? ''}>
+                              {exe.path ?? '—'}
+                            </td>
+                          </tr>
+                        {/each}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              {/if}
+            </div>
+          {/if}
+        </div>
+
+        <div class="border-t border-neutral-800 px-5 py-3">
+          <Button className="w-full" onclick={() => (showVersions = false)}>Close</Button>
+        </div>
+      </div>
+    </div>
+  {/if}
 
   <nav class="flex items-center gap-2 p-4 text-sm">
     <p class="dark:text-neutral-200">Stages:</p>

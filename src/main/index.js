@@ -10,10 +10,116 @@ import { ensureMambaRuntime, getLaunchPythonPath } from './runtime-bootstrap.js'
 const BACKEND_URL = 'http://127.0.0.1:8765'
 const GPU_SAFE_MODE_FLAG = '--gatewizard-gpu-safe-mode=1'
 const GPU_RELAUNCHED_FLAG = '--gatewizard-gpu-relaunched=1'
+const SPLASH_MIN_MS = 1500
+const SPLASH_FADE_MS = 350
 
 let backendProcess = null
 /** @type {BrowserWindow | null} */
 let mainWindow = null
+/** @type {BrowserWindow | null} */
+let splashWindow = null
+let splashShownAt = 0
+let splashClosing = false
+
+function getResourcesDir() {
+  if (app.isPackaged) {
+    return join(process.resourcesPath, 'app.asar.unpacked', 'resources')
+  }
+  return join(app.getAppPath(), 'resources')
+}
+
+function keepSplashOnTop() {
+  if (!splashWindow || splashWindow.isDestroyed()) return
+  // Avoid moveTop() on Linux/WSL — it triggers Chromium _NET_RESTACK_WINDOW noise.
+  // alwaysOnTop plus delaying main-window reveal keeps the splash visible.
+  if (process.platform === 'linux') {
+    splashWindow.setAlwaysOnTop(true)
+  } else {
+    splashWindow.setAlwaysOnTop(true, 'screen-saver')
+  }
+}
+
+function createSplashWindow() {
+  if (splashWindow && !splashWindow.isDestroyed()) {
+    return splashWindow
+  }
+
+  splashWindow = new BrowserWindow({
+    width: 300,
+    height: 300,
+    frame: false,
+    transparent: true,
+    center: true,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    show: false,
+    hasShadow: false,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true
+    }
+  })
+
+  splashWindow.loadFile(join(getResourcesDir(), 'splash.html'))
+  splashWindow.once('ready-to-show', () => {
+    if (splashWindow && !splashWindow.isDestroyed()) {
+      splashShownAt = Date.now()
+      keepSplashOnTop()
+      splashWindow.show()
+    }
+  })
+
+  return splashWindow
+}
+
+function isSplashActive() {
+  return splashWindow != null && !splashWindow.isDestroyed()
+}
+
+function revealMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed() || isSplashActive()) return
+  if (!mainWindow.isVisible()) mainWindow.show()
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.focus()
+}
+
+function closeSplashWindowImmediate() {
+  splashClosing = false
+  if (splashWindow && !splashWindow.isDestroyed()) {
+    splashWindow.close()
+  }
+  splashWindow = null
+}
+
+async function closeSplashWindowWhenReady() {
+  if (splashClosing || !splashWindow || splashWindow.isDestroyed()) return
+  splashClosing = true
+
+  const remaining = Math.max(0, SPLASH_MIN_MS - (Date.now() - splashShownAt))
+  if (remaining > 0) {
+    await new Promise((resolve) => setTimeout(resolve, remaining))
+  }
+
+  if (splashWindow && !splashWindow.isDestroyed()) {
+    keepSplashOnTop()
+    try {
+      await splashWindow.webContents.executeJavaScript(
+        "document.documentElement.classList.add('fade-out')"
+      )
+    } catch {
+      // Splash may have been destroyed while waiting.
+    }
+    await new Promise((resolve) => setTimeout(resolve, SPLASH_FADE_MS))
+  }
+
+  closeSplashWindowImmediate()
+}
 
 function hasCliFlag(flag) {
   return process.argv.includes(flag)
@@ -177,9 +283,9 @@ function createWindow() {
     }
   })
 
-  mainWindow.on('ready-to-show', () => {
-    mainWindow.show()
-    mainWindow.focus()
+  mainWindow.on('ready-to-show', async () => {
+    await closeSplashWindowWhenReady()
+    revealMainWindow()
 
     if (isGpuSafeModeEnabled()) {
       dialog.showMessageBox(mainWindow, {
@@ -193,17 +299,11 @@ function createWindow() {
   })
 
   mainWindow.webContents.on('did-finish-load', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      if (!mainWindow.isVisible()) mainWindow.show()
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      mainWindow.focus()
-    }
+    revealMainWindow()
   })
 
   const forceShowTimer = setTimeout(() => {
-    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
-      mainWindow.show()
-    }
+    revealMainWindow()
   }, 2000)
 
   mainWindow.on('closed', () => {
@@ -246,10 +346,13 @@ app.whenReady().then(async () => {
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
 
+  createSplashWindow()
+
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.
   // see https://github.com/alex8088/electron-toolkit/tree/master/packages/utils
   app.on('browser-window-created', (_, window) => {
+    if (window === splashWindow) return
     optimizer.watchWindowShortcuts(window)
   })
 
@@ -262,6 +365,7 @@ app.whenReady().then(async () => {
       onStatus: (msg) => process.stdout.write(`[runtime] ${msg}\n`)
     })
   } catch (error) {
+    closeSplashWindowImmediate()
     await dialog.showErrorBox('Runtime bootstrap failed', error.message)
     app.quit()
     return
@@ -271,6 +375,7 @@ app.whenReady().then(async () => {
   try {
     await waitForBackendHealth()
   } catch (error) {
+    closeSplashWindowImmediate()
     await dialog.showErrorBox('Backend failed to start', error.message)
   }
 
