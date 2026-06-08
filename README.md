@@ -176,8 +176,8 @@ Install `npm` dependencies in **one environment only** (WSL or Windows), not bot
 
 | Platform | Command | Release artifact (example) |
 |----------|---------|----------------------------|
-| Linux / WSL | `npm run build:linux` | `gatewizard-gui-1.0.3-linux-x86_64.AppImage`, `.deb` |
-| Windows | `npm run build` then `npm run build:win:pack` | `gatewizard-gui-1.0.3-win-x64-setup.exe` |
-| macOS | `npm run build:mac` (on macOS) | `gatewizard-gui-1.0.3-mac-arm64.dmg` |
+| Linux / WSL | `npm run build:linux` | `gatewizard-gui-1.0.4-linux-x86_64.AppImage`, `.deb` |
+| Windows | `npm run build` then `npm run build:win:pack` | `gatewizard-gui-1.0.4-win-x64-setup.exe` |
+| macOS | `npm run build:mac` (on macOS) | `gatewizard-gui-1.0.4-mac-arm64.dmg` |
 
 Installers use platform suffixes (`-win-`, `-linux-`, `-mac-`) so Windows and WSL/Linux builds are easy to tell apart on one machine.
