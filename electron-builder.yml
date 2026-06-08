@@ -16,6 +16,8 @@ extraResources:
     to: backend
 win:
   executableName: gatewizard-gui
+  # Avoid winCodeSign extraction (needs symlink privilege / Developer Mode on Windows).
+  signAndEditExecutable: false
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}

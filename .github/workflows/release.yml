@@ -1,0 +1,148 @@
+name: Release GUI
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build app bundle
+        run: npm run build
+
+      - name: Package Linux (AppImage + deb)
+        run: npx electron-builder --linux AppImage deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-dist
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+          if-no-files-found: error
+
+  build-win:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build app bundle
+        run: npm run build
+
+      - name: Package Windows installer
+        run: npx electron-builder --win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win-dist
+          path: dist/*-setup.exe
+          if-no-files-found: error
+
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build app bundle
+        run: npm run build
+
+      - name: Package macOS dmg
+        run: npx electron-builder --mac dmg
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-dist
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  release:
+    needs: [build-linux, build-win, build-mac]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version and tag
+        id: meta
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$PKG_VERSION" != "$VERSION" ]; then
+            echo "package.json version ($PKG_VERSION) must match tag ($TAG)" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Build versions manifest
+        run: node scripts/build-versions-manifest.mjs "${{ github.repository }}" "${{ steps.meta.outputs.tag }}" "${{ steps.meta.outputs.version }}"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: GateWizard GUI ${{ steps.meta.outputs.version }}
+          generate_release_notes: true
+          files: |
+            dist/**
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sync manifest to public gatewizard repo
+        env:
+          UPDATE_MANIFEST_TOKEN: ${{ secrets.UPDATE_MANIFEST_TOKEN }}
+        run: |
+          if [ -z "$UPDATE_MANIFEST_TOKEN" ]; then
+            echo "UPDATE_MANIFEST_TOKEN not set — skip syncing to public gatewizard repo."
+            echo "Copy dist/versions.json to gatewizard/releases/gui-versions.json manually, or add the secret."
+            exit 0
+          fi
+          git clone "https://x-access-token:${UPDATE_MANIFEST_TOKEN}@github.com/maurobedoya/gatewizard.git" gatewizard-public
+          mkdir -p gatewizard-public/releases
+          cp dist/versions.json gatewizard-public/releases/gui-versions.json
+          cd gatewizard-public
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add releases/gui-versions.json
+          git diff --staged --quiet || git commit -m "chore: update GUI versions manifest for ${{ steps.meta.outputs.tag }}"
+          git push origin main

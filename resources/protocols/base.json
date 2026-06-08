@@ -69,7 +69,7 @@
       "name": "Equilibration 4",
       "description": "Fourth equilibration stage",
       "time_ns": 0.5,
-      "steps": 250000,
+      "steps": 500000,
       "ensemble": null,
       "temperature": 303.15,
       "pressure": 1.0,
@@ -83,7 +83,7 @@
         { "name": "Ions", "force_constant": 0.0, "selection": "ions" },
         { "name": "Other", "force_constant": 0.0, "selection": "other" }
       ],
-      "timestep": 2.0,
+      "timestep": 1.0,
       "dcd_freq": 5000,
       "margin": 5.0
     },

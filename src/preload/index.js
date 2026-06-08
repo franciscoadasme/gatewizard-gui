@@ -18,7 +18,12 @@ const api = {
   readJson: (filePath) => ipcRenderer.invoke('fs:readJson', filePath),
   writeJson: (filePath, data) => ipcRenderer.invoke('fs:writeJson', filePath, data),
   writeText: (filePath, text) => ipcRenderer.invoke('fs:writeText', filePath, text),
-  writeBinary: (filePath, base64) => ipcRenderer.invoke('fs:writeBinary', filePath, base64)
+  writeBinary: (filePath, base64) => ipcRenderer.invoke('fs:writeBinary', filePath, base64),
+
+  checkForUpdates: () => ipcRenderer.invoke('updates:check'),
+  getUpdateManifestUrl: () => ipcRenderer.invoke('updates:get-manifest-url'),
+  openExternalUrl: (url) => ipcRenderer.invoke('updates:open-url', url),
+  upgradeGatewizard: (installSpec) => ipcRenderer.invoke('runtime:upgrade-gatewizard', installSpec)
 }
 
 function installTitlebarDoubleClickHandler() {

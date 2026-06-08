@@ -5,7 +5,8 @@ import { readFile, writeFile } from 'fs/promises'
 import path, { join } from 'path'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import icon from '../../resources/window_icon.png?asset'
-import { ensureMambaRuntime, getLaunchPythonPath } from './runtime-bootstrap.js'
+import { ensureMambaRuntime, getLaunchPythonPath, upgradeGatewizardPackage } from './runtime-bootstrap.js'
+import { checkForUpdates, getLocalGuiVersion, getManifestUrl } from './update-check.js'
 import {
   applyWorkAreaMaximize,
   clearWorkAreaMaximizeLimits
@@ -775,4 +776,42 @@ ipcMain.handle('fs:writeText', async (_event, filePath, text) => {
 
 ipcMain.handle('fs:writeBinary', async (_event, filePath, base64) => {
   await writeFile(filePath, Buffer.from(base64, 'base64'))
+})
+
+async function fetchGatewizardVersion() {
+  try {
+    const response = await fetch(`${BACKEND_URL}/ping`)
+    if (!response.ok) return null
+    const data = await response.json()
+    return data.gatewizard_version ?? null
+  } catch {
+    return null
+  }
+}
+
+ipcMain.handle('updates:check', async () => {
+  const gatewizardVersion = await fetchGatewizardVersion()
+  return checkForUpdates({
+    guiVersion: getLocalGuiVersion(),
+    gatewizardVersion
+  })
+})
+
+ipcMain.handle('updates:get-manifest-url', async () => getManifestUrl())
+
+ipcMain.handle('updates:open-url', async (_event, url) => {
+  if (!url || typeof url !== 'string') {
+    throw new Error('URL is required')
+  }
+  await shell.openExternal(url)
+})
+
+ipcMain.handle('runtime:upgrade-gatewizard', async (_event, installSpec) => {
+  const result = await upgradeGatewizardPackage({
+    requirementsPath: getRequirementsPath(),
+    installSpec: typeof installSpec === 'string' ? installSpec : undefined,
+    onStatus: (msg) => process.stdout.write(`[runtime] ${msg}\n`)
+  })
+  await restartBackend()
+  return result
 })

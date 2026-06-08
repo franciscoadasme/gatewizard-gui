@@ -17,6 +17,8 @@
     "postinstall": "electron-builder install-app-deps && node scripts/ensure-electron.cjs",
     "build:unpack": "npm run build && electron-builder --dir",
     "build:win": "npm run build && electron-builder --win",
+    "build:win:pack": "bash scripts/pack-win-from-wsl.sh",
+    "build:release:local": "npm run build && npm run build:linux && npm run build:win:pack",
     "build:mac": "npm run build && electron-builder --mac",
     "build:linux": "npm run build && electron-builder --linux"
   },

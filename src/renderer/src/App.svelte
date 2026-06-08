@@ -438,6 +438,86 @@
         return 'Core'
     }
   }
+
+  // ── Updates (manifest on public gatewizard repo) ──
+  let updatesChecking = $state(false)
+  let updatesUpgrading = $state(false)
+  /** @type {string | null} */
+  let updatesMessage = $state(null)
+  /** @type {string | null} */
+  let updatesError = $state(null)
+  /** @type {Awaited<ReturnType<NonNullable<typeof window.api>['checkForUpdates']>> | null} */
+  let updatesResult = $state(null)
+
+  async function onCheckForUpdates() {
+    if (!window.api?.checkForUpdates) {
+      updatesError = 'Update API is not available in this build.'
+      return
+    }
+    updatesChecking = true
+    updatesError = null
+    updatesMessage = null
+    try {
+      updatesResult = await window.api.checkForUpdates()
+      if (updatesResult.error) {
+        updatesError = updatesResult.error
+        return
+      }
+      if (!updatesResult.gui.updateAvailable && !updatesResult.gatewizard.updateAvailable) {
+        updatesMessage = 'You are up to date.'
+      } else {
+        const parts = []
+        if (updatesResult.gui.updateAvailable) {
+          parts.push(`GUI ${updatesResult.remote.gui} available (installed ${updatesResult.local.gui})`)
+        }
+        if (updatesResult.gatewizard.updateAvailable) {
+          parts.push(
+            `gatewizard ${updatesResult.remote.gatewizard} available` +
+              (updatesResult.local.gatewizard
+                ? ` (installed ${updatesResult.local.gatewizard})`
+                : '')
+          )
+        }
+        updatesMessage = parts.join(' · ')
+      }
+    } catch (err) {
+      updatesResult = null
+      updatesError = err instanceof Error ? err.message : 'Failed to check for updates'
+    } finally {
+      updatesChecking = false
+    }
+  }
+
+  async function onDownloadGuiUpdate() {
+    const url =
+      updatesResult?.gui.downloadUrl || updatesResult?.gui.releasePage || null
+    if (!url || !window.api?.openExternalUrl) return
+    await window.api.openExternalUrl(url)
+  }
+
+  async function onUpgradeGatewizard() {
+    if (!window.api?.upgradeGatewizard) return
+    updatesUpgrading = true
+    updatesError = null
+    try {
+      const installSpec = updatesResult?.gatewizard.installSpec ?? undefined
+      const result = await window.api.upgradeGatewizard(installSpec)
+      updatesMessage = result.gatewizardVersion
+        ? `gatewizard upgraded to ${result.gatewizardVersion}. Backend restarted.`
+        : 'gatewizard upgrade finished. Backend restarted.'
+      updatesResult = null
+      versionsLoading = true
+      try {
+        versionsData = await getDependencyVersions()
+      } finally {
+        versionsLoading = false
+      }
+    } catch (err) {
+      updatesError = err instanceof Error ? err.message : 'Failed to upgrade gatewizard'
+    } finally {
+      updatesUpgrading = false
+    }
+  }
 </script>
 
 <div
@@ -609,8 +689,61 @@
           {/if}
         </div>
 
-        <div class="border-t border-neutral-800 px-5 py-3">
-          <Button className="w-full" onclick={() => (showVersions = false)}>Close</Button>
+        <div class="space-y-3 border-t border-neutral-800 px-5 py-3">
+          {#if updatesMessage}
+            <p class="rounded-md border border-green-800/60 bg-green-950/20 px-3 py-2 text-green-300">
+              {updatesMessage}
+            </p>
+          {/if}
+          {#if updatesError}
+            <p class="rounded-md border border-red-700/50 bg-red-950/30 px-3 py-2 text-red-300">
+              {updatesError}
+            </p>
+          {/if}
+          <div class="flex flex-wrap gap-2">
+            <Button
+              className="flex-1 min-w-[8rem]"
+              disabled={updatesChecking || updatesUpgrading}
+              onclick={onCheckForUpdates}
+            >
+              {#if updatesChecking}
+                <Spinner className="mr-1.5" />
+                Checking...
+              {:else}
+                Check for updates
+              {/if}
+            </Button>
+            {#if updatesResult?.gui.updateAvailable}
+              <Button
+                className="flex-1 min-w-[8rem]"
+                variant="outline"
+                onclick={onDownloadGuiUpdate}
+              >
+                Download GUI
+              </Button>
+            {/if}
+            {#if updatesResult?.gatewizard.updateAvailable}
+              <Button
+                className="flex-1 min-w-[8rem]"
+                variant="outline"
+                disabled={updatesUpgrading}
+                onclick={onUpgradeGatewizard}
+              >
+                {#if updatesUpgrading}
+                  <Spinner className="mr-1.5" />
+                  Updating API...
+                {:else}
+                  Update API
+                {/if}
+              </Button>
+            {/if}
+            <Button className="flex-1 min-w-[8rem]" onclick={() => (showVersions = false)}
+              >Close</Button
+            >
+          </div>
+          <p class="text-center text-[10px] text-neutral-600">
+            Compares installed versions with the public update manifest on GitHub.
+          </p>
         </div>
       </div>
     </div>

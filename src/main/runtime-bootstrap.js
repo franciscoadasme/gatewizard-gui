@@ -50,14 +50,79 @@ function getMambaRoot() {
   return path.join(app.getPath('userData'), 'mamba-root')
 }
 
+/** Revision bumped when conda OpenMM GPU packages change (existing runtimes re-sync on next start). */
+const OPENMM_CONDA_REV = '1'
+
 /** conda-forge packages for the embedded runtime (platform-specific). */
+function getCondaOpenmmGpuPackages() {
+  if (process.platform === 'win32') return []
+  // macOS OpenMM uses Metal, not cudatoolkit
+  if (process.platform === 'darwin') return ['openmm']
+  // Linux / WSL: conda openmm + cudatoolkit for CUDA platform
+  return ['openmm', 'cudatoolkit']
+}
+
 function getCondaPackages() {
   const pkgs = [`python=${PYTHON_SPEC}`, 'pip']
   // AmberTools is not published for win-64 on conda-forge; use WSL/Linux for tleap workflows.
   if (process.platform !== 'win32') {
     pkgs.push('ambertools')
   }
+  pkgs.push(...getCondaOpenmmGpuPackages())
   return pkgs
+}
+
+async function ensureMicromambaBinary(onStatus) {
+  const key = getMicromambaKey()
+  if (!key || !MICROMAMBA_URL[key]) {
+    throw new Error(
+      `This platform (${process.platform} ${process.arch}) has no micromamba URL. Set GATEWIZARD_RUNTIME_PREFIX or GATEWIZARD_PYTHON.`
+    )
+  }
+  const micromambaDest = getMicromambaBinPath()
+  await fs.mkdir(path.dirname(micromambaDest), { recursive: true })
+  if (!(await fileExists(micromambaDest))) {
+    onStatus(`Downloading micromamba ${MICROMAMBA_TAG}...`)
+    await downloadFile(MICROMAMBA_URL[key], micromambaDest)
+    if (process.platform !== 'win32') {
+      await fs.chmod(micromambaDest, 0o755)
+    }
+  }
+  return micromambaDest
+}
+
+async function installCondaOpenmmGpu(micromambaDest, runtimePrefix, mmEnv, onStatus) {
+  const gpuPkgs = getCondaOpenmmGpuPackages()
+  if (!gpuPkgs.length) return
+  onStatus(`Ensuring OpenMM via conda (${gpuPkgs.join(', ')})...`)
+  await runProcess(
+    micromambaDest,
+    ['install', '-p', runtimePrefix, '-c', 'conda-forge', ...gpuPkgs, '-y'],
+    { env: mmEnv }
+  )
+}
+
+async function syncCondaOpenmmGpuIfNeeded({
+  micromambaDest,
+  runtimePrefix,
+  mmEnv,
+  onStatus,
+  state,
+  statePath,
+  extraState = {}
+}) {
+  if (process.platform === 'win32') return state
+  if (state.openmmCondaRev === OPENMM_CONDA_REV) return state
+  await installCondaOpenmmGpu(micromambaDest, runtimePrefix, mmEnv, onStatus)
+  const nextState = { ...state, ...extraState, openmmCondaRev: OPENMM_CONDA_REV }
+  await fs.writeFile(statePath, JSON.stringify(nextState, null, 2), 'utf-8')
+  return nextState
+}
+
+async function restoreCondaOpenmmAfterPip(micromambaDest, runtimePrefix, mmEnv, onStatus) {
+  // pip install gatewizard[full] may replace conda openmm with a CPU-only wheel
+  if (process.platform === 'win32') return
+  await installCondaOpenmmGpu(micromambaDest, runtimePrefix, mmEnv, onStatus)
 }
 
 function getStatePath() {
@@ -144,9 +209,7 @@ function parseVcsRequirements(requirementsText) {
 }
 
 function forceReinstallVcsRequirements(pyPath, requirementsText, runtimePrefix) {
-  const vcsReqs = parseVcsRequirements(requirementsText).filter((req) =>
-    req.toLowerCase().startsWith('gatewizard @ git+')
-  )
+  const vcsReqs = parseVcsRequirements(requirementsText)
   if (vcsReqs.length === 0) return
 
   for (const req of vcsReqs) {
@@ -220,7 +283,24 @@ export async function ensureMambaRuntime(options) {
 
   const envReady = condaOk && state.requirementsHash === requirementsHash
 
+  const mambaRoot = getMambaRoot()
+  const mmEnv = {
+    ...process.env,
+    MAMBA_ROOT_PREFIX: mambaRoot
+  }
+
   if (envReady) {
+    if (process.platform !== 'win32' && state.openmmCondaRev !== OPENMM_CONDA_REV) {
+      const micromambaDest = await ensureMicromambaBinary(onStatus)
+      state = await syncCondaOpenmmGpuIfNeeded({
+        micromambaDest,
+        runtimePrefix,
+        mmEnv,
+        onStatus,
+        state,
+        statePath
+      })
+    }
     cachedLaunchPython = pyPath
     process.env.CONDA_PREFIX = runtimePrefix
     onStatus(`Runtime ready (cached): ${runtimePrefix}`)
@@ -248,20 +328,22 @@ export async function ensureMambaRuntime(options) {
       throw new Error('pip install -r requirements.txt failed')
     }
     forceReinstallVcsRequirements(pyPath, requirementsText, runtimePrefix)
-    await fs.writeFile(
+    const micromambaDest = await ensureMicromambaBinary(onStatus)
+    await restoreCondaOpenmmAfterPip(micromambaDest, runtimePrefix, mmEnv, onStatus)
+    state = await syncCondaOpenmmGpuIfNeeded({
+      micromambaDest,
+      runtimePrefix,
+      mmEnv,
+      onStatus,
+      state,
       statePath,
-      JSON.stringify(
-        {
-          python: PYTHON_SPEC,
-          micromambaTag: MICROMAMBA_TAG,
-          requirementsHash,
-          runtimePrefix
-        },
-        null,
-        2
-      ),
-      'utf-8'
-    )
+      extraState: {
+        python: PYTHON_SPEC,
+        micromambaTag: MICROMAMBA_TAG,
+        requirementsHash,
+        runtimePrefix
+      }
+    })
     cachedLaunchPython = pyPath
     process.env.CONDA_PREFIX = runtimePrefix
     onStatus(`Runtime ready: ${runtimePrefix}`)
@@ -273,26 +355,13 @@ export async function ensureMambaRuntime(options) {
     onStatus(
       'Note: AmberTools (tleap, antechamber) is not installed on native Windows — use WSL for membrane building.'
     )
+  } else if (getCondaOpenmmGpuPackages().includes('cudatoolkit')) {
+    onStatus('Linux/WSL: installing openmm + cudatoolkit from conda-forge for OpenMM CUDA support.')
   }
 
-  const micromambaDest = getMicromambaBinPath()
-  await fs.mkdir(path.dirname(micromambaDest), { recursive: true })
+  const micromambaDest = await ensureMicromambaBinary(onStatus)
 
-  if (!(await fileExists(micromambaDest))) {
-    onStatus(`Downloading micromamba ${MICROMAMBA_TAG}...`)
-    await downloadFile(MICROMAMBA_URL[key], micromambaDest)
-    if (process.platform !== 'win32') {
-      await fs.chmod(micromambaDest, 0o755)
-    }
-  }
-
-  const mambaRoot = getMambaRoot()
   await fs.mkdir(mambaRoot, { recursive: true })
-
-  const mmEnv = {
-    ...process.env,
-    MAMBA_ROOT_PREFIX: mambaRoot
-  }
 
   const condaPkgs = getCondaPackages()
 
@@ -337,6 +406,7 @@ export async function ensureMambaRuntime(options) {
     throw new Error('pip install -r requirements.txt failed')
   }
   forceReinstallVcsRequirements(pyResolved, requirementsText, runtimePrefix)
+  await restoreCondaOpenmmAfterPip(micromambaDest, runtimePrefix, mmEnv, onStatus)
 
   await fs.writeFile(
     statePath,
@@ -345,7 +415,8 @@ export async function ensureMambaRuntime(options) {
         python: PYTHON_SPEC,
         micromambaTag: MICROMAMBA_TAG,
         requirementsHash,
-        runtimePrefix
+        runtimePrefix,
+        openmmCondaRev: OPENMM_CONDA_REV
       },
       null,
       2
@@ -356,6 +427,110 @@ export async function ensureMambaRuntime(options) {
   cachedLaunchPython = pyResolved
   process.env.CONDA_PREFIX = runtimePrefix
   onStatus(`Runtime ready: ${runtimePrefix}`)
+}
+
+function readGatewizardInstallSpec(requirementsText, overrideSpec) {
+  if (overrideSpec?.trim()) return overrideSpec.trim()
+  const vcsReqs = parseVcsRequirements(requirementsText).filter((req) =>
+    req.toLowerCase().startsWith('gatewizard')
+  )
+  if (vcsReqs.length > 0) return vcsReqs[0]
+  const line = requirementsText
+    .split(/\r?\n/)
+    .map((row) => row.trim())
+    .find((row) => row && !row.startsWith('#') && row.toLowerCase().startsWith('gatewizard'))
+  return line ?? null
+}
+
+/**
+ * Upgrade the gatewizard Python package in the embedded runtime.
+ * @param {{ requirementsPath: string, installSpec?: string, onStatus?: (msg: string) => void }} options
+ */
+export async function upgradeGatewizardPackage(options) {
+  const onStatus = options.onStatus || (() => {})
+  const requirementsPath = options.requirementsPath
+  const requirementsText = await fs.readFile(requirementsPath, 'utf-8')
+  const installSpec = readGatewizardInstallSpec(requirementsText, options.installSpec)
+
+  if (!installSpec) {
+    throw new Error('No gatewizard install spec found in requirements or manifest')
+  }
+
+  const pyPath = cachedLaunchPython
+  const runtimePrefix = process.env.CONDA_PREFIX || getDefaultRuntimePrefix()
+
+  if (!pyPath) {
+    throw new Error('Python runtime is not ready. Restart the app and try again.')
+  }
+
+  onStatus(`Upgrading gatewizard: ${installSpec}`)
+
+  const pipUpgrade = spawnSync(
+    pyPath,
+    ['-m', 'pip', 'install', '--upgrade', 'pip', 'setuptools', 'wheel'],
+    {
+      stdio: 'inherit',
+      env: { ...process.env, CONDA_PREFIX: runtimePrefix }
+    }
+  )
+  if (pipUpgrade.status !== 0) {
+    throw new Error('pip upgrade failed')
+  }
+
+  const pipGatewizard = spawnSync(
+    pyPath,
+    ['-m', 'pip', 'install', '--upgrade', '--force-reinstall', '--no-deps', installSpec],
+    {
+      stdio: 'inherit',
+      env: { ...process.env, CONDA_PREFIX: runtimePrefix }
+    }
+  )
+  if (pipGatewizard.status !== 0) {
+    throw new Error(`pip install failed for ${installSpec}`)
+  }
+
+  const pipReq = spawnSync(pyPath, ['-m', 'pip', 'install', '-r', requirementsPath], {
+    stdio: 'inherit',
+    env: { ...process.env, CONDA_PREFIX: runtimePrefix }
+  })
+  if (pipReq.status !== 0) {
+    throw new Error('pip install -r requirements.txt failed after gatewizard upgrade')
+  }
+
+  forceReinstallVcsRequirements(pyPath, requirementsText, runtimePrefix)
+
+  if (process.platform !== 'win32') {
+    try {
+      const onStatus = options.onStatus || (() => {})
+      const micromambaDest = await ensureMicromambaBinary(onStatus)
+      const mmEnv = {
+        ...process.env,
+        MAMBA_ROOT_PREFIX: getMambaRoot()
+      }
+      await restoreCondaOpenmmAfterPip(micromambaDest, runtimePrefix, mmEnv, onStatus)
+    } catch (err) {
+      onStatus(`Note: could not refresh conda OpenMM packages: ${err.message}`)
+    }
+  }
+
+  const versionProbe = spawnSync(
+    pyPath,
+    ['-c', 'from importlib import metadata; print(metadata.version("gatewizard"))'],
+    {
+      encoding: 'utf-8',
+      env: { ...process.env, CONDA_PREFIX: runtimePrefix }
+    }
+  )
+  const gatewizardVersion =
+    versionProbe.status === 0 ? String(versionProbe.stdout).trim() || null : null
+
+  onStatus(
+    gatewizardVersion
+      ? `gatewizard upgraded to ${gatewizardVersion}`
+      : 'gatewizard upgrade finished'
+  )
+
+  return { gatewizardVersion, installSpec }
 }
 
 export function getLaunchPythonPath() {
