@@ -30,10 +30,10 @@ mac:
   hardenedRuntime: false
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
-    - NSCameraUsageDescription: Application requests access to the device's camera.
-    - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
-    - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
-    - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
+    NSCameraUsageDescription: Application requests access to the device's camera.
+    NSMicrophoneUsageDescription: Application requests access to the device's microphone.
+    NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
+    NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
   notarize: false
 dmg:
   artifactName: ${name}-${version}-mac-${arch}.${ext}
@@ -46,9 +46,9 @@ linux:
   maintainer: gatewizard
   category: Science
   desktop:
-    entryName: gatewizard-gui-linux
-    Name: GateWizard GUI (Linux)
-    StartupWMClass: gatewizard-gui-linux
+    entry:
+      Name: GateWizard GUI (Linux)
+      StartupWMClass: gatewizard-gui-linux
 deb:
   artifactName: ${name}-${version}-linux-${arch}.${ext}
 appImage:
