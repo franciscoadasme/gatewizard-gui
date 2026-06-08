@@ -17,7 +17,7 @@ function getDisplayForWindow(win) {
 
 /**
  * Compute bounds that fill the monitor work area without covering the taskbar.
- * Frameless + thickFrame windows on Windows can extend past logical setBounds().
+ * Frameless windows on Windows must respect the taskbar work area when maximized.
  *
  * @param {import('electron').BrowserWindow} win
  * @returns {Electron.Rectangle}
@@ -47,14 +47,6 @@ export function getWorkAreaMaximizeBounds(win) {
       // Taskbar likely at the bottom (default on Windows).
       height = Math.max(MIN_WINDOW_HEIGHT, height - taskbarReserve)
     }
-  }
-
-  // Frameless + thickFrame: logical setBounds can extend past the requested rect.
-  if (process.platform === 'win32') {
-    const inset = Math.round(8 * sf)
-    x += inset
-    width = Math.max(MIN_WINDOW_WIDTH, width - inset * 2)
-    height = Math.max(MIN_WINDOW_HEIGHT, height - inset)
   }
 
   return {

@@ -489,9 +489,13 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 900,
     height: 670,
+    minWidth: MIN_WINDOW_WIDTH,
+    minHeight: MIN_WINDOW_HEIGHT,
     show: false,
     frame: false,
-    thickFrame: true,
+    // Custom renderer resize handles (see WindowResizeHandles.svelte). Native thickFrame
+    // adds external hit bands with a second cursor and pointer jump on Windows.
+    thickFrame: false,
     autoHideMenuBar: true,
     backgroundColor: '#0a0a0a',
     ...(process.platform === 'win32' ? { roundedCorners: true } : {}),
@@ -502,6 +506,8 @@ function createWindow() {
       sandbox: false
     }
   })
+
+  mainWindow.setMinimumSize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
 
   setupWorkAreaFramelessWindow(mainWindow)
   attachWindowStateHandlers(mainWindow)

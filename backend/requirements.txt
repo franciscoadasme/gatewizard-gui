@@ -1,7 +1,9 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 # DEV: editable local gatewizard with all optional API extras (md, orientation)
--e /mnt/d/Dropbox/comandos_2/github/gatewizard[full]
-#-e /mnt/c/Dropbox/comandos_2/github/gatewizard[full]
+# -e /mnt/d/Dropbox/comandos_2/github/gatewizard[full]
+# -e /mnt/c/Dropbox/comandos_2/github/gatewizard[full]
+# Install gatewizard from GitHub main branch
+gatewizard[full] @ git+https://github.com/maurobedoya/gatewizard.git@main
 # Release: pin gatewizard from PyPI with optional extras
 # gatewizard[full]>=1.0.34

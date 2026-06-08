@@ -50,14 +50,34 @@ function getMambaRoot() {
   return path.join(app.getPath('userData'), 'mamba-root')
 }
 
+/** conda-forge packages for the embedded runtime (platform-specific). */
+function getCondaPackages() {
+  const pkgs = [`python=${PYTHON_SPEC}`, 'pip']
+  // AmberTools is not published for win-64 on conda-forge; use WSL/Linux for tleap workflows.
+  if (process.platform !== 'win32') {
+    pkgs.push('ambertools')
+  }
+  return pkgs
+}
+
 function getStatePath() {
   return path.join(app.getPath('userData'), 'runtime-state.json')
 }
 
+function getWindowsPythonCandidates(prefix) {
+  return [
+    path.join(prefix, 'python.exe'),
+    path.join(prefix, 'Scripts', 'python.exe'),
+    path.join(prefix, 'Library', 'bin', 'python.exe')
+  ]
+}
+
 async function findPythonInPrefix(prefix) {
   if (process.platform === 'win32') {
-    const py = path.join(prefix, 'Scripts', 'python.exe')
-    return (await fileExists(py)) ? py : null
+    for (const candidate of getWindowsPythonCandidates(prefix)) {
+      if (await fileExists(candidate)) return candidate
+    }
+    return null
   }
   for (const name of ['python3', 'python']) {
     const p = path.join(prefix, 'bin', name)
@@ -67,10 +87,14 @@ async function findPythonInPrefix(prefix) {
 }
 
 function inferCondaPrefixFromPython(pythonPath) {
-  const dir = path.dirname(path.resolve(pythonPath))
+  const resolved = path.resolve(pythonPath)
+  const dir = path.dirname(resolved)
   const base = path.basename(dir)
   if (base === 'bin' || base === 'Scripts') {
     return path.dirname(dir)
+  }
+  if (process.platform === 'win32' && path.basename(resolved).toLowerCase() === 'python.exe') {
+    return dir
   }
   return null
 }
@@ -245,6 +269,11 @@ export async function ensureMambaRuntime(options) {
   }
 
   onStatus('Installing runtime (micromamba: Python + pip). First run may take several minutes.')
+  if (process.platform === 'win32') {
+    onStatus(
+      'Note: AmberTools (tleap, antechamber) is not installed on native Windows — use WSL for membrane building.'
+    )
+  }
 
   const micromambaDest = getMicromambaBinPath()
   await fs.mkdir(path.dirname(micromambaDest), { recursive: true })
@@ -265,10 +294,10 @@ export async function ensureMambaRuntime(options) {
     MAMBA_ROOT_PREFIX: mambaRoot
   }
 
-  const condaPkgs = [`python=${PYTHON_SPEC}`, 'pip', 'ambertools']
+  const condaPkgs = getCondaPackages()
 
   if (!(await fileExists(runtimePrefix))) {
-    onStatus(`Creating environment: python=${PYTHON_SPEC}...`)
+    onStatus(`Creating environment: ${condaPkgs.join(', ')}...`)
     await runProcess(
       micromambaDest,
       ['create', '-p', runtimePrefix, '-c', 'conda-forge', ...condaPkgs, '-y'],

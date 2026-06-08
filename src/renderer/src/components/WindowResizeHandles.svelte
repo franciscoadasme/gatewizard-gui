@@ -1,8 +1,20 @@
 <script>
   const platform = window.electron?.process?.platform
-  // Linux/WSL lacks reliable external resize bands; Windows uses native thickFrame only.
-  const enabled = platform === 'linux'
-  const border = 8
+  // Thin in-app resize edges (VS Code style). Native thickFrame is disabled on Windows.
+  const enabled = platform === 'linux' || platform === 'win32'
+  const border = platform === 'win32' ? 4 : 6
+
+  /** @type {Record<string, string>} */
+  const cursorByEdge = {
+    n: 'ns-resize',
+    s: 'ns-resize',
+    e: 'ew-resize',
+    w: 'ew-resize',
+    nw: 'nwse-resize',
+    ne: 'nesw-resize',
+    sw: 'nesw-resize',
+    se: 'nwse-resize'
+  }
 
   /** @param {string} edge @param {MouseEvent} event */
   function onPointerDown(edge, event) {
@@ -12,9 +24,15 @@
 
     window.electron?.ipcRenderer?.send('window:resize-start', edge)
 
+    const cursor = cursorByEdge[edge] ?? 'default'
+    document.body.style.cursor = cursor
+    document.body.style.userSelect = 'none'
+
     const onMove = () => window.electron?.ipcRenderer?.send('window:resize-move')
     const onUp = () => {
       window.electron?.ipcRenderer?.send('window:resize-end')
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
     }
@@ -25,7 +43,7 @@
 </script>
 
 {#if enabled}
-  <div class="window-resize-handles pointer-events-none fixed inset-0 z-40">
+  <div class="window-resize-handles pointer-events-none fixed inset-0 z-40" aria-hidden="true">
     <button
       type="button"
       tabindex="-1"

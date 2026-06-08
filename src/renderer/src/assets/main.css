@@ -29,11 +29,11 @@
     border-radius: 0;
   }
 
-  /* Inset from top so native resize bands stay clear; flex centers logo vertically. */
+  /* Keep drag zones below the thin top resize edge (WindowResizeHandles). */
   .titlebar-drag-zone {
     -webkit-app-region: drag;
     cursor: default !important;
-    margin-top: 6px;
+    margin-top: 4px;
     align-self: stretch;
   }
 
