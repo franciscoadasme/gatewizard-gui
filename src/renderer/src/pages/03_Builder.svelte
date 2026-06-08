@@ -29,6 +29,7 @@
   const ffPromise = getAvailableForceFields()
 
   let waterModel = $state('opc')
+  let mdEngine = $state('namd')
   let proteinFf = $state('ff19SB')
   let lipidFf = $state('lipid21')
 
@@ -357,6 +358,7 @@
       lowerLipids,
       lipidRatios,
       waterModel,
+      mdEngine: mdEngine || null,
       proteinFf,
       lipidFf,
       preoriented,
@@ -514,6 +516,7 @@
 
   function onLoadDefaults() {
     waterModel = 'opc'
+    mdEngine = 'namd'
     proteinFf = 'ff19SB'
     lipidFf = 'lipid21'
     preoriented = true
@@ -728,6 +731,22 @@
             {/each}
           </select>
         </div>
+        <div class="flex items-center gap-1">
+          <span class="w-20 shrink-0 dark:text-neutral-500">MD engine</span>
+          <select
+            class="flex-1 rounded-md border p-2 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+            bind:value={mdEngine}
+          >
+            <option value="namd">namd</option>
+            <option value="gromacs">gromacs</option>
+            <option value="openmm">openmm</option>
+          </select>
+        </div>
+        {#if waterModel === 'opc' && mdEngine === 'namd'}
+          <p class="text-xs text-neutral-500 dark:text-neutral-400">
+            OPC + NAMD: tleap uses FlexibleWater and equilibration adds waterModel tip4.
+          </p>
+        {/if}
         <div class="flex items-center gap-1">
           <span class="w-20 shrink-0 dark:text-neutral-500">Protein FF</span>
           <select

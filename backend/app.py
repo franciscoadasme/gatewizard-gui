@@ -451,6 +451,10 @@ class StartPreparationRequest(BaseModel):
     water_model: str = "opc"
     protein_ff: str = "ff19SB"
     lipid_ff: str = "lipid21"
+    md_engine: str | None = Field(
+        None,
+        description="Target MD engine (namd, gromacs, openmm). Enables NAMD-specific OPC tleap when namd+opc.",
+    )
     preoriented: bool = True
     parametrize: bool = True
     salt_concentration: float = 0.15
@@ -944,6 +948,7 @@ def _configure_builder(payload: StartPreparationRequest) -> Builder:
         water_model=payload.water_model,
         protein_ff=payload.protein_ff,
         lipid_ff=payload.lipid_ff,
+        md_engine=payload.md_engine,
         preoriented=payload.preoriented,
         parametrize=payload.parametrize,
         salt_concentration=payload.salt_concentration,
@@ -1150,6 +1155,10 @@ class GenerateEquilibrationRequest(BaseModel):
     )
     rotation_restraint_k: float = Field(
         2000.0, description="Rotation force constant in kcal/mol/A^2"
+    )
+    water_model: str | None = Field(
+        None,
+        description="Water model override (opc, tip3p, …). Auto-read from builder status.json if omitted.",
     )
     openmm_platform: str | None = Field(
         None,
@@ -1543,6 +1552,11 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
         )
 
     manager = NAMDEquilibrationManager(input_dir, resolved_exec)
+    from gatewizard.tools.namd_water import read_water_model_from_builder_status
+
+    water_model = payload.water_model or read_water_model_from_builder_status(
+        input_dir
+    )
     manager.setup_namd_equilibration(
         system_files=system_files,
         stage_params_list=stage_params,
@@ -1554,6 +1568,7 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
         com_restraint_k=payload.com_restraint_k,
         add_rotation_restraint=payload.add_rotation_restraint,
         rotation_restraint_k=payload.rotation_restraint_k,
+        water_model=water_model,
     )
 
 

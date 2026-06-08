@@ -254,7 +254,7 @@ export async function preparePDB(props) {
 }
 
 /**
- * @param {{ workingDir: string, outputName: string, ensemble: string, programConfig: object, protocol: object, addComRestraint?: boolean, comSelection?: string, comRestraintK?: number, addRotationRestraint?: boolean, rotationRestraintK?: number }} props
+ * @param {{ workingDir: string, outputName: string, ensemble: string, programConfig: object, protocol: object, addComRestraint?: boolean, comSelection?: string, comRestraintK?: number, addRotationRestraint?: boolean, rotationRestraintK?: number, waterModel?: string|null }} props
  * @returns {Promise<void>}
  */
 export async function generateEquilibration(props) {

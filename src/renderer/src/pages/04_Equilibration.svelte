@@ -659,6 +659,12 @@
             <option value={item.id}>{item.label}</option>
           {/each}
         </Select>
+        {#if engine === 'namd'}
+          <p class="text-xs text-neutral-500 dark:text-neutral-400">
+            NAMD + OPC builds: waterModel tip4 is added automatically from the builder
+            job (FlexibleWater prmtop).
+          </p>
+        {/if}
       </div>
       <div class="space-y-1">
         <p class="text-xs">Executable:</p>
