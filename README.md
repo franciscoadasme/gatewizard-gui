@@ -24,7 +24,38 @@ The app uses the **[GateWizard API](https://github.com/maurobedoya/gatewizard)**
 
 Download the installer for your platform from [Releases](https://github.com/franciscoadasme/gatewizard-gui/releases).
 
-The app bundles a Python runtime. After opening it, install or update the API from **Dependency Versions** if prompted.
+**First launch** downloads Python packages in the background (several minutes). Keep the splash screen open — progress is shown there. Logs: `%APPDATA%\gatewizard-gui\runtime-install.log` (Windows) or `~/.config/gatewizard-gui/runtime-install.log` (Linux).
+
+### Windows
+
+1. Run `gatewizard-gui-*-win-x64-setup.exe`
+2. Open **GateWizard GUI (Windows)** from the Start menu or desktop
+3. Wait on the splash screen until the main window appears (first run: 5–15 min)
+4. **Full MD workflow** (membrane builder, AmberTools): use the **Linux/WSL** build on the same PC
+
+### Linux / WSL
+
+**`.deb` (Ubuntu/Debian/WSL):**
+```bash
+sudo apt install ./gatewizard-gui-*-linux-amd64.deb
+gatewizard-gui-linux
+```
+
+**AppImage:**
+```bash
+chmod +x gatewizard-gui-*-linux-x86_64.AppImage
+./gatewizard-gui-*-linux-x86_64.AppImage
+```
+
+Do **not** run `gatewizard` in the terminal — that is the Python API CLI, not this app.
+
+### macOS
+
+1. Open the `.dmg`, drag **`gatewizard-gui-mac.app`** to **Applications**
+2. Open from **Applications** (not from the DMG)
+3. If macOS blocks it: `xattr -cr /Applications/gatewizard-gui-mac.app`
+
+Update the API later from **Grimoire → Dependency Versions → Check for updates**.
 
 ## Dependencies
 
@@ -143,8 +174,10 @@ Install `npm` dependencies in **one environment only** (WSL or Windows), not bot
 
 ### Build installers
 
-| Platform | Command |
-|----------|---------|
-| Linux | `npm run build:linux` |
-| Windows | `npm run build` then `npm run build:win:pack` |
-| macOS | `npm run build:mac` (on macOS) |
+| Platform | Command | Release artifact (example) |
+|----------|---------|----------------------------|
+| Linux / WSL | `npm run build:linux` | `gatewizard-gui-1.0.2-linux-x86_64.AppImage`, `.deb` |
+| Windows | `npm run build` then `npm run build:win:pack` | `gatewizard-gui-1.0.2-win-x64-setup.exe` |
+| macOS | `npm run build:mac` (on macOS) | `gatewizard-gui-1.0.2-mac-arm64.dmg` |
+
+Installers use platform suffixes (`-win-`, `-linux-`, `-mac-`) so Windows and WSL/Linux builds are easy to tell apart on one machine.

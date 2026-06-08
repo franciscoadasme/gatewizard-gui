@@ -66,10 +66,101 @@ function getCondaPackages() {
   const pkgs = [`python=${PYTHON_SPEC}`, 'pip']
   // AmberTools is not published for win-64 on conda-forge; use WSL/Linux for tleap workflows.
   if (process.platform !== 'win32') {
-    pkgs.push('ambertools')
+    pkgs.push('ambertools', 'git')
   }
   pkgs.push(...getCondaOpenmmGpuPackages())
   return pkgs
+}
+
+function getRuntimeInstallLogPath() {
+  return path.join(app.getPath('userData'), 'runtime-install.log')
+}
+
+async function appendRuntimeLog(text) {
+  const logPath = getRuntimeInstallLogPath()
+  await fs.appendFile(logPath, text, 'utf-8')
+}
+
+/** Hide console windows on Windows; pipe output to the install log. */
+function getSubprocessOptions(runtimePrefix, extraEnv = {}) {
+  return {
+    encoding: 'utf-8',
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, CONDA_PREFIX: runtimePrefix, ...extraEnv }
+  }
+}
+
+function attachOutputLogging(child) {
+  child.stdout?.on('data', (chunk) => {
+    void appendRuntimeLog(chunk.toString())
+  })
+  child.stderr?.on('data', (chunk) => {
+    void appendRuntimeLog(chunk.toString())
+  })
+}
+
+/**
+ * @param {string} pyPath
+ * @param {string[]} pipArgs
+ * @param {string} runtimePrefix
+ * @param {{ label: string, required?: boolean }} options
+ */
+async function runPip(pyPath, pipArgs, runtimePrefix, options) {
+  const { label, required = true } = options
+  const stamp = new Date().toISOString()
+  await appendRuntimeLog(`\n[${stamp}] ${label}\n> pip ${pipArgs.join(' ')}\n`)
+
+  const result = spawnSync(pyPath, ['-m', 'pip', ...pipArgs], getSubprocessOptions(runtimePrefix))
+
+  const output = `${result.stdout || ''}${result.stderr || ''}`
+  if (output) {
+    await appendRuntimeLog(output)
+  }
+
+  if (result.status !== 0) {
+    const logPath = getRuntimeInstallLogPath()
+    const tail = output.trim().slice(-3000)
+    const message = `${label} failed.\nLog: ${logPath}${tail ? `\n\n${tail}` : ''}`
+    if (required) {
+      throw new Error(message)
+    }
+    await appendRuntimeLog(`[warning] ${message}\n`)
+    return false
+  }
+  return true
+}
+
+function getOrientationRequirementsPath(requirementsPath) {
+  return path.join(path.dirname(requirementsPath), 'requirements-orientation.txt')
+}
+
+/**
+ * MemPrO is optional — failure must not block the GUI from starting.
+ */
+async function installOptionalOrientationRequirements(pyPath, requirementsPath, runtimePrefix, onStatus) {
+  if (process.platform === 'win32') {
+    onStatus('Skipping MemPrO (optional; use WSL/Linux for orientation).')
+    return
+  }
+
+  const orientPath = getOrientationRequirementsPath(requirementsPath)
+  if (!(await fileExists(orientPath))) {
+    return
+  }
+
+  onStatus('Installing optional MemPrO (orientation)...')
+  const ok = await runPip(
+    pyPath,
+    ['install', '-r', orientPath],
+    runtimePrefix,
+    { label: 'pip install -r requirements-orientation.txt (optional)', required: false }
+  )
+  if (ok) {
+    onStatus('MemPrO installed (orientation features available).')
+  } else {
+    onStatus('MemPrO install failed — orientation features disabled. See runtime-install.log.')
+  }
 }
 
 async function ensureMicromambaBinary(onStatus) {
@@ -187,11 +278,11 @@ async function downloadFile(url, destPath) {
 }
 
 function runProcess(command, args, options = {}) {
+  const env = { ...process.env, ...(options.env || {}) }
+  const runtimePrefix = env.CONDA_PREFIX || ''
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      stdio: 'inherit',
-      env: options.env || process.env
-    })
+    const child = spawn(command, args, getSubprocessOptions(runtimePrefix, env))
+    attachOutputLogging(child)
     child.on('close', (code) => {
       if (code === 0) resolve()
       else reject(new Error(`${path.basename(command)} exited with code ${code}`))
@@ -216,10 +307,7 @@ function forceReinstallVcsRequirements(pyPath, requirementsText, runtimePrefix) 
     const pipVcs = spawnSync(
       pyPath,
       ['-m', 'pip', 'install', '--force-reinstall', '--no-deps', req],
-      {
-        stdio: 'inherit',
-        env: { ...process.env, CONDA_PREFIX: runtimePrefix }
-      }
+      getSubprocessOptions(runtimePrefix)
     )
     if (pipVcs.status !== 0) {
       throw new Error(`pip force reinstall failed for VCS requirement: ${req}`)
@@ -309,25 +397,20 @@ export async function ensureMambaRuntime(options) {
 
   if (condaOk && state.requirementsHash !== requirementsHash) {
     onStatus('Updating pip dependencies (requirements.txt changed)...')
-    const pipUpgrade = spawnSync(
+    await runPip(
       pyPath,
-      ['-m', 'pip', 'install', '--upgrade', 'pip', 'setuptools', 'wheel'],
-      {
-        stdio: 'inherit',
-        env: { ...process.env, CONDA_PREFIX: runtimePrefix }
-      }
+      ['install', '--upgrade', 'pip', 'setuptools', 'wheel'],
+      runtimePrefix,
+      { label: 'pip upgrade (tools)' }
     )
-    if (pipUpgrade.status !== 0) {
-      throw new Error('pip upgrade failed')
-    }
-    const pipReq = spawnSync(pyPath, ['-m', 'pip', 'install', '-r', requirementsPath], {
-      stdio: 'inherit',
-      env: { ...process.env, CONDA_PREFIX: runtimePrefix }
-    })
-    if (pipReq.status !== 0) {
-      throw new Error('pip install -r requirements.txt failed')
-    }
+    await runPip(
+      pyPath,
+      ['install', '-r', requirementsPath],
+      runtimePrefix,
+      { label: 'pip install -r requirements.txt' }
+    )
     forceReinstallVcsRequirements(pyPath, requirementsText, runtimePrefix)
+    await installOptionalOrientationRequirements(pyPath, requirementsPath, runtimePrefix, onStatus)
     const micromambaDest = await ensureMicromambaBinary(onStatus)
     await restoreCondaOpenmmAfterPip(micromambaDest, runtimePrefix, mmEnv, onStatus)
     state = await syncCondaOpenmmGpuIfNeeded({
@@ -387,25 +470,25 @@ export async function ensureMambaRuntime(options) {
   }
 
   onStatus('pip install -r backend/requirements.txt ...')
-  const pipUpgrade = spawnSync(
+  await runPip(
     pyResolved,
-    ['-m', 'pip', 'install', '--upgrade', 'pip', 'setuptools', 'wheel'],
-    {
-      stdio: 'inherit',
-      env: { ...process.env, CONDA_PREFIX: runtimePrefix }
-    }
+    ['install', '--upgrade', 'pip', 'setuptools', 'wheel'],
+    runtimePrefix,
+    { label: 'pip upgrade (tools)' }
   )
-  if (pipUpgrade.status !== 0) {
-    throw new Error('pip upgrade failed')
-  }
-  const pipReq = spawnSync(pyResolved, ['-m', 'pip', 'install', '-r', requirementsPath], {
-    stdio: 'inherit',
-    env: { ...process.env, CONDA_PREFIX: runtimePrefix }
-  })
-  if (pipReq.status !== 0) {
-    throw new Error('pip install -r requirements.txt failed')
-  }
+  await runPip(
+    pyResolved,
+    ['install', '-r', requirementsPath],
+    runtimePrefix,
+    { label: 'pip install -r requirements.txt' }
+  )
   forceReinstallVcsRequirements(pyResolved, requirementsText, runtimePrefix)
+  await installOptionalOrientationRequirements(
+    pyResolved,
+    requirementsPath,
+    runtimePrefix,
+    onStatus
+  )
   await restoreCondaOpenmmAfterPip(micromambaDest, runtimePrefix, mmEnv, onStatus)
 
   await fs.writeFile(
@@ -465,39 +548,29 @@ export async function upgradeGatewizardPackage(options) {
 
   onStatus(`Upgrading gatewizard: ${installSpec}`)
 
-  const pipUpgrade = spawnSync(
+  await runPip(
     pyPath,
-    ['-m', 'pip', 'install', '--upgrade', 'pip', 'setuptools', 'wheel'],
-    {
-      stdio: 'inherit',
-      env: { ...process.env, CONDA_PREFIX: runtimePrefix }
-    }
+    ['install', '--upgrade', 'pip', 'setuptools', 'wheel'],
+    runtimePrefix,
+    { label: 'pip upgrade (tools)' }
   )
-  if (pipUpgrade.status !== 0) {
-    throw new Error('pip upgrade failed')
-  }
 
-  const pipGatewizard = spawnSync(
+  await runPip(
     pyPath,
-    ['-m', 'pip', 'install', '--upgrade', '--force-reinstall', '--no-deps', installSpec],
-    {
-      stdio: 'inherit',
-      env: { ...process.env, CONDA_PREFIX: runtimePrefix }
-    }
+    ['install', '--upgrade', '--force-reinstall', '--no-deps', installSpec],
+    runtimePrefix,
+    { label: `pip install ${installSpec}` }
   )
-  if (pipGatewizard.status !== 0) {
-    throw new Error(`pip install failed for ${installSpec}`)
-  }
 
-  const pipReq = spawnSync(pyPath, ['-m', 'pip', 'install', '-r', requirementsPath], {
-    stdio: 'inherit',
-    env: { ...process.env, CONDA_PREFIX: runtimePrefix }
-  })
-  if (pipReq.status !== 0) {
-    throw new Error('pip install -r requirements.txt failed after gatewizard upgrade')
-  }
+  await runPip(
+    pyPath,
+    ['install', '-r', requirementsPath],
+    runtimePrefix,
+    { label: 'pip install -r requirements.txt (after gatewizard upgrade)' }
+  )
 
   forceReinstallVcsRequirements(pyPath, requirementsText, runtimePrefix)
+  await installOptionalOrientationRequirements(pyPath, requirementsPath, runtimePrefix, onStatus)
 
   if (process.platform !== 'win32') {
     try {
@@ -516,10 +589,7 @@ export async function upgradeGatewizardPackage(options) {
   const versionProbe = spawnSync(
     pyPath,
     ['-c', 'from importlib import metadata; print(metadata.version("gatewizard"))'],
-    {
-      encoding: 'utf-8',
-      env: { ...process.env, CONDA_PREFIX: runtimePrefix }
-    }
+    getSubprocessOptions(runtimePrefix)
   )
   const gatewizardVersion =
     versionProbe.status === 0 ? String(versionProbe.stdout).trim() || null : null

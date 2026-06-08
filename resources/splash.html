@@ -76,26 +76,23 @@
 
       .status {
         margin: 0;
-        font-size: 0.8125rem;
+        max-width: 88%;
+        text-align: center;
+        font-size: 0.75rem;
         font-weight: 500;
-        letter-spacing: 0.06em;
+        line-height: 1.35;
+        letter-spacing: 0.02em;
         color: #e5e5e5;
         text-shadow:
           0 1px 2px rgba(0, 0, 0, 0.9),
           0 0 12px rgba(0, 0, 0, 0.75);
+        animation: statusIn 0.55s ease-out 0.28s both;
+      }
+
+      .status.busy {
         animation:
           statusIn 0.55s ease-out 0.28s both,
           statusPulse 1.6s ease-in-out 0.9s infinite;
-      }
-
-      @keyframes statusPulse {
-        0%,
-        100% {
-          opacity: 0.55;
-        }
-        50% {
-          opacity: 1;
-        }
       }
 
       @keyframes statusIn {
@@ -113,7 +110,7 @@
   <body>
     <div class="splash">
       <img id="logo" class="logo" src="splash.png" alt="GateWizard logo" />
-      <p class="status">Loading…</p>
+      <p id="status" class="status busy">Starting…</p>
     </div>
     <script>
       const logo = document.getElementById('logo')
@@ -123,6 +120,12 @@
           logo.src = 'icon.png'
         }
       })
+      window.setSplashStatus = (text, busy = true) => {
+        const el = document.getElementById('status')
+        if (!el) return
+        el.textContent = text
+        el.classList.toggle('busy', busy)
+      }
     </script>
   </body>
 </html>

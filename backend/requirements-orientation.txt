@@ -1,0 +1,3 @@
+# Optional — MemPrO for membrane orientation (Linux/macOS only, installed separately).
+# Not part of requirements.txt so a failed MemPrO build does not block the GUI.
+mempro @ git+https://github.com/pstansfeld/MemPrO.git@v0.1.0

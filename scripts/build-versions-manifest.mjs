@@ -33,11 +33,13 @@ const manifest = {
     min_gatewizard: base.gatewizard?.min_for_gui ?? base.gatewizard?.latest ?? null,
     release_page: releasePage,
     downloads: {
-      linux: `${downloadBase}/gatewizard-gui-${version}.AppImage`,
-      win: `${downloadBase}/gatewizard-gui-${version}-setup.exe`,
-      mac: `${downloadBase}/gatewizard-gui-${version}.dmg`,
-      mac_arm64: `${downloadBase}/gatewizard-gui-${version}-arm64.dmg`,
-      mac_x64: `${downloadBase}/gatewizard-gui-${version}.dmg`
+      linux_appimage: `${downloadBase}/gatewizard-gui-${version}-linux-x86_64.AppImage`,
+      linux_deb: `${downloadBase}/gatewizard-gui-${version}-linux-amd64.deb`,
+      linux: `${downloadBase}/gatewizard-gui-${version}-linux-x86_64.AppImage`,
+      win: `${downloadBase}/gatewizard-gui-${version}-win-x64-setup.exe`,
+      mac: `${downloadBase}/gatewizard-gui-${version}-mac-arm64.dmg`,
+      mac_arm64: `${downloadBase}/gatewizard-gui-${version}-mac-arm64.dmg`,
+      mac_x64: `${downloadBase}/gatewizard-gui-${version}-mac-x64.dmg`
     }
   }
 }

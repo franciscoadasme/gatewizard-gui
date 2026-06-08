@@ -6,7 +6,9 @@
   },
   "mempro": {
     "latest": "0.1.0",
-    "install": "mempro @ git+https://github.com/pstansfeld/MemPrO.git@v0.1.0"
+    "optional": true,
+    "install": "mempro @ git+https://github.com/pstansfeld/MemPrO.git@v0.1.0",
+    "notes": "Optional; installed from requirements-orientation.txt on Linux/macOS only."
   },
-  "notes": "Bump gatewizard and mempro pins before each GUI release. API updater installs gatewizard; mempro is applied via bundled backend/requirements.txt."
+  "notes": "Bump gatewizard before each GUI release. MemPrO is optional and must not block startup."
 }

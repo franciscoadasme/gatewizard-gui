@@ -255,14 +255,23 @@ function keepSplashOnTop() {
   }
 }
 
+function setSplashStatus(message, busy = true) {
+  if (!splashWindow || splashWindow.isDestroyed()) return
+  const safeMessage = JSON.stringify(message)
+  const busyFlag = busy ? 'true' : 'false'
+  splashWindow.webContents
+    .executeJavaScript(`window.setSplashStatus(${safeMessage}, ${busyFlag})`)
+    .catch(() => {})
+}
+
 function createSplashWindow() {
   if (splashWindow && !splashWindow.isDestroyed()) {
     return splashWindow
   }
 
   splashWindow = new BrowserWindow({
-    width: 300,
-    height: 300,
+    width: 360,
+    height: 340,
     frame: false,
     transparent: true,
     center: true,
@@ -434,6 +443,7 @@ function startBackend() {
 
   backendProcess = spawn(pythonBin, ['-u', backendScript], {
     stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
     env: getBackendEnv()
   })
 
@@ -578,6 +588,17 @@ app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.electron')
 
   createSplashWindow()
+  await new Promise((resolve) => {
+    if (!splashWindow || splashWindow.isDestroyed()) {
+      resolve()
+      return
+    }
+    if (splashWindow.webContents.isLoading()) {
+      splashWindow.webContents.once('did-finish-load', () => resolve())
+    } else {
+      resolve()
+    }
+  })
 
   registerWindowControlsIpc()
   registerWindowResizeIpc()
@@ -593,10 +614,14 @@ app.whenReady().then(async () => {
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
 
+  setSplashStatus('Preparing Python environment…\nFirst launch may take several minutes.')
   try {
     await ensureMambaRuntime({
       requirementsPath: getRequirementsPath(),
-      onStatus: (msg) => process.stdout.write(`[runtime] ${msg}\n`)
+      onStatus: (msg) => {
+        process.stdout.write(`[runtime] ${msg}\n`)
+        setSplashStatus(msg)
+      }
     })
   } catch (error) {
     closeSplashWindowImmediate()
@@ -605,6 +630,7 @@ app.whenReady().then(async () => {
     return
   }
 
+  setSplashStatus('Starting backend…')
   startBackend()
   try {
     await waitForBackendHealth()

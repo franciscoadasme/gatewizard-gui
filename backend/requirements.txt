@@ -1,11 +1,8 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
-# DEV: editable local gatewizard with all optional API extras (md, orientation)
+# PyPI install — no git required (works on Windows/macOS/Linux installers)
+gatewizard[full]>=1.0.36
+# DEV: editable local gatewizard
 # -e /mnt/d/Dropbox/comandos_2/github/gatewizard[full]
-# -e /mnt/c/Dropbox/comandos_2/github/gatewizard[full]
-# Release: pin gatewizard from GitHub tag (includes [full] extras: parmed, openmm)
-gatewizard[full] @ git+https://github.com/maurobedoya/gatewizard.git@v1.0.36
-# MemPrO: separate line — PyPI gatewizard cannot declare this VCS dep in metadata
-mempro @ git+https://github.com/pstansfeld/MemPrO.git@v0.1.0
-# DEV: editable local gatewizard — still add mempro line above after install
-# -e /mnt/d/Dropbox/comandos_2/github/gatewizard[full]
+# DEV: git pin (needs git on PATH)
+# gatewizard[full] @ git+https://github.com/maurobedoya/gatewizard.git@v1.0.36

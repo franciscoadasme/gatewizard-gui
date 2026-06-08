@@ -33,8 +33,8 @@ jobs:
         with:
           name: linux-dist
           path: |
-            dist/*.AppImage
-            dist/*.deb
+            dist/*linux*.AppImage
+            dist/*linux*.deb
           if-no-files-found: error
 
   build-win:
@@ -61,7 +61,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: win-dist
-          path: dist/*-setup.exe
+          path: dist/*win*-setup.exe
           if-no-files-found: error
 
   build-mac:
@@ -88,7 +88,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: mac-dist
-          path: dist/*.dmg
+          path: dist/*mac*.dmg
           if-no-files-found: error
 
   release:

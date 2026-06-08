@@ -1,5 +1,6 @@
-appId: com.electron.app
-productName: gatewizard-gui
+appId: com.gatewizard.gui
+productName: GateWizard GUI
+copyright: Copyright © GateWizard
 directories:
   buildResources: build
 files:
@@ -15,15 +16,18 @@ extraResources:
   - from: backend
     to: backend
 win:
-  executableName: gatewizard-gui
-  # Avoid winCodeSign extraction (needs symlink privilege / Developer Mode on Windows).
+  executableName: gatewizard-gui-win
   signAndEditExecutable: false
 nsis:
-  artifactName: ${name}-${version}-setup.${ext}
-  shortcutName: ${productName}
-  uninstallDisplayName: ${productName}
+  artifactName: ${name}-${version}-win-${arch}-setup.${ext}
+  shortcutName: GateWizard GUI (Windows)
+  uninstallDisplayName: GateWizard GUI (Windows)
   createDesktopShortcut: always
 mac:
+  executableName: gatewizard-gui-mac
+  identity: '-'
+  gatekeeperAssess: false
+  hardenedRuntime: false
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
     - NSCameraUsageDescription: Application requests access to the device's camera.
@@ -32,16 +36,23 @@ mac:
     - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
   notarize: false
 dmg:
-  artifactName: ${name}-${version}.${ext}
+  artifactName: ${name}-${version}-mac-${arch}.${ext}
 linux:
   target:
     - AppImage
-    - snap
     - deb
-  maintainer: electronjs.org
-  category: Utility
+  executableName: gatewizard-gui-linux
+  packageName: gatewizard-gui-linux
+  maintainer: gatewizard
+  category: Science
+  desktop:
+    entryName: gatewizard-gui-linux
+    Name: GateWizard GUI (Linux)
+    StartupWMClass: gatewizard-gui-linux
+deb:
+  artifactName: ${name}-${version}-linux-${arch}.${ext}
 appImage:
-  artifactName: ${name}-${version}.${ext}
+  artifactName: ${name}-${version}-linux-${arch}.${ext}
 npmRebuild: false
 publish:
   provider: generic
