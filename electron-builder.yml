@@ -1,6 +1,8 @@
 appId: com.gatewizard.gui
 productName: GateWizard GUI
 copyright: Copyright © GateWizard
+icon: build/icon.png
+afterPack: scripts/after-pack-win-icon.cjs
 directories:
   buildResources: build
 files:
@@ -17,11 +19,14 @@ extraResources:
     to: backend
 win:
   executableName: gatewizard-gui-win
+  icon: build/icon.ico
   signAndEditExecutable: false
 nsis:
   artifactName: ${name}-${version}-win-${arch}-setup.${ext}
   shortcutName: GateWizard GUI (Windows)
   uninstallDisplayName: GateWizard GUI (Windows)
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
   createDesktopShortcut: always
 mac:
   executableName: gatewizard-gui-mac

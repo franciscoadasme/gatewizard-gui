@@ -23,6 +23,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Sync app icons
+        run: npm run sync:icons
+
       - name: Build app bundle
         run: npm run build
 
@@ -50,6 +53,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Sync app icons
+        run: npm run sync:icons
+
       - name: Build app bundle
         run: npm run build
 
@@ -76,6 +82,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Sync app icons
+        run: npm run sync:icons
 
       - name: Build app bundle
         run: npm run build
@@ -123,12 +132,28 @@ jobs:
       - name: Build versions manifest
         run: node scripts/build-versions-manifest.mjs "${{ github.repository }}" "${{ steps.meta.outputs.tag }}" "${{ steps.meta.outputs.version }}"
 
+      - name: Extract changelog for this version
+        run: |
+          VERSION="${{ steps.meta.outputs.version }}"
+          awk "/^## \[$VERSION\]/, /^## \[/" CHANGELOG.md | sed '$d' > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "GateWizard GUI ${{ steps.meta.outputs.tag }}" > release_notes.md
+            echo "" >> release_notes.md
+            echo "See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details." >> release_notes.md
+          fi
+          echo "" >> release_notes.md
+          echo "---" >> release_notes.md
+          echo "" >> release_notes.md
+          echo "**Full Changelog**: https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md" >> release_notes.md
+          cat release_notes.md
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: GateWizard GUI ${{ steps.meta.outputs.version }}
-          generate_release_notes: true
+          body_path: release_notes.md
+          generate_release_notes: false
           files: |
             dist/**
         env:

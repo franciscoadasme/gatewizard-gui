@@ -23,14 +23,15 @@
     "predev": "node scripts/ensure-electron.cjs",
     "dev": "electron-vite dev",
     "dev:wsl": "LIBGL_ALWAYS_SOFTWARE=1 electron-vite dev -- --disable-gpu --use-angle=swiftshader --enable-unsafe-swiftshader",
+    "sync:icons": "node scripts/sync-build-icons.mjs",
     "build": "electron-vite build",
     "postinstall": "electron-builder install-app-deps && node scripts/ensure-electron.cjs",
-    "build:unpack": "npm run build && electron-builder --dir",
-    "build:win": "npm run build && electron-builder --win",
-    "build:win:pack": "bash scripts/pack-win-from-wsl.sh",
+    "build:unpack": "npm run sync:icons && npm run build && electron-builder --dir",
+    "build:win": "npm run sync:icons && npm run build && electron-builder --win",
+    "build:win:pack": "npm run sync:icons && npm run build && node scripts/pack-win-from-wsl.mjs",
     "build:release:local": "npm run build && npm run build:linux && npm run build:win:pack",
-    "build:mac": "npm run build && electron-builder --mac",
-    "build:linux": "npm run build && electron-builder --linux"
+    "build:mac": "npm run sync:icons && npm run build && electron-builder --mac",
+    "build:linux": "npm run sync:icons && npm run build && electron-builder --linux"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
@@ -50,9 +51,11 @@
     "electron-vite": "^5.0.0",
     "eslint": "^9.39.1",
     "eslint-plugin-svelte": "^3.13.1",
+    "png-to-ico": "^2.1.8",
     "prettier": "^3.7.4",
     "prettier-plugin-svelte": "^3.4.0",
     "prettier-plugin-tailwindcss": "^0.7.2",
+    "resedit": "^2.0.3",
     "svelte": "^5.45.6",
     "tailwindcss": "^4.2.2",
     "vite": "^7.2.6"

@@ -39,6 +39,9 @@ if (-not (Test-Path (Join-Path $root 'out\main\index.js'))) {
   Write-Error 'Missing out/main/index.js. Run npm run build in WSL first.'
 }
 
+# Embed app icon via rcedit without requiring a code-signing certificate.
+$env:CSC_IDENTITY_AUTO_DISCOVERY = 'false'
+
 Write-Host "Packing Windows installer with $nodeExe ..."
 & $nodeExe $cli --win @args
 exit $LASTEXITCODE

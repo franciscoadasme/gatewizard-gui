@@ -11,6 +11,7 @@ import {
   applyWorkAreaMaximize,
   clearWorkAreaMaximizeLimits
 } from './window-work-area.js'
+import { buildAugmentedPath } from './shell-path.js'
 
 const BACKEND_URL = 'http://127.0.0.1:8765'
 const GPU_SAFE_MODE_FLAG = '--gatewizard-gpu-safe-mode=1'
@@ -425,15 +426,19 @@ async function waitForBackendHealth(timeoutMs = 120000) {
 
 function getBackendEnv() {
   const env = { ...process.env }
-  const prefix = env.CONDA_PREFIX
+  const prefix = env.CONDA_PREFIX || process.env.CONDA_PREFIX
+  let prefixDirs = ''
   if (prefix) {
+    env.CONDA_PREFIX = prefix
     const binDir = process.platform === 'win32' ? join(prefix, 'Scripts') : join(prefix, 'bin')
-    env.PATH = `${binDir}${path.delimiter}${env.PATH || ''}`
+    prefixDirs = binDir
     // packmol-memgen needs AMBERHOME to discover packmol, tleap, etc.
     if (!env.AMBERHOME) {
       env.AMBERHOME = prefix
     }
   }
+  // Desktop / Explorer launches inherit a minimal PATH; merge login-shell PATH for NAMD, GROMACS, etc.
+  env.PATH = buildAugmentedPath(env.PATH, prefixDirs)
   return env
 }
 
@@ -585,7 +590,7 @@ function createWindow() {
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(async () => {
   // Set app user model id for windows
-  electronApp.setAppUserModelId('com.electron')
+  electronApp.setAppUserModelId('com.gatewizard.gui')
 
   createSplashWindow()
   await new Promise((resolve) => {
