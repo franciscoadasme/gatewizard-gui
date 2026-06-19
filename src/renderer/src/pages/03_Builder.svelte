@@ -75,6 +75,11 @@
       !launching
   )
   const pendingJob = $derived(jobs.find((j) => j.status === 'not_started'))
+  const hasGeneratedInputFiles = $derived(
+    jobs.some((j) =>
+      ['not_started', 'running', 'completed', 'error'].includes(j.status)
+    )
+  )
   const canStartPreparation = $derived(
     pendingJob !== undefined && !launching && !generatingInputFiles
   )
@@ -1051,7 +1056,7 @@
           Inputs have not been validated. Click <strong>Validate Inputs</strong> before generating.
         </p>
       {/if}
-      {#if validationResult?.valid && !pendingJob}
+      {#if validationResult?.valid && !hasGeneratedInputFiles}
         <p
           class="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-400"
         >
