@@ -52,7 +52,63 @@ async function migrateDarwinDataRootIfNeeded() {
     const to = path.join(root, name)
     if (!(await fileExists(from)) || (await fileExists(to))) continue
     await fs.rename(from, to)
+    if (name === 'mamba-env') {
+      await rewriteCondaPrefixInTree(to, from, to)
+    }
   }
+}
+
+/** Fix shebangs and metadata after moving mamba-env (scripts still point at Application Support). */
+async function rewriteCondaPrefixInTree(rootDir, oldPrefix, newPrefix) {
+  if (!oldPrefix || oldPrefix === newPrefix) return
+  let entries
+  try {
+    entries = await fs.readdir(rootDir, { withFileTypes: true })
+  } catch {
+    return
+  }
+  for (const ent of entries) {
+    const full = path.join(rootDir, ent.name)
+    if (ent.isDirectory()) {
+      await rewriteCondaPrefixInTree(full, oldPrefix, newPrefix)
+      continue
+    }
+    if (!ent.isFile()) continue
+    let stat
+    try {
+      stat = await fs.stat(full)
+    } catch {
+      continue
+    }
+    if (stat.size > 5 * 1024 * 1024) continue
+    let text
+    try {
+      text = await fs.readFile(full, 'utf8')
+    } catch {
+      continue
+    }
+    if (!text.includes(oldPrefix)) continue
+    await fs.writeFile(full, text.split(oldPrefix).join(newPrefix), 'utf8')
+  }
+}
+
+async function fixStaleCondaShebangsIfNeeded(onStatus) {
+  if (process.platform !== 'darwin') return
+  const envPrefix = getDefaultRuntimePrefix()
+  if (!(await fileExists(envPrefix))) return
+  const legacyPrefix = path.join(app.getPath('userData'), 'mamba-env')
+  if (legacyPrefix === envPrefix) return
+  const probe = path.join(envPrefix, 'bin', 'propka3')
+  if (!(await fileExists(probe))) return
+  let firstLine = ''
+  try {
+    firstLine = (await fs.readFile(probe, 'utf8')).split('\n')[0] || ''
+  } catch {
+    return
+  }
+  if (!firstLine.includes(legacyPrefix)) return
+  onStatus('Updating conda environment paths after data folder move…')
+  await rewriteCondaPrefixInTree(envPrefix, legacyPrefix, envPrefix)
 }
 
 function getDefaultRuntimePrefix() {
@@ -345,6 +401,7 @@ export async function ensureMambaRuntime(options) {
   const requirementsPath = options.requirementsPath
 
   await migrateDarwinDataRootIfNeeded()
+  await fixStaleCondaShebangsIfNeeded(onStatus)
 
   if (process.env.GATEWIZARD_PYTHON) {
     cachedLaunchPython = process.env.GATEWIZARD_PYTHON
