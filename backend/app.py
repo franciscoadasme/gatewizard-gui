@@ -31,13 +31,16 @@ if _conda_prefix:
 
 import numpy as np
 import MDAnalysis as mda
-import psique
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from gatewizard.utils.protein_capping import cap_protein
-from gatewizard.core.structure_manager import StructureManager, StructureError
+from gatewizard.core.structure_manager import (
+    StructureManager,
+    StructureError,
+    assign_secondary_structure_map,
+)
 from gatewizard.core.preparation import PreparationError, PreparationManager
 from gatewizard.core.builder import Builder
 
@@ -209,20 +212,33 @@ def get_atoms(atoms: mda.AtomGroup | mda.Universe) -> list[dict]:
 
 
 def get_residues(
-    u: mda.Universe, needs_secondary_structure: bool = False
+    u: mda.Universe,
+    needs_secondary_structure: bool = False,
+    source_path: str | None = None,
 ) -> list[dict]:
-    sec_segments = []
+    residue_sec_table: dict[tuple[str, int, str | None], str] = {}
     if needs_secondary_structure:
+        pdb_for_ss = source_path
+        cleanup = False
+        if not pdb_for_ss or not os.path.isfile(pdb_for_ss):
+            tmp = tempfile.NamedTemporaryFile("w", suffix=".pdb", delete=False)
+            u.atoms.write(tmp.name)
+            tmp.close()
+            pdb_for_ss = tmp.name
+            cleanup = True
         try:
-            sec_segments = get_secondary_structure(u)
+            # auto: PSIQUE first, then PDB HELIX/SHEET records, then CA-angle heuristic
+            ss_map = assign_secondary_structure_map(pdb_for_ss, method="auto")
+            for (chain, resid), sec in ss_map.items():
+                residue_sec_table[(chain, resid, None)] = sec
         except Exception:
             pass
-
-    residue_sec_table: dict[tuple[str, int, str | None], str] = {}
-    for sec in sec_segments:
-        for resid in range(sec.start.number, sec.end.number + 1):
-            # FIXME: Handle insertion codes
-            residue_sec_table[(sec.start.chain, resid, None)] = sec.kind.value
+        finally:
+            if cleanup and pdb_for_ss:
+                try:
+                    os.unlink(pdb_for_ss)
+                except OSError:
+                    pass
 
     residues = []
     for res in u.residues:
@@ -246,13 +262,6 @@ def get_residues(
             )
         )
     return residues
-
-
-def get_secondary_structure(u: mda.Universe) -> list[psique.SecondaryStructure]:
-    """Return the secondary structure of the universe."""
-    with tempfile.NamedTemporaryFile("w", suffix=".pdb") as file:
-        u.atoms.write(file.name)
-        return psique.assign(file.name)
 
 
 _TOPOLOGY_ONLY_SUFFIXES = frozenset(
@@ -2689,7 +2698,9 @@ def get_structure(payload: StructureRequest) -> dict:
     except mda.exceptions.NoDataError:
         data["bonds"] = []
     if payload.needs_secondary_structure:
-        data["residues"] = get_residues(u, needs_secondary_structure=True)
+        data["residues"] = get_residues(
+            u, needs_secondary_structure=True, source_path=payload.path
+        )
 
     return data
 
@@ -2714,7 +2725,9 @@ def detect_molecules(payload: DetectMoleculesRequest) -> list[dict]:
             atoms=get_atoms(atoms),
         )
         if name == "protein":
-            data["residues"] = get_residues(atoms, needs_secondary_structure=True)
+            data["residues"] = get_residues(
+                atoms, needs_secondary_structure=True, source_path=payload.path
+            )
         datalist.append(data)
         idxs.extend(atoms.indices)
 
