@@ -5,7 +5,7 @@ import { readFile, writeFile } from 'fs/promises'
 import path, { join } from 'path'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import icon from '../../resources/window_icon.png?asset'
-import { ensureMambaRuntime, getLaunchPythonPath, inferCondaPrefixFromPython, upgradeGatewizardPackage } from './runtime-bootstrap.js'
+import { ensureMambaRuntime, getGatewizardDataRoot, getLaunchPythonPath, inferCondaPrefixFromPython, upgradeGatewizardPackage } from './runtime-bootstrap.js'
 import { checkForUpdates, getLocalGuiVersion, getManifestUrl } from './update-check.js'
 import {
   applyWorkAreaMaximize,
@@ -447,7 +447,7 @@ function getBackendEnv() {
   // Desktop / Explorer launches inherit a minimal PATH; merge login-shell PATH for NAMD, GROMACS, etc.
   env.PATH = buildAugmentedPath(env.PATH, prefixDirs)
   // Writable app data dir for backend file I/O (PDB downloads, etc.) when no working dir is set.
-  env.GATEWIZARD_USER_DATA = app.getPath('userData')
+  env.GATEWIZARD_USER_DATA = getGatewizardDataRoot()
   return env
 }
 
@@ -458,7 +458,7 @@ function startBackend() {
   backendProcess = spawn(pythonBin, ['-u', backendScript], {
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
-    cwd: app.getPath('userData'),
+    cwd: getGatewizardDataRoot(),
     env: getBackendEnv()
   })
 

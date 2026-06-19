@@ -33,13 +33,35 @@ function getMicromambaKey() {
   return null
 }
 
+function getGatewizardDataRoot() {
+  // macOS userData lives under "Application Support" (spaces break conda script shebangs).
+  if (process.platform === 'darwin') {
+    return path.join(app.getPath('home'), 'Library', 'gatewizard-gui')
+  }
+  return app.getPath('userData')
+}
+
+async function migrateDarwinDataRootIfNeeded() {
+  if (process.platform !== 'darwin') return
+  const legacy = app.getPath('userData')
+  const root = getGatewizardDataRoot()
+  if (path.resolve(legacy) === path.resolve(root)) return
+  await fs.mkdir(root, { recursive: true })
+  for (const name of ['mamba-env', 'mamba-root', 'micromamba']) {
+    const from = path.join(legacy, name)
+    const to = path.join(root, name)
+    if (!(await fileExists(from)) || (await fileExists(to))) continue
+    await fs.rename(from, to)
+  }
+}
+
 function getDefaultRuntimePrefix() {
-  return path.join(app.getPath('userData'), 'mamba-env')
+  return path.join(getGatewizardDataRoot(), 'mamba-env')
 }
 
 function getMicromambaBinPath() {
   return path.join(
-    app.getPath('userData'),
+    getGatewizardDataRoot(),
     'micromamba',
     MICROMAMBA_TAG,
     process.platform === 'win32' ? 'micromamba.exe' : 'micromamba'
@@ -47,7 +69,7 @@ function getMicromambaBinPath() {
 }
 
 function getMambaRoot() {
-  return path.join(app.getPath('userData'), 'mamba-root')
+  return path.join(getGatewizardDataRoot(), 'mamba-root')
 }
 
 /** Revision bumped when conda OpenMM GPU packages change (existing runtimes re-sync on next start). */
@@ -73,7 +95,7 @@ function getCondaPackages() {
 }
 
 function getRuntimeInstallLogPath() {
-  return path.join(app.getPath('userData'), 'runtime-install.log')
+  return path.join(getGatewizardDataRoot(), 'runtime-install.log')
 }
 
 async function appendRuntimeLog(text) {
@@ -217,7 +239,7 @@ async function restoreCondaOpenmmAfterPip(micromambaDest, runtimePrefix, mmEnv, 
 }
 
 function getStatePath() {
-  return path.join(app.getPath('userData'), 'runtime-state.json')
+  return path.join(getGatewizardDataRoot(), 'runtime-state.json')
 }
 
 function getWindowsPythonCandidates(prefix) {
@@ -321,6 +343,8 @@ function forceReinstallVcsRequirements(pyPath, requirementsText, runtimePrefix) 
 export async function ensureMambaRuntime(options) {
   const onStatus = options.onStatus || (() => {})
   const requirementsPath = options.requirementsPath
+
+  await migrateDarwinDataRootIfNeeded()
 
   if (process.env.GATEWIZARD_PYTHON) {
     cachedLaunchPython = process.env.GATEWIZARD_PYTHON
@@ -619,3 +643,5 @@ export function getLaunchPythonPath() {
   }
   return process.platform === 'win32' ? 'python' : 'python3'
 }
+
+export { getGatewizardDataRoot }
