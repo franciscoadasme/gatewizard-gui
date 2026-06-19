@@ -1238,6 +1238,26 @@ def _resolve_executable(executable: str) -> str | None:
     return shutil.which(executable)
 
 
+def _executable_for_equilibration_setup(
+    engine: str, executable: str, *, require_on_path: bool
+) -> str:
+    """Resolve an MD engine executable for input-file generation.
+
+    NAMD/OpenMM only embed the executable in run scripts during setup; GROMACS
+    may invoke ``gmx`` (e.g. ``make_ndx``) while generating files.
+    """
+    executable = executable.strip()
+    if not executable:
+        raise HTTPException(status_code=400, detail="Executable cannot be empty")
+    resolved = _resolve_executable(executable)
+    if require_on_path and not resolved:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Executable not found: {executable}",
+        )
+    return resolved or executable
+
+
 def _run_version_probe(executable: str, engine: str) -> str | None:
     probe_args = {
         "namd": ["-version"],
@@ -1506,12 +1526,11 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
     if engine not in {"namd", "gromacs", "openmm"}:
         raise HTTPException(status_code=400, detail=f"Unsupported engine: {engine}")
 
-    resolved_exec = _resolve_executable(executable)
-    if not resolved_exec:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Executable not found: {executable}",
-        )
+    resolved_exec = _executable_for_equilibration_setup(
+        engine,
+        executable,
+        require_on_path=(engine == "gromacs"),
+    )
 
     if engine == "gromacs" and GROMACSEquilibrationManager is None:
         raise HTTPException(
@@ -1622,11 +1641,16 @@ def generate_com_restraint(payload: GenerateComRestraintRequest) -> dict:
         raise HTTPException(status_code=404, detail=f"Directory not found: {input_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    resolved_exec = _resolve_executable(executable)
-    if not resolved_exec:
-        raise HTTPException(
-            status_code=400, detail=f"Executable not found: {executable}"
+    if engine == "namd":
+        resolved_exec = _executable_for_equilibration_setup(
+            engine, executable, require_on_path=False
         )
+    else:
+        resolved_exec = _resolve_executable(executable)
+        if not resolved_exec:
+            raise HTTPException(
+                status_code=400, detail=f"Executable not found: {executable}"
+            )
 
     pdb_path = output_dir / "system.pdb"
     if not pdb_path.exists():
