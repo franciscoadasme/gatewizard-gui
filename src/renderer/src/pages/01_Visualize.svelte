@@ -1824,10 +1824,21 @@
   }
 
   async function onMemproApply(result) {
+    if (!filePath) return
     editBusy = true
     try {
-      await loadStructure(result.pdb_path)
+      const res = await memproApply({
+        sourcePath: filePath,
+        pdbPath: result.pdb_path
+      })
       dlgMempro?.close()
+      await applyEditResult(res)
+      logEvent(
+        'info',
+        'view',
+        `Applied MemPro orientation rank ${result.rank}`,
+        filePath
+      )
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : String(ex))
     } finally {
@@ -3385,7 +3396,7 @@
     <!-- Results -->
     <div class="w-[520px] p-4">
       <p class="mb-2 text-xs text-neutral-400">
-        Orientation results — click Apply to load a result:
+        Orientation results — Apply transforms the loaded structure (keeps ligands, water, etc.):
       </p>
       <div class="overflow-x-auto rounded border border-neutral-800">
         <table class="w-full text-xs">

@@ -41,6 +41,7 @@ from gatewizard.core.structure_manager import (
     StructureError,
     assign_secondary_structure_map,
 )
+from gatewizard.core.mempro import MemProError
 from gatewizard.core.preparation import PreparationError, PreparationManager
 from gatewizard.core.builder import Builder
 
@@ -3336,21 +3337,39 @@ def mempro_status(job_id: str) -> dict:
 
 class MemProApplyRequest(BaseModel):
     pdb_path: str
+    source_path: str | None = None
 
 
 @app.post("/mempro/apply")
 def mempro_apply(payload: MemProApplyRequest) -> dict:
-    """Load an oriented PDB file as the new current structure."""
+    """Apply a MemPro orientation to the loaded structure, preserving all molecules."""
+    oriented_pdb = payload.pdb_path
+    if not os.path.isfile(oriented_pdb):
+        raise HTTPException(status_code=404, detail=f"File not found: {oriented_pdb}")
+
+    source_path = (payload.source_path or "").strip()
+    if source_path and os.path.isfile(source_path):
+        try:
+            return _mv_edit(
+                source_path,
+                lambda mv: mv.apply_mempro_orientation(oriented_pdb),
+            )
+        except (StructureError, MemProError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # Fallback: load oriented MemPro output only (protein + dummy atoms).
     try:
-        u = load_structure(payload.pdb_path)
-        data: dict = {"path": payload.pdb_path, "atoms": get_atoms(u.atoms)}
+        u = load_structure(oriented_pdb)
+        data: dict = {"path": oriented_pdb, "atoms": get_atoms(u.atoms)}
         try:
             data["bonds"] = u.atoms.bonds.indices.tolist()
         except mda.exceptions.NoDataError:
             data["bonds"] = []
         return data
     except Exception as exc:
-        raise HTTPException(400, str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 if __name__ == "__main__":

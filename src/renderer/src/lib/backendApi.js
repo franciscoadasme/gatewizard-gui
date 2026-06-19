@@ -514,8 +514,8 @@ export function memproStatus(jobId) {
 }
 
 /**
- * Load an oriented PDB as the current structure.
- * @param {{ pdb_path: string }} payload
+ * Apply a MemPro orientation to the loaded structure (keeps ligands/water/etc.).
+ * @param {{ pdb_path: string, source_path?: string|null }} payload
  * @returns {Promise<{ path: string, atoms: object[], bonds: number[][] }>}
  */
 export function memproApply(payload) {
