@@ -5,7 +5,7 @@ import { readFile, writeFile } from 'fs/promises'
 import path, { join } from 'path'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import icon from '../../resources/window_icon.png?asset'
-import { ensureMambaRuntime, getLaunchPythonPath, upgradeGatewizardPackage } from './runtime-bootstrap.js'
+import { ensureMambaRuntime, getLaunchPythonPath, inferCondaPrefixFromPython, upgradeGatewizardPackage } from './runtime-bootstrap.js'
 import { checkForUpdates, getLocalGuiVersion, getManifestUrl } from './update-check.js'
 import {
   applyWorkAreaMaximize,
@@ -426,7 +426,14 @@ async function waitForBackendHealth(timeoutMs = 120000) {
 
 function getBackendEnv() {
   const env = { ...process.env }
-  const prefix = env.CONDA_PREFIX || process.env.CONDA_PREFIX
+  let prefix = env.CONDA_PREFIX || process.env.CONDA_PREFIX
+  if (!prefix) {
+    const inferred = inferCondaPrefixFromPython(getLaunchPythonPath())
+    if (inferred) {
+      prefix = inferred
+      env.CONDA_PREFIX = inferred
+    }
+  }
   let prefixDirs = ''
   if (prefix) {
     env.CONDA_PREFIX = prefix

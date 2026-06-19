@@ -15,7 +15,15 @@
   let workingFile = $state('')
 
   // derived values
-  let protonatedFile = $derived(workingFile.replace('.pdb', '_protonated.pdb'))
+  let protonatedFile = $derived.by(() => {
+    if (!workingFile) return ''
+    const basename = workingFile.split(/[/\\]/).pop() ?? 'structure.pdb'
+    const outName = basename.replace(/\.pdb$/i, '_protonated.pdb')
+    if (workingDir) {
+      return `${workingDir.replace(/[/\\]+$/, '')}/${outName}`
+    }
+    return workingFile.replace(/\.pdb$/i, '_protonated.pdb')
+  })
   let sortedProtonationStates = $derived.by(() => {
     const col = sortColumn
     const dir = sortDirection === 'asc' ? 1 : -1
@@ -102,7 +110,9 @@
     try {
       preparingPDB = true
       const data = await preparePDB({
-        path: capProtein ? workingFile.replace('.pdb', '_capped.pdb') : workingFile,
+        path: capProtein
+          ? workingFile.replace(/\.pdb$/i, '_capped.pdb')
+          : workingFile,
         outputPath: protonatedFile,
         protonationStates,
         targetPh,
@@ -110,7 +120,7 @@
       })
       preparationOutput = data.output.trim()
       preparationStatus.prepareDone = true
-      preparationStatus.outputFile = protonatedFile
+      preparationStatus.outputFile = data.output_path ?? protonatedFile
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
     } finally {

@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field
 
 from gatewizard.utils.protein_capping import cap_protein
 from gatewizard.core.structure_manager import StructureManager, StructureError
-from gatewizard.core.preparation import PreparationManager
+from gatewizard.core.preparation import PreparationError, PreparationManager
 from gatewizard.core.builder import Builder
 
 try:
@@ -1054,10 +1054,23 @@ class PreparePDBRequest(BaseModel):
     )
 
 
+def _ensure_conda_tools_on_path() -> None:
+    """Prepend CONDA_PREFIX/bin to PATH so AmberTools subprocesses resolve on macOS."""
+    prefix = os.environ.get("CONDA_PREFIX", "")
+    if not prefix:
+        return
+    bin_dir = os.path.join(prefix, "bin")
+    path = os.environ.get("PATH", "")
+    parts = [p for p in path.split(os.pathsep) if p] if path else []
+    if bin_dir not in parts:
+        os.environ["PATH"] = bin_dir + (os.pathsep + path if path else "")
+
+
 @app.post("/prepare-pdb")
-def prepare_pdb(payload: PreparePDBRequest) -> None:
+def prepare_pdb(payload: PreparePDBRequest) -> dict:
+    _ensure_conda_tools_on_path()
     path = os.path.abspath(os.path.expanduser(payload.path))
-    output_path = os.path.abspath(os.path.expanduser(payload.output_path))
+    output_path = _ensure_writable_output_file(payload.output_path)
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
 
@@ -1068,8 +1081,10 @@ def prepare_pdb(payload: PreparePDBRequest) -> None:
         return resid
 
     manager = PreparationManager()
+    fd, tmp_path = tempfile.mkstemp(suffix=".pdb")
+    os.close(fd)
 
-    with tempfile.NamedTemporaryFile(suffix=".pdb", delete=True) as tmp:
+    try:
         custom_states = {
             get_residue_id(info): info["current_state"]
             for info in payload.protonation_states
@@ -1077,20 +1092,35 @@ def prepare_pdb(payload: PreparePDBRequest) -> None:
         }
         manager.apply_protonation_states(
             path,
-            tmp.name,
+            tmp_path,
             payload.target_ph,
             custom_states,
             payload.protonation_states,
         )
 
-        manager.apply_disulfide_bonds(tmp.name, tmp.name, payload.disulfide_bonds)
+        manager.apply_disulfide_bonds(tmp_path, tmp_path, payload.disulfide_bonds)
 
         result = manager.run_pdb4amber_with_cap_fix(
-            input_pdb=tmp.name,
-            output_pdb=output_path,
+            input_pdb=tmp_path,
+            output_pdb=str(output_path),
             fix_caps="capped" in path,
         )
-        return dict(output=result["stdout"] + "\n" + result["stderr"])
+        return dict(
+            output=result["stdout"] + "\n" + result["stderr"],
+            output_path=str(output_path),
+        )
+    except (PreparationError, FileNotFoundError, OSError, ValueError) as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    except Exception as ex:
+        import traceback
+
+        tb_str = "".join(traceback.format_exception(type(ex), ex, ex.__traceback__))
+        raise HTTPException(status_code=400, detail=str(ex) + "\n" + tb_str) from ex
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
 
 class ProgramConfig(BaseModel):
@@ -2537,6 +2567,28 @@ def run_energetic_analysis(payload: EnergeticAnalysisRequest) -> dict:
         return sanitize_value(result)
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+def _ensure_writable_output_file(output_path: str) -> Path:
+    """Resolve output path and verify its parent directory can be created/written."""
+    out = Path(os.path.abspath(os.path.expanduser(output_path)))
+    parent = out.parent
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+    except OSError as ex:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Cannot create output directory ({parent}): {ex}",
+        ) from ex
+    if not os.access(parent, os.W_OK):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot write to {parent}. Set a working directory with write access "
+                "or move the input PDB to a writable folder."
+            ),
+        )
+    return out
 
 
 def _resolve_structure_save_dir(save_dir: str | None) -> Path:

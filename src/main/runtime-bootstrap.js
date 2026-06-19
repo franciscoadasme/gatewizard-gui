@@ -242,7 +242,7 @@ async function findPythonInPrefix(prefix) {
   return null
 }
 
-function inferCondaPrefixFromPython(pythonPath) {
+export function inferCondaPrefixFromPython(pythonPath) {
   const resolved = path.resolve(pythonPath)
   const dir = path.dirname(resolved)
   const base = path.basename(dir)
