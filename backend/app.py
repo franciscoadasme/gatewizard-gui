@@ -2539,6 +2539,31 @@ def run_energetic_analysis(payload: EnergeticAnalysisRequest) -> dict:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
 
 
+def _resolve_structure_save_dir(save_dir: str | None) -> Path:
+    """Writable directory for RCSB PDB downloads (packaged macOS apps often have a read-only cwd)."""
+    if save_dir:
+        base = Path(os.path.abspath(os.path.expanduser(save_dir)))
+    else:
+        user_data = os.environ.get("GATEWIZARD_USER_DATA", "").strip()
+        if user_data:
+            base = Path(user_data) / "structures"
+        else:
+            base = Path.home() / "Documents" / "GateWizard"
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+    except OSError as ex:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Cannot create directory for PDB download ({base}): {ex}",
+        ) from ex
+    if not os.access(base, os.W_OK):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Directory is not writable: {base}",
+        )
+    return base
+
+
 class StructureRequest(BaseModel):
     path: str = Field(..., description="Absolute path to a PDB/mmCIF file")
     topology: str | None = Field(description="Topology file name", default=None)
@@ -2550,26 +2575,36 @@ class StructureRequest(BaseModel):
         False, description="Whether to get secondary structure"
     )
     save_dir: str | None = Field(
-        None, description="Directory to save downloaded PDB files (uses cwd if omitted)"
+        None,
+        description="Directory to save downloaded PDB files (uses app user data if omitted)",
     )
 
 
 @app.post("/get-structure")
 def get_structure(payload: StructureRequest) -> dict:
     if len(payload.path) == 4:  # PDB ID
+        pdbid = payload.path.upper()
         try:
-            pdbid = payload.path
-            url = f"https://files.rcsb.org/download/{pdbid}.pdb"
+            url = f"https://files.rcsb.org/download/{pdbid.lower()}.pdb"
             resp = requests.get(url, timeout=15)
             resp.raise_for_status()
 
-            base = Path(payload.save_dir).resolve() if payload.save_dir else Path.cwd()
-            base.mkdir(parents=True, exist_ok=True)
+            base = _resolve_structure_save_dir(payload.save_dir)
             path = base / f"{pdbid.lower()}.pdb"
-            path.write_text(resp.text)
+            path.write_text(resp.text, encoding="utf-8")
             payload.path = str(path)
         except requests.HTTPError as ex:
-            raise HTTPException(400, f"Failed to fetch PDB: {pdbid}")
+            raise HTTPException(
+                status_code=400, detail=f"Failed to fetch PDB: {pdbid}"
+            ) from ex
+        except requests.RequestException as ex:
+            raise HTTPException(
+                status_code=400, detail=f"Failed to fetch PDB {pdbid}: {ex}"
+            ) from ex
+        except OSError as ex:
+            raise HTTPException(
+                status_code=500, detail=f"Failed to save PDB file: {ex}"
+            ) from ex
     elif not os.path.isfile(payload.path):
         raise HTTPException(status_code=404, detail=f"File not found: {payload.path}")
 

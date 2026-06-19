@@ -439,6 +439,8 @@ function getBackendEnv() {
   }
   // Desktop / Explorer launches inherit a minimal PATH; merge login-shell PATH for NAMD, GROMACS, etc.
   env.PATH = buildAugmentedPath(env.PATH, prefixDirs)
+  // Writable app data dir for backend file I/O (PDB downloads, etc.) when no working dir is set.
+  env.GATEWIZARD_USER_DATA = app.getPath('userData')
   return env
 }
 
@@ -449,6 +451,7 @@ function startBackend() {
   backendProcess = spawn(pythonBin, ['-u', backendScript], {
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
+    cwd: app.getPath('userData'),
     env: getBackendEnv()
   })
 
