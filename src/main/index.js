@@ -4,7 +4,8 @@ import { watch } from 'fs'
 import { readFile, writeFile } from 'fs/promises'
 import path, { join } from 'path'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
-import icon from '../../resources/window_icon.png?asset'
+import appWindowIcon from '../../resources/brand/logos/app-window-dark.png?asset'
+// Brand asset map: resources/brand/manifest.mjs (use getAppWindowIconUrl when theme toggle exists)
 import { ensureMambaRuntime, getGatewizardDataRoot, getLaunchPythonPath, inferCondaPrefixFromPython, upgradeGatewizardPackage } from './runtime-bootstrap.js'
 import { checkForUpdates, getLocalGuiVersion, getManifestUrl } from './update-check.js'
 import {
@@ -16,8 +17,18 @@ import { buildAugmentedPath } from './shell-path.js'
 const BACKEND_URL = 'http://127.0.0.1:8765'
 const GPU_SAFE_MODE_FLAG = '--gatewizard-gpu-safe-mode=1'
 const GPU_RELAUNCHED_FLAG = '--gatewizard-gpu-relaunched=1'
-const SPLASH_MIN_MS = 1500
+const SPLASH_MIN_MS = 3200
 const SPLASH_FADE_MS = 350
+const SPLASH_WIDTH = 360
+const SPLASH_HEIGHT = 420
+const SPLASH_LINUX_SIZE = 440
+
+function getSplashWindowSize() {
+  if (process.platform === 'linux') {
+    return { width: SPLASH_LINUX_SIZE, height: SPLASH_LINUX_SIZE }
+  }
+  return { width: SPLASH_WIDTH, height: SPLASH_HEIGHT }
+}
 
 let backendProcess = null
 /** @type {BrowserWindow | null} */
@@ -270,9 +281,11 @@ function createSplashWindow() {
     return splashWindow
   }
 
+  const { width, height } = getSplashWindowSize()
+
   splashWindow = new BrowserWindow({
-    width: 360,
-    height: 340,
+    width,
+    height,
     frame: false,
     transparent: true,
     center: true,
@@ -526,7 +539,7 @@ function createWindow() {
     backgroundColor: '#0a0a0a',
     ...(process.platform === 'win32' ? { roundedCorners: true } : {}),
     ...(usesWorkAreaMaximize() ? { maximizable: false } : {}),
-    ...(process.platform === 'linux' || process.platform === 'win32' ? { icon } : {}),
+    ...(process.platform === 'linux' || process.platform === 'win32' ? { icon: appWindowIcon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false

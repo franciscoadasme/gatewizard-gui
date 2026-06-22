@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:"
+      content="default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:"
     />
     <title>GateWizard</title>
     <style>
@@ -31,52 +31,155 @@
       }
 
       .splash {
+        position: fixed;
+        inset: 0;
+        background: transparent;
+        overflow: hidden;
+      }
+
+      /* Hex stays fixed at the visual centre; status is anchored below it. */
+      .stage-wrap {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        width: 280px;
+        height: 323px;
+      }
+
+      /* Regular pointy-top hexagon (width / height = sqrt(3)/2 ≈ 0.866). */
+      .panel {
+        position: absolute;
+        inset: 0;
         display: flex;
-        width: 100%;
-        height: 100%;
-        flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 0.65rem;
-        background: transparent;
-        clip-path: polygon(50% 0%, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%);
-        animation: hexIn 0.65s cubic-bezier(0.22, 1, 0.36, 1) both;
+        background: #0a0a0c;
+        clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
       }
 
-      @keyframes hexIn {
-        from {
-          opacity: 0;
-          transform: scale(0.88);
-        }
-        to {
-          opacity: 1;
-          transform: scale(1);
-        }
+      /* Glowing progress border, drawn on top and NOT clipped, so its halo
+         and sparks can bloom slightly outside the hex edge. */
+      .hex-border {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+        pointer-events: none;
+      }
+      .hex-track {
+        fill: none;
+        stroke: rgba(255, 255, 255, 0.10);
+        stroke-width: 2;
+      }
+      .hex-progress {
+        fill: none;
+        stroke: #ffffff;
+        stroke-width: 3;
+        stroke-linecap: round;
       }
 
-      .logo {
+      .scene {
+        position: relative;
+        width: 260px;
+        height: 200px;
+        perspective: 850px;
+        perspective-origin: 50% 50%;
+      }
+
+      /* CAMERA: slide-in, then zoom while centering the binding on hex centre. */
+      .camera {
+        position: absolute;
+        inset: 0;
+        transform-style: preserve-3d;
+        transform-origin: 27.6% 50%;
+        transform: translateX(330px) scale(1);
+        transition: transform 1.05s cubic-bezier(0.22, 1, 0.36, 1);
+        will-change: transform;
+      }
+      body.phase-slide .camera {
+        transform: translateX(0) scale(1);
+      }
+      body.phase-zoom .camera {
+        transform: translateX(58px) scale(1.2);
+        transition: transform 0.9s cubic-bezier(0.33, 0, 0.2, 1);
+      }
+
+      /* CARD: one plane, key on the front, logo on the back. A real 3D turn. */
+      .card {
+        position: absolute;
+        inset: 0;
+        transform-style: preserve-3d;
+        transform-origin: 27.6% 50%;
+        transform: rotateY(0deg);
+      }
+
+      .face {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        backface-visibility: hidden;
+        -webkit-backface-visibility: hidden;
+      }
+      .face-key {
+        transform: rotateY(0deg);
+      }
+      .face-logo {
+        transform: rotateY(180deg);
+      }
+      .logo-inner {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        transform: translateX(58.3px) translateY(-6px);
+      }
+
+      .key-svg {
         display: block;
-        max-width: min(58vw, 160px);
-        max-height: min(52vh, 160px);
-        object-fit: contain;
-        background: transparent;
-        animation: logoIn 0.75s cubic-bezier(0.22, 1, 0.36, 1) 0.08s both;
+        width: 190px;
+        height: auto;
+        overflow: visible;
       }
+      .key-svg :is(line, path, circle, ellipse) {
+        fill: none;
+        stroke: #ffffff;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .key-bit { stroke-width: 7; }
+      .key-shaft { stroke-width: 6; }
+      .key-bow { stroke-width: 7; }
 
-      @keyframes logoIn {
-        from {
-          opacity: 0;
-          transform: translateY(10px) scale(0.92);
-        }
-        to {
-          opacity: 1;
-          transform: translateY(0) scale(1);
-        }
+      .gw-emblem {
+        display: block;
+        width: 74px;
+        height: auto;
+        overflow: visible;
+      }
+      .gw-fill {
+        fill: #ffffff;
+        stroke: none;
+      }
+      .wordmark {
+        margin-top: 8px;
+        white-space: nowrap;
+        font-size: 0.6rem;
+        font-weight: 300;
+        letter-spacing: 0.05em;
+        color: #ececec;
       }
 
       .status {
+        position: absolute;
+        left: 50%;
+        top: calc(50% + 161.5px + 0.75rem);
+        transform: translateX(-50%);
+        width: 88%;
+        max-width: 320px;
         margin: 0;
-        max-width: 88%;
         text-align: center;
         font-size: 0.75rem;
         font-weight: 500;
@@ -86,40 +189,281 @@
         text-shadow:
           0 1px 2px rgba(0, 0, 0, 0.9),
           0 0 12px rgba(0, 0, 0, 0.75);
-        animation: statusIn 0.55s ease-out 0.28s both;
+        opacity: 0;
+        animation: statusIn 0.5s ease-out 0.25s both;
       }
-
       .status.busy {
         animation:
-          statusIn 0.55s ease-out 0.28s both,
-          statusPulse 1.6s ease-in-out 0.9s infinite;
+          statusIn 0.5s ease-out 0.25s both,
+          statusPulse 1.6s ease-in-out 1s infinite;
       }
-
       @keyframes statusIn {
-        from {
-          opacity: 0;
-          transform: translateY(6px);
-        }
-        to {
-          opacity: 1;
-          transform: translateY(0);
-        }
+        from { opacity: 0; transform: translateX(-50%) translateY(6px); }
+        to { opacity: 1; transform: translateX(-50%) translateY(0); }
+      }
+      @keyframes statusPulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.55; }
       }
     </style>
   </head>
   <body>
     <div class="splash">
-      <img id="logo" class="logo" src="splash.png" alt="GateWizard logo" />
+      <div class="stage-wrap">
+        <div class="panel">
+          <div class="scene">
+            <div class="camera" id="camera">
+              <div class="card" id="card">
+                <!-- FRONT: key -->
+                <div class="face face-key">
+                  <svg class="key-svg" viewBox="0 0 300 240" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+                    <g class="key-bit">
+                      <line x1="46" y1="50" x2="46" y2="120" />
+                      <line x1="72" y1="95" x2="72" y2="140" />
+                    </g>
+                    <line class="key-shaft" x1="46" y1="120" x2="163" y2="120" />
+                    <circle class="key-shaft" cx="173" cy="120" r="6" />
+                    <g class="key-bow">
+                      <circle cx="198" cy="120" r="20" />
+                      <circle cx="250" cy="120" r="20" />
+                      <circle cx="224" cy="94" r="20" />
+                      <circle cx="224" cy="146" r="20" />
+                    </g>
+                  </svg>
+                </div>
+
+                <!-- BACK: GateWizard emblem -->
+                <div class="face face-logo">
+                  <div class="logo-inner">
+                    <svg class="gw-emblem" viewBox="0 0 1204.5 1006" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="GateWizard">
+                      <g transform="translate(-48.506239,1161) scale(0.1,-0.1)">
+                        <path class="gw-fill" d="M4523 9628 c-1913 -1914 -1983 -1985 -2013 -2051 -65 -144 -63 -293 6 -437 36 -73 71 -109 1658 -1698 l1621 -1622 -530 -530 -530 -530 -1770 1770 -1770 1770 -355 -355 -355 -355 1960 -1960 c1078 -1078 1983 -1976 2010 -1995 88 -61 155 -80 280 -79 126 0 183 17 282 84 34 23 360 341 773 754 l715 716 735 -733 c622 -621 744 -738 796 -765 155 -80 313 -83 473 -6 49 23 312 282 2039 2008 l1982 1981 -352 352 -353 353 -1772 -1772 -1773 -1773 -532 532 -533 533 1621 1622 c1592 1594 1622 1624 1659 1700 72 147 71 298 -1 448 -35 73 -66 104 -948 988 -501 502 -937 933 -969 957 -145 111 -338 130 -512 53 -68 -31 -100 -62 -1168 -1127 l-1097 -1096 352 -352 353 -353 885 885 885 885 533 -532 532 -533 -1417 -1417 -1418 -1418 -1417 1417 -1418 1418 1772 1772 1773 1773 -350 350 c-192 192 -352 350 -355 350 -3 0 -897 -892 -1987 -1982z" />
+                      </g>
+                    </svg>
+                    <span class="wordmark">GateWizard</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Glowing progress border + spark layer -->
+        <svg class="hex-border" id="hexBorder" viewBox="0 0 280 323" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+              <feGaussianBlur stdDeviation="3" result="b" />
+              <feMerge>
+                <feMergeNode in="b" />
+                <feMergeNode in="b" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+            <filter id="sparkGlow" x="-200%" y="-200%" width="500%" height="500%">
+              <feGaussianBlur stdDeviation="1.4" result="b" />
+              <feMerge>
+                <feMergeNode in="b" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+          </defs>
+          <path class="hex-track" id="hexTrack"
+            d="M140 1 L279 81 L279 242 L140 322 L1 242 L1 81 Z" />
+          <path class="hex-progress" id="hexProgress" filter="url(#glow)"
+            d="M140 1 L279 81 L279 242 L140 322 L1 242 L1 81 Z" />
+          <g id="sparkLayer"></g>
+          <g id="headLayer" filter="url(#glow)">
+            <circle id="headHalo" r="6" fill="#ffffff" opacity="0" />
+            <circle id="headDot" r="2.6" fill="#ffffff" opacity="0" />
+          </g>
+        </svg>
+      </div>
+
       <p id="status" class="status busy">Starting…</p>
     </div>
+
     <script>
-      const logo = document.getElementById('logo')
-      logo.addEventListener('error', () => {
-        if (!logo.dataset.fallback) {
-          logo.dataset.fallback = '1'
-          logo.src = 'icon.png'
+      const SLIDE_MS = 1050
+      const ZOOM_MS = 900
+      const SEG_MS = 1600
+      const HOLD_MS = 900
+
+      const card = document.getElementById('card')
+
+      /* ---------- Key / logo 3D flip ---------- */
+      const SEQ = [180, 0]
+      let rafId = null
+      let idx = 0
+      let fromA = 0
+      let toA = SEQ[0]
+      let segStart = null
+      let holding = false
+      let holdStart = 0
+      let theta = 0
+      const easeInOut = (p) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2)
+
+      function applyFlip() {
+        card.style.transform = 'rotateY(' + theta + 'deg)'
+      }
+      function flipFrame(ts) {
+        if (segStart === null) segStart = ts
+        if (!holding) {
+          const p = Math.min(1, (ts - segStart) / SEG_MS)
+          theta = fromA + (toA - fromA) * easeInOut(p)
+          if (p >= 1) { theta = toA; holding = true; holdStart = ts }
+        } else if (ts - holdStart >= HOLD_MS) {
+          holding = false; segStart = ts; fromA = toA
+          idx = (idx + 1) % SEQ.length; toA = SEQ[idx]
         }
-      })
+        applyFlip()
+        rafId = requestAnimationFrame(flipFrame)
+      }
+
+      /* ---------- Glowing progress border ---------- */
+      const SVGNS = 'http://www.w3.org/2000/svg'
+      const progressPath = document.getElementById('hexProgress')
+      const sparkLayer = document.getElementById('sparkLayer')
+      const headLayer = document.getElementById('headLayer')
+      const headDot = document.getElementById('headDot')
+      const headHalo = document.getElementById('headHalo')
+      const totalLen = progressPath.getTotalLength()
+      progressPath.style.strokeDasharray = totalLen
+      progressPath.style.strokeDashoffset = totalLen
+
+      let curr = 0 // displayed progress 0..1 (soft-interpolated)
+      let target = 0 // target progress 0..1
+      let manual = false // true once setSplashProgress is called
+      let lastTs = 0
+      let sparks = []
+      let borderRafId = null
+
+      // Demo auto-fill (used only until the app calls setSplashProgress):
+      // fill, hold, fade out, repeat — so the effect is visible on loop.
+      let demoStart = 0
+      const DEMO_FILL = 5200
+      const DEMO_HOLD = 1400
+      const DEMO_FADE = 700
+      const DEMO_CYCLE = DEMO_FILL + DEMO_HOLD + DEMO_FADE
+
+      function spawnSparks(x, y, n) {
+        for (let i = 0; i < n; i++) {
+          const ang = Math.random() * Math.PI * 2
+          const spd = 0.4 + Math.random() * 1.3
+          const c = document.createElementNS(SVGNS, 'circle')
+          c.setAttribute('r', (0.6 + Math.random() * 1.1).toFixed(2))
+          c.setAttribute('fill', '#ffffff')
+          c.setAttribute('filter', 'url(#sparkGlow)')
+          sparkLayer.appendChild(c)
+          sparks.push({
+            el: c, x, y,
+            vx: Math.cos(ang) * spd,
+            vy: Math.sin(ang) * spd - 0.3,
+            life: 1, decay: 0.012 + Math.random() * 0.02,
+          })
+        }
+        if (sparks.length > 120) {
+          const extra = sparks.splice(0, sparks.length - 120)
+          extra.forEach((s) => s.el.remove())
+        }
+      }
+
+      function borderFrame(ts) {
+        if (!lastTs) lastTs = ts
+        const dt = Math.min(50, ts - lastTs)
+        lastTs = ts
+
+        // Demo target curve (disabled once manual progress is supplied)
+        if (!manual) {
+          if (!demoStart) demoStart = ts
+          const t = (ts - demoStart) % DEMO_CYCLE
+          if (t < DEMO_FILL) {
+            target = easeInOut(t / DEMO_FILL)
+            document.getElementById('hexBorder').style.opacity = '1'
+          } else if (t < DEMO_FILL + DEMO_HOLD) {
+            target = 1
+          } else {
+            const f = (t - DEMO_FILL - DEMO_HOLD) / DEMO_FADE
+            document.getElementById('hexBorder').style.opacity = (1 - f).toFixed(3)
+            if (f >= 0.99) { curr = 0; target = 0 }
+          }
+        }
+
+        // Soft interpolation toward the target
+        const prev = curr
+        curr += (target - curr) * Math.min(1, dt * 0.006)
+        if (curr < 0) curr = 0
+        if (curr > 1) curr = 1
+
+        const drawn = totalLen * curr
+        progressPath.style.strokeDashoffset = totalLen - drawn
+
+        // Leading head + sparks (only while actively filling)
+        if (curr > 0.001 && curr < 0.999) {
+          const pt = progressPath.getPointAtLength(drawn)
+          headDot.setAttribute('cx', pt.x); headDot.setAttribute('cy', pt.y)
+          headHalo.setAttribute('cx', pt.x); headHalo.setAttribute('cy', pt.y)
+          headDot.setAttribute('opacity', '1')
+          headHalo.setAttribute('opacity', '0.5')
+          const speed = (curr - prev)
+          if (speed > 0.0002) spawnSparks(pt.x, pt.y, speed > 0.004 ? 3 : 1)
+        } else {
+          headDot.setAttribute('opacity', '0')
+          headHalo.setAttribute('opacity', '0')
+        }
+
+        // Advance + retire sparks
+        for (let i = sparks.length - 1; i >= 0; i--) {
+          const s = sparks[i]
+          s.x += s.vx; s.y += s.vy; s.vy += 0.03; s.life -= s.decay
+          if (s.life <= 0) { s.el.remove(); sparks.splice(i, 1); continue }
+          s.el.setAttribute('cx', s.x.toFixed(2))
+          s.el.setAttribute('cy', s.y.toFixed(2))
+          s.el.setAttribute('opacity', s.life.toFixed(3))
+        }
+
+        borderRafId = requestAnimationFrame(borderFrame)
+      }
+
+      /* ---------- Boot ---------- */
+      function startSplashAnimation() {
+        if (rafId) cancelAnimationFrame(rafId)
+        rafId = null
+        idx = 0; fromA = 0; toA = SEQ[0]; segStart = null; holding = false; theta = 0
+        applyFlip()
+        document.body.classList.remove('phase-slide', 'phase-zoom')
+        void document.body.offsetWidth
+        requestAnimationFrame(() => document.body.classList.add('phase-slide'))
+        setTimeout(() => document.body.classList.add('phase-zoom'), SLIDE_MS + 150)
+        setTimeout(() => { rafId = requestAnimationFrame(flipFrame) }, SLIDE_MS + 150 + ZOOM_MS)
+
+        if (!borderRafId) {
+          lastTs = 0; demoStart = 0
+          borderRafId = requestAnimationFrame(borderFrame)
+        }
+      }
+
+      // Drive the border from real load progress (0..1). Soft-interpolated.
+      window.setSplashProgress = (p) => {
+        manual = true
+        document.getElementById('hexBorder').style.opacity = '1'
+        target = Math.max(0, Math.min(1, p))
+      }
+
+      // Stop the flip and settle on the logo; fill the border to 100%.
+      window.stopSplashLoop = () => {
+        if (rafId) cancelAnimationFrame(rafId)
+        rafId = null
+        theta = 180
+        applyFlip()
+        window.setSplashProgress(1)
+      }
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', startSplashAnimation)
+      } else {
+        startSplashAnimation()
+      }
+
       window.setSplashStatus = (text, busy = true) => {
         const el = document.getElementById('status')
         if (!el) return
