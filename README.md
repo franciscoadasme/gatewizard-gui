@@ -24,7 +24,12 @@ The app uses the **[GateWizard API](https://github.com/maurobedoya/gatewizard)**
 
 Download the installer for your platform from [Releases](https://github.com/franciscoadasme/gatewizard-gui/releases).
 
-**First launch** downloads Python packages in the background (several minutes). Keep the splash screen open — progress is shown there. Logs: `%APPDATA%\gatewizard-gui\runtime-install.log` (Windows) or `~/.config/gatewizard-gui/runtime-install.log` (Linux).
+**First launch** downloads Python packages in the background (several minutes). Keep the splash screen open — progress is shown there.
+
+Install logs:
+- **Windows:** `%APPDATA%\gatewizard-gui\runtime-install.log`
+- **Linux / WSL:** `~/.config/gatewizard-gui/runtime-install.log`
+- **macOS:** `~/Library/gatewizard-gui/runtime-install.log`
 
 ### Windows
 
@@ -51,11 +56,69 @@ Do **not** run `gatewizard` in the terminal — that is the Python API CLI, not 
 
 ### macOS
 
-1. Open the `.dmg`, drag **`gatewizard-gui-mac.app`** to **Applications**
-2. Open from **Applications** (not from the DMG)
-3. If macOS blocks it: `xattr -cr /Applications/gatewizard-gui-mac.app`
+GateWizard releases from GitHub are **not Apple-notarized** yet. macOS may block the app the first time — that is normal for unsigned downloads.
+
+#### Install
+
+1. Download the `.dmg` for your Mac from [Releases](https://github.com/franciscoadasme/gatewizard-gui/releases) (Apple Silicon: `*-mac-arm64.dmg`).
+2. **Double-click** the `.dmg` to open it.
+3. **Drag** `gatewizard-gui-mac.app` into **Applications**.
+4. **Eject** the disk image.
+5. Open **Applications** and launch **gatewizard-gui-mac** (do not run the app from inside the `.dmg`).
+
+#### If macOS says it cannot verify the app
+
+You may see a dialog like *“Apple could not verify that gatewizard-gui-mac is free of malware”*.
+
+**Recommended (works on most Macs):**
+
+1. Try to open the app once (it will be blocked).
+2. Open **System Settings → Privacy & Security**.
+3. Scroll down and click **Open Anyway** next to the GateWizard message.
+4. Confirm **Open** in the next dialog.
+5. Launch the app again from **Applications**.
+
+**Alternatives:**
+
+- **Right-click** `gatewizard-gui-mac.app` → **Open** → **Open** (first launch only).
+- Terminal (removes the “downloaded from internet” quarantine flag):
+  ```bash
+  xattr -cr /Applications/gatewizard-gui-mac.app
+  ```
+
+Do **not** click **Move to Trash** in the Gatekeeper dialog — that deletes the app.
+
+#### First launch
+
+Wait on the splash screen until the main window appears (first run often **5–15 minutes** while Python packages install). Progress text appears below the logo.
 
 Update the API later from **Grimoire → Dependency Versions → Check for updates**.
+
+#### Troubleshooting: `pip upgrade (tools) failed` / SSL not available
+
+If the log shows **`SSL module is not available`** or **`libcrypto.3.dylib (not a mach-o file)`**, the embedded Python environment under `~/Library/gatewizard-gui/mamba-env` is **corrupted** — this is **not** a Homebrew issue. GateWizard uses its own conda Python, separate from anything you installed elsewhere.
+
+**Fix (recommended):**
+
+1. Quit GateWizard completely.
+2. In Terminal:
+   ```bash
+   rm -rf ~/Library/gatewizard-gui/mamba-env
+   rm -f ~/Library/gatewizard-gui/runtime-state.json
+   ```
+3. Relaunch **gatewizard-gui-mac** from **Applications** and wait for the splash screen to finish (the runtime reinstalls from scratch).
+
+**If it happens again:** exclude `~/Library/gatewizard-gui` from **iCloud Desktop & Documents** sync — iCloud can corrupt binary libraries inside `mamba-env`.
+
+**Verify after reinstall:**
+
+```bash
+~/Library/gatewizard-gui/mamba-env/bin/python -c "import ssl; print(ssl.OPENSSL_VERSION)"
+```
+
+You should see a line starting with `OpenSSL` (not an `ImportError`).
+
+Newer app versions detect broken SSL on launch and remove the corrupted environment automatically before reinstalling.
 
 ## Dependencies
 

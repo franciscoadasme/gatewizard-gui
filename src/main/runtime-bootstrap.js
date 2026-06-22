@@ -81,12 +81,15 @@ async function rewriteCondaPrefixInTree(rootDir, oldPrefix, newPrefix) {
       continue
     }
     if (stat.size > 5 * 1024 * 1024) continue
-    let text
+    let buf
     try {
-      text = await fs.readFile(full, 'utf8')
+      buf = await fs.readFile(full)
     } catch {
       continue
     }
+    // Never rewrite binaries (.dylib, .so, etc.) — UTF-8 round-trip corrupts them.
+    if (buf.includes(0)) continue
+    const text = buf.toString('utf8')
     if (!text.includes(oldPrefix)) continue
     await fs.writeFile(full, text.split(oldPrefix).join(newPrefix), 'utf8')
   }
@@ -141,7 +144,7 @@ function getCondaOpenmmGpuPackages() {
 }
 
 function getCondaPackages() {
-  const pkgs = [`python=${PYTHON_SPEC}`, 'pip']
+  const pkgs = [`python=${PYTHON_SPEC}`, 'pip', 'openssl']
   // AmberTools is not published for win-64 on conda-forge; use WSL/Linux for tleap workflows.
   if (process.platform !== 'win32') {
     pkgs.push('ambertools', 'git')
@@ -161,11 +164,19 @@ async function appendRuntimeLog(text) {
 
 /** Hide console windows on Windows; pipe output to the install log. */
 function getSubprocessOptions(runtimePrefix, extraEnv = {}) {
+  const env = { ...process.env, ...extraEnv }
+  if (runtimePrefix) {
+    env.CONDA_PREFIX = runtimePrefix
+  }
+  // Homebrew / user shell PYTHONPATH can inject incompatible ssl or urllib3 into pip.
+  delete env.PYTHONPATH
+  delete env.PYTHONHOME
+  delete env.PYTHONUSERBASE
   return {
     encoding: 'utf-8',
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, CONDA_PREFIX: runtimePrefix, ...extraEnv }
+    env
   }
 }
 
@@ -176,6 +187,72 @@ function attachOutputLogging(child) {
   child.stderr?.on('data', (chunk) => {
     void appendRuntimeLog(chunk.toString())
   })
+}
+
+function probePythonSsl(pyPath, runtimePrefix) {
+  const result = spawnSync(
+    pyPath,
+    ['-c', 'import ssl; print(ssl.OPENSSL_VERSION)'],
+    getSubprocessOptions(runtimePrefix)
+  )
+  const combined = `${result.stdout || ''}${result.stderr || ''}`
+  return (
+    result.status === 0 &&
+    String(result.stdout || '').trim().length > 0 &&
+    !combined.includes('SSL module is not available') &&
+    !combined.includes('not a mach-o file')
+  )
+}
+
+async function removeCorruptedRuntime(onStatus) {
+  const envPath = getDefaultRuntimePrefix()
+  const statePath = getStatePath()
+  onStatus('Removing corrupted Python environment (will reinstall on next step)…')
+  await appendRuntimeLog(`\n[repair] Removing corrupted runtime at ${envPath}\n`)
+  await fs.rm(envPath, { recursive: true, force: true })
+  await fs.rm(statePath, { force: true })
+  cachedLaunchPython = null
+}
+
+/**
+ * Verify embedded Python can use HTTPS; repair openssl or wipe env if libraries are corrupt.
+ * @returns {Promise<boolean>} false when the env was removed and must be recreated
+ */
+async function ensurePythonSsl(pyPath, runtimePrefix, micromambaDest, mmEnv, onStatus) {
+  if (probePythonSsl(pyPath, runtimePrefix)) return true
+
+  await appendRuntimeLog('\n[ssl] Python SSL probe failed; attempting conda openssl repair\n')
+  onStatus('Repairing Python SSL (OpenSSL)…')
+  try {
+    await runProcess(
+      micromambaDest,
+      ['install', '-p', runtimePrefix, '-c', 'conda-forge', 'openssl', '-y'],
+      { env: mmEnv }
+    )
+  } catch (err) {
+    await appendRuntimeLog(`[ssl] openssl conda install failed: ${err.message}\n`)
+  }
+
+  if (probePythonSsl(pyPath, runtimePrefix)) return true
+
+  await removeCorruptedRuntime(onStatus)
+  return false
+}
+
+function formatPipSslHint(output) {
+  if (
+    !output.includes('SSL module is not available') &&
+    !output.includes('ssl support is missing')
+  ) {
+    return ''
+  }
+  const root = getGatewizardDataRoot()
+  return (
+    '\n\nPython SSL/OpenSSL in the embedded environment is broken (often after a bad ' +
+    'migration or iCloud sync of ~/Library/gatewizard-gui).\n' +
+    `Quit GateWizard, then run: rm -rf "${root}/mamba-env" and relaunch the app.\n` +
+    'If it persists, exclude ~/Library/gatewizard-gui from iCloud Desktop & Documents sync.'
+  )
 }
 
 /**
@@ -199,7 +276,8 @@ async function runPip(pyPath, pipArgs, runtimePrefix, options) {
   if (result.status !== 0) {
     const logPath = getRuntimeInstallLogPath()
     const tail = output.trim().slice(-3000)
-    const message = `${label} failed.\nLog: ${logPath}${tail ? `\n\n${tail}` : ''}`
+    const sslHint = formatPipSslHint(output)
+    const message = `${label} failed.\nLog: ${logPath}${tail ? `\n\n${tail}` : ''}${sslHint}`
     if (required) {
       throw new Error(message)
     }
@@ -446,17 +524,25 @@ export async function ensureMambaRuntime(options) {
     }
   }
 
-  const pyPath = await findPythonInPrefix(runtimePrefix)
-
-  const condaOk = pyPath && state.python === PYTHON_SPEC && state.micromambaTag === MICROMAMBA_TAG
-
-  const envReady = condaOk && state.requirementsHash === requirementsHash
-
   const mambaRoot = getMambaRoot()
   const mmEnv = {
     ...process.env,
     MAMBA_ROOT_PREFIX: mambaRoot
   }
+
+  let pyPath = await findPythonInPrefix(runtimePrefix)
+  if (pyPath) {
+    const micromambaDest = await ensureMicromambaBinary(onStatus)
+    const sslOk = await ensurePythonSsl(pyPath, runtimePrefix, micromambaDest, mmEnv, onStatus)
+    if (!sslOk) {
+      pyPath = null
+      state = {}
+    }
+  }
+
+  const condaOk = pyPath && state.python === PYTHON_SPEC && state.micromambaTag === MICROMAMBA_TAG
+
+  const envReady = condaOk && state.requirementsHash === requirementsHash
 
   if (envReady) {
     if (process.platform !== 'win32' && state.openmmCondaRev !== OPENMM_CONDA_REV) {
