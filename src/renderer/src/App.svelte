@@ -7,7 +7,7 @@
   import WindowResizeHandles from './components/WindowResizeHandles.svelte'
   import { getDependencyVersions, getProjectStatus } from './lib/backendApi'
   import pkg from '../../../package.json'
-  import windowIcon from '../../../resources/window_icon.png'
+  import { getAppWindowIconUrl, defaultAppTheme } from '../../shared/brand.js'
   import {
     analysisStatus,
     builderStatus,
@@ -17,6 +17,8 @@
     preparationStatus,
     visualizeStatus
   } from './lib/pageStatus.svelte.js'
+
+  const windowIcon = getAppWindowIconUrl(defaultAppTheme)
 
   const pageModules = import.meta.glob('./pages/*.svelte', { eager: true })
 

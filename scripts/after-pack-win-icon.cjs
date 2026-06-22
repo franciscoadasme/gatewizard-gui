@@ -17,6 +17,7 @@ module.exports = async function afterPack(context) {
   const exeName = `${context.packager.appInfo.productFilename}.exe`
   const exePath = path.join(context.appOutDir, exeName)
   const iconPath = path.join(context.packager.info.projectDir, 'build', 'icon.ico')
+  // Generated from resources/brand/manifest.mjs → packaging.png via npm run sync:icons
 
   if (!fs.existsSync(iconPath)) {
     throw new Error(`Missing ${iconPath}. Run npm run sync:icons before packaging.`)
