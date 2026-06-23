@@ -2723,9 +2723,15 @@ def get_structure(payload: StructureRequest) -> dict:
     except mda.exceptions.NoDataError:
         data["bonds"] = []
     if payload.needs_secondary_structure:
-        data["residues"] = get_residues(
+        atom_indices = {int(i) for i in atoms.indices}
+        all_residues = get_residues(
             u, needs_secondary_structure=True, source_path=payload.path
         )
+        data["residues"] = [
+            r
+            for r in all_residues
+            if r.get("ca_index") is not None and int(r["ca_index"]) in atom_indices
+        ]
 
     return data
 
@@ -2750,9 +2756,15 @@ def detect_molecules(payload: DetectMoleculesRequest) -> list[dict]:
             atoms=get_atoms(atoms),
         )
         if name == "protein":
-            data["residues"] = get_residues(
-                atoms, needs_secondary_structure=True, source_path=payload.path
+            protein_indices = {int(i) for i in atoms.indices}
+            all_residues = get_residues(
+                u, needs_secondary_structure=True, source_path=payload.path
             )
+            data["residues"] = [
+                r
+                for r in all_residues
+                if r.get("ca_index") is not None and int(r["ca_index"]) in protein_indices
+            ]
         datalist.append(data)
         idxs.extend(atoms.indices)
 

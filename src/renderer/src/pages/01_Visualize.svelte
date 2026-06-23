@@ -6,6 +6,7 @@
     CameraRig,
     Canvas,
     Cartoon,
+    AtomGlowLights,
     MeasureOverlay,
     Tube,
     VdwSpheres
@@ -14,7 +15,7 @@
   import { mainViewerControls } from '../components/viewer/Canvas.svelte'
   import Axes from '../components/icons/Axes.svelte'
   import AxesLinesIcon from '../components/icons/AxesLines.svelte'
-  import { COLOR_PALETTE, cpkScheme, defaultColorScheme, ssScheme } from '../lib/colorSchemes.js'
+  import { COLOR_PALETTE, cpkScheme, defaultColorScheme, ssScheme, DEFAULT_VIEW_MATERIAL, isIllustrativeMaterial, isGlowingMaterial, resolveGlowingMaterial, ILLUSTRATIVE_MATERIAL_DEFAULTS, GLOWING_MATERIAL_DEFAULTS } from '../lib/colorSchemes.js'
   import { getCameraForAtoms } from '../lib/viewer/base.js'
   import { pickAtomFromViews } from '../lib/viewer/picking.js'
   import { measureDistance, measureAngle, measureDihedral } from '../lib/viewer/measure.js'
@@ -49,11 +50,16 @@
   import Empty from '../components/ui/Empty.svelte'
   import Plus from '../components/icons/Plus.svelte'
   import ResetIcon from '../components/icons/Reset.svelte'
+  import Sun from '../components/icons/Sun.svelte'
   import Spinner from '../components/ui/Spinner.svelte'
   import ViewItem, { skipNextPathFetch } from '../components/ViewItem.svelte'
+  import ViewerSettingsDialog from '../components/ViewerSettingsDialog.svelte'
   import RadialMenu from '../components/RadialMenu.svelte'
   import TransformGizmo from '../components/TransformGizmo.svelte'
   import { visualizeStatus, logEvent } from '../lib/pageStatus.svelte.js'
+  import { syncIllustrativeSceneLighting } from '../lib/illustrativeSceneLighting.svelte.js'
+  import { themeState } from '../lib/theme.svelte.js'
+  import { themeBackgroundHex, viewerSettings } from '../lib/viewerSettings.svelte.js'
 
   /**
    * Svelte action for range inputs: sets the initial value on mount and blocks Svelte's
@@ -105,6 +111,14 @@
   // state
   let axesLinesVisible = $state(false)
   let axesVisible = $state(true)
+  let sceneSettingsOpen = $state(false)
+  const sceneBackgroundStyle = $derived.by(() => {
+    const theme = themeState.current
+    const mode = viewerSettings.backgroundMode
+    const custom = viewerSettings.customBackgroundHex
+    const hex = mode === 'custom' ? custom : themeBackgroundHex(theme)
+    return `background-color: ${hex}`
+  })
   /** @type {ViewerFraming | null} */
   let camera = $state(null)
   let loadingPDB = $state(false)
@@ -177,6 +191,16 @@
     visualizeStatus.fileName = filePath ? (String(filePath).split(/[/\\]/).pop() ?? '') : ''
     visualizeStatus.viewCount = views.length
   })
+
+  $effect(() => {
+    const needsFlatLighting = views.some(
+      (v) =>
+        v.visible &&
+        isIllustrativeMaterial(v.material) &&
+        v.material.useIllustrativeLighting !== false
+    )
+    syncIllustrativeSceneLighting(needsFlatLighting)
+  })
   let selectMenuOpen = $state(false)
   const EDIT_LEVEL_LABEL = { atom: 'Atom', residue: 'Res', chain: 'Chain', molecule: 'Mol.' }
   /** @type {'atom'|'residue'|'chain'|'molecule'} */
@@ -191,6 +215,13 @@
   let selectedGroupIndices = $state(new Set())
   /** @type {{ name:string, element:string, index:number, res_name:string, res_id:number, chain_id:string } | null} */
   let selectedAtom = $state(null)
+
+  /** Atoms that receive bulb lights when Glowing material filter is “highlighted”. */
+  const glowHighlightIndices = $derived.by(() => {
+    const indices = new Set(selectedGroupIndices)
+    for (const i of editHoverGroupIndices) indices.add(i)
+    return indices
+  })
 
   const editSelectedAtoms = $derived(
     editMode && selectedGroupIndices.size > 0 && structure
@@ -435,7 +466,8 @@
 
   async function onAutoGenerateViews() {
     const data = await detectMolecules(filePath)
-    views.length = 0
+    /** @type {View[]} */
+    const next = []
     for (const [i, struc] of data.entries()) {
       const representation = struc.selection === 'protein' ? { type: 'cartoon' } : { type: 'vdw' }
       let colorScheme
@@ -451,15 +483,15 @@
       } else {
         colorScheme = { name: 'cpk', resolver: cpkScheme() }
       }
-      views.push({
+      next.push({
         id: crypto.randomUUID(),
         selection: struc.selection,
         baseSelection: struc.selection,
         representation,
         path: filePath,
         atoms: struc.atoms,
-        bonds: struc.bonds,
-        residues: struc.residues,
+        bonds: struc.bonds ?? [],
+        residues: struc.residues ?? null,
         visible: struc.selection !== 'water',
         colorScheme,
         helixWidth: 1.0,
@@ -470,14 +502,17 @@
         atomScale: 1.0,
         bondScale: 1.0,
         quality: 3,
-        material: { metalness: 0.08, roughness: 0.48, emissiveIntensity: 0.0 }
+        material: { ...DEFAULT_VIEW_MATERIAL },
+        _prefetched: true
       })
     }
+    views = next
+    reframeCameraOnAtoms(collectVisibleViewAtoms(next))
     logEvent(
       'detail',
       'view',
       'Auto-generated views',
-      `${views.length} view(s) from detected molecules`
+      `${next.length} view(s) from detected molecules`
     )
   }
 
@@ -501,30 +536,33 @@
   /** @param {Representation} representation */
   function addView(selection = 'all', representation = { type: 'vdw' }) {
     logEvent('detail', 'view', `Added view: ${selection}`, `Representation: ${representation.type}`)
-    views.push({
-      id: crypto.randomUUID(),
-      selection,
-      baseSelection: selection,
-      representation,
-      path: filePath,
-      atoms: structure?.atoms,
-      bonds: structure?.bonds,
-      residues: structure?.residues,
-      visible: true,
-      colorScheme: {
-        name: 'cpk',
-        resolver: cpkScheme()
-      },
-      helixWidth: 1.0,
-      sheetWidth: 0.875,
-      coilWidth: 0.125,
-      ssColors: null,
-      tubeRadius: 0.9,
-      atomScale: 1.0,
-      bondScale: 1.0,
-      quality: 3,
-      material: { metalness: 0.08, roughness: 0.48, emissiveIntensity: 0.0 }
-    })
+    views = [
+      ...views,
+      {
+        id: crypto.randomUUID(),
+        selection,
+        baseSelection: selection,
+        representation,
+        path: filePath,
+        atoms: structure?.atoms,
+        bonds: structure?.bonds,
+        residues: structure?.residues,
+        visible: true,
+        colorScheme: {
+          name: 'cpk',
+          resolver: cpkScheme()
+        },
+        helixWidth: 1.0,
+        sheetWidth: 0.875,
+        coilWidth: 0.125,
+        ssColors: null,
+        tubeRadius: 0.9,
+        atomScale: 1.0,
+        bondScale: 1.0,
+        quality: 3,
+        material: { ...DEFAULT_VIEW_MATERIAL }
+      }
+    ]
   }
 
   /** @param {Atom[] | undefined | null} atoms */
@@ -539,6 +577,54 @@
       framingGeneration: (camera?.framingGeneration ?? 0) + 1,
       poseResetGeneration: camera?.poseResetGeneration ?? 0
     }
+    syncControlsTarget(atoms)
+  }
+
+  /** @param {Atom[] | undefined | null} atoms */
+  function syncControlsTarget(atoms) {
+    if (!mainViewerControls.current || !atoms?.length) return
+    let cx = 0
+    let cy = 0
+    let cz = 0
+    for (const a of atoms) {
+      cx += a.x
+      cy += a.y
+      cz += a.z
+    }
+    const n = atoms.length
+    mainViewerControls.current.target.set(cx / n, cy / n, cz / n)
+  }
+
+  /**
+   * @param {View[]} [viewList]
+   * @returns {Atom[]}
+   */
+  function collectVisibleViewAtoms(viewList = views) {
+    /** @type {Atom[]} */
+    const out = []
+    const seen = new Set()
+    for (const v of viewList) {
+      if (!v.visible) continue
+      for (const a of v.atoms ?? []) {
+        if (seen.has(a.index)) continue
+        seen.add(a.index)
+        out.push(a)
+      }
+    }
+    return out.length ? out : (structure?.atoms ?? [])
+  }
+
+  /** Reframe camera to *atoms* and reset orbit pose (e.g. after auto-generate). @param {Atom[] | undefined | null} atoms */
+  function reframeCameraOnAtoms(atoms) {
+    const base = getCameraForAtoms(atoms)
+    if (!base) return
+    camera = {
+      ...base,
+      framingZoom: 1,
+      framingGeneration: (camera?.framingGeneration ?? 0) + 1,
+      poseResetGeneration: (camera?.poseResetGeneration ?? 0) + 1
+    }
+    syncControlsTarget(atoms)
   }
 
   /** @param {string} path */
@@ -558,7 +644,7 @@
         `Opened ${String(structure.path).split(/[/\\]/).pop()}`,
         structure.path
       )
-      views.length = 0
+      views = []
       measurements = []
       measurePicks = []
       atomLabels = []
@@ -1016,7 +1102,7 @@
               atomScale: 1.0,
               bondScale: 1.0,
               quality: 3,
-              material: { metalness: 0.08, roughness: 0.48, emissiveIntensity: 0.0 }
+              material: { ...DEFAULT_VIEW_MATERIAL }
             })
           }
         }
@@ -1717,7 +1803,7 @@
       atomScale: 1.1,
       bondScale: 1.0,
       quality: 3,
-      material: { metalness: 0.08, roughness: 0.48, emissiveIntensity: 0.25 }
+      material: { ...DEFAULT_VIEW_MATERIAL, emissiveIntensity: 0.25 }
     })
   }
 
@@ -1850,7 +1936,8 @@
 <div class="flex min-w-0 flex-1 flex-col">
   <div class="flex min-h-0 min-w-0 flex-1">
     <div
-      class="relative min-h-0 min-w-0 flex-1 bg-black"
+      class="relative min-h-0 min-w-0 flex-1"
+      style={sceneBackgroundStyle}
       bind:this={viewerEl}
       bind:clientWidth={canvasWidth}
       bind:clientHeight={canvasHeight}
@@ -1863,6 +1950,7 @@
         >
           <CameraRig framing={camera} />
           {#each views.filter((v) => v.visible) as view (view.id)}
+            {#key view.representation.type}
             {#if view.representation.type === 'ball-stick'}
               <BallStick
                 atoms={viewAtoms(view)}
@@ -1874,12 +1962,17 @@
                 metalness={view.material?.metalness ?? 0.08}
                 roughness={view.material?.roughness ?? 0.48}
                 emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
+                glowBulb={isGlowingMaterial(view.material)}
+                illustrative={isIllustrativeMaterial(view.material)}
+                outlinesEnabled={view.material?.outlinesEnabled ?? ILLUSTRATIVE_MATERIAL_DEFAULTS.outlinesEnabled}
+                outlineColor={view.material?.outlineColor ?? ILLUSTRATIVE_MATERIAL_DEFAULTS.outlineColor}
+                outlineWidth={view.material?.outlineWidth ?? ILLUSTRATIVE_MATERIAL_DEFAULTS.outlineWidth}
                 highlightIndices={editHoverGroupIndices}
               />
             {:else if view.representation.type === 'cartoon'}
               <Cartoon
                 atoms={viewAtoms(view)}
-                residues={view.residues}
+                residues={view.residues ?? []}
                 getColor={view.colorScheme.resolver}
                 helixWidth={view.helixWidth ?? 1.0}
                 sheetWidth={view.sheetWidth ?? 0.875}
@@ -1889,12 +1982,16 @@
                 metalness={view.material?.metalness ?? 0.08}
                 roughness={view.material?.roughness ?? 0.48}
                 emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
+                illustrative={isIllustrativeMaterial(view.material)}
+                outlinesEnabled={view.material?.outlinesEnabled ?? ILLUSTRATIVE_MATERIAL_DEFAULTS.outlinesEnabled}
+                outlineColor={view.material?.outlineColor ?? ILLUSTRATIVE_MATERIAL_DEFAULTS.outlineColor}
+                outlineWidth={view.material?.outlineWidth ?? ILLUSTRATIVE_MATERIAL_DEFAULTS.outlineWidth}
                 highlightIndices={editHoverGroupIndices}
               />
             {:else if view.representation.type === 'tube'}
               <Tube
                 atoms={viewAtoms(view)}
-                residues={view.residues}
+                residues={view.residues ?? []}
                 getColor={view.colorScheme.resolver}
                 tubeRadius={view.tubeRadius ?? 0.9}
                 ssColors={view.ssColors}
@@ -1902,6 +1999,10 @@
                 metalness={view.material?.metalness ?? 0.08}
                 roughness={view.material?.roughness ?? 0.48}
                 emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
+                illustrative={isIllustrativeMaterial(view.material)}
+                outlinesEnabled={view.material?.outlinesEnabled ?? ILLUSTRATIVE_MATERIAL_DEFAULTS.outlinesEnabled}
+                outlineColor={view.material?.outlineColor ?? ILLUSTRATIVE_MATERIAL_DEFAULTS.outlineColor}
+                outlineWidth={view.material?.outlineWidth ?? ILLUSTRATIVE_MATERIAL_DEFAULTS.outlineWidth}
                 highlightIndices={editHoverGroupIndices}
               />
             {:else if view.representation.type === 'vdw'}
@@ -1913,7 +2014,25 @@
                 metalness={view.material?.metalness ?? 0.12}
                 roughness={view.material?.roughness ?? 0.45}
                 emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
+                glowBulb={isGlowingMaterial(view.material)}
+                illustrative={isIllustrativeMaterial(view.material)}
+                outlinesEnabled={view.material?.outlinesEnabled ?? ILLUSTRATIVE_MATERIAL_DEFAULTS.outlinesEnabled}
+                outlineColor={view.material?.outlineColor ?? ILLUSTRATIVE_MATERIAL_DEFAULTS.outlineColor}
+                outlineWidth={view.material?.outlineWidth ?? ILLUSTRATIVE_MATERIAL_DEFAULTS.outlineWidth}
                 highlightIndices={editHoverGroupIndices}
+              />
+            {/if}
+            {/key}
+            {#if isGlowingMaterial(view.material) && resolveGlowingMaterial(view.material).glowEmitLight !== false}
+              <AtomGlowLights
+                atoms={viewAtoms(view)}
+                getColor={view.colorScheme.resolver}
+                intensity={resolveGlowingMaterial(view.material).glowLightIntensity ?? GLOWING_MATERIAL_DEFAULTS.glowLightIntensity}
+                distance={resolveGlowingMaterial(view.material).glowLightDistance ?? GLOWING_MATERIAL_DEFAULTS.glowLightDistance}
+                decay={resolveGlowingMaterial(view.material).glowLightDecay ?? GLOWING_MATERIAL_DEFAULTS.glowLightDecay}
+                maxLights={resolveGlowingMaterial(view.material).glowMaxLights ?? GLOWING_MATERIAL_DEFAULTS.glowMaxLights}
+                atomFilter={resolveGlowingMaterial(view.material).glowAtomFilter ?? GLOWING_MATERIAL_DEFAULTS.glowAtomFilter}
+                highlightIndices={glowHighlightIndices}
               />
             {/if}
           {/each}
@@ -2058,8 +2177,8 @@
       onpointerdown={_startRightResize}
     ></div>
 
-    <div class="flex shrink-0 flex-col border-l border-neutral-800" style="width:{rightW}px">
-      <h2 class="border-b border-neutral-800 p-2 text-xs font-semibold">Representations</h2>
+    <div class="flex shrink-0 flex-col border-l border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950" style="width:{rightW}px">
+      <h2 class="border-b border-neutral-200 p-2 text-xs font-semibold text-neutral-800 dark:border-neutral-800 dark:text-neutral-100">Representations</h2>
       {#if views.length > 0 || filePath}
         <div class="min-h-0 flex-1 overflow-y-auto">
           {#each views as view, i (view.id)}
@@ -2070,11 +2189,11 @@
             />
           {/each}
         </div>
-        <div class="flex gap-1 border-t border-neutral-800 p-2">
+        <div class="flex gap-1 border-t border-neutral-200 p-2 dark:border-neutral-800">
           {#snippet toolbarBtn(title, onclick, Icon, className)}
             <button
               type="button"
-              class="flex size-7 items-center justify-center rounded-lg border border-neutral-800 bg-neutral-900 transition-colors hover:border-neutral-700 hover:bg-neutral-800 active:translate-y-0.5"
+              class="flex size-7 items-center justify-center rounded-lg border border-neutral-200 bg-neutral-100 transition-colors hover:border-neutral-300 hover:bg-neutral-200 active:translate-y-0.5 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:border-neutral-700 dark:hover:bg-neutral-800"
               aria-label={title}
               {title}
               {onclick}
@@ -2083,18 +2202,18 @@
             </button>
           {/snippet}
 
-          {@render toolbarBtn('Add view', () => addView(), Plus, 'size-3 fill-white')}
+          {@render toolbarBtn('Add view', () => addView(), Plus, 'size-3 fill-neutral-800 dark:fill-white')}
           {@render toolbarBtn(
             'Auto-generate representations',
             onAutoGenerateViews,
             DetectIcon,
-            'size-4 stroke-2 stroke-white'
+            'size-4 stroke-2 stroke-neutral-800 dark:stroke-white'
           )}
           {@render toolbarBtn(
             axesVisible ? 'Hide axes gizmo' : 'Show axes gizmo',
             () => (axesVisible = !axesVisible),
             Axes,
-            `size-4 ${axesVisible ? 'fill-white' : 'fill-neutral-500'}`
+            `size-4 ${axesVisible ? 'fill-neutral-800 dark:fill-white' : 'fill-neutral-400 dark:fill-neutral-500'}`
           )}
           {@render toolbarBtn(
             axesLinesVisible ? 'Hide axes lines' : 'Show axes lines',
@@ -2102,10 +2221,16 @@
             AxesLinesIcon,
             `size-4 stroke-2 ${axesLinesVisible ? 'opacity-100' : 'opacity-45'}`
           )}
-          {@render toolbarBtn('Reset camera', resetCamera, ResetIcon, 'size-3 fill-white')}
+          {@render toolbarBtn('Reset camera', resetCamera, ResetIcon, 'size-3 fill-neutral-800 dark:fill-white')}
+          {@render toolbarBtn(
+            'Scene rendering settings',
+            () => (sceneSettingsOpen = true),
+            Sun,
+            'size-4 stroke-2 stroke-neutral-800 dark:stroke-white'
+          )}
           <button
             type="button"
-            class="flex h-7 items-center justify-center rounded-lg border border-neutral-800 bg-neutral-900 px-1.5 text-xs text-neutral-400 transition-colors hover:border-neutral-700 hover:bg-neutral-800 active:translate-y-0.5 disabled:opacity-40"
+            class="flex h-7 items-center justify-center rounded-lg border border-neutral-200 bg-neutral-100 px-1.5 text-xs text-neutral-600 transition-colors hover:border-neutral-300 hover:bg-neutral-200 active:translate-y-0.5 disabled:opacity-40 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:border-neutral-700 dark:hover:bg-neutral-800"
             title="Save viewpoint"
             aria-label="Save viewpoint"
             onclick={onSaveViewpoint}
@@ -2113,20 +2238,20 @@
           >
           <button
             type="button"
-            class="flex h-7 items-center justify-center rounded-lg border border-neutral-800 bg-neutral-900 px-1.5 text-xs text-neutral-400 transition-colors hover:border-neutral-700 hover:bg-neutral-800 active:translate-y-0.5 disabled:opacity-40"
+            class="flex h-7 items-center justify-center rounded-lg border border-neutral-200 bg-neutral-100 px-1.5 text-xs text-neutral-600 transition-colors hover:border-neutral-300 hover:bg-neutral-200 active:translate-y-0.5 disabled:opacity-40 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:border-neutral-700 dark:hover:bg-neutral-800"
             title="Load saved viewpoint"
             aria-label="Load saved viewpoint"
             onclick={onLoadViewpoint}>VP↓</button
           >
           <!-- Measurement mode buttons -->
-          <div class="mx-0.5 h-4 w-px bg-neutral-700"></div>
+          <div class="mx-0.5 h-4 w-px bg-neutral-300 dark:bg-neutral-700"></div>
           {#snippet measureBtn(title, mode)}
             <button
               type="button"
               class="flex size-7 items-center justify-center rounded-lg border transition-colors active:translate-y-0.5
               {measureMode === mode
                 ? 'border-yellow-500 bg-yellow-500/10 text-yellow-400'
-                : 'border-neutral-800 bg-neutral-900 text-neutral-400 hover:border-neutral-700 hover:bg-neutral-800'}"
+                : 'border-neutral-200 bg-neutral-100 text-neutral-600 hover:border-neutral-300 hover:bg-neutral-200 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:border-neutral-700 dark:hover:bg-neutral-800'}"
               aria-label={title}
               {title}
               onclick={() => toggleMeasureMode(mode)}
@@ -2199,7 +2324,7 @@
           <div class="border-t border-neutral-800">
             <div class="flex items-center">
               <button
-                class="flex flex-1 items-center justify-between px-2 py-1.5 hover:bg-neutral-800/40"
+                class="flex flex-1 items-center justify-between px-2 py-1.5 hover:bg-neutral-100/80 dark:hover:bg-neutral-800/40"
                 onclick={() => (measExpanded = !measExpanded)}
               >
                 <span class="text-xs font-semibold text-neutral-300">Measurements</span>
@@ -2214,7 +2339,7 @@
             {#if measExpanded}
               <div class="max-h-40 space-y-0.5 overflow-y-auto px-1.5 pb-1.5">
                 {#each measurements as m, i (m.id)}
-                  <div class="flex flex-col rounded hover:bg-neutral-800/40">
+                  <div class="flex flex-col rounded hover:bg-neutral-100/80 dark:hover:bg-neutral-800/40">
                     <div class="flex items-center gap-1.5 px-1 py-0.5">
                       <span
                         class="shrink-0"
@@ -2417,7 +2542,7 @@
           </div>
           {#if labelsExpanded}
             <!-- Size + Color controls -->
-            <div class="flex items-center gap-1.5 border-b border-neutral-800/60 px-2 py-1">
+            <div class="flex items-center gap-1.5 border-b border-neutral-200/80 px-2 py-1 dark:border-neutral-800/60">
               <span class="text-xs text-neutral-500">Size</span>
               <input
                 type="range"
@@ -2446,7 +2571,7 @@
             {#if atomLabels.length > 0}
               <div class="max-h-32 space-y-0.5 overflow-y-auto px-1.5 pb-1.5">
                 {#each atomLabels as l, j (l.id)}
-                  <div class="flex flex-col rounded hover:bg-neutral-800/40">
+                  <div class="flex flex-col rounded hover:bg-neutral-100/80 dark:hover:bg-neutral-800/40">
                     <div class="flex items-center gap-1.5 px-1 py-0.5">
                       <span
                         class="inline-block size-2 shrink-0 rounded-full"
@@ -2552,12 +2677,12 @@
 
   <!-- Bottom toolbar -->
   <div
-    class="relative flex h-8 shrink-0 items-center gap-1 border-t border-neutral-800 bg-neutral-950 px-2 text-[11px]"
+    class="relative flex h-8 shrink-0 items-center gap-1 border-t border-neutral-200 bg-white px-2 text-[11px] dark:border-neutral-800 dark:bg-neutral-950"
   >
     <!-- Open file -->
     <button
       type="button"
-      class="flex items-center gap-1 rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-neutral-300 transition-colors hover:border-neutral-600 hover:bg-neutral-800 active:translate-y-0.5 disabled:opacity-40"
+      class="flex items-center gap-1 rounded border border-neutral-300 bg-neutral-100 px-2 py-0.5 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 active:translate-y-0.5 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
       onclick={onOpenPdb}
       disabled={loadingPDB}
       title="Open PDB file"
@@ -2575,7 +2700,7 @@
       {/if}
     </button>
     {#if filePath && !loadingPDB}
-      <span class="max-w-36 truncate font-mono text-neutral-400" title={filePath}>
+      <span class="max-w-36 truncate font-mono text-neutral-500 dark:text-neutral-400" title={filePath}>
         {filePath.split(/[/\\]/).at(-1)}
       </span>
     {/if}
@@ -2592,7 +2717,7 @@
         type="text"
         placeholder="1CRN"
         maxlength="4"
-        class="w-14 rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 font-mono text-[11px] text-neutral-200 uppercase outline-none focus:border-neutral-500"
+        class="w-14 rounded border border-neutral-300 bg-neutral-100 px-1.5 py-0.5 font-mono text-[11px] text-neutral-800 uppercase outline-none focus:border-neutral-500 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
         bind:value={pdbId}
         oninput={(e) => {
           if (/** @type {HTMLInputElement} */ (e.target).value.length > 4)
@@ -2603,13 +2728,13 @@
       />
       <button
         type="submit"
-        class="rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 text-neutral-300 transition-colors hover:border-neutral-500 hover:bg-neutral-800 disabled:opacity-40"
+        class="rounded border border-neutral-300 bg-neutral-100 px-1.5 py-0.5 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-500 dark:hover:bg-neutral-800"
         disabled={!isPdbIdValid || loadingPDB}
         title="Download PDB from RCSB">↓ PDB</button
       >
     </form>
 
-    <div class="h-4 w-px bg-neutral-700"></div>
+    <div class="h-4 w-px bg-neutral-300 dark:bg-neutral-700"></div>
 
     <!-- Edit Mode: Select dropdown (hover to open, no backdrop) -->
     <div class="relative">
@@ -2618,7 +2743,7 @@
         class="flex items-center gap-1 rounded border px-2 py-0.5 text-[11px] transition-colors disabled:opacity-40
           {editMode
           ? 'border-orange-500/60 bg-orange-500/15 text-orange-300 hover:bg-orange-500/25'
-          : 'border-neutral-700 bg-neutral-900 text-neutral-400 hover:border-neutral-600 hover:bg-neutral-800 hover:text-neutral-200'}"
+          : 'border-neutral-300 bg-neutral-100 text-neutral-600 hover:border-neutral-400 hover:bg-neutral-200 hover:text-neutral-800 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:border-neutral-600 dark:hover:bg-neutral-800 dark:hover:text-neutral-200'}"
         onpointerenter={() => {
           clearTimeout(_selectHoverTimer)
           if (filePath) selectMenuOpen = true
@@ -2638,7 +2763,7 @@
       {#if selectMenuOpen}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
-          class="absolute bottom-full left-0 z-50 mb-0.5 min-w-32 overflow-hidden rounded-md border border-neutral-700 bg-neutral-900 py-1 shadow-xl"
+          class="absolute bottom-full left-0 z-50 mb-0.5 min-w-32 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
           onpointerenter={() => clearTimeout(_selectHoverTimer)}
           onpointerleave={() => {
             _selectHoverTimer = setTimeout(() => (selectMenuOpen = false), 280)
@@ -2676,7 +2801,7 @@
           <div class="my-0.5 border-t border-neutral-800"></div>
           <button
             type="button"
-            class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-white"
+            class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-neutral-700 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800 dark:hover:text-white"
             onclick={() => {
               selectMenuOpen = false
               customSelInput = ''
@@ -2691,7 +2816,7 @@
             <div class="my-0.5 border-t border-neutral-800"></div>
             <button
               type="button"
-              class="w-full px-3 py-1.5 text-left text-xs text-neutral-400 hover:bg-neutral-800 hover:text-white"
+              class="w-full px-3 py-1.5 text-left text-xs text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-white"
               onclick={() => {
                 editMode = false
                 selectMenuOpen = false
@@ -2706,7 +2831,7 @@
     <div class="relative">
       <button
         type="button"
-        class="flex items-center gap-0.5 rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-neutral-300 transition-colors hover:border-neutral-600 hover:bg-neutral-800 disabled:opacity-40"
+        class="flex items-center gap-0.5 rounded border border-neutral-300 bg-neutral-100 px-2 py-0.5 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
         onpointerenter={() => {
           clearTimeout(_editMenuHoverTimer)
           if (filePath && !editBusy) editMenuOpen = true
@@ -2721,7 +2846,7 @@
       {#if editMenuOpen}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
-          class="absolute bottom-full left-0 z-40 mb-0.5 min-w-44 overflow-hidden rounded border border-neutral-700 bg-neutral-900 py-1 text-[11px] shadow-xl"
+          class="absolute bottom-full left-0 z-40 mb-0.5 min-w-44 overflow-hidden rounded border border-neutral-200 bg-white py-1 text-[11px] shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
           onpointerenter={() => clearTimeout(_editMenuHoverTimer)}
           onpointerleave={() => {
             _editMenuHoverTimer = setTimeout(() => (editMenuOpen = false), 280)
@@ -2787,18 +2912,18 @@
     <!-- MemPro orientation -->
     <button
       type="button"
-      class="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-neutral-300 transition-colors hover:border-neutral-600 hover:bg-neutral-800 disabled:opacity-40"
+      class="rounded border border-neutral-300 bg-neutral-100 px-2 py-0.5 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
       onclick={() => dlgMempro?.showModal()}
       disabled={!filePath || editBusy}
       title="MemPro membrane protein orientation">MemPro</button
     >
 
-    <div class="h-4 w-px bg-neutral-700"></div>
+    <div class="h-4 w-px bg-neutral-300 dark:bg-neutral-700"></div>
 
     <!-- Save PDB -->
     <button
       type="button"
-      class="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-neutral-300 transition-colors hover:border-neutral-600 hover:bg-neutral-800 disabled:opacity-40"
+      class="rounded border border-neutral-300 bg-neutral-100 px-2 py-0.5 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
       onclick={onSavePdb}
       disabled={!filePath}
       title="Save current PDB file">Save PDB</button
@@ -2807,7 +2932,7 @@
     <!-- Save Image -->
     <button
       type="button"
-      class="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-neutral-300 transition-colors hover:border-neutral-600 hover:bg-neutral-800 disabled:opacity-40"
+      class="rounded border border-neutral-300 bg-neutral-100 px-2 py-0.5 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
       onclick={onSaveImage}
       disabled={!structure}
       title="Save viewport as PNG image">Save Image</button
@@ -2818,7 +2943,7 @@
     <!-- Clear workspace -->
     <button
       type="button"
-      class="rounded border border-red-900/40 bg-neutral-900 px-2 py-0.5 text-red-400/70 transition-colors hover:border-red-700/60 hover:bg-red-900/20 hover:text-red-300 disabled:opacity-40"
+      class="rounded border border-red-300 bg-red-50 px-2 py-0.5 text-red-600 transition-colors hover:border-red-400 hover:bg-red-100 hover:text-red-700 disabled:opacity-40 dark:border-red-900/40 dark:bg-neutral-900 dark:text-red-400/70 dark:hover:border-red-700/60 dark:hover:bg-red-900/20 dark:hover:text-red-300"
       onclick={clearWorkspace}
       disabled={!structure}
       title="Clear workspace">Clear</button
@@ -2852,9 +2977,11 @@
 {/if}
 <!-- Edit dialogs -->
 
+<ViewerSettingsDialog bind:open={sceneSettingsOpen} />
+
 <dialog
   bind:this={dlgRenameChain}
-  class="rounded-lg border border-neutral-700 bg-neutral-900 p-0 text-neutral-200 shadow-2xl backdrop:bg-black/60"
+  class="rounded-lg border border-neutral-300 bg-white p-0 text-neutral-900 shadow-2xl backdrop:bg-black/60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
 >
   <form
     method="dialog"
@@ -2878,7 +3005,7 @@
           <input
             type="text"
             maxlength="1"
-            class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs uppercase ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+            class="w-20 field-input uppercase"
             bind:value={rcOldChain}
           />
         </label>
@@ -2888,7 +3015,7 @@
         <input
           type="text"
           maxlength="1"
-          class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs uppercase ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          class="w-20 field-input uppercase"
           bind:value={rcNewChain}
           required
         />
@@ -2897,7 +3024,7 @@
     <div class="mt-4 flex justify-end gap-2">
       <button
         type="button"
-        class="rounded border border-neutral-700 px-3 py-1 text-xs hover:bg-neutral-800"
+        class="dialog-btn-outline"
         onclick={() => dlgRenameChain?.close()}>Cancel</button
       >
       <button
@@ -2912,7 +3039,7 @@
 
 <dialog
   bind:this={dlgRenameRes}
-  class="rounded-lg border border-neutral-700 bg-neutral-900 p-0 text-neutral-200 shadow-2xl backdrop:bg-black/60"
+  class="rounded-lg border border-neutral-300 bg-white p-0 text-neutral-900 shadow-2xl backdrop:bg-black/60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
 >
   <form
     method="dialog"
@@ -2936,7 +3063,7 @@
           <input
             type="text"
             maxlength="1"
-            class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs uppercase ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+            class="w-20 field-input uppercase"
             bind:value={rrChain}
           />
         </label>
@@ -2944,13 +3071,13 @@
           <span class="w-24 text-neutral-400">Residue range</span>
           <input
             type="number"
-            class="w-16 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+            class="w-16 field-input"
             bind:value={rrStart}
           />
           <span class="text-neutral-500">–</span>
           <input
             type="number"
-            class="w-16 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+            class="w-16 field-input"
             bind:value={rrEnd}
           />
         </label>
@@ -2960,7 +3087,7 @@
         <input
           type="text"
           maxlength="4"
-          class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs uppercase ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          class="w-20 field-input uppercase"
           bind:value={rrNewName}
           required
         />
@@ -2969,7 +3096,7 @@
     <div class="mt-4 flex justify-end gap-2">
       <button
         type="button"
-        class="rounded border border-neutral-700 px-3 py-1 text-xs hover:bg-neutral-800"
+        class="dialog-btn-outline"
         onclick={() => dlgRenameRes?.close()}>Cancel</button
       >
       <button
@@ -2984,7 +3111,7 @@
 
 <dialog
   bind:this={dlgRenumberRes}
-  class="rounded-lg border border-neutral-700 bg-neutral-900 p-0 text-neutral-200 shadow-2xl backdrop:bg-black/60"
+  class="rounded-lg border border-neutral-300 bg-white p-0 text-neutral-900 shadow-2xl backdrop:bg-black/60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
 >
   <form
     method="dialog"
@@ -3008,7 +3135,7 @@
           <input
             type="text"
             maxlength="1"
-            class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs uppercase ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+            class="w-20 field-input uppercase"
             bind:value={rnChain}
           />
         </label>
@@ -3016,13 +3143,13 @@
           <span class="w-24 text-neutral-400">Residue range</span>
           <input
             type="number"
-            class="w-16 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+            class="w-16 field-input"
             bind:value={rnStart}
           />
           <span class="text-neutral-500">–</span>
           <input
             type="number"
-            class="w-16 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+            class="w-16 field-input"
             bind:value={rnEnd}
           />
         </label>
@@ -3031,7 +3158,7 @@
         <span class="w-24 text-neutral-400">New start</span>
         <input
           type="number"
-          class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          class="w-20 field-input"
           bind:value={rnNewStart}
           required
         />
@@ -3040,7 +3167,7 @@
     <div class="mt-4 flex justify-end gap-2">
       <button
         type="button"
-        class="rounded border border-neutral-700 px-3 py-1 text-xs hover:bg-neutral-800"
+        class="dialog-btn-outline"
         onclick={() => dlgRenumberRes?.close()}>Cancel</button
       >
       <button
@@ -3055,7 +3182,7 @@
 
 <dialog
   bind:this={dlgDeleteAtoms}
-  class="rounded-lg border border-neutral-700 bg-neutral-900 p-0 text-neutral-200 shadow-2xl backdrop:bg-black/60"
+  class="rounded-lg border border-neutral-300 bg-white p-0 text-neutral-900 shadow-2xl backdrop:bg-black/60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
 >
   <form
     method="dialog"
@@ -3071,7 +3198,7 @@
         <span class="text-neutral-400">MDAnalysis selection</span>
         <input
           type="text"
-          class="w-full rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          class="w-full field-input"
           bind:value={daSelection}
           placeholder="water"
           required
@@ -3082,7 +3209,7 @@
     <div class="mt-4 flex justify-end gap-2">
       <button
         type="button"
-        class="rounded border border-neutral-700 px-3 py-1 text-xs hover:bg-neutral-800"
+        class="dialog-btn-outline"
         onclick={() => dlgDeleteAtoms?.close()}>Cancel</button
       >
       <button
@@ -3097,19 +3224,19 @@
 
 <dialog
   bind:this={dlgTransform}
-  class="rounded-lg border border-neutral-700 bg-neutral-900 p-0 text-neutral-200 shadow-2xl backdrop:bg-black/60"
+  class="rounded-lg border border-neutral-300 bg-white p-0 text-neutral-900 shadow-2xl backdrop:bg-black/60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
 >
   <!-- Header -->
-  <div class="flex items-center justify-between border-b border-neutral-800 px-4 py-2.5">
+  <div class="flex items-center justify-between border-b dialog-divider px-4 py-2.5">
     <h3 class="text-sm font-semibold">Transform Structure</h3>
     {#if previewPositions}
-      <span class="rounded bg-yellow-500/15 px-1.5 py-0.5 text-[10px] text-yellow-400"
+      <span class="rounded bg-yellow-500/15 px-1.5 py-0.5 text-[10px] text-yellow-700 dark:text-yellow-400"
         >● Preview active</span
       >
     {/if}
     <button
       type="button"
-      class="ml-2 text-neutral-500 hover:text-neutral-200"
+      class="ml-2 text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
       onclick={() => {
         previewPositions = null
         dlgTransform?.close()
@@ -3118,13 +3245,13 @@
   </div>
 
   <!-- Tabs -->
-  <div class="flex border-b border-neutral-800 text-xs">
+  <div class="flex border-b dialog-divider text-xs">
     {#each ['rotate', 'translate', 'align'] as tab}
       <button
         type="button"
         class="px-4 py-2 transition-colors {transformTab === tab
-          ? 'border-b-2 border-yellow-400 text-yellow-300'
-          : 'text-neutral-400 hover:text-neutral-200'}"
+          ? 'border-b-2 border-yellow-500 text-yellow-700 dark:border-yellow-400 dark:text-yellow-300'
+          : 'text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-200'}"
         onclick={() => (transformTab = tab)}>{tab[0].toUpperCase() + tab.slice(1)}</button
       >
     {/each}
@@ -3134,11 +3261,11 @@
     <!-- ── Shared selection row (rotate / translate) ── -->
     {#if transformTab !== 'align'}
       <div class="flex items-center gap-2">
-        <label for="tf-sel" class="w-20 shrink-0 text-xs text-neutral-400">Selection</label>
+        <label for="tf-sel" class="dialog-label w-20 shrink-0 text-xs">Selection</label>
         <input
           id="tf-sel"
           type="text"
-          class="min-w-0 flex-1 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          class="min-w-0 flex-1 field-input"
           bind:value={tfSel}
           placeholder="all atoms"
         />
@@ -3153,12 +3280,12 @@
     <!-- ── Rotate tab ── -->
     {#if transformTab === 'rotate'}
       <div class="flex items-center gap-2">
-        <label for="tf-angle" class="w-20 shrink-0 text-xs text-neutral-400">Angle</label>
+        <label for="tf-angle" class="dialog-label w-20 shrink-0 text-xs">Angle</label>
         <input
           id="tf-angle"
           type="number"
           step="any"
-          class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          class="w-20 field-input"
           bind:value={tfRotAngle}
           placeholder="0"
         />
@@ -3167,14 +3294,14 @@
           {#each [90, 180, -90, 270] as a}
             <button
               type="button"
-              class="rounded border border-neutral-700 px-1 py-0.5 text-[10px] hover:bg-neutral-800"
+              class="rounded border border-neutral-300 px-1 py-0.5 text-[10px] text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
               onclick={() => (tfRotAngle = a)}>{a}°</button
             >
           {/each}
         </div>
       </div>
       <div class="flex items-center gap-2">
-        <span class="w-20 shrink-0 text-xs text-neutral-400">Axis</span>
+        <span class="w-20 shrink-0 text-xs dialog-label">Axis</span>
         <div class="flex gap-3">
           {#each ['x', 'y', 'z'] as ax}
             <label class="flex cursor-pointer items-center gap-1 text-xs">
@@ -3185,7 +3312,7 @@
         </div>
       </div>
       <div class="flex items-center gap-2">
-        <span class="w-20 shrink-0 text-xs text-neutral-400">Center</span>
+        <span class="w-20 shrink-0 text-xs dialog-label">Center</span>
         <div class="flex gap-3">
           <label class="flex cursor-pointer items-center gap-1 text-xs">
             <input
@@ -3207,14 +3334,14 @@
     <!-- ── Translate tab ── -->
     {#if transformTab === 'translate'}
       <div class="flex items-center gap-1">
-        <span class="w-20 shrink-0 text-xs text-neutral-400">Displacement</span>
+        <span class="w-20 shrink-0 text-xs dialog-label">Displacement</span>
         {#each [['X', 'tfTx'], ['Y', 'tfTy'], ['Z', 'tfTz']] as [lbl, field]}
           <span class="text-xs text-neutral-500">{lbl}</span>
           {#if field === 'tfTx'}
             <input
               type="number"
               step="any"
-              class="w-16 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+              class="w-16 field-input"
               bind:value={tfTx}
               placeholder="0"
             />
@@ -3222,7 +3349,7 @@
             <input
               type="number"
               step="any"
-              class="w-16 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+              class="w-16 field-input"
               bind:value={tfTy}
               placeholder="0"
             />
@@ -3230,7 +3357,7 @@
             <input
               type="number"
               step="any"
-              class="w-16 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+              class="w-16 field-input"
               bind:value={tfTz}
               placeholder="0"
             />
@@ -3241,7 +3368,7 @@
       <div>
         <button
           type="button"
-          class="flex items-center gap-1 rounded border border-neutral-700 px-3 py-1 text-xs hover:bg-neutral-800 disabled:opacity-40"
+          class="dialog-btn-outline flex items-center gap-1 disabled:opacity-40"
           disabled={editBusy}
           onclick={onCenterAtOrigin}
           title="Translate so the centroid of the selection is at origin (0,0,0)"
@@ -3254,13 +3381,13 @@
     {#if transformTab === 'align'}
       <!-- Primary selection -->
       <div class="flex items-center gap-2">
-        <label for="tf-align-prim" class="w-28 shrink-0 text-xs text-neutral-400"
+        <label for="tf-align-prim" class="dialog-label w-28 shrink-0 text-xs"
           >Primary selection</label
         >
         <input
           id="tf-align-prim"
           type="text"
-          class="min-w-0 flex-1 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          class="min-w-0 flex-1 field-input"
           bind:value={tfAlignPrimSel}
           placeholder="protein  (required)"
         />
@@ -3271,7 +3398,7 @@
         {/if}
       </div>
       <div class="flex items-center gap-2">
-        <span class="w-28 shrink-0 text-xs text-neutral-400">Target axis</span>
+        <span class="w-28 shrink-0 text-xs dialog-label">Target axis</span>
         <div class="flex gap-3">
           {#each ['x', 'y', 'z'] as ax}
             <label class="flex cursor-pointer items-center gap-1 text-xs">
@@ -3286,16 +3413,16 @@
           {/each}
         </div>
       </div>
-      <div class="border-t border-neutral-800/60 pt-2">
+      <div class="border-t border-neutral-200 pt-2 dark:border-neutral-800/60">
         <p class="mb-1.5 text-[10px] text-neutral-500">Secondary alignment (optional)</p>
         <div class="flex items-center gap-2">
-          <label for="tf-align-sec" class="w-28 shrink-0 text-xs text-neutral-400"
+          <label for="tf-align-sec" class="dialog-label w-28 shrink-0 text-xs"
             >Secondary sel.</label
           >
           <input
             id="tf-align-sec"
             type="text"
-            class="min-w-0 flex-1 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+            class="min-w-0 flex-1 field-input"
             bind:value={tfAlignSecSel}
             placeholder="resname LIG  (optional)"
           />
@@ -3306,7 +3433,7 @@
           {/if}
         </div>
         <div class="mt-1.5 flex items-center gap-2">
-          <span class="w-28 shrink-0 text-xs text-neutral-400">Secondary axis</span>
+          <span class="w-28 shrink-0 text-xs dialog-label">Secondary axis</span>
           <div class="flex gap-3">
             {#each ['x', 'y', 'z'] as ax}
               <label class="flex cursor-pointer items-center gap-1 text-xs">
@@ -3323,13 +3450,13 @@
         </div>
       </div>
       <div class="flex items-center gap-2">
-        <label for="tf-align-applyto" class="w-28 shrink-0 text-xs text-neutral-400"
+        <label for="tf-align-applyto" class="dialog-label w-28 shrink-0 text-xs"
           >Apply transform to</label
         >
         <input
           id="tf-align-applyto"
           type="text"
-          class="min-w-0 flex-1 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          class="min-w-0 flex-1 field-input"
           bind:value={tfAlignApplyTo}
           placeholder="all atoms  (default)"
         />
@@ -3338,10 +3465,10 @@
   </div>
 
   <!-- Footer -->
-  <div class="flex items-center justify-end gap-2 border-t border-neutral-800 px-4 py-3">
+  <div class="flex items-center justify-end gap-2 border-t dialog-divider px-4 py-3">
     <button
       type="button"
-      class="rounded border border-neutral-700 px-3 py-1 text-xs hover:bg-neutral-800"
+      class="dialog-btn-outline"
       onclick={() => {
         previewPositions = null
         dlgTransform?.close()
@@ -3349,7 +3476,7 @@
     >
     <button
       type="button"
-      class="flex items-center gap-1 rounded border border-neutral-700 bg-neutral-800 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-700 disabled:opacity-40"
+      class="dialog-btn-outline flex items-center gap-1 bg-neutral-100 hover:bg-neutral-200 disabled:opacity-40 dark:bg-neutral-800 dark:hover:bg-neutral-700"
       disabled={tfPreviewBusy || !filePath}
       onclick={onTransformPreview}
       title="Preview the transformation without saving"
@@ -3368,14 +3495,14 @@
 <!-- MemPro orientation dialog -->
 <dialog
   bind:this={dlgMempro}
-  class="rounded-lg border border-neutral-700 bg-neutral-900 p-0 text-neutral-200 shadow-2xl backdrop:bg-black/60"
+  class="rounded-lg border border-neutral-300 bg-white p-0 text-neutral-900 shadow-2xl backdrop:bg-black/60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
 >
   <!-- Header -->
-  <div class="flex items-center justify-between border-b border-neutral-800 px-4 py-2.5">
+  <div class="flex items-center justify-between border-b dialog-divider px-4 py-2.5">
     <h3 class="text-sm font-semibold">MemPro Orientation</h3>
     <button
       type="button"
-      class="text-neutral-500 hover:text-neutral-200"
+      class="text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
       onclick={() => dlgMempro?.close()}>✕</button
     >
   </div>
@@ -3395,13 +3522,13 @@
   {:else if memproJobStatus === 'done'}
     <!-- Results -->
     <div class="w-[520px] p-4">
-      <p class="mb-2 text-xs text-neutral-400">
+      <p class="mb-2 text-xs text-neutral-600 dark:text-neutral-400">
         Orientation results — Apply transforms the loaded structure (keeps ligands, water, etc.):
       </p>
-      <div class="overflow-x-auto rounded border border-neutral-800">
+      <div class="overflow-x-auto rounded border border-neutral-200 dark:border-neutral-800">
         <table class="w-full text-xs">
           <thead>
-            <tr class="border-b border-neutral-800 text-left text-neutral-500">
+            <tr class="border-b border-neutral-200 text-left text-neutral-600 dark:border-neutral-800 dark:text-neutral-500">
               <th class="px-2 py-1">Rank</th>
               <th class="px-2 py-1">Rel. Potential</th>
               <th class="px-2 py-1">Hits %</th>
@@ -3412,8 +3539,8 @@
           </thead>
           <tbody>
             {#each memproResults as r}
-              <tr class="border-b border-neutral-800/50 hover:bg-neutral-800/30">
-                <td class="px-2 py-1 font-semibold text-yellow-400">#{r.rank}</td>
+              <tr class="border-b border-neutral-200/80 hover:bg-neutral-100 dark:border-neutral-800/50 dark:hover:bg-neutral-800/30">
+                <td class="px-2 py-1 font-semibold text-yellow-700 dark:text-yellow-400">#{r.rank}</td>
                 <td class="px-2 py-1 font-mono">{r.relative_potential?.toFixed(3) ?? '—'}</td>
                 <td class="px-2 py-1 font-mono">{r.hits_pct?.toFixed(1) ?? '—'}%</td>
                 <td class="px-2 py-1 font-mono">{r.rerank_value?.toFixed(3) ?? '—'}</td>
@@ -3436,8 +3563,8 @@
   {:else if memproJobStatus === 'error'}
     <!-- Error -->
     <div class="w-[380px] p-4">
-      <p class="mb-1 text-xs text-red-400">MemPro failed:</p>
-      <p class="rounded bg-neutral-800 px-2 py-1.5 font-mono text-xs text-neutral-300">
+      <p class="mb-1 text-xs text-red-600 dark:text-red-400">MemPro failed:</p>
+      <p class="rounded border border-red-200 bg-red-50 px-2 py-1.5 font-mono text-xs text-red-900 dark:border-transparent dark:bg-neutral-800 dark:text-neutral-300">
         {memproError}
       </p>
     </div>
@@ -3445,34 +3572,34 @@
     <!-- Setup form -->
     <div class="w-[380px] space-y-2.5 p-4">
       <div class="flex items-center gap-2">
-        <label for="mp-iters" class="w-36 shrink-0 text-xs text-neutral-400">Iterations</label>
+        <label for="mp-iters" class="dialog-label w-36 shrink-0 text-xs">Iterations</label>
         <input
           id="mp-iters"
           type="number"
           min="10"
-          class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          class="w-20 field-input"
           bind:value={memproNIters}
         />
       </div>
       <div class="flex items-center gap-2">
-        <label for="mp-grid" class="w-36 shrink-0 text-xs text-neutral-400">Grid size</label>
+        <label for="mp-grid" class="dialog-label w-36 shrink-0 text-xs">Grid size</label>
         <input
           id="mp-grid"
           type="number"
           min="4"
-          class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          class="w-20 field-input"
           bind:value={memproGridSize}
         />
       </div>
       <div class="flex items-center gap-2">
-        <label for="mp-memthick" class="w-36 shrink-0 text-xs text-neutral-400"
+        <label for="mp-memthick" class="dialog-label w-36 shrink-0 text-xs"
           >Membrane thickness (Å)</label
         >
         <input
           id="mp-memthick"
           type="number"
           step="any"
-          class="w-20 rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          class="w-20 field-input"
           bind:value={memproMembrane}
           placeholder="auto"
         />
@@ -3497,12 +3624,12 @@
   {/if}
 
   <!-- Footer -->
-  <div class="flex items-center justify-between border-t border-neutral-800 px-4 py-3">
+  <div class="flex items-center justify-between border-t dialog-divider px-4 py-3">
     <div>
       {#if memproJobStatus === 'done'}
         <button
           type="button"
-          class="rounded border border-neutral-700 px-3 py-1 text-xs hover:bg-neutral-800"
+          class="dialog-btn-outline"
           onclick={() => {
             memproJobId = null
             memproJobStatus = null
@@ -3524,7 +3651,7 @@
       {/if}
       <button
         type="button"
-        class="rounded border border-neutral-700 px-3 py-1 text-xs hover:bg-neutral-800"
+        class="dialog-btn-outline"
         onclick={() => dlgMempro?.close()}>Close</button
       >
     </div>
@@ -3534,7 +3661,7 @@
 <!-- Custom MDAnalysis selection dialog -->
 <dialog
   bind:this={dlgCustomSel}
-  class="rounded-lg border border-neutral-700 bg-neutral-900 p-0 text-neutral-200 shadow-2xl backdrop:bg-black/60"
+  class="rounded-lg border border-neutral-300 bg-white p-0 text-neutral-900 shadow-2xl backdrop:bg-black/60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
 >
   <form
     method="dialog"
@@ -3550,7 +3677,7 @@
         <span class="text-neutral-400">MDAnalysis selection string</span>
         <input
           type="text"
-          class="w-full rounded bg-neutral-800 px-2 py-1 font-mono text-xs ring-1 ring-neutral-700 outline-none focus:ring-yellow-500/50"
+          class="w-full field-input"
           bind:value={customSelInput}
           placeholder="resname HOH"
           use:focusOnMount
@@ -3565,7 +3692,7 @@
     <div class="mt-4 flex justify-end gap-2">
       <button
         type="button"
-        class="rounded border border-neutral-700 px-3 py-1 text-xs hover:bg-neutral-800"
+        class="dialog-btn-outline"
         onclick={() => {
           dlgCustomSel?.close()
           customSelError = ''
