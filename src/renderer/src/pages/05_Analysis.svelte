@@ -840,7 +840,7 @@
   >
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
-      class="mx-4 max-h-[80vh] w-full max-w-lg overflow-y-auto rounded-lg border border-neutral-700 bg-neutral-900 p-5 text-xs"
+      class="mx-4 max-h-[80vh] w-full max-w-lg overflow-y-auto rounded-lg border border-neutral-300 bg-white p-5 text-xs dark:border-neutral-700 dark:bg-neutral-900"
       onmousedown={(e) => e.stopPropagation()}
     >
       <h2 class="mb-3 text-sm font-semibold">MDAnalysis Atom Selection Syntax</h2>
@@ -894,22 +894,22 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
   >
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
-      class="mx-4 max-h-[80vh] w-full max-w-lg overflow-y-auto rounded-lg border border-neutral-700 bg-neutral-900 p-5 text-xs"
+      class="mx-4 max-h-[80vh] w-full max-w-lg overflow-y-auto rounded-lg border border-neutral-300 bg-white p-5 text-xs dark:border-neutral-700 dark:bg-neutral-900"
       onmousedown={(e) => e.stopPropagation()}
     >
       <h2 class="mb-3 text-sm font-semibold">Topology Summary</h2>
 
       <!-- Totals -->
       <div class="mb-4 grid grid-cols-3 gap-2">
-        <div class="rounded border border-neutral-800 p-2 text-center">
+        <div class="rounded border border-neutral-200 p-2 text-center dark:border-neutral-800">
           <p class="text-neutral-500">Atoms</p>
           <p class="text-sm font-semibold">{topoInfo.n_atoms.toLocaleString()}</p>
         </div>
-        <div class="rounded border border-neutral-800 p-2 text-center">
+        <div class="rounded border border-neutral-200 p-2 text-center dark:border-neutral-800">
           <p class="text-neutral-500">Residues</p>
           <p class="text-sm font-semibold">{topoInfo.n_residues.toLocaleString()}</p>
         </div>
-        <div class="rounded border border-neutral-800 p-2 text-center">
+        <div class="rounded border border-neutral-200 p-2 text-center dark:border-neutral-800">
           <p class="text-neutral-500">Segments</p>
           <p class="text-sm font-semibold">{topoInfo.n_segments}</p>
         </div>
@@ -928,7 +928,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
         <p class="mb-1.5 font-medium">Molecule categories</p>
         <div class="mb-4 space-y-2">
           {#each Object.entries(topoInfo.categories) as [cat, info] (cat)}
-            <div class="rounded border border-neutral-800 p-2">
+            <div class="rounded border border-neutral-200 p-2 dark:border-neutral-800">
               <div class="mb-1 flex items-center justify-between">
                 <span class="font-medium">{catIcons[cat] ?? '◆'} {cat}</span>
                 <span class="text-neutral-400"
@@ -950,7 +950,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
         <p class="mb-1 font-medium">Segments</p>
         <table class="mb-4 w-full">
           <thead>
-            <tr class="border-b border-neutral-800 text-neutral-500">
+            <tr class="border-b border-neutral-200 text-neutral-500 dark:border-neutral-800">
               <th class="pb-1 text-left">SegID</th>
               <th class="pb-1 text-right">Residues</th>
               <th class="pb-1 text-right">Atoms</th>
@@ -958,7 +958,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           </thead>
           <tbody>
             {#each topoInfo.segments as seg (seg.segid)}
-              <tr class="border-b border-neutral-800/50">
+              <tr class="border-b border-neutral-200/80 dark:border-neutral-800/50">
                 <td class="py-0.5 text-neutral-300">{seg.segid}</td>
                 <td class="py-0.5 text-right text-neutral-300">{seg.n_residues}</td>
                 <td class="py-0.5 text-right text-neutral-300">{seg.n_atoms.toLocaleString()}</td>
@@ -995,7 +995,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
   </div>
 {/if}
 
-<div class="flex min-w-0 flex-1 divide-x divide-neutral-800 overflow-hidden select-none">
+<div class="flex min-w-0 flex-1 divide-x divide-neutral-200 overflow-hidden select-none dark:divide-neutral-800">
   <!-- ===== SIDEBAR ===== -->
   <aside class="w-80 shrink-0 space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs">
     <div class="space-y-2">
@@ -1045,7 +1045,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   ondragover={(e) => onDragOver(e, i)}
                   ondrop={(e) => onDropTrajectory(e, i)}
                   ondragend={onDragEnd}
-                  class="flex items-center gap-1 rounded border px-1.5 py-1 transition-opacity dark:border-neutral-800
+                  class="flex items-center gap-1 rounded border border-neutral-200 px-1.5 py-1 transition-opacity dark:border-neutral-800
                     {dragIdx === i ? 'opacity-40' : ''}
                     {dragOverIdx === i && dragIdx !== i ? 'border-amber-500 bg-amber-500/10' : ''}"
                 >
@@ -1053,7 +1053,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     class="shrink-0 cursor-grab text-neutral-600 select-none"
                     title="Drag to reorder">⠿</span
                   >
-                  <span class="min-w-0 flex-1 truncate text-neutral-300" title={file.path}
+                  <span class="min-w-0 flex-1 truncate text-neutral-700 dark:text-neutral-300" title={file.path}
                     >{basename(file.path)}</span
                   >
                   <Input
@@ -1148,7 +1148,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
             <button
               type="button"
-              class="flex w-full items-center justify-between rounded border px-2 py-1.5 text-left dark:border-neutral-800 hover:bg-neutral-900"
+              class="flex w-full items-center justify-between rounded border border-neutral-200 px-2 py-1.5 text-left hover:bg-neutral-100 dark:border-neutral-800 dark:hover:bg-neutral-900"
               onclick={() => (bilayerAdvancedOpen = !bilayerAdvancedOpen)}
             >
               <span class="text-neutral-400">Advanced settings</span>
@@ -1292,7 +1292,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 ondragover={(e) => onDragOver(e, i)}
                 ondrop={(e) => onDropLog(e, i)}
                 ondragend={onDragEnd}
-                class="flex items-center gap-1 rounded border px-1.5 py-1 transition-opacity dark:border-neutral-800
+                class="flex items-center gap-1 rounded border border-neutral-200 px-1.5 py-1 transition-opacity dark:border-neutral-800
                   {dragIdx === i ? 'opacity-40' : ''}
                   {dragOverIdx === i && dragIdx !== i ? 'border-amber-500 bg-amber-500/10' : ''}"
               >
@@ -1684,7 +1684,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
     {#if displaySeries.length === 0}
       <p
-        class="mx-4 mb-4 flex flex-1 items-center justify-center rounded-lg border border-dashed border-neutral-800 text-neutral-700"
+        class="mx-4 mb-4 flex flex-1 items-center justify-center rounded-lg border border-dashed border-neutral-300 text-neutral-500 dark:border-neutral-800 dark:text-neutral-700"
       >
         Run an analysis to see results.
       </p>

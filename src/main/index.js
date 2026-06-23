@@ -1,10 +1,11 @@
-import { app, BrowserWindow, dialog, ipcMain, screen, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, screen, shell } from 'electron'
 import { spawn } from 'child_process'
 import { watch } from 'fs'
 import { readFile, writeFile } from 'fs/promises'
 import path, { join } from 'path'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import appWindowIcon from '../../resources/brand/logos/app-window-dark.png?asset'
+import { resolveAppWindowIconPath } from '../../resources/brand/manifest.mjs'
 // Brand asset map: resources/brand/manifest.mjs (use getAppWindowIconUrl when theme toggle exists)
 import { ensureMambaRuntime, getGatewizardDataRoot, getLaunchPythonPath, inferCondaPrefixFromPython, upgradeGatewizardPackage } from './runtime-bootstrap.js'
 import { checkForUpdates, getLocalGuiVersion, getManifestUrl } from './update-check.js'
@@ -518,6 +519,16 @@ function watchBackendFiles() {
   })
 }
 
+function applyMainWindowTheme(theme) {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.setBackgroundColor(theme === 'light' ? '#fafafa' : '#0a0a0a')
+  if (process.platform === 'linux' || process.platform === 'win32') {
+    const iconPath = resolveAppWindowIconPath(theme)
+    const image = nativeImage.createFromPath(iconPath)
+    if (!image.isEmpty()) mainWindow.setIcon(image)
+  }
+}
+
 function createWindow() {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.focus()
@@ -868,4 +879,9 @@ ipcMain.handle('runtime:upgrade-gatewizard', async (_event, installSpec) => {
   })
   await restartBackend()
   return result
+})
+
+ipcMain.handle('theme:set', (_event, theme) => {
+  if (theme !== 'light' && theme !== 'dark') return
+  applyMainWindowTheme(theme)
 })

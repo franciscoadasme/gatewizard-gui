@@ -23,7 +23,9 @@ const api = {
   checkForUpdates: () => ipcRenderer.invoke('updates:check'),
   getUpdateManifestUrl: () => ipcRenderer.invoke('updates:get-manifest-url'),
   openExternalUrl: (url) => ipcRenderer.invoke('updates:open-url', url),
-  upgradeGatewizard: (installSpec) => ipcRenderer.invoke('runtime:upgrade-gatewizard', installSpec)
+  upgradeGatewizard: (installSpec) => ipcRenderer.invoke('runtime:upgrade-gatewizard', installSpec),
+
+  setAppTheme: (theme) => ipcRenderer.invoke('theme:set', theme)
 }
 
 function installTitlebarDoubleClickHandler() {

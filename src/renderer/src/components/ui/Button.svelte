@@ -14,9 +14,10 @@
     default:
       'bg-neutral-100 text-neutral-900 hover:bg-neutral-200 dark:bg-neutral-50 dark:text-neutral-900 dark:hover:bg-neutral-200',
     outline:
-      'border border-neutral-300 bg-neutral-900 hover:bg-neutral-100 dark:border-neutral-800 dark:hover:bg-neutral-800 dark:hover:border-neutral-700',
-    ghost: 'bg-transparent hover:bg-neutral-100 dark:hover:bg-neutral-800',
-    danger: 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
+      'border border-neutral-300 bg-white text-neutral-900 hover:bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-50 dark:hover:bg-neutral-800 dark:hover:border-neutral-700',
+    ghost:
+      'bg-transparent text-neutral-700 hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800 dark:hover:text-neutral-50',
+    danger: 'bg-red-500/20 text-red-600 hover:bg-red-500/30 dark:text-red-400'
   }
 
   const sizeClasses = {

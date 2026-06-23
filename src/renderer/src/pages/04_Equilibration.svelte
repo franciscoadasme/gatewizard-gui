@@ -613,7 +613,7 @@
   }
 </script>
 
-<div class="flex min-w-0 flex-1 divide-x divide-neutral-800 overflow-hidden select-none">
+<div class="flex min-w-0 flex-1 divide-x divide-neutral-200 overflow-hidden select-none dark:divide-neutral-800">
   <aside class="w-80 shrink-0 space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs">
     <div class="space-y-2">
       <div class="space-y-1">
@@ -622,7 +622,7 @@
           Must contain <code>.prmtop</code> and <code>.inpcrd</code> files.
         </p>
         {#if inputDir}
-          <div class="w-full rounded-md border border-neutral-800 p-2 font-mono wrap-anywhere">
+          <div class="w-full rounded-md border border-neutral-200 p-2 font-mono wrap-anywhere dark:border-neutral-800">
             {inputDir}
           </div>
           {#if systemSize !== null}
@@ -915,7 +915,7 @@
       {/if}
     </div>
     <div
-      class="flex max-h-2/5 min-h-1/5 flex-col gap-2 overflow-y-auto border-t p-4 text-xs dark:border-neutral-800"
+      class="flex max-h-2/5 min-h-1/5 flex-col gap-2 overflow-y-auto border-t border-neutral-200 p-4 text-xs dark:border-neutral-800"
     >
       <h3 class="font-semibold uppercase">Progress</h3>
       <div class="flex items-center gap-2">
@@ -948,7 +948,7 @@
         {/if}
       </div>
       {#if showProcessInfo}
-        <div class="rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 text-xs">
+        <div class="rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs dark:border-neutral-700 dark:bg-neutral-900">
           {#if loadingProcessInfo}
             <span class="text-neutral-400">Loading…</span>
           {:else if processInfo}
@@ -988,7 +988,7 @@
           {/each}
         </div>
         {#if equilibrationOutput}
-          <pre class="rounded-md border border-neutral-800 p-2 text-xs">{equilibrationOutput}</pre>
+          <pre class="rounded-md border border-neutral-200 p-2 text-xs dark:border-neutral-800">{equilibrationOutput}</pre>
         {/if}
       {:else if equilibrationStatus === 'empty'}
         <Empty message="No equilibration files found. Generate input files first." />

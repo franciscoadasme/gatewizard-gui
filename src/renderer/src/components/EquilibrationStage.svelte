@@ -22,7 +22,7 @@
   }
 </script>
 
-<div class="rounded-md bg-neutral-900 p-4">
+<div class="rounded-md border border-neutral-200 bg-neutral-50 p-4 text-neutral-900 dark:border-transparent dark:bg-neutral-900 dark:text-inherit">
   <div class="mb-2">
     <h3>{stage.name}</h3>
     <p class="text-xs text-neutral-500">{stage.description}</p>
@@ -184,7 +184,7 @@
       <div>
         <button
           type="button"
-          class="rounded p-1 text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-100 active:translate-y-0.5"
+          class="rounded p-1 text-neutral-500 transition-colors hover:bg-neutral-200 hover:text-neutral-900 active:translate-y-0.5 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
           onclick={() => onEditConstraint(i)}
           aria-label="Edit {constraint.name}"
         >

@@ -156,13 +156,13 @@
   }
 </script>
 
-<div class="flex min-w-0 flex-1 divide-x divide-neutral-800 overflow-hidden select-none">
+<div class="flex min-w-0 flex-1 divide-x divide-neutral-200 overflow-hidden select-none dark:divide-neutral-800">
   <aside class="w-80 shrink-0 space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs">
     <div class="space-y-2">
       <p class="mb-1">Working file:</p>
       {#if workingFile}
         <p
-          class="w-full rounded-md border p-2 wrap-break-word dark:border-neutral-800 dark:text-neutral-400"
+          class="w-full rounded-md border border-neutral-200 p-2 wrap-break-word text-neutral-600 dark:border-neutral-800 dark:text-neutral-400"
         >
           {workingFile}
         </p>
@@ -177,7 +177,7 @@
       <div>
         <p class="mb-1">Export Protonated File:</p>
         <p
-          class="rounded-md border p-2 wrap-break-word dark:border-neutral-800 dark:text-neutral-400"
+          class="rounded-md border border-neutral-200 p-2 wrap-break-word text-neutral-600 dark:border-neutral-800 dark:text-neutral-400"
         >
           {protonatedFile ? protonatedFile : 'It will be auto-generated'}
         </p>
@@ -198,7 +198,7 @@
           type="text"
           inputmode="decimal"
           name="target-ph"
-          class="w-20 rounded-md border p-2 dark:border-neutral-700 dark:hover:bg-neutral-700"
+          class="w-20 rounded-md border border-neutral-300 p-2 hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-700"
           value={targetPh.toFixed(1)}
           onchange={(e) => {
             targetPh = parseFloat(e.target.value) || 0
@@ -229,7 +229,7 @@
           type="text"
           inputmode="decimal"
           name="max-ss-distance"
-          class="w-20 rounded-md border p-2 dark:border-neutral-700 dark:hover:bg-neutral-700"
+          class="w-20 rounded-md border border-neutral-300 p-2 hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-700"
           bind:value={maxDisulfideDistance}
         />
       </div>
@@ -239,13 +239,13 @@
       <div class="space-y-2">
         {#if disulfideBonds.length > 0}
           <p>Detected S-S bonds:</p>
-          <ol class="list-inside list-decimal rounded-md border border-neutral-800 p-2">
+          <ol class="list-inside list-decimal rounded-md border border-neutral-200 p-2 dark:border-neutral-800">
             {#each disulfideBonds as bond}
               <li>{bond[0][0]}{bond[0][1]} → {bond[1][0]}{bond[1][1]}</li>
             {/each}
           </ol>
         {:else}
-          <p class="rounded-md border border-neutral-800 px-2 py-1.5 text-neutral-500">
+          <p class="rounded-md border border-neutral-200 px-2 py-1.5 text-neutral-500 dark:border-neutral-800">
             No disulfide bonds detected
           </p>
         {/if}
@@ -263,14 +263,14 @@
     <h1 class="m-4 text-xl font-semibold">Protonation states</h1>
     {#if protonationStates.length > 0}
       {@const sortIndicator = sortDirection === 'asc' ? '▲' : '▼'}
-      <div class="mx-4 mb-4 min-h-0 flex-1 overflow-y-auto rounded-lg border border-neutral-800">
+      <div class="mx-4 mb-4 min-h-0 flex-1 overflow-y-auto rounded-lg border border-neutral-200 dark:border-neutral-800">
         <table class="w-full">
-          <thead class="sticky top-0 z-10 bg-neutral-950">
+          <thead class="sticky top-0 z-10 bg-neutral-50 dark:bg-neutral-950">
             <tr>
               {#each columns as col, i}
                 <th class={['px-0.5 py-1', i === 0 && 'pl-1', i === columns.length - 1 && 'pr-1']}>
                   <button
-                    class="flex w-full items-center justify-center gap-2 rounded-md bg-neutral-900 px-2 py-1 hover:bg-neutral-800"
+                    class="flex w-full items-center justify-center gap-2 rounded-md bg-neutral-100 px-2 py-1 hover:bg-neutral-200 dark:bg-neutral-900 dark:hover:bg-neutral-800"
                     onclick={() => toggleSort(col.key)}
                   >
                     <span>
@@ -284,7 +284,7 @@
               {/each}
             </tr>
           </thead>
-          <tbody class="divide-y divide-neutral-800">
+          <tbody class="divide-y divide-neutral-200 dark:divide-neutral-800">
             {#each sortedProtonationStates as info}
               {@const key = `${info.residue}_${info.chain}_${info.res_id}`}
               {@const newId = residueRenumberingTable[key]}
@@ -298,9 +298,9 @@
                 <td class="px-2 py-1 text-center">
                   <select
                     class={[
-                      'w-full rounded-md p-1 hover:bg-neutral-900 focus:bg-neutral-900 focus:outline-1 focus:outline-neutral-800',
+                      'w-full rounded-md p-1 hover:bg-neutral-100 focus:bg-neutral-100 focus:outline-1 focus:outline-neutral-300 dark:hover:bg-neutral-900 dark:focus:bg-neutral-900 dark:focus:outline-neutral-800',
                       info.current_state !== info.initial_state
-                        ? 'outline-2 outline-white focus:outline-2 focus:outline-white'
+                        ? 'outline-2 outline-neutral-900 focus:outline-2 focus:outline-neutral-900 dark:outline-white dark:focus:outline-white'
                         : ''
                     ]}
                     bind:value={info.current_state}
@@ -317,13 +317,13 @@
       </div>
     {:else}
       <p
-        class="mx-4 mb-4 flex flex-1 items-center justify-center rounded-lg border border-dashed border-neutral-800 text-neutral-700"
+        class="mx-4 mb-4 flex flex-1 items-center justify-center rounded-lg border border-dashed border-neutral-300 text-neutral-500 dark:border-neutral-800 dark:text-neutral-700"
       >
         Run PropKa to see the protonation states.
       </p>
     {/if}
     {#if preparationOutput}
-      <div class="max-h-2/5 overflow-y-auto border-t p-4 text-xs dark:border-neutral-800">
+      <div class="max-h-2/5 overflow-y-auto border-t border-neutral-200 p-4 text-xs dark:border-neutral-800">
         <pre>{preparationOutput}</pre>
       </div>
     {/if}

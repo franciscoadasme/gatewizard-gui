@@ -11,7 +11,13 @@
   </head>
 
   <body>
-    <div id="app" class="dark"></div>
+    <div id="app"></div>
+    <script>
+      ;(function () {
+        var t = localStorage.getItem('gw_theme')
+        if (t !== 'light') document.getElementById('app').classList.add('dark')
+      })()
+    </script>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

@@ -568,7 +568,7 @@
   }
 </script>
 
-<div class="flex min-w-0 flex-1 divide-x divide-neutral-800 overflow-hidden select-none">
+<div class="flex min-w-0 flex-1 divide-x divide-neutral-200 overflow-hidden select-none dark:divide-neutral-800">
   <!-- ── Left: Options (scrollable) ── -->
   <aside class="w-80 shrink-0 space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs">
     <!-- Input -->
@@ -1106,7 +1106,7 @@
     <h1 class="m-4 text-xl font-semibold">Preparation Jobs</h1>
     {#if jobs.length === 0}
       <p
-        class="mx-4 mb-4 flex flex-1 items-center justify-center rounded-lg border border-dashed border-neutral-800 text-neutral-700"
+        class="mx-4 mb-4 flex flex-1 items-center justify-center rounded-lg border border-dashed border-neutral-300 text-neutral-500 dark:border-neutral-800 dark:text-neutral-700"
       >
         No preparations yet. Configure options, generate input files, then click "Start Preparation".
       </p>

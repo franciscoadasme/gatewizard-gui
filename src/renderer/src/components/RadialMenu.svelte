@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte'
+  import { themeState } from '../lib/theme.svelte.js'
 
   /**
    * @typedef {{
@@ -61,6 +62,8 @@
   /** @type {number} */
   let activeSubmenu = $state(-1)
 
+  const isLight = $derived(themeState.current === 'light')
+
   onMount(() => {
     // Double rAF so transition triggers after mount
     requestAnimationFrame(() =>
@@ -99,7 +102,9 @@
 <div class="pointer-events-none fixed z-[51]" style="left:{x}px; top:{y}px">
   <!-- subtle glow/bg ring -->
   <div
-    class="absolute rounded-full border border-white/5 bg-neutral-950/40"
+    class="absolute rounded-full border backdrop-blur-[2px] transition-opacity duration-[180ms] ease-linear {isLight
+      ? 'border-neutral-300/80 bg-white/75'
+      : 'border-white/5 bg-neutral-950/40'}"
     style="
       width:{RADIUS * 2 + ICON_SIZE + 4}px;
       height:{RADIUS * 2 + ICON_SIZE + 4}px;
@@ -114,7 +119,9 @@
   <!-- Center info badge -->
   {#if info}
     <div
-      class="pointer-events-none absolute z-10 rounded-full border border-neutral-600/60 bg-neutral-900/95 px-3 py-1.5 text-center shadow-lg"
+      class="pointer-events-none absolute z-10 rounded-full border px-3 py-1.5 text-center shadow-lg {isLight
+        ? 'border-neutral-300 bg-white/95'
+        : 'border-neutral-600/60 bg-neutral-900/95'}"
       style="
         min-width: 74px;
         transform: translate(-50%, -50%) scale({open ? 1 : 0.6});
@@ -122,15 +129,15 @@
         transition: transform 200ms cubic-bezier(0.34, 1.56, 0.64, 1), opacity 150ms ease;
       "
     >
-      <div class="text-[11px] font-semibold tracking-wide text-orange-300">{info.title}</div>
+      <div class="text-[11px] font-semibold tracking-wide {isLight ? 'text-orange-600' : 'text-orange-300'}">{info.title}</div>
       {#if info.subtitle}
-        <div class="mt-0.5 text-[9px] text-neutral-400">{info.subtitle}</div>
+        <div class="mt-0.5 text-[9px] {isLight ? 'text-neutral-600' : 'text-neutral-400'}">{info.subtitle}</div>
       {/if}
     </div>
   {:else}
     <!-- Center dot -->
     <div
-      class="pointer-events-none absolute h-2 w-2 rounded-full bg-white/30"
+      class="pointer-events-none absolute h-2 w-2 rounded-full {isLight ? 'bg-neutral-400/50' : 'bg-white/30'}"
       style="transform: translate(-50%, -50%)"
     ></div>
   {/if}
@@ -200,7 +207,9 @@
 
       <!-- Label -->
       <div
-        class="pointer-events-none absolute text-[10px] font-medium whitespace-nowrap text-neutral-200 drop-shadow"
+        class="pointer-events-none absolute text-[10px] font-medium whitespace-nowrap drop-shadow {isLight
+          ? 'text-neutral-900'
+          : 'text-neutral-200'}"
         style="
           left: {loff.x}px;
           top: {loff.y}px;
@@ -218,13 +227,17 @@
       {#if isActive && item.submenu?.length}
         {@const subX = pos.x > 0 ? 'left-full ml-1' : 'right-full mr-1'}
         <div
-          class="absolute top-0 z-10 min-w-36 overflow-hidden rounded-lg border border-neutral-700 bg-neutral-900/98 py-1 shadow-2xl {subX}"
+          class="absolute top-0 z-10 min-w-36 overflow-hidden rounded-lg border py-1 shadow-2xl {subX} {isLight
+            ? 'border-neutral-300 bg-white/98'
+            : 'border-neutral-700 bg-neutral-900/98'}"
           style="animation: fadeSlideIn 120ms ease forwards;"
         >
           {#each item.submenu as sub}
             <button
               type="button"
-              class="w-full px-3 py-1.5 text-left font-mono text-xs text-neutral-200 transition-colors hover:bg-neutral-800 hover:text-white"
+              class="w-full px-3 py-1.5 text-left font-mono text-xs transition-colors {isLight
+                ? 'text-neutral-800 hover:bg-neutral-100 hover:text-neutral-950'
+                : 'text-neutral-200 hover:bg-neutral-800 hover:text-white'}"
               onclick={sub.action}>{sub.text}</button
             >
           {/each}
