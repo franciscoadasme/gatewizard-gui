@@ -1,12 +1,17 @@
 <script>
+  import { onDestroy } from 'svelte'
   import { T, useThrelte } from '@threlte/core'
   import { Color, DoubleSide, Mesh, MeshStandardMaterial } from 'three'
   import { buildTubeGeometries } from '../../../lib/viewer/cartoon.js'
   import { defaultColorScheme } from '../../../lib/colorSchemes.js'
+  import {
+    createIllustrativeSurfaceMaterial,
+    createSilhouetteOutlineMaterial
+  } from '../../../lib/viewer/illustrativeMaterial.js'
 
   /**
    * @type {{
-   *   atoms: { x: number, y: number, z: number, name: string }[],
+   *   atoms: { x: number, y: number, z: number, name: string, index?: number }[],
    *   residues: Array<{
    *     chain: string,
    *     number: number,
@@ -21,11 +26,15 @@
    *   quality?: number,
    *   metalness?: number,
    *   roughness?: number,
-   *   emissiveIntensity?: number
+   *   emissiveIntensity?: number,
+   *   illustrative?: boolean,
+   *   outlinesEnabled?: boolean,
+   *   outlineColor?: string,
+   *   outlineWidth?: number
    * }}
    */
   let {
-    atoms = [],
+    atoms,
     residues = [],
     getColor = defaultColorScheme,
     tubeRadius = 0.9,
@@ -34,6 +43,10 @@
     metalness = 0.08,
     roughness = 0.48,
     emissiveIntensity = 0.0,
+    illustrative = false,
+    outlinesEnabled = true,
+    outlineColor = '#000000',
+    outlineWidth = 0.12,
     highlightIndices = new Set()
   } = $props()
 
@@ -61,13 +74,19 @@
     side: DoubleSide
   })
 
+  const illustrativeMaterial = createIllustrativeSurfaceMaterial(true)
+  illustrativeMaterial.side = DoubleSide
+
   /** @type {Mesh[]} */
   let meshes = $state([])
 
   $effect(() => {
+    if (illustrative) return
     material.metalness = metalness
     material.roughness = roughness
     material.emissiveIntensity = emissiveIntensity
+    material.emissive.setHex(0x000000)
+    material.toneMapped = true
     material.needsUpdate = true
     invalidate()
   })
@@ -78,22 +97,62 @@
       return
     }
 
-    const geometries = buildTubeGeometries(atoms, residues, _effectiveGetColor, {
-      tubeRadius,
-      ssColors,
-      quality
-    })
-    const newMeshes = geometries.map((geom) => new Mesh(geom, material))
+    const surfaceMat = illustrative ? illustrativeMaterial : material
+    const showOutlines = illustrative && outlinesEnabled && outlineWidth > 0
+    const outlineMat = showOutlines ? createSilhouetteOutlineMaterial(outlineColor) : null
 
-    meshes = newMeshes
+    /** @type {Mesh[]} */
+    const nextMeshes = []
+
+    try {
+      const geometries = buildTubeGeometries(atoms, residues, _effectiveGetColor, {
+        tubeRadius,
+        ssColors,
+        quality
+      })
+
+      if (showOutlines && outlineMat) {
+        const outlineColorForGeom = new Color(outlineColor)
+        const outlineColorFn = () => outlineColorForGeom
+        const outlineGeometries = buildTubeGeometries(atoms, residues, outlineColorFn, {
+          tubeRadius: tubeRadius + outlineWidth,
+          ssColors,
+          quality
+        })
+        for (const geom of outlineGeometries) {
+          const outlineMesh = new Mesh(geom, outlineMat)
+          outlineMesh.renderOrder = 0
+          nextMeshes.push(outlineMesh)
+        }
+      }
+
+      for (const geom of geometries) {
+        const surfaceMesh = new Mesh(geom, surfaceMat)
+        surfaceMesh.renderOrder = 1
+        nextMeshes.push(surfaceMesh)
+      }
+    } catch (err) {
+      console.error('[Tube] geometry build failed:', err)
+      meshes = []
+      return
+    }
+
+    meshes = nextMeshes
     invalidate()
 
     return () => {
-      newMeshes.forEach((m) => m.geometry.dispose())
+      for (const m of nextMeshes) {
+        m.geometry.dispose()
+      }
+      outlineMat?.dispose()
     }
   })
 
-  $effect(() => () => material.dispose())
+  onDestroy(() => {
+    meshes = []
+    material.dispose()
+    illustrativeMaterial.dispose()
+  })
 </script>
 
 {#each meshes as mesh (mesh.uuid)}

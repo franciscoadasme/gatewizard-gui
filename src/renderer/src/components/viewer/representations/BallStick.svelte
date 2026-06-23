@@ -6,12 +6,16 @@
     InstancedBufferAttribute,
     InstancedMesh,
     Matrix4,
+    MeshBasicMaterial,
     MeshStandardMaterial,
+    MeshToonMaterial,
     Quaternion,
     SphereGeometry,
     Vector3
   } from 'three'
   import { defaultColorScheme } from '../../../lib/colorSchemes.js'
+  import { getToonGradientMap } from '../../../lib/viewer/illustrativeMaterial.js'
+  import { applyGlowMaterial } from '../../../lib/viewer/glowMaterial.js'
   import { untrack } from 'svelte'
 
   /** @typedef {{ x: number, y: number, z: number, element: string, name: string }} Atom */
@@ -83,10 +87,24 @@
     4: [48, 36, 20],
     5: [72, 56, 32]
   })
-  // [sphereW, sphereH, cylRadial]
 
   /**
-   * @type {{ atoms: Atom[], bonds?: [number,number][], getColor?: ColorScheme, quality?: number, atomScale?: number, bondScale?: number, metalness?: number, roughness?: number, emissiveIntensity?: number }}
+   * @type {{
+   *   atoms: Atom[],
+   *   bonds?: [number,number][],
+   *   getColor?: ColorScheme,
+   *   quality?: number,
+   *   atomScale?: number,
+   *   bondScale?: number,
+   *   metalness?: number,
+   *   roughness?: number,
+   *   emissiveIntensity?: number,
+   *   illustrative?: boolean,
+   *   outlinesEnabled?: boolean,
+   *   outlineColor?: string,
+   *   outlineWidth?: number,
+   *   glowBulb?: boolean
+   * }}
    */
   let {
     atoms = [],
@@ -98,31 +116,59 @@
     metalness = 0.1,
     roughness = 0.42,
     emissiveIntensity = 0.0,
-    highlightIndices = new Set()
+    illustrative = false,
+    outlinesEnabled = true,
+    outlineColor = '#000000',
+    outlineWidth = 0.12,
+    highlightIndices = new Set(),
+    glowBulb = false
   } = $props()
 
   let sphereMeshRef = $state(/** @type {InstancedMesh | null} */ (null))
   let bondMeshRef = $state(/** @type {InstancedMesh | null} */ (null))
+  let sphereOutlineMeshRef = $state(/** @type {InstancedMesh | null} */ (null))
+  let bondOutlineMeshRef = $state(/** @type {InstancedMesh | null} */ (null))
 
   const count = $derived(atoms.length)
 
   const { invalidate } = useThrelte()
 
-  $effect(() => {
-    const n = count
-    if (n < 1) {
-      return
-    }
-
+  /**
+   * @param {number} n
+   * @param {number} m
+   * @param {boolean} showOutlines
+   */
+  function buildMeshes(n, m, showOutlines) {
     const [sw, sh, cr] = BS_QUALITY[quality] ?? BS_QUALITY[3]
     const sphereGeom = new SphereGeometry(1, sw, sh)
-    const sphereMat = new MeshStandardMaterial({
-      metalness,
-      roughness,
-      emissiveIntensity
-    })
+
+    /** @type {import('three').Material} */
+    let sphereMat
+    if (illustrative) {
+      sphereMat = new MeshToonMaterial({ gradientMap: getToonGradientMap() })
+    } else {
+      const mat = new MeshStandardMaterial({
+        metalness,
+        roughness,
+        emissiveIntensity: glowBulb ? 0 : emissiveIntensity
+      })
+      if (glowBulb && emissiveIntensity > 0.001) {
+        applyGlowMaterial(mat, emissiveIntensity, { useSurfaceColor: true })
+      }
+      sphereMat = mat
+    }
+
     const sphereMesh = new InstancedMesh(sphereGeom, sphereMat, n)
+    sphereMesh.renderOrder = 1
     sphereMesh.instanceColor = new InstancedBufferAttribute(new Float32Array(n * 3), 3)
+
+    /** @type {InstancedMesh | null} */
+    let sphereOutlineMesh = null
+    if (showOutlines) {
+      const outlineMat = new MeshBasicMaterial({ color: outlineColor, depthWrite: false })
+      sphereOutlineMesh = new InstancedMesh(sphereGeom.clone(), outlineMat, n)
+      sphereOutlineMesh.renderOrder = 0
+    }
 
     const sphereMatrix = new Matrix4()
     const sphereQuat = new Quaternion()
@@ -137,26 +183,58 @@
       sphereMatrix.compose(spherePos, sphereQuat, sphereScale)
       sphereMesh.setMatrixAt(index, sphereMatrix)
       sphereMesh.setColorAt(index, color)
+
+      if (sphereOutlineMesh) {
+        const outlineScale = 1 + outlineWidth / Math.max(ri, 0.5)
+        sphereScale.set(ri * outlineScale, ri * outlineScale, ri * outlineScale)
+        sphereMatrix.compose(spherePos, sphereQuat, sphereScale)
+        sphereOutlineMesh.setMatrixAt(index, sphereMatrix)
+      }
     })
     sphereMesh.instanceMatrix.needsUpdate = true
     sphereMesh.instanceColor.needsUpdate = true
+    if (sphereOutlineMesh) sphereOutlineMesh.instanceMatrix.needsUpdate = true
 
-    const m = bonds.length
-    const cylGeom = new CylinderGeometry(
-      BOND_RADIUS * bondScale,
-      BOND_RADIUS * bondScale,
-      1,
-      cr,
-      1,
-      false
-    )
-    const cylMat = new MeshStandardMaterial({
-      color: new Color().setRGB(...STICK_GRAY),
-      metalness,
-      roughness,
-      emissiveIntensity
-    })
+    const bondRadius = BOND_RADIUS * bondScale
+    const outlineBondRadius = bondRadius + outlineWidth
+    const cylGeom = new CylinderGeometry(bondRadius, bondRadius, 1, cr, 1, false)
+    /** @type {import('three').Material} */
+    let cylMat
+    if (illustrative) {
+      cylMat = new MeshToonMaterial({
+        color: new Color().setRGB(...STICK_GRAY),
+        gradientMap: getToonGradientMap()
+      })
+    } else {
+      const mat = new MeshStandardMaterial({
+        color: new Color().setRGB(...STICK_GRAY),
+        metalness,
+        roughness,
+        emissiveIntensity: glowBulb ? 0 : emissiveIntensity
+      })
+      if (glowBulb && emissiveIntensity > 0.001) {
+        applyGlowMaterial(mat, emissiveIntensity, { useSurfaceColor: false })
+      }
+      cylMat = mat
+    }
     const bondMesh = new InstancedMesh(cylGeom, cylMat, m)
+    bondMesh.renderOrder = 1
+
+    /** @type {InstancedMesh | null} */
+    let bondOutlineMesh = null
+    if (showOutlines && m > 0) {
+      const outlineCylGeom = new CylinderGeometry(
+        outlineBondRadius,
+        outlineBondRadius,
+        1,
+        cr,
+        1,
+        false
+      )
+      const outlineCylMat = new MeshBasicMaterial({ color: outlineColor, depthWrite: false })
+      bondOutlineMesh = new InstancedMesh(outlineCylGeom, outlineCylMat, m)
+      bondOutlineMesh.renderOrder = 0
+    }
 
     const cylMatrix = new Matrix4()
     const cylQuat = new Quaternion()
@@ -172,43 +250,67 @@
       const [i, j] = bonds[b]
       const ai = atom_by_index.get(i)
       const aj = atom_by_index.get(j)
-      if (!ai || !aj) {
-        continue
-      }
+      if (!ai || !aj) continue
+
       pa.set(ai.x, ai.y, ai.z)
       pb.set(aj.x, aj.y, aj.z)
 
-      /** Shorten cylinders so spheres sit visibly on ends (Å). */
       const ri = atomBallRadius(ai.element)
       const rj = atomBallRadius(aj.element)
 
       dir.copy(pb).sub(pa)
       const effLen = dir.length() - ri - rj
-
       dir.normalize()
       cylPos.copy(pa).addScaledVector(dir, ri + effLen / 2)
       cylQuat.setFromUnitVectors(yAxis, dir)
       cylScale.set(1, effLen, 1)
       cylMatrix.compose(cylPos, cylQuat, cylScale)
       bondMesh.setMatrixAt(b, cylMatrix)
+
+      if (bondOutlineMesh) {
+        bondOutlineMesh.setMatrixAt(b, cylMatrix)
+      }
     }
     bondMesh.instanceMatrix.needsUpdate = true
+    if (bondOutlineMesh) bondOutlineMesh.instanceMatrix.needsUpdate = true
 
-    sphereMeshRef = sphereMesh
-    bondMeshRef = bondMesh
+    return { sphereMesh, bondMesh, sphereOutlineMesh, bondOutlineMesh }
+  }
+
+  $effect(() => {
+    const n = count
+    if (n < 1) {
+      sphereMeshRef = null
+      bondMeshRef = null
+      sphereOutlineMeshRef = null
+      bondOutlineMeshRef = null
+      return
+    }
+
+    const m = bonds.length
+    const showOutlines = illustrative && outlinesEnabled && outlineWidth > 0
+    const built = buildMeshes(n, m, showOutlines)
+
+    sphereMeshRef = built.sphereMesh
+    bondMeshRef = built.bondMesh
+    sphereOutlineMeshRef = built.sphereOutlineMesh
+    bondOutlineMeshRef = built.bondOutlineMesh
     invalidate()
 
     return () => {
-      sphereMesh.dispose()
-      bondMesh.dispose()
+      built.sphereMesh.dispose()
+      built.bondMesh.dispose()
+      built.sphereOutlineMesh?.dispose()
+      built.bondOutlineMesh?.dispose()
       sphereMeshRef = null
       bondMeshRef = null
+      sphereOutlineMeshRef = null
+      bondOutlineMeshRef = null
     }
   })
 
   const _tmpHL = new Color()
 
-  // Update colors when `getColor` or `highlightIndices` changes (atoms is not tracked).
   $effect(() => {
     const mesh = untrack(() => sphereMeshRef)
     if (!mesh) return
@@ -235,6 +337,12 @@
   })
 </script>
 
+{#if sphereOutlineMeshRef}
+  <T is={sphereOutlineMeshRef} />
+{/if}
+{#if bondOutlineMeshRef}
+  <T is={bondOutlineMeshRef} />
+{/if}
 {#if sphereMeshRef}
   <T is={sphereMeshRef} />
 {/if}

@@ -6,12 +6,16 @@
     InstancedBufferAttribute,
     InstancedMesh,
     Matrix4,
+    MeshBasicMaterial,
     MeshStandardMaterial,
+    MeshToonMaterial,
     Quaternion,
     SphereGeometry,
     Vector3
   } from 'three'
   import { defaultColorScheme } from '../../../lib/colorSchemes.js'
+  import { getToonGradientMap } from '../../../lib/viewer/illustrativeMaterial.js'
+  import { applyGlowMaterial } from '../../../lib/viewer/glowMaterial.js'
   import { untrack } from 'svelte'
 
   /** @typedef {{ x: number, y: number, z: number, element: string, name: string }} Atom */
@@ -57,7 +61,7 @@
   const VDW_SPHERE_Q = { 1: [12, 8], 2: [24, 16], 3: [48, 32], 4: [72, 48], 5: [128, 96] }
 
   /**
-   * @type {{atoms: Atom[], getColor?: ColorScheme, quality?: number, atomScale?: number, metalness?: number, roughness?: number, emissiveIntensity?: number, renderOrder?: number, depthTest?: boolean, opacity?: number, outline?: boolean}}
+   * @type {{atoms: Atom[], getColor?: ColorScheme, quality?: number, atomScale?: number, metalness?: number, roughness?: number, emissiveIntensity?: number, renderOrder?: number, depthTest?: boolean, opacity?: number, outline?: boolean, illustrative?: boolean, outlinesEnabled?: boolean, outlineColor?: string, outlineWidth?: number, glowBulb?: boolean}}
    */
   let {
     atoms = [],
@@ -71,7 +75,12 @@
     depthTest = true,
     opacity = 1.0,
     outline = false,
-    highlightIndices = new Set()
+    illustrative = false,
+    outlinesEnabled = true,
+    outlineColor = '#000000',
+    outlineWidth = 0.12,
+    highlightIndices = new Set(),
+    glowBulb = false
   } = $props()
 
   const { invalidate } = useThrelte()
@@ -79,25 +88,39 @@
   const count = $derived(atoms.length)
 
   let meshRef = $state(/** @type {InstancedMesh | null} */ (null))
+  let outlineMeshRef = $state(/** @type {InstancedMesh | null} */ (null))
 
   $effect(() => {
     const n = count
     if (n < 1) {
       meshRef = null
+      outlineMeshRef = null
       return
     }
 
     const [ws, hs] = VDW_SPHERE_Q[quality] ?? VDW_SPHERE_Q[3]
     const geometry = new SphereGeometry(1, ws, hs)
-    const material = new MeshStandardMaterial({
-      metalness,
-      roughness,
-      emissiveIntensity,
-      transparent: opacity < 1,
-      opacity,
-      depthTest,
-      ...(outline ? { side: BackSide } : {})
-    })
+
+    /** @type {import('three').Material} */
+    let material
+    if (illustrative) {
+      material = new MeshToonMaterial({ gradientMap: getToonGradientMap() })
+    } else {
+      const mat = new MeshStandardMaterial({
+        metalness,
+        roughness,
+        emissiveIntensity: glowBulb ? 0 : emissiveIntensity,
+        transparent: opacity < 1,
+        opacity,
+        depthTest,
+        ...(outline ? { side: BackSide } : {})
+      })
+      if (glowBulb && emissiveIntensity > 0.001) {
+        applyGlowMaterial(mat, emissiveIntensity, { useSurfaceColor: true })
+      }
+      material = mat
+    }
+
     const mesh = new InstancedMesh(geometry, material, n)
     mesh.renderOrder = renderOrder
     mesh.instanceColor = new InstancedBufferAttribute(new Float32Array(n * 3), 3)
@@ -107,6 +130,18 @@
     const scale = new Vector3()
     const pos = new Vector3()
 
+    const showOutlines = illustrative && outlinesEnabled && outlineWidth > 0
+    /** @type {InstancedMesh | null} */
+    let outlineMesh = null
+    if (showOutlines) {
+      const outlineMat = new MeshBasicMaterial({
+        color: outlineColor,
+        depthWrite: false
+      })
+      outlineMesh = new InstancedMesh(geometry.clone(), outlineMat, n)
+      outlineMesh.renderOrder = renderOrder - 1
+    }
+
     atoms.forEach((atom, index) => {
       pos.set(atom.x, atom.y, atom.z)
       const r = vdwRadius(atom.element) * atomScale
@@ -115,22 +150,35 @@
       matrix.compose(pos, quat, scale)
       mesh.setMatrixAt(index, matrix)
       mesh.setColorAt(index, color)
+
+      if (outlineMesh) {
+        const outlineScale = 1 + outlineWidth / Math.max(r, 0.5)
+        scale.set(r * outlineScale, r * outlineScale, r * outlineScale)
+        matrix.compose(pos, quat, scale)
+        outlineMesh.setMatrixAt(index, matrix)
+        outlineMesh.setColorAt(index, new Color(outlineColor))
+      }
     })
     mesh.instanceMatrix.needsUpdate = true
     mesh.instanceColor.needsUpdate = true
+    if (outlineMesh) {
+      outlineMesh.instanceMatrix.needsUpdate = true
+    }
 
     meshRef = mesh
+    outlineMeshRef = outlineMesh
     invalidate()
 
     return () => {
       mesh.dispose()
+      outlineMesh?.dispose()
       meshRef = null
+      outlineMeshRef = null
     }
   })
 
   const _tmpHL = new Color()
 
-  // Update colors when `getColor` or `highlightIndices` changes (atoms is not tracked).
   $effect(() => {
     const mesh = untrack(() => meshRef)
     if (!mesh) return
@@ -157,6 +205,9 @@
   })
 </script>
 
+{#if outlineMeshRef}
+  <T is={outlineMeshRef} />
+{/if}
 {#if meshRef}
   <T is={meshRef} />
 {/if}

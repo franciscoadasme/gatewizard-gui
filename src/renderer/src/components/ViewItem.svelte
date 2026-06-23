@@ -12,15 +12,24 @@
     cpkScheme,
     defaultColorScheme,
     chainScheme,
+    illustrativeChainScheme,
     residueNatureScheme,
     ssScheme,
     COLOR_PALETTE,
     SS_COLORS_DEFAULT,
     SS_LABELS,
-    MATERIAL_PRESETS
+    MATERIAL_PRESETS,
+    buildMaterialFromPreset,
+    isIllustrativeMaterial,
+    isGlowingMaterial,
+    resolveGlowingMaterial,
+    GLOWING_MATERIAL_DEFAULTS,
+    GLOWING_UI_SLIDERS,
+    ILLUSTRATIVE_CHAIN_PALETTE_HEX
   } from '../lib/colorSchemes.js'
+  import { countGlowPool, selectGlowLightAtoms } from '../lib/viewer/glowLights.js'
   import { getStructure } from '../lib/backendApi'
-  import { untrack } from 'svelte'
+  import { onDestroy, untrack } from 'svelte'
   import Button from './ui/Button.svelte'
   import ColorInput from './ui/ColorInput.svelte'
   import Focus from './icons/Focus.svelte'
@@ -80,7 +89,7 @@ Distance:
    *   tubeRadius: number,
    *   atomScale: number,
    *   bondScale: number,
-   *   material: { metalness: number, roughness: number, emissiveIntensity: number },
+   *   material: { preset?: string, metalness: number, roughness: number, emissiveIntensity: number },
    *   quality: number
    * }} View
    */
@@ -99,15 +108,17 @@ Distance:
   let invalidSelection = $state(false)
   let loadingStructure = $state(false)
   let namedSelection = $state(NAMED_SELECTIONS.includes(view.selection) ? view.selection : 'other')
+  let gearBackdropPointerDown = $state(false)
+  let helpBackdropPointerDown = $state(false)
+  /** Ignore stale /get-structure responses when a newer request was started. */
+  let structureFetchGen = 0
 
   // ── Reactivity ────────────────────────────────────────────────────────────
 
   $effect(() => {
     const sel = view.selection
     if (sel === '' || view._isSelHighlight) return
-    // Slow down live selection checks to avoid hammering /get-structure while typing.
-    // The same update still happens, just after a longer pause.
-    const tid = setTimeout(updateStructure, 500)
+    const tid = setTimeout(scheduleStructureUpdate, 500)
     return () => clearTimeout(tid)
   })
 
@@ -123,17 +134,22 @@ Distance:
       skipNextPathFetch.delete(view.id)
       return
     }
-    const tid = setTimeout(updateStructure, 300)
+    const tid = setTimeout(scheduleStructureUpdate, 300)
     return () => clearTimeout(tid)
   })
 
+  let _namedSelInit = false
   $effect(() => {
     const sel = namedSelection
     untrack(() => {
-      if (sel !== 'other') {
-        view.selection = ''
-        updateStructure()
+      if (sel !== 'other') view.selection = ''
+      if (!_namedSelInit) {
+        _namedSelInit = true
+        // Parent (load / auto-generate) already populated atoms — skip redundant fetch.
+        if (!view._prefetched && !view.atoms?.length) scheduleStructureUpdate()
+        return
       }
+      scheduleStructureUpdate()
     })
   })
 
@@ -142,11 +158,10 @@ Distance:
     const needsFetch = untrack(
       () =>
         (repr === 'ball-stick' && (view.bonds?.length || 0) < view.atoms.length / 2) ||
-        ((repr === 'cartoon' || repr === 'tube') && !view.residues)
+        ((repr === 'cartoon' || repr === 'tube') && !(view.residues?.length))
     )
     if (!needsFetch) return
-    const tid = setTimeout(updateStructure, 300)
-    return () => clearTimeout(tid)
+    scheduleStructureUpdate()
   })
 
   $effect(() => {
@@ -161,6 +176,8 @@ Distance:
       colorScheme.resolver = cpkScheme({ carbonColor: constantColorHex })
     } else if (colorSchemeName === 'chain') {
       colorScheme.resolver = chainScheme()
+    } else if (colorSchemeName === 'illustrative') {
+      colorScheme.resolver = illustrativeChainScheme()
     } else if (colorSchemeName === 'residue_nature') {
       colorScheme.resolver = residueNatureScheme()
     } else if (colorSchemeName === 'ss') {
@@ -182,6 +199,7 @@ Distance:
       view.representation.type === 'cartoon' ||
       view.representation.type === 'tube' ||
       colorSchemeName === 'ss'
+    const fetchGen = ++structureFetchGen
     loadingStructure = true
     getStructure({
       path: view.path,
@@ -190,17 +208,33 @@ Distance:
       needs_secondary_structure: needsSS
     })
       .then((structure) => {
-        view.atoms = structure.atoms
-        view.bonds = structure.bonds
-        view.residues = structure.residues
+        if (fetchGen !== structureFetchGen) return
+        if (structure.atoms?.length) view.atoms = structure.atoms
+        if (structure.bonds) view.bonds = structure.bonds
+        if (structure.residues?.length) view.residues = structure.residues
         invalidSelection = false
         loadingStructure = false
       })
       .catch(() => {
+        if (fetchGen !== structureFetchGen) return
         invalidSelection = true
         loadingStructure = false
       })
   }
+
+  /** Skip redundant /get-structure while auto-generate data is still settling in. */
+  function scheduleStructureUpdate() {
+    if (view._prefetched) return
+    updateStructure()
+  }
+
+  $effect(() => {
+    if (!view._prefetched) return
+    const tid = setTimeout(() => {
+      view._prefetched = false
+    }, 0)
+    return () => clearTimeout(tid)
+  })
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -210,13 +244,71 @@ Distance:
   }
 
   function applyMaterialPreset(preset) {
-    const [m, r, e] = MATERIAL_PRESETS[preset]
-    view.material = { metalness: m, roughness: r, emissiveIntensity: e }
+    view.material = buildMaterialFromPreset(preset)
+    if (preset === 'Illustrative') {
+      view.colorScheme = { name: 'illustrative', resolver: illustrativeChainScheme() }
+      colorSchemeName = 'illustrative'
+    }
   }
+
+  /** @param {HTMLDialogElement | null} dialog */
+  function mountDialogToBody(dialog) {
+    if (dialog && dialog.parentElement !== document.body) {
+      document.body.appendChild(dialog)
+    }
+  }
+
+  function openGearDialog() {
+    mountDialogToBody(gearDialog)
+    gearDialog?.showModal()
+  }
+
+  function closeGearDialog() {
+    gearDialog?.close()
+  }
+
+  function openHelpDialog() {
+    mountDialogToBody(helpDialog)
+    helpDialog?.showModal()
+  }
+
+  function closeHelpDialog() {
+    helpDialog?.close()
+  }
+
+  /** @param {MouseEvent} event */
+  function onGearDialogClick(event) {
+    if (event.target === gearDialog && gearBackdropPointerDown) closeGearDialog()
+    gearBackdropPointerDown = false
+  }
+
+  /** @param {PointerEvent} event */
+  function onGearDialogPointerDown(event) {
+    gearBackdropPointerDown = event.target === gearDialog
+  }
+
+  /** @param {MouseEvent} event */
+  function onHelpDialogClick(event) {
+    if (event.target === helpDialog && helpBackdropPointerDown) closeHelpDialog()
+    helpBackdropPointerDown = false
+  }
+
+  /** @param {PointerEvent} event */
+  function onHelpDialogPointerDown(event) {
+    helpBackdropPointerDown = event.target === helpDialog
+  }
+
+  onDestroy(() => {
+    if (gearDialog?.open) gearDialog.close()
+    if (helpDialog?.open) helpDialog.close()
+  })
 
   const swatchColors = $derived(() => {
     if (colorSchemeName === 'chain') {
       return ['#e6194b', '#3cb44b', '#ffe119', '#0082c8']
+    }
+    if (colorSchemeName === 'illustrative') {
+      return ILLUSTRATIVE_CHAIN_PALETTE_HEX.slice(0, 4)
     }
     if (colorSchemeName === 'residue_nature') {
       return ['#e6c832', '#dc3c3c', '#4664dc', '#f09632']
@@ -226,6 +318,25 @@ Distance:
       return [c.H ?? '#7259ea', c.E ?? '#2196a6', c.C ?? '#e8e8e8', c.G ?? '#3fb4ea']
     }
     return null
+  })
+
+  const glowingBulbStats = $derived.by(() => {
+    if (!isGlowingMaterial(view.material)) return null
+    const m = resolveGlowingMaterial(view.material)
+    if (!m.glowEmitLight) return { disabled: true }
+    const atoms = view.atoms ?? []
+    const maxLights = m.glowMaxLights ?? GLOWING_MATERIAL_DEFAULTS.glowMaxLights
+    const filter = m.glowAtomFilter ?? GLOWING_MATERIAL_DEFAULTS.glowAtomFilter
+    if (filter === 'highlighted') {
+      return { filter, maxLights, needsSelection: true }
+    }
+    const pool = countGlowPool(atoms, filter)
+    const active = selectGlowLightAtoms(atoms, {
+      filter,
+      maxLights,
+      highlightIndices: new Set()
+    }).length
+    return { filter, pool, active, maxLights, capped: pool > maxLights }
   })
 
   const SWATCH_ATOMS = [
@@ -240,7 +351,7 @@ Distance:
 {#if view._isSelHighlight}
   <!-- Compact read-only row for temporary selection highlight views -->
   <div
-    class="flex items-center gap-2 border-b border-neutral-800 bg-yellow-500/5 px-2 py-1.5 select-none"
+    class="flex items-center gap-2 border-b border-neutral-200 bg-yellow-500/5 px-2 py-1.5 select-none dark:border-neutral-800"
   >
     <div class="size-2 shrink-0 rounded-full bg-yellow-400/70"></div>
     <div class="min-w-0 flex-1 truncate text-[10px] text-yellow-300/80 italic">
@@ -255,9 +366,9 @@ Distance:
   </div>
 {:else}
   <div
-    class="gap-2 border-b border-neutral-800 p-2 select-none {view.visible
-      ? 'white bg-neutral-900'
-      : 'text-neutral-400'}"
+    class="gap-2 border-b border-neutral-200 p-2 select-none dark:border-neutral-800 {view.visible
+      ? 'bg-neutral-50 text-neutral-900 dark:bg-neutral-900 dark:text-white'
+      : 'text-neutral-500 dark:text-neutral-400'}"
   >
     <div class="flex items-center gap-2">
       <!-- Visibility toggle -->
@@ -272,7 +383,7 @@ Distance:
           }}
         />
         <div
-          class="pointer-events-none h-full w-full rounded-full border-2 border-neutral-500 bg-transparent transition-[background-color,border-color] peer-checked:border-neutral-100 peer-checked:bg-neutral-100 peer-focus-visible:ring-2 peer-focus-visible:ring-neutral-400"
+          class="pointer-events-none h-full w-full rounded-full border-2 border-neutral-400 bg-transparent transition-[background-color,border-color] peer-checked:border-neutral-800 peer-checked:bg-neutral-800 peer-focus-visible:ring-2 peer-focus-visible:ring-neutral-400 dark:border-neutral-500 dark:peer-checked:border-neutral-100 dark:peer-checked:bg-neutral-100 dark:peer-focus-visible:ring-neutral-600"
           aria-hidden="true"
         ></div>
       </div>
@@ -290,7 +401,7 @@ Distance:
       <div class="relative flex shrink-0 items-center">
         <button
           type="button"
-          class="rounded bg-neutral-800 px-1.5 py-0.5 text-[10px] transition-colors hover:bg-neutral-700"
+          class="rounded bg-neutral-200 px-1.5 py-0.5 text-[10px] text-neutral-800 transition-colors hover:bg-neutral-300 dark:bg-neutral-800 dark:text-neutral-100 dark:hover:bg-neutral-700"
           onclick={cycleRepr}
           title="Click to cycle representation"
         >
@@ -336,7 +447,7 @@ Distance:
       <!-- Gear → opens dialog -->
       <button
         type="button"
-        onclick={() => gearDialog?.showModal()}
+        onclick={openGearDialog}
         class="focus-visible:outline-none active:translate-y-0.5"
         title="View settings"
       >
@@ -348,12 +459,12 @@ Distance:
     {#if colorPickerOpen}
       <div class="mt-2 flex flex-col gap-2">
         <div class="flex flex-wrap gap-1">
-          {#each [{ v: 'cpk', l: 'CPK' }, { v: 'chain', l: 'Chain' }, { v: 'residue_nature', l: 'Residue' }, { v: 'ss', l: 'SS' }, { v: 'cpk-carbon', l: 'CPK+C' }, { v: 'constant', l: 'Uniform' }] as opt (opt.v)}
+          {#each [{ v: 'cpk', l: 'CPK' }, { v: 'chain', l: 'Chain' }, { v: 'illustrative', l: 'Pastel' }, { v: 'residue_nature', l: 'Residue' }, { v: 'ss', l: 'SS' }, { v: 'cpk-carbon', l: 'CPK+C' }, { v: 'constant', l: 'Uniform' }] as opt (opt.v)}
             <button
               type="button"
               class="rounded px-2 py-0.5 text-[10px] transition-colors {colorSchemeName === opt.v
                 ? 'bg-blue-600 text-white'
-                : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'}"
+                : 'bg-neutral-200 text-neutral-700 hover:bg-neutral-300 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700'}"
               onclick={() => {
                 colorSchemeName = opt.v
               }}
@@ -370,7 +481,7 @@ Distance:
           <div class="grid grid-cols-8 gap-1">
             {#each COLOR_PALETTE as color (color.getHexString())}
               <button
-                class="aspect-square w-full rounded-sm border border-neutral-800 bg-neutral-950 p-0.5 hover:border-neutral-600 active:translate-y-0.5"
+                class="aspect-square w-full rounded-sm border border-neutral-200 bg-white p-0.5 hover:border-neutral-400 active:translate-y-0.5 dark:border-neutral-800 dark:bg-neutral-950 dark:hover:border-neutral-600"
                 aria-label="Select color #{color.getHexString()}"
                 onclick={() => (constantColorHex = `#${color.getHexString()}`)}
               >
@@ -390,18 +501,27 @@ Distance:
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <dialog
     bind:this={gearDialog}
-    class="max-h-[85vh] w-80 overflow-y-auto rounded-lg border border-neutral-700 bg-neutral-900 p-0 text-xs text-neutral-100 shadow-2xl backdrop:bg-black/60"
-    onclick={(e) => {
-      if (e.target === gearDialog) gearDialog?.close()
+    class="fixed top-10 bottom-10 left-16 z-50 m-0 w-80 max-w-[calc(100vw-5rem)] overflow-y-auto rounded-lg border border-neutral-300 bg-white p-0 text-xs text-neutral-900 shadow-2xl backdrop:bg-black/20 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+    onpointerdown={onGearDialogPointerDown}
+    onclick={onGearDialogClick}
+    oncancel={(e) => {
+      e.preventDefault()
+      closeGearDialog()
     }}
   >
-    <form method="dialog" class="flex flex-col gap-0">
+    <div class="flex flex-col gap-0">
       <div
-        class="sticky top-0 z-10 flex items-center justify-between border-b border-neutral-700 bg-neutral-900 px-3 py-2"
+        class="sticky top-0 z-10 flex items-center justify-between border-b border-neutral-200 bg-white px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
       >
         <span class="text-sm font-medium">View settings</span>
-        <button type="submit" class="text-lg leading-none text-neutral-400 hover:text-white"
-          >&times;</button
+        <button
+          type="button"
+          class="relative z-20 -mr-1 min-h-8 min-w-8 rounded px-2 text-lg leading-none text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 dark:hover:bg-neutral-800 dark:hover:text-white"
+          aria-label="Close"
+          onclick={(e) => {
+            e.stopPropagation()
+            closeGearDialog()
+          }}>&times;</button
         >
       </div>
 
@@ -409,7 +529,7 @@ Distance:
         <!-- Selection -->
         <section class="space-y-1.5">
           <div class="flex items-center justify-between">
-            <p class="font-medium text-neutral-300">Selection</p>
+            <p class="font-medium text-neutral-800 dark:text-neutral-300">Selection</p>
             <span class="text-neutral-500">{view.atoms?.length ?? 0} atoms</span>
           </div>
           <Select size="sm" className="w-full capitalize" bind:value={namedSelection}>
@@ -428,9 +548,9 @@ Distance:
               />
               <button
                 type="button"
-                class="shrink-0 rounded border border-neutral-600 px-2 py-0.5 text-neutral-400 transition-colors hover:border-neutral-400 hover:text-white"
+                class="shrink-0 rounded border border-neutral-300 px-2 py-0.5 text-neutral-600 transition-colors hover:border-neutral-400 hover:text-neutral-900 dark:border-neutral-600 dark:text-neutral-400 dark:hover:border-neutral-400 dark:hover:text-white"
                 title="MDAnalysis selection help"
-                onclick={() => helpDialog?.showModal()}>?</button
+                onclick={openHelpDialog}>?</button
               >
             </div>
           {/if}
@@ -438,7 +558,7 @@ Distance:
 
         <!-- Representation -->
         <section class="space-y-1.5">
-          <p class="font-medium text-neutral-300">Representation</p>
+          <p class="font-medium text-neutral-800 dark:text-neutral-300">Representation</p>
           <Select
             size="sm"
             className="w-full"
@@ -459,9 +579,9 @@ Distance:
         <!-- VdW atom size -->
         {#if view.representation.type === 'vdw'}
           <section class="space-y-2">
-            <p class="font-medium text-neutral-300">Atom size</p>
+            <p class="font-medium text-neutral-800 dark:text-neutral-300">Atom size</p>
             <div class="flex items-center gap-2">
-              <span class="w-10 shrink-0 text-neutral-400">Scale</span>
+              <span class="w-10 shrink-0 text-neutral-600 dark:text-neutral-400">Scale</span>
               <input
                 type="range"
                 class="flex-1 accent-blue-500"
@@ -481,10 +601,10 @@ Distance:
         <!-- Ball-stick atom & bond size -->
         {#if view.representation.type === 'ball-stick'}
           <section class="space-y-2">
-            <p class="font-medium text-neutral-300">Atom &amp; Bond size</p>
+            <p class="font-medium text-neutral-800 dark:text-neutral-300">Atom &amp; Bond size</p>
             {#each [{ label: 'Atom', key: 'atomScale', min: 0.2, max: 2.0, step: 0.05, def: 1.0 }, { label: 'Bond', key: 'bondScale', min: 0.1, max: 4.0, step: 0.1, def: 1.0 }] as s (s.key)}
               <div class="flex items-center gap-2">
-                <span class="w-10 shrink-0 text-neutral-400">{s.label}</span>
+                <span class="w-10 shrink-0 text-neutral-600 dark:text-neutral-400">{s.label}</span>
                 <input
                   type="range"
                   class="flex-1 accent-blue-500"
@@ -505,10 +625,10 @@ Distance:
         <!-- Cartoon dimensions / Tube radius -->
         {#if view.representation.type === 'cartoon'}
           <section class="space-y-2">
-            <p class="font-medium text-neutral-300">Cartoon dimensions</p>
+            <p class="font-medium text-neutral-800 dark:text-neutral-300">Cartoon dimensions</p>
             {#each [{ label: 'Helix', key: 'helixWidth', min: 0.1, max: 2.5, step: 0.05 }, { label: 'Sheet', key: 'sheetWidth', min: 0.1, max: 2.5, step: 0.05 }, { label: 'Coil', key: 'coilWidth', min: 0.03, max: 0.5, step: 0.01 }] as s (s.key)}
               <div class="flex items-center gap-2">
-                <span class="w-10 shrink-0 text-neutral-400">{s.label}</span>
+                <span class="w-10 shrink-0 text-neutral-600 dark:text-neutral-400">{s.label}</span>
                 <input
                   type="range"
                   class="flex-1 accent-blue-500"
@@ -530,10 +650,10 @@ Distance:
         {#if view.representation.type === 'cartoon' || view.representation.type === 'tube'}
           <section class="space-y-2">
             <div class="flex items-center justify-between">
-              <p class="font-medium text-neutral-300">SS colors</p>
+              <p class="font-medium text-neutral-800 dark:text-neutral-300">SS colors</p>
               <button
                 type="button"
-                class="text-[10px] text-neutral-500 hover:text-neutral-300"
+                class="text-[10px] text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-300"
                 onclick={() => {
                   view.ssColors = null
                 }}>Reset</button
@@ -544,10 +664,10 @@ Distance:
                 (view.ssColors ?? SS_COLORS_DEFAULT)[code] ?? SS_COLORS_DEFAULT[code] ?? '#888888'}
               <div class="flex items-center gap-2">
                 <div
-                  class="size-3 shrink-0 rounded-sm border border-neutral-700"
+                  class="size-3 shrink-0 rounded-sm border border-neutral-300 dark:border-neutral-700"
                   style="background-color: {currentHex};"
                 ></div>
-                <span class="w-20 shrink-0 text-neutral-400">{label}</span>
+                <span class="w-20 shrink-0 text-neutral-600 dark:text-neutral-400">{label}</span>
                 <input
                   type="color"
                   class="h-5 w-10 cursor-pointer rounded border-0 bg-transparent p-0"
@@ -572,9 +692,9 @@ Distance:
         <!-- Tube radius -->
         {#if view.representation.type === 'tube'}
           <section class="space-y-2">
-            <p class="font-medium text-neutral-300">Tube radius</p>
+            <p class="font-medium text-neutral-800 dark:text-neutral-300">Tube radius</p>
             <div class="flex items-center gap-2">
-              <span class="w-10 shrink-0 text-neutral-400">Radius</span>
+              <span class="w-10 shrink-0 text-neutral-600 dark:text-neutral-400">Radius</span>
               <input
                 type="range"
                 class="flex-1 accent-blue-500"
@@ -593,40 +713,171 @@ Distance:
 
         <!-- Material -->
         <section class="space-y-2">
-          <p class="font-medium text-neutral-300">Material</p>
+          <p class="font-medium text-neutral-800 dark:text-neutral-300">Material</p>
           <div class="flex flex-wrap gap-1">
             {#each Object.keys(MATERIAL_PRESETS) as preset (preset)}
               <button
                 type="button"
-                class="rounded bg-neutral-800 px-2 py-0.5 text-[10px] transition-colors hover:bg-neutral-700"
+                class="rounded px-2 py-0.5 text-[10px] capitalize transition-colors {(view.material?.preset ??
+                'Default') === preset
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-neutral-200 text-neutral-700 hover:bg-neutral-300 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700'}"
                 onclick={() => applyMaterialPreset(preset)}>{preset}</button
               >
             {/each}
           </div>
-          {#each [{ label: 'Metalness', key: 'metalness', min: 0, max: 1, step: 0.01 }, { label: 'Roughness', key: 'roughness', min: 0, max: 1, step: 0.01 }, { label: 'Ambient', key: 'emissiveIntensity', min: 0, max: 0.4, step: 0.01 }] as s (s.key)}
-            <div class="flex items-center gap-2">
-              <span class="w-16 shrink-0 text-neutral-400">{s.label}</span>
-              <input
-                type="range"
-                class="flex-1 accent-blue-500"
-                min={s.min}
-                max={s.max}
-                step={s.step}
-                value={view.material[s.key]}
-                oninput={(e) => {
-                  view.material[s.key] = +e.target.value
-                }}
-              />
-              <span class="w-8 text-right tabular-nums"
-                >{(view.material[s.key] ?? 0).toFixed(2)}</span
-              >
+          {#if isIllustrativeMaterial(view.material)}
+            <div class="space-y-2 rounded border border-neutral-200 p-2 dark:border-neutral-700">
+              <p class="text-[10px] font-medium text-neutral-700 dark:text-neutral-300">Outlines</p>
+              <label class="flex items-center gap-2 text-neutral-700 dark:text-neutral-300">
+                <input type="checkbox" bind:checked={view.material.outlinesEnabled} />
+                Show outlines
+              </label>
+              <div class="flex items-center gap-2">
+                <span class="w-12 shrink-0 text-neutral-600 dark:text-neutral-400">Color</span>
+                <ColorInput size="sm" bind:value={view.material.outlineColor} />
+                <Input type="text" size="sm" className="field-input flex-1" bind:value={view.material.outlineColor} />
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="w-12 shrink-0 text-neutral-600 dark:text-neutral-400">Width</span>
+                <input
+                  type="range"
+                  class="flex-1 accent-blue-500"
+                  min={0.04}
+                  max={0.35}
+                  step={0.01}
+                  bind:value={view.material.outlineWidth}
+                />
+                <span class="w-10 text-right tabular-nums">{view.material.outlineWidth.toFixed(2)}</span>
+              </div>
+              <label class="flex items-center gap-2 text-neutral-700 dark:text-neutral-300">
+                <input type="checkbox" bind:checked={view.material.useIllustrativeLighting} />
+                Flat illustrative lighting
+              </label>
+              <p class="text-[10px] leading-snug text-neutral-500 dark:text-neutral-400">
+                Lighting is restored automatically when you switch to another material or disable this
+                option.
+              </p>
             </div>
-          {/each}
+          {:else if isGlowingMaterial(view.material)}
+            <div class="space-y-2 rounded border border-neutral-200 p-2 dark:border-neutral-700">
+              <p class="text-[10px] leading-snug text-neutral-500 dark:text-neutral-400">
+                Atoms act as colored bulbs: they emit light into the scene and tint nearby
+                surfaces. Use a tight selection (e.g. ligand) or “Selected atoms only” for a few
+                bright sources inside a protein.
+              </p>
+              <label class="flex items-center gap-2 text-neutral-700 dark:text-neutral-300">
+                <input type="checkbox" bind:checked={view.material.glowEmitLight} />
+                Emit scene light from atoms
+              </label>
+              <div class="flex items-center gap-2">
+                <span class="w-16 shrink-0 text-neutral-600 dark:text-neutral-400">Bulb filter</span>
+                <select
+                  class="field-input flex-1 rounded px-1.5 py-0.5 text-[11px]"
+                  bind:value={view.material.glowAtomFilter}
+                >
+                  <option value="non_hydrogen">Heavy atoms (no H)</option>
+                  <option value="all">All atoms</option>
+                  <option value="highlighted">Selected / hovered only</option>
+                </select>
+              </div>
+              {#if glowingBulbStats}
+                <p class="text-[10px] tabular-nums text-neutral-600 dark:text-neutral-400">
+                  {#if glowingBulbStats.disabled}
+                    Scene bulbs off (enable “Emit scene light”).
+                  {:else if glowingBulbStats.needsSelection}
+                    Scene bulbs: select atoms in the viewer (max {glowingBulbStats.maxLights}).
+                  {:else}
+                    Scene bulbs: {glowingBulbStats.active} active
+                    {#if glowingBulbStats.capped}
+                      (pool {glowingBulbStats.pool}, capped at {glowingBulbStats.maxLights})
+                    {:else}
+                      of {glowingBulbStats.pool} eligible atoms
+                    {/if}
+                  {/if}
+                </p>
+              {/if}
+              {#each GLOWING_UI_SLIDERS as s (s.key)}
+                <div class="flex items-center gap-2">
+                  <span class="w-16 shrink-0 text-neutral-600 dark:text-neutral-400">{s.label}</span>
+                  <input
+                    type="range"
+                    class="flex-1 accent-blue-500"
+                    min={s.min}
+                    max={s.max}
+                    step={s.step}
+                    value={view.material[s.key] ??
+                      (s.key === 'emissiveIntensity' ? 2.5 : GLOWING_MATERIAL_DEFAULTS[s.key])}
+                    oninput={(e) => {
+                      view.material = {
+                        ...view.material,
+                        preset: 'Glowing',
+                        [s.key]: +e.target.value
+                      }
+                    }}
+                  />
+                  <span class="w-10 text-right tabular-nums"
+                    >{(
+                      view.material[s.key] ??
+                      (s.key === 'emissiveIntensity' ? 2.5 : GLOWING_MATERIAL_DEFAULTS[s.key]) ??
+                      0
+                    ).toFixed(s.decimals)}</span
+                  >
+                </div>
+              {/each}
+              {#each [{ label: 'Metalness', key: 'metalness' }, { label: 'Roughness', key: 'roughness' }] as s (s.key)}
+                <div class="flex items-center gap-2">
+                  <span class="w-16 shrink-0 text-neutral-600 dark:text-neutral-400">{s.label}</span>
+                  <input
+                    type="range"
+                    class="flex-1 accent-blue-500"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={view.material[s.key] ?? (s.key === 'roughness' ? 0.15 : 0)}
+                    oninput={(e) => {
+                      view.material = {
+                        ...view.material,
+                        preset: 'Glowing',
+                        [s.key]: +e.target.value
+                      }
+                    }}
+                  />
+                  <span class="w-8 text-right tabular-nums">{(view.material[s.key] ?? 0).toFixed(2)}</span>
+                </div>
+              {/each}
+              <p class="text-[10px] leading-snug text-neutral-500 dark:text-neutral-400">
+                Surface glow = self-lit atoms; scene bulbs = point lights (Max bulbs only matters when
+                eligible atoms exceed the cap). Lower Surface glow to see metalness / roughness.
+                DevTools warns if materials fail to mount (F12).
+              </p>
+            </div>
+          {:else}
+            {#each [{ label: 'Metalness', key: 'metalness', min: 0, max: 1, step: 0.01 }, { label: 'Roughness', key: 'roughness', min: 0, max: 1, step: 0.01 }, { label: 'Glow', key: 'emissiveIntensity', min: 0, max: 2, step: 0.05 }] as s (s.key)}
+              <div class="flex items-center gap-2">
+                <span class="w-16 shrink-0 text-neutral-600 dark:text-neutral-400">{s.label}</span>
+                <input
+                  type="range"
+                  class="flex-1 accent-blue-500"
+                  min={s.min}
+                  max={s.max}
+                  step={s.step}
+                  value={view.material[s.key]}
+                  oninput={(e) => {
+                    view.material = { ...view.material, preset: view.material?.preset ?? 'Default', [s.key]: +e.target.value }
+                  }}
+                />
+                <span class="w-8 text-right tabular-nums"
+                  >{(view.material[s.key] ?? 0).toFixed(2)}</span
+                >
+              </div>
+            {/each}
+          {/if}
         </section>
 
         <!-- Quality -->
         <section class="space-y-2">
-          <p class="font-medium text-neutral-300">Quality</p>
+          <p class="font-medium text-neutral-800 dark:text-neutral-300">Quality</p>
           <div class="flex gap-1">
             {#each [{ v: 1, l: 'Low' }, { v: 2, l: 'Med' }, { v: 3, l: 'High' }, { v: 4, l: 'Ultra' }, { v: 5, l: 'Max' }] as q (q.v)}
               <button
@@ -634,7 +885,7 @@ Distance:
                 class="flex-1 rounded px-1 py-0.5 text-xs transition-colors
                 {(view.quality ?? 3) === q.v
                   ? 'bg-blue-600 text-white'
-                  : 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700'}"
+                  : 'bg-neutral-200 text-neutral-700 hover:bg-neutral-300 dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700'}"
                 onclick={() => {
                   view.quality = q.v
                 }}>{q.l}</button
@@ -650,34 +901,43 @@ Distance:
           type="button"
           className="w-full"
           onclick={() => {
-            gearDialog?.close()
+            closeGearDialog()
             onremove()
           }}
         >
           Remove
         </Button>
       </div>
-    </form>
+    </div>
   </dialog>
 
   <!-- ── MDAnalysis help dialog ────────────────────────────────────────────────-->
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <dialog
     bind:this={helpDialog}
-    class="max-h-[80vh] w-96 overflow-y-auto rounded-lg border border-neutral-700 bg-neutral-900 p-0 text-xs text-neutral-100 shadow-2xl backdrop:bg-black/60"
-    onclick={(e) => {
-      if (e.target === helpDialog) helpDialog?.close()
+    class="fixed top-1/2 left-1/2 m-0 max-h-[80vh] w-96 max-w-[90vw] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border border-neutral-300 bg-white p-0 text-xs text-neutral-900 shadow-2xl backdrop:bg-black/60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+    onpointerdown={onHelpDialogPointerDown}
+    onclick={onHelpDialogClick}
+    oncancel={(e) => {
+      e.preventDefault()
+      closeHelpDialog()
     }}
   >
-    <form method="dialog" class="flex flex-col">
-      <div class="flex items-center justify-between border-b border-neutral-700 px-3 py-2">
+    <div class="flex flex-col">
+      <div class="flex items-center justify-between border-b border-neutral-200 px-3 py-2 dark:border-neutral-700">
         <span class="text-sm font-medium">MDAnalysis Selection Language</span>
-        <button type="submit" class="text-lg leading-none text-neutral-400 hover:text-white"
-          >&times;</button
+        <button
+          type="button"
+          class="relative z-20 -mr-1 min-h-8 min-w-8 rounded px-2 text-lg leading-none text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 dark:hover:bg-neutral-800 dark:hover:text-white"
+          aria-label="Close"
+          onclick={(e) => {
+            e.stopPropagation()
+            closeHelpDialog()
+          }}>&times;</button
         >
       </div>
       <pre
-        class="p-4 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-neutral-300">{MDA_HELP}</pre>
-    </form>
+        class="p-4 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-neutral-700 dark:text-neutral-300">{MDA_HELP}</pre>
+    </div>
   </dialog>
 {/if}

@@ -62,8 +62,88 @@ export const MATERIAL_PRESETS = /** @type {Record<string, [number,number,number]
   Matte:    [0.00, 0.90, 0.05],
   Metallic: [0.80, 0.20, 0.0],
   Plastic:  [0.05, 0.30, 0.0],
-  Glowing:  [0.00, 0.60, 0.18]
+  Glowing:  [0.00, 0.15, 2.5],
+  Illustrative: [0.0, 1.0, 0.0]
 })
+
+/** Per-view bulb options when preset is Glowing. */
+export const GLOWING_MATERIAL_DEFAULTS = {
+  /** Spawn colored point lights at atoms (illuminates the whole scene). */
+  glowEmitLight: true,
+  /** Point-light intensity (candela in Three.js physical units). */
+  glowLightIntensity: 18,
+  /** Light falloff radius in Å (same units as structure coordinates). */
+  glowLightDistance: 24,
+  /** Inverse-square falloff exponent (2 = physical). */
+  glowLightDecay: 2,
+  /** Cap lights for performance when many atoms are shown. */
+  glowMaxLights: 48,
+  /** Which atoms become bulbs: all, non_hydrogen, or highlighted selection only. */
+  glowAtomFilter: /** @type {'all' | 'non_hydrogen' | 'highlighted'} */ ('non_hydrogen')
+}
+
+/** Glowing preset slider ranges in ViewItem (extended for extreme looks). */
+export const GLOWING_UI_SLIDERS = [
+  { label: 'Surface glow', key: 'emissiveIntensity', min: 0, max: 20, step: 0.25, decimals: 1 },
+  { label: 'Light power', key: 'glowLightIntensity', min: 0, max: 300, step: 1, decimals: 0 },
+  { label: 'Light reach', key: 'glowLightDistance', min: 1, max: 500, step: 1, decimals: 0 },
+  { label: 'Max bulbs', key: 'glowMaxLights', min: 1, max: 1024, step: 1, decimals: 0 }
+]
+
+/** Pastel chain palette inspired by Mol* / Goodsell illustrative style. */
+export const ILLUSTRATIVE_CHAIN_PALETTE_HEX = [
+  '#f4a3a8', '#a8d4a0', '#9ec5e8', '#f7d08a',
+  '#c5a3d9', '#7ec8c8', '#f5b87a', '#b8c4e8',
+  '#e8a0c8', '#98d4b0'
+]
+
+/** Per-view illustrative options (stored on view.material when preset is Illustrative). */
+export const ILLUSTRATIVE_MATERIAL_DEFAULTS = {
+  outlinesEnabled: true,
+  outlineColor: '#000000',
+  outlineWidth: 0.12,
+  useIllustrativeLighting: true
+}
+
+/**
+ * @param {{ preset?: string, metalness?: number, roughness?: number, emissiveIntensity?: number, outlinesEnabled?: boolean, outlineColor?: string, outlineWidth?: number, useIllustrativeLighting?: boolean }} material
+ */
+export function isIllustrativeMaterial(material) {
+  return material?.preset === 'Illustrative'
+}
+
+/**
+ * @param {Record<string, unknown> | null | undefined} material
+ */
+export function isGlowingMaterial(material) {
+  return material?.preset === 'Glowing'
+}
+
+/**
+ * Merge stored Glowing options with defaults (handles older saved views).
+ * @param {Record<string, unknown> | null | undefined} material
+ */
+export function resolveGlowingMaterial(material) {
+  if (!isGlowingMaterial(material)) return material
+  return { ...GLOWING_MATERIAL_DEFAULTS, ...material }
+}
+
+/**
+ * @param {string} preset
+ */
+export function buildMaterialFromPreset(preset) {
+  const values = MATERIAL_PRESETS[preset] ?? MATERIAL_PRESETS.Default
+  const [metalness, roughness, emissiveIntensity] = values
+  if (preset === 'Illustrative') {
+    return { preset, metalness, roughness, emissiveIntensity, ...ILLUSTRATIVE_MATERIAL_DEFAULTS }
+  }
+  if (preset === 'Glowing') {
+    return { preset, metalness, roughness, emissiveIntensity, ...GLOWING_MATERIAL_DEFAULTS }
+  }
+  return { preset, metalness, roughness, emissiveIntensity }
+}
+
+export const DEFAULT_VIEW_MATERIAL = buildMaterialFromPreset('Default')
 
 export const COLOR_PALETTE = [
   // intense colors
@@ -181,6 +261,25 @@ export function chainScheme() {
     const key = atom.chain_id ?? atom.chainId ?? ''
     if (!cache.has(key)) {
       const hex = CHAIN_PALETTE_HEX[chainIndex % CHAIN_PALETTE_HEX.length]
+      cache.set(key, new Color(hex))
+      chainIndex++
+    }
+    return cache.get(key)
+  }
+}
+
+/**
+ * Soft pastel chain colours for Goodsell / Molecule of the Month style cartoon.
+ * @returns {(atom: AtomLike) => Color}
+ */
+export function illustrativeChainScheme() {
+  /** @type {Map<string, Color>} */
+  const cache = new Map()
+  let chainIndex = 0
+  return (atom) => {
+    const key = atom.chain_id ?? atom.chainId ?? ''
+    if (!cache.has(key)) {
+      const hex = ILLUSTRATIVE_CHAIN_PALETTE_HEX[chainIndex % ILLUSTRATIVE_CHAIN_PALETTE_HEX.length]
       cache.set(key, new Color(hex))
       chainIndex++
     }

@@ -1,12 +1,17 @@
 <script>
+  import { onDestroy } from 'svelte'
   import { T, useThrelte } from '@threlte/core'
   import { Color, DoubleSide, Mesh, MeshStandardMaterial } from 'three'
   import { buildCartoonGeometries } from '../../../lib/viewer/cartoon.js'
   import { defaultColorScheme } from '../../../lib/colorSchemes.js'
+  import {
+    createIllustrativeSurfaceMaterial,
+    createSilhouetteOutlineMaterial
+  } from '../../../lib/viewer/illustrativeMaterial.js'
 
   /**
    * @type {{
-   *   atoms: { x: number, y: number, z: number, name: string }[],
+   *   atoms: { x: number, y: number, z: number, name: string, index?: number }[],
    *   residues: Array<{
    *     chain: string,
    *     number: number,
@@ -23,7 +28,11 @@
    *   quality?: number,
    *   metalness?: number,
    *   roughness?: number,
-   *   emissiveIntensity?: number
+   *   emissiveIntensity?: number,
+   *   illustrative?: boolean,
+   *   outlinesEnabled?: boolean,
+   *   outlineColor?: string,
+   *   outlineWidth?: number
    * }}
    */
   let {
@@ -38,6 +47,10 @@
     metalness = 0.08,
     roughness = 0.48,
     emissiveIntensity = 0.0,
+    illustrative = false,
+    outlinesEnabled = true,
+    outlineColor = '#000000',
+    outlineWidth = 0.12,
     highlightIndices = new Set()
   } = $props()
 
@@ -65,13 +78,19 @@
     side: DoubleSide
   })
 
+  const illustrativeMaterial = createIllustrativeSurfaceMaterial(true)
+  illustrativeMaterial.side = DoubleSide
+
   /** @type {Mesh[]} */
   let meshes = $state([])
 
   $effect(() => {
+    if (illustrative) return
     material.metalness = metalness
     material.roughness = roughness
     material.emissiveIntensity = emissiveIntensity
+    material.emissive.setHex(0x000000)
+    material.toneMapped = true
     material.needsUpdate = true
     invalidate()
   })
@@ -82,24 +101,67 @@
       return
     }
 
-    const geometries = buildCartoonGeometries(atoms, residues, _effectiveGetColor, {
-      helixWidth,
-      sheetWidth,
-      coilWidth,
-      ssColors,
-      quality
-    })
-    const newMeshes = geometries.map((geom) => new Mesh(geom, material))
+    const surfaceMat = illustrative ? illustrativeMaterial : material
+    const showOutlines = illustrative && outlinesEnabled && outlineWidth > 0
+    const outlineMat = showOutlines ? createSilhouetteOutlineMaterial(outlineColor) : null
 
-    meshes = newMeshes
+    /** @type {Mesh[]} */
+    const nextMeshes = []
+
+    try {
+      const geometries = buildCartoonGeometries(atoms, residues, _effectiveGetColor, {
+        helixWidth,
+        sheetWidth,
+        coilWidth,
+        ssColors,
+        quality
+      })
+
+      if (showOutlines && outlineMat) {
+        const grow = outlineWidth * 0.9
+        const outlineColorForGeom = new Color(outlineColor)
+        const outlineColorFn = () => outlineColorForGeom
+        const outlineGeometries = buildCartoonGeometries(atoms, residues, outlineColorFn, {
+          helixWidth: helixWidth + grow,
+          sheetWidth: sheetWidth + grow * (sheetWidth / helixWidth),
+          coilWidth: coilWidth + grow * (coilWidth / helixWidth),
+          ssColors,
+          quality
+        })
+        for (const geom of outlineGeometries) {
+          const outlineMesh = new Mesh(geom, outlineMat)
+          outlineMesh.renderOrder = 0
+          nextMeshes.push(outlineMesh)
+        }
+      }
+
+      for (const geom of geometries) {
+        const surfaceMesh = new Mesh(geom, surfaceMat)
+        surfaceMesh.renderOrder = 1
+        nextMeshes.push(surfaceMesh)
+      }
+    } catch (err) {
+      console.error('[Cartoon] geometry build failed:', err)
+      meshes = []
+      return
+    }
+
+    meshes = nextMeshes
     invalidate()
 
     return () => {
-      newMeshes.forEach((m) => m.geometry.dispose())
+      for (const m of nextMeshes) {
+        m.geometry.dispose()
+      }
+      outlineMat?.dispose()
     }
   })
 
-  $effect(() => () => material.dispose())
+  onDestroy(() => {
+    meshes = []
+    material.dispose()
+    illustrativeMaterial.dispose()
+  })
 </script>
 
 {#each meshes as mesh (mesh.uuid)}
