@@ -7,6 +7,9 @@
   import { Canvas as ThrelteCanvas, T } from '@threlte/core'
   import { TrackballControls } from '@threlte/extras'
   import { MOUSE, WebGLRenderer } from 'three'
+  import { illustrativeLightingState } from '../../lib/illustrativeSceneLighting.svelte.js'
+  import { viewerSettings } from '../../lib/viewerSettings.svelte.js'
+  import SceneBackground from './SceneBackground.svelte'
 
   /**
    * @type {{
@@ -28,15 +31,21 @@
     }
   })
 
-  // Middle-drag pans the camera view (slides camera+target together).
-  // Atoms are never moved — this is pure camera navigation, like VMD T-mode.
   $effect(() => {
     if (!controls) return
     controls.mouseButtons.MIDDLE = MOUSE.PAN
     controls.mouseButtons.RIGHT = -1
   })
+
   /** @type {{ x: number, y: number }} */
   let dragStart = { x: 0, y: 0 }
+
+  const hemisphereSky = $derived(viewerSettings.hemisphereSky)
+  const hemisphereGround = $derived(viewerSettings.hemisphereGround)
+  const hemisphereIntensity = $derived(viewerSettings.hemisphereIntensity)
+  const ambientIntensity = $derived(viewerSettings.ambientIntensity)
+  const directionalLights = $derived(viewerSettings.directionalLights)
+  const dirLightMultiplier = $derived(illustrativeLightingState.active ? 0.35 : 1)
 
   function _coords(e) {
     const r = wrapEl.getBoundingClientRect()
@@ -44,11 +53,6 @@
   }
 </script>
 
-<!--
-  Wrapper div captures pointer events without breaking TrackballControls:
-  - pointerdown records start; pointerup fires click only if pointer moved < 4 px (not a drag)
-  - contextmenu forwards to parent with canvas-local coords
--->
 <div
   bind:this={wrapEl}
   class="h-full w-full"
@@ -74,17 +78,24 @@
   }}
 >
   <ThrelteCanvas
-    createRenderer={(canvas) =>
-      new WebGLRenderer({
+    createRenderer={(canvas) => {
+      const renderer = new WebGLRenderer({
         canvas,
         powerPreference: 'high-performance',
         antialias: true,
         alpha: true,
         preserveDrawingBuffer: true
-      })}
+      })
+      if (import.meta.env?.DEV) {
+        renderer.debug.checkShaderErrors = true
+      }
+      return renderer
+    }}
   >
-    <T.Color attach="background" args={[0x000000]} />
+    <SceneBackground />
+
     <T.OrthographicCamera makeDefault manual near={0.05} far={500000} />
+
     <TrackballControls
       bind:ref={controls}
       staticMoving={false}
@@ -92,10 +103,17 @@
       rotateSpeed={3.5}
       zoomSpeed={3.5}
     />
-    <T.HemisphereLight args={['#c4d2e8', '#0c0e12', 0.52]} />
-    <T.AmbientLight intensity={0.35} />
-    <T.DirectionalLight position={[7, 11, 9]} intensity={0.42} />
-    <T.DirectionalLight position={[-9, 6, -7]} intensity={0.34} />
+
+    <T.HemisphereLight args={[hemisphereSky, hemisphereGround, hemisphereIntensity]} />
+
+    <T.AmbientLight intensity={ambientIntensity} />
+
+    {#each directionalLights as light, i (i)}
+      {#if light.enabled}
+        <T.DirectionalLight position={light.position} intensity={light.intensity * dirLightMultiplier} />
+      {/if}
+    {/each}
+
     {@render children?.()}
   </ThrelteCanvas>
 </div>
