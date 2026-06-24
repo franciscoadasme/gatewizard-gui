@@ -7,6 +7,8 @@ Desktop application for membrane protein preparation, system building, equilibra
 
 The app uses the **[GateWizard API](https://github.com/maurobedoya/gatewizard)** under the hood. You do not need to clone the API repo to run the GUI, it installs `gatewizard` into its embedded Python environment. You can also use the API alone from Python or Jupyter without this app.
 
+💬 **Questions and community help** → [gatewizard Discussions](https://github.com/maurobedoya/gatewizard/discussions) (shared forum for API and GUI; use labels `gui` or `gui:installation` for app topics)
+
 [<img src="./resources/readme/main_viewer.png" width="600" alt="GateWizard desktop application" align="left" />](./resources/readme/main_viewer.png)
 
 <br clear="left" />
@@ -92,7 +94,7 @@ Do **not** click **Move to Trash** in the Gatekeeper dialog — that deletes the
 
 Wait on the splash screen until the main window appears (first run often **5–15 minutes** while Python packages install). Progress text appears below the logo.
 
-Update the API later from **Grimoire → Dependency Versions → Check for updates**.
+Update the API later from the left sidebar: open **Dependency versions**, then click **Check for updates**.
 
 #### Troubleshooting: `pip upgrade (tools) failed` / SSL not available
 
@@ -244,3 +246,14 @@ Install `npm` dependencies in **one environment only** (WSL or Windows), not bot
 | macOS | `npm run build:mac` (on macOS) | `gatewizard-gui-1.0.5-mac-arm64.dmg` |
 
 Installers use platform suffixes (`-win-`, `-linux-`, `-mac-`) so Windows and WSL/Linux builds are easy to tell apart on one machine.
+
+## Community and support
+
+| Need | Where |
+|------|--------|
+| Questions, workflows, install help | [Discussions](https://github.com/maurobedoya/gatewizard/discussions) on the API repo (label `gui` or `gui:installation`) |
+| GUI bug or feature | [Issues](https://github.com/franciscoadasme/gatewizard-gui/issues/new/choose) in this repo |
+| API bug or feature | [Issues](https://github.com/maurobedoya/gatewizard/issues/new/choose) in gatewizard |
+| API docs and troubleshooting | [Documentation](https://maurobedoya.github.io/gatewizard/) |
+
+New to the project? Read the [welcome post](https://github.com/maurobedoya/gatewizard/discussions/36).

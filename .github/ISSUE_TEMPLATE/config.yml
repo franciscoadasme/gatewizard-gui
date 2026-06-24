@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and community help
+    url: https://github.com/maurobedoya/gatewizard/discussions
+    about: Ask usage questions and workflows in the central GateWizard forum (API + GUI).
+  - name: API documentation
+    url: https://maurobedoya.github.io/gatewizard/
+    about: Python API reference, installation, and troubleshooting.
+  - name: API bugs and features
+    url: https://github.com/maurobedoya/gatewizard/issues/new/choose
+    about: Python library, docs, or scripting issues belong in the API repository.

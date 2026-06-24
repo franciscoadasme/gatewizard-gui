@@ -1,0 +1,89 @@
+name: Bug report
+description: Report a bug in the desktop app, installer, or UI
+title: "[Bug]: "
+labels: ["bug", "gui"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a GUI bug. For **usage questions** or workflow advice, use [Discussions](https://github.com/maurobedoya/gatewizard/discussions) (label `gui` or `gui:installation`).
+
+        For **Python API** bugs (library behavior outside the app), open an issue in [gatewizard](https://github.com/maurobedoya/gatewizard/issues/new/choose).
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Install / first launch
+        - Visualize (3D viewer)
+        - Preparation
+        - Membrane builder
+        - Equilibration
+        - Analysis
+        - Dependency versions / API updates
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the bug and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+
+  - type: input
+    id: gui_version
+    attributes:
+      label: GUI version
+      description: From the release installer name or the **Dependency versions** dialog (e.g. 1.0.5)
+    validations:
+      required: true
+
+  - type: input
+    id: api_version
+    attributes:
+      label: gatewizard API version (if known)
+      description: From **Dependency versions** in the left sidebar, or `python -c "import gatewizard; print(gatewizard.__version__)"` in the embedded env
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows (native)
+        - Linux
+        - WSL
+        - macOS
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Install / runtime log
+      description: |
+        Relevant excerpt from runtime-install.log:
+        - Windows: %APPDATA%\gatewizard-gui\runtime-install.log
+        - Linux/WSL: ~/.config/gatewizard-gui/runtime-install.log
+        - macOS: ~/Library/gatewizard-gui/runtime-install.log
+      render: shell
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Screenshots, sample PDB, force field, MD engine, etc.

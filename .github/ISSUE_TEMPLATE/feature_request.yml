@@ -1,0 +1,54 @@
+name: Feature request
+description: Suggest an improvement to the desktop app or installer
+title: "[Feature]: "
+labels: ["enhancement", "gui"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For **API-only** features (Python library, no UI change), open a request in [gatewizard](https://github.com/maurobedoya/gatewizard/issues/new/choose).
+
+        For open-ended ideas, consider [Discussions → Ideas](https://github.com/maurobedoya/gatewizard/discussions/categories/ideas).
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What is hard or missing in the desktop workflow?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How should the app behave or look?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Visualize (3D viewer)
+        - Preparation
+        - Membrane builder
+        - Equilibration
+        - Analysis
+        - Installer / updates
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Primary platform
+      options:
+        - All platforms
+        - Windows
+        - Linux / WSL
+        - macOS
+    validations:
+      required: true
