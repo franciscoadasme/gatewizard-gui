@@ -6,6 +6,21 @@
  */
 
 /**
+ * Three.js forward rendering adds per-light uniforms; above ~48–64 point lights
+ * fragment shaders exceed MAX_FRAGMENT_UNIFORM_VECTORS and the scene goes blank.
+ */
+export const GLOW_LIGHTS_HARD_MAX = 48
+
+/**
+ * @param {number} n
+ * @returns {number}
+ */
+export function clampGlowMaxLights(n) {
+  const v = Math.round(Number(n)) || 1
+  return Math.max(1, Math.min(GLOW_LIGHTS_HARD_MAX, v))
+}
+
+/**
  * @param {GlowAtom[]} atoms
  * @param {GlowAtomFilter} filter
  * @returns {number}
@@ -27,7 +42,12 @@ export function countGlowPool(atoms, filter) {
  * @returns {GlowAtom[]}
  */
 export function selectGlowLightAtoms(atoms, options = {}) {
-  const { filter = 'non_hydrogen', maxLights = 48, highlightIndices = new Set() } = options
+  const {
+    filter = 'non_hydrogen',
+    maxLights = 48,
+    highlightIndices = new Set()
+  } = options
+  const cap = clampGlowMaxLights(maxLights)
   if (!atoms?.length) return []
 
   /** @type {GlowAtom[]} */
@@ -39,12 +59,12 @@ export function selectGlowLightAtoms(atoms, options = {}) {
     pool = pool.filter((a) => a.index !== undefined && highlightIndices.has(a.index))
   }
 
-  if (pool.length <= maxLights) return pool
+  if (pool.length <= cap) return pool
 
   /** @type {GlowAtom[]} */
   const sampled = []
-  const step = pool.length / maxLights
-  for (let i = 0; i < maxLights; i++) {
+  const step = pool.length / cap
+  for (let i = 0; i < cap; i++) {
     sampled.push(pool[Math.floor(i * step)])
   }
   return sampled

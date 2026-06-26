@@ -87,7 +87,7 @@ export const GLOWING_UI_SLIDERS = [
   { label: 'Surface glow', key: 'emissiveIntensity', min: 0, max: 20, step: 0.25, decimals: 1 },
   { label: 'Light power', key: 'glowLightIntensity', min: 0, max: 300, step: 1, decimals: 0 },
   { label: 'Light reach', key: 'glowLightDistance', min: 1, max: 500, step: 1, decimals: 0 },
-  { label: 'Max bulbs', key: 'glowMaxLights', min: 1, max: 1024, step: 1, decimals: 0 }
+  { label: 'Max bulbs', key: 'glowMaxLights', min: 1, max: 48, step: 1, decimals: 0 }
 ]
 
 /** Pastel chain palette inspired by Mol* / Goodsell illustrative style. */

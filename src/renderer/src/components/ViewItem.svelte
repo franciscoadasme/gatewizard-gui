@@ -27,7 +27,9 @@
     GLOWING_UI_SLIDERS,
     ILLUSTRATIVE_CHAIN_PALETTE_HEX
   } from '../lib/colorSchemes.js'
-  import { countGlowPool, selectGlowLightAtoms } from '../lib/viewer/glowLights.js'
+  import { countGlowPool, selectGlowLightAtoms, clampGlowMaxLights, GLOW_LIGHTS_HARD_MAX } from '../lib/viewer/glowLights.js'
+  import { GLOW_LIGHTS_PERF_WARN } from '../lib/viewer/viewerDiagnostics.js'
+  import { viewerBusy } from '../lib/viewer/viewerBusy.svelte.js'
   import { getStructure } from '../lib/backendApi'
   import { onDestroy, untrack } from 'svelte'
   import Button from './ui/Button.svelte'
@@ -325,10 +327,11 @@ Distance:
     const m = resolveGlowingMaterial(view.material)
     if (!m.glowEmitLight) return { disabled: true }
     const atoms = view.atoms ?? []
-    const maxLights = m.glowMaxLights ?? GLOWING_MATERIAL_DEFAULTS.glowMaxLights
+    const maxRequested = m.glowMaxLights ?? GLOWING_MATERIAL_DEFAULTS.glowMaxLights
+    const maxLights = clampGlowMaxLights(maxRequested)
     const filter = m.glowAtomFilter ?? GLOWING_MATERIAL_DEFAULTS.glowAtomFilter
     if (filter === 'highlighted') {
-      return { filter, maxLights, needsSelection: true }
+      return { filter, maxLights, maxRequested, needsSelection: true }
     }
     const pool = countGlowPool(atoms, filter)
     const active = selectGlowLightAtoms(atoms, {
@@ -336,8 +339,23 @@ Distance:
       maxLights,
       highlightIndices: new Set()
     }).length
-    return { filter, pool, active, maxLights, capped: pool > maxLights }
+    return {
+      filter,
+      pool,
+      active,
+      maxLights,
+      maxRequested,
+      gpuLimited: maxRequested > GLOW_LIGHTS_HARD_MAX,
+      capped: pool > maxLights
+    }
   })
+
+  const glowingBulbsHeavy = $derived(
+    glowingBulbStats &&
+      !glowingBulbStats.disabled &&
+      !glowingBulbStats.needsSelection &&
+      glowingBulbStats.active > GLOW_LIGHTS_PERF_WARN
+  )
 
   const SWATCH_ATOMS = [
     { element: 'C', name: 'CA', res_name: 'ALA', chain_id: 'A', index: 0 },
@@ -797,6 +815,24 @@ Distance:
                   {/if}
                 </p>
               {/if}
+              {#if glowingBulbsHeavy}
+                <p class="text-[10px] leading-snug text-amber-600 dark:text-amber-400">
+                  Many scene bulbs can slow placement. For full proteins prefer Surface glow and
+                  Light power; use “Selected atoms only” for localized highlights.
+                </p>
+              {/if}
+              {#if glowingBulbStats?.gpuLimited}
+                <p class="text-[10px] leading-snug text-amber-600 dark:text-amber-400">
+                  Saved Max bulbs ({glowingBulbStats.maxRequested}) exceeds the GPU limit — only
+                  {GLOW_LIGHTS_HARD_MAX} are used (higher values break WebGL shaders).
+                </p>
+              {/if}
+              {#if viewerBusy.active && isGlowingMaterial(view.material)}
+                <p class="flex items-center gap-1.5 text-[10px] text-blue-600 dark:text-blue-400">
+                  <Spinner className="size-3" />
+                  {viewerBusy.label || 'Updating material…'}
+                </p>
+              {/if}
               {#each GLOWING_UI_SLIDERS as s (s.key)}
                 <div class="flex items-center gap-2">
                   <span class="w-16 shrink-0 text-neutral-600 dark:text-neutral-400">{s.label}</span>
@@ -809,10 +845,12 @@ Distance:
                     value={view.material[s.key] ??
                       (s.key === 'emissiveIntensity' ? 2.5 : GLOWING_MATERIAL_DEFAULTS[s.key])}
                     oninput={(e) => {
+                      let val = +e.target.value
+                      if (s.key === 'glowMaxLights') val = clampGlowMaxLights(val)
                       view.material = {
                         ...view.material,
                         preset: 'Glowing',
-                        [s.key]: +e.target.value
+                        [s.key]: val
                       }
                     }}
                   />
@@ -847,9 +885,9 @@ Distance:
                 </div>
               {/each}
               <p class="text-[10px] leading-snug text-neutral-500 dark:text-neutral-400">
-                Surface glow = self-lit atoms; scene bulbs = point lights (Max bulbs only matters when
-                eligible atoms exceed the cap). Lower Surface glow to see metalness / roughness.
-                DevTools warns if materials fail to mount (F12).
+                Surface glow = self-lit atoms; scene bulbs = point lights (max {GLOW_LIGHTS_HARD_MAX}
+                — WebGL shader limit). Max bulbs only matters when eligible atoms exceed the cap.
+                Lower Surface glow to see metalness / roughness.
               </p>
             </div>
           {:else}

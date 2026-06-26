@@ -52,6 +52,7 @@
   import ResetIcon from '../components/icons/Reset.svelte'
   import Sun from '../components/icons/Sun.svelte'
   import Spinner from '../components/ui/Spinner.svelte'
+  import { viewerBusy } from '../lib/viewer/viewerBusy.svelte.js'
   import ViewItem, { skipNextPathFetch } from '../components/ViewItem.svelte'
   import ViewerSettingsDialog from '../components/ViewerSettingsDialog.svelte'
   import RadialMenu from '../components/RadialMenu.svelte'
@@ -2091,6 +2092,21 @@
             <AxesLines length={camera.extent * 2} />
           {/if}
         </Canvas>
+        {#if viewerBusy.active}
+          <div
+            class="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-neutral-950/35"
+            style="backdrop-filter:blur(1px)"
+            aria-live="polite"
+            aria-busy="true"
+          >
+            <div
+              class="flex items-center gap-2 rounded-lg border border-neutral-600/50 bg-neutral-900/90 px-4 py-2 text-sm text-neutral-100 shadow-lg"
+            >
+              <Spinner className="size-5 text-blue-400" />
+              <span>{viewerBusy.label || 'Updating view…'}</span>
+            </div>
+          </div>
+        {/if}
         {#if axesVisible}
           <AxesGizmo />
         {/if}
