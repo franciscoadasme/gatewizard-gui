@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Light / dark theme:** Sun/moon sliding toggle in the activity sidebar (above Dependency versions); preference persists across restarts; title bar and taskbar icons switch with theme (`app-window-light.png` / `app-window-dark.png`)
+- **Visualize — 3D scene settings:** Viewport background follows app theme by default; Representations toolbar sun button opens a left-docked panel for custom background color, hemisphere/ambient/directional lighting, illustrative outlines, and reset to defaults (persisted in `gw_viewer_settings`)
+- **Visualize — Illustrative material:** Goodsell-style preset (cartoon, tube, ball-and-stick, vdW) with per-view outline and flat-lighting options in View settings; scene lighting restores when switching materials
+
+### Fixed
+
+- **macOS runtime — broken SSL / pip:** Detect corrupted OpenSSL (`libcrypto` / SSL module unavailable), repair or wipe `mamba-env` and reinstall; migration no longer rewrites binary `.dylib` files as text
+
 ## [1.0.5] - 2026-06-19
 
 ### Fixed
