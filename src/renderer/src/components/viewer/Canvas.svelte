@@ -7,7 +7,7 @@
   import { Canvas as ThrelteCanvas, T } from '@threlte/core'
   import { TrackballControls } from '@threlte/extras'
   import { MOUSE, WebGLRenderer } from 'three'
-  import { illustrativeLightingState } from '../../lib/illustrativeSceneLighting.svelte.js'
+  import { goodsellLightingState } from '../../lib/goodsellSceneLighting.svelte.js'
   import { viewerSettings } from '../../lib/viewerSettings.svelte.js'
   import SceneBackground from './SceneBackground.svelte'
 
@@ -45,7 +45,7 @@
   const hemisphereIntensity = $derived(viewerSettings.hemisphereIntensity)
   const ambientIntensity = $derived(viewerSettings.ambientIntensity)
   const directionalLights = $derived(viewerSettings.directionalLights)
-  const dirLightMultiplier = $derived(illustrativeLightingState.active ? 0.35 : 1)
+  const dirLightMultiplier = $derived(goodsellLightingState.active ? 0.35 : 1)
 
   function _coords(e) {
     const r = wrapEl.getBoundingClientRect()

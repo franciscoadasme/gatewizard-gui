@@ -5,9 +5,9 @@
   import { buildTubeGeometries } from '../../../lib/viewer/cartoon.js'
   import { defaultColorScheme } from '../../../lib/colorSchemes.js'
   import {
-    createIllustrativeSurfaceMaterial,
+    createGoodsellSurfaceMaterial,
     createSilhouetteOutlineMaterial
-  } from '../../../lib/viewer/illustrativeMaterial.js'
+  } from '../../../lib/viewer/goodsellMaterial.js'
 
   /**
    * @type {{
@@ -27,7 +27,7 @@
    *   metalness?: number,
    *   roughness?: number,
    *   emissiveIntensity?: number,
-   *   illustrative?: boolean,
+   *   goodsell?: boolean,
    *   outlinesEnabled?: boolean,
    *   outlineColor?: string,
    *   outlineWidth?: number
@@ -43,7 +43,7 @@
     metalness = 0.08,
     roughness = 0.48,
     emissiveIntensity = 0.0,
-    illustrative = false,
+    goodsell = false,
     outlinesEnabled = true,
     outlineColor = '#000000',
     outlineWidth = 0.12,
@@ -74,14 +74,14 @@
     side: DoubleSide
   })
 
-  const illustrativeMaterial = createIllustrativeSurfaceMaterial(true)
-  illustrativeMaterial.side = DoubleSide
+  const goodsellMaterial = createGoodsellSurfaceMaterial(true)
+  goodsellMaterial.side = DoubleSide
 
   /** @type {Mesh[]} */
   let meshes = $state([])
 
   $effect(() => {
-    if (illustrative) return
+    if (goodsell) return
     material.metalness = metalness
     material.roughness = roughness
     material.emissiveIntensity = emissiveIntensity
@@ -97,8 +97,8 @@
       return
     }
 
-    const surfaceMat = illustrative ? illustrativeMaterial : material
-    const showOutlines = illustrative && outlinesEnabled && outlineWidth > 0
+    const surfaceMat = goodsell ? goodsellMaterial : material
+    const showOutlines = goodsell && outlinesEnabled && outlineWidth > 0
     const outlineMat = showOutlines ? createSilhouetteOutlineMaterial(outlineColor) : null
 
     /** @type {Mesh[]} */
@@ -151,7 +151,7 @@
   onDestroy(() => {
     meshes = []
     material.dispose()
-    illustrativeMaterial.dispose()
+    goodsellMaterial.dispose()
   })
 </script>
 

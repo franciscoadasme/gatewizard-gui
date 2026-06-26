@@ -11,7 +11,7 @@ import {
 /** @type {DataTexture | null} */
 let toonGradientMap = null
 
-/** Two-step gradient → soft cel shading (Goodsell-like). */
+/** Two-step gradient → soft cel shading (Goodsell). */
 export function getToonGradientMap() {
   if (toonGradientMap) return toonGradientMap
   const colors = new Uint8Array([0, 255])
@@ -24,7 +24,7 @@ export function getToonGradientMap() {
 }
 
 /** @param {boolean} [vertexColors] */
-export function createIllustrativeSurfaceMaterial(vertexColors = true) {
+export function createGoodsellSurfaceMaterial(vertexColors = true) {
   return new MeshToonMaterial({
     vertexColors,
     gradientMap: getToonGradientMap()

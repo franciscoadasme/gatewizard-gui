@@ -15,7 +15,7 @@
   import { mainViewerControls } from '../components/viewer/Canvas.svelte'
   import Axes from '../components/icons/Axes.svelte'
   import AxesLinesIcon from '../components/icons/AxesLines.svelte'
-  import { COLOR_PALETTE, cpkScheme, defaultColorScheme, ssScheme, DEFAULT_VIEW_MATERIAL, isIllustrativeMaterial, isGlowingMaterial, resolveGlowingMaterial, ILLUSTRATIVE_MATERIAL_DEFAULTS, GLOWING_MATERIAL_DEFAULTS } from '../lib/colorSchemes.js'
+  import { COLOR_PALETTE, cpkScheme, defaultColorScheme, ssScheme, DEFAULT_VIEW_MATERIAL, isGoodsellMaterial, isGlowingMaterial, resolveGlowingMaterial, GOODSELL_MATERIAL_DEFAULTS, GLOWING_MATERIAL_DEFAULTS } from '../lib/colorSchemes.js'
   import { getCameraForAtoms } from '../lib/viewer/base.js'
   import { pickAtomFromViews } from '../lib/viewer/picking.js'
   import { measureDistance, measureAngle, measureDihedral } from '../lib/viewer/measure.js'
@@ -58,7 +58,7 @@
   import RadialMenu from '../components/RadialMenu.svelte'
   import TransformGizmo from '../components/TransformGizmo.svelte'
   import { visualizeStatus, logEvent } from '../lib/pageStatus.svelte.js'
-  import { syncIllustrativeSceneLighting } from '../lib/illustrativeSceneLighting.svelte.js'
+  import { syncGoodsellSceneLighting } from '../lib/goodsellSceneLighting.svelte.js'
   import { themeState } from '../lib/theme.svelte.js'
   import { themeBackgroundHex, viewerSettings } from '../lib/viewerSettings.svelte.js'
 
@@ -197,10 +197,10 @@
     const needsFlatLighting = views.some(
       (v) =>
         v.visible &&
-        isIllustrativeMaterial(v.material) &&
-        v.material.useIllustrativeLighting !== false
+        isGoodsellMaterial(v.material) &&
+        v.material.useGoodsellLighting !== false
     )
-    syncIllustrativeSceneLighting(needsFlatLighting)
+    syncGoodsellSceneLighting(needsFlatLighting)
   })
   let selectMenuOpen = $state(false)
   const EDIT_LEVEL_LABEL = { atom: 'Atom', residue: 'Res', chain: 'Chain', molecule: 'Mol.' }
@@ -1964,10 +1964,10 @@
                 roughness={view.material?.roughness ?? 0.48}
                 emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
                 glowBulb={isGlowingMaterial(view.material)}
-                illustrative={isIllustrativeMaterial(view.material)}
-                outlinesEnabled={view.material?.outlinesEnabled ?? ILLUSTRATIVE_MATERIAL_DEFAULTS.outlinesEnabled}
-                outlineColor={view.material?.outlineColor ?? ILLUSTRATIVE_MATERIAL_DEFAULTS.outlineColor}
-                outlineWidth={view.material?.outlineWidth ?? ILLUSTRATIVE_MATERIAL_DEFAULTS.outlineWidth}
+                goodsell={isGoodsellMaterial(view.material)}
+                outlinesEnabled={view.material?.outlinesEnabled ?? GOODSELL_MATERIAL_DEFAULTS.outlinesEnabled}
+                outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
+                outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
                 highlightIndices={editHoverGroupIndices}
               />
             {:else if view.representation.type === 'cartoon'}
@@ -1983,10 +1983,10 @@
                 metalness={view.material?.metalness ?? 0.08}
                 roughness={view.material?.roughness ?? 0.48}
                 emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
-                illustrative={isIllustrativeMaterial(view.material)}
-                outlinesEnabled={view.material?.outlinesEnabled ?? ILLUSTRATIVE_MATERIAL_DEFAULTS.outlinesEnabled}
-                outlineColor={view.material?.outlineColor ?? ILLUSTRATIVE_MATERIAL_DEFAULTS.outlineColor}
-                outlineWidth={view.material?.outlineWidth ?? ILLUSTRATIVE_MATERIAL_DEFAULTS.outlineWidth}
+                goodsell={isGoodsellMaterial(view.material)}
+                outlinesEnabled={view.material?.outlinesEnabled ?? GOODSELL_MATERIAL_DEFAULTS.outlinesEnabled}
+                outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
+                outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
                 highlightIndices={editHoverGroupIndices}
               />
             {:else if view.representation.type === 'tube'}
@@ -2000,10 +2000,10 @@
                 metalness={view.material?.metalness ?? 0.08}
                 roughness={view.material?.roughness ?? 0.48}
                 emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
-                illustrative={isIllustrativeMaterial(view.material)}
-                outlinesEnabled={view.material?.outlinesEnabled ?? ILLUSTRATIVE_MATERIAL_DEFAULTS.outlinesEnabled}
-                outlineColor={view.material?.outlineColor ?? ILLUSTRATIVE_MATERIAL_DEFAULTS.outlineColor}
-                outlineWidth={view.material?.outlineWidth ?? ILLUSTRATIVE_MATERIAL_DEFAULTS.outlineWidth}
+                goodsell={isGoodsellMaterial(view.material)}
+                outlinesEnabled={view.material?.outlinesEnabled ?? GOODSELL_MATERIAL_DEFAULTS.outlinesEnabled}
+                outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
+                outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
                 highlightIndices={editHoverGroupIndices}
               />
             {:else if view.representation.type === 'vdw'}
@@ -2016,10 +2016,10 @@
                 roughness={view.material?.roughness ?? 0.45}
                 emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
                 glowBulb={isGlowingMaterial(view.material)}
-                illustrative={isIllustrativeMaterial(view.material)}
-                outlinesEnabled={view.material?.outlinesEnabled ?? ILLUSTRATIVE_MATERIAL_DEFAULTS.outlinesEnabled}
-                outlineColor={view.material?.outlineColor ?? ILLUSTRATIVE_MATERIAL_DEFAULTS.outlineColor}
-                outlineWidth={view.material?.outlineWidth ?? ILLUSTRATIVE_MATERIAL_DEFAULTS.outlineWidth}
+                goodsell={isGoodsellMaterial(view.material)}
+                outlinesEnabled={view.material?.outlinesEnabled ?? GOODSELL_MATERIAL_DEFAULTS.outlinesEnabled}
+                outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
+                outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
                 highlightIndices={editHoverGroupIndices}
               />
             {/if}

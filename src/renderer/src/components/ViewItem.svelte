@@ -12,7 +12,7 @@
     cpkScheme,
     defaultColorScheme,
     chainScheme,
-    illustrativeChainScheme,
+    goodsellChainScheme,
     residueNatureScheme,
     ssScheme,
     COLOR_PALETTE,
@@ -20,12 +20,12 @@
     SS_LABELS,
     MATERIAL_PRESETS,
     buildMaterialFromPreset,
-    isIllustrativeMaterial,
+    isGoodsellMaterial,
     isGlowingMaterial,
     resolveGlowingMaterial,
     GLOWING_MATERIAL_DEFAULTS,
     GLOWING_UI_SLIDERS,
-    ILLUSTRATIVE_CHAIN_PALETTE_HEX
+    GOODSELL_CHAIN_PALETTE_HEX
   } from '../lib/colorSchemes.js'
   import { countGlowPool, selectGlowLightAtoms, clampGlowMaxLights, GLOW_LIGHTS_HARD_MAX } from '../lib/viewer/glowLights.js'
   import { GLOW_LIGHTS_PERF_WARN } from '../lib/viewer/viewerDiagnostics.js'
@@ -178,8 +178,8 @@ Distance:
       colorScheme.resolver = cpkScheme({ carbonColor: constantColorHex })
     } else if (colorSchemeName === 'chain') {
       colorScheme.resolver = chainScheme()
-    } else if (colorSchemeName === 'illustrative') {
-      colorScheme.resolver = illustrativeChainScheme()
+    } else if (colorSchemeName === 'goodsell') {
+      colorScheme.resolver = goodsellChainScheme()
     } else if (colorSchemeName === 'residue_nature') {
       colorScheme.resolver = residueNatureScheme()
     } else if (colorSchemeName === 'ss') {
@@ -247,9 +247,9 @@ Distance:
 
   function applyMaterialPreset(preset) {
     view.material = buildMaterialFromPreset(preset)
-    if (preset === 'Illustrative') {
-      view.colorScheme = { name: 'illustrative', resolver: illustrativeChainScheme() }
-      colorSchemeName = 'illustrative'
+    if (preset === 'Goodsell') {
+      view.colorScheme = { name: 'goodsell', resolver: goodsellChainScheme() }
+      colorSchemeName = 'goodsell'
     }
   }
 
@@ -309,8 +309,8 @@ Distance:
     if (colorSchemeName === 'chain') {
       return ['#e6194b', '#3cb44b', '#ffe119', '#0082c8']
     }
-    if (colorSchemeName === 'illustrative') {
-      return ILLUSTRATIVE_CHAIN_PALETTE_HEX.slice(0, 4)
+    if (colorSchemeName === 'goodsell') {
+      return GOODSELL_CHAIN_PALETTE_HEX.slice(0, 4)
     }
     if (colorSchemeName === 'residue_nature') {
       return ['#e6c832', '#dc3c3c', '#4664dc', '#f09632']
@@ -477,7 +477,7 @@ Distance:
     {#if colorPickerOpen}
       <div class="mt-2 flex flex-col gap-2">
         <div class="flex flex-wrap gap-1">
-          {#each [{ v: 'cpk', l: 'CPK' }, { v: 'chain', l: 'Chain' }, { v: 'illustrative', l: 'Pastel' }, { v: 'residue_nature', l: 'Residue' }, { v: 'ss', l: 'SS' }, { v: 'cpk-carbon', l: 'CPK+C' }, { v: 'constant', l: 'Uniform' }] as opt (opt.v)}
+          {#each [{ v: 'cpk', l: 'CPK' }, { v: 'chain', l: 'Chain' }, { v: 'goodsell', l: 'Goodsell' }, { v: 'residue_nature', l: 'Residue' }, { v: 'ss', l: 'SS' }, { v: 'cpk-carbon', l: 'CPK+C' }, { v: 'constant', l: 'Uniform' }] as opt (opt.v)}
             <button
               type="button"
               class="rounded px-2 py-0.5 text-[10px] transition-colors {colorSchemeName === opt.v
@@ -744,7 +744,7 @@ Distance:
               >
             {/each}
           </div>
-          {#if isIllustrativeMaterial(view.material)}
+          {#if isGoodsellMaterial(view.material)}
             <div class="space-y-2 rounded border border-neutral-200 p-2 dark:border-neutral-700">
               <p class="text-[10px] font-medium text-neutral-700 dark:text-neutral-300">Outlines</p>
               <label class="flex items-center gap-2 text-neutral-700 dark:text-neutral-300">
@@ -769,8 +769,8 @@ Distance:
                 <span class="w-10 text-right tabular-nums">{view.material.outlineWidth.toFixed(2)}</span>
               </div>
               <label class="flex items-center gap-2 text-neutral-700 dark:text-neutral-300">
-                <input type="checkbox" bind:checked={view.material.useIllustrativeLighting} />
-                Flat illustrative lighting
+                <input type="checkbox" bind:checked={view.material.useGoodsellLighting} />
+                Flat Goodsell lighting
               </label>
               <p class="text-[10px] leading-snug text-neutral-500 dark:text-neutral-400">
                 Lighting is restored automatically when you switch to another material or disable this

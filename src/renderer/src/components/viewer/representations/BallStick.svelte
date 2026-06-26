@@ -14,7 +14,7 @@
     Vector3
   } from 'three'
   import { defaultColorScheme } from '../../../lib/colorSchemes.js'
-  import { getToonGradientMap } from '../../../lib/viewer/illustrativeMaterial.js'
+  import { getToonGradientMap } from '../../../lib/viewer/goodsellMaterial.js'
   import { applyGlowMaterial } from '../../../lib/viewer/glowMaterial.js'
   import { untrack } from 'svelte'
 
@@ -99,7 +99,7 @@
    *   metalness?: number,
    *   roughness?: number,
    *   emissiveIntensity?: number,
-   *   illustrative?: boolean,
+   *   goodsell?: boolean,
    *   outlinesEnabled?: boolean,
    *   outlineColor?: string,
    *   outlineWidth?: number,
@@ -116,7 +116,7 @@
     metalness = 0.1,
     roughness = 0.42,
     emissiveIntensity = 0.0,
-    illustrative = false,
+    goodsell = false,
     outlinesEnabled = true,
     outlineColor = '#000000',
     outlineWidth = 0.12,
@@ -144,7 +144,7 @@
 
     /** @type {import('three').Material} */
     let sphereMat
-    if (illustrative) {
+    if (goodsell) {
       sphereMat = new MeshToonMaterial({ gradientMap: getToonGradientMap() })
     } else {
       const mat = new MeshStandardMaterial({
@@ -200,7 +200,7 @@
     const cylGeom = new CylinderGeometry(bondRadius, bondRadius, 1, cr, 1, false)
     /** @type {import('three').Material} */
     let cylMat
-    if (illustrative) {
+    if (goodsell) {
       cylMat = new MeshToonMaterial({
         color: new Color().setRGB(...STICK_GRAY),
         gradientMap: getToonGradientMap()
@@ -288,7 +288,7 @@
     }
 
     const m = bonds.length
-    const showOutlines = illustrative && outlinesEnabled && outlineWidth > 0
+    const showOutlines = goodsell && outlinesEnabled && outlineWidth > 0
     const built = buildMeshes(n, m, showOutlines)
 
     sphereMeshRef = built.sphereMesh

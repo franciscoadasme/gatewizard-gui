@@ -1,10 +1,10 @@
 /**
- * Saves / restores global scene lighting when Illustrative views request flat lighting.
+ * Saves / restores global scene lighting when Goodsell views request flat lighting.
  */
 import { persistViewerSettings, viewerSettings } from './viewerSettings.svelte.js'
 
-/** Whether flat illustrative lighting is currently applied to the scene. */
-export const illustrativeLightingState = $state({ active: false })
+/** Whether flat Goodsell lighting is currently applied to the scene. */
+export const goodsellLightingState = $state({ active: false })
 
 /** @type {null | {
  *   ambientIntensity: number,
@@ -56,17 +56,17 @@ function restoreLighting() {
 }
 
 /** @param {boolean} active */
-export function syncIllustrativeSceneLighting(active) {
+export function syncGoodsellSceneLighting(active) {
   if (active) {
-    if (!illustrativeLightingState.active) {
+    if (!goodsellLightingState.active) {
       savedLightingSnapshot = snapshotLighting()
       applyFlatLighting()
-      illustrativeLightingState.active = true
+      goodsellLightingState.active = true
       persistViewerSettings()
     }
-  } else if (illustrativeLightingState.active) {
+  } else if (goodsellLightingState.active) {
     restoreLighting()
-    illustrativeLightingState.active = false
+    goodsellLightingState.active = false
     persistViewerSettings()
   }
 }

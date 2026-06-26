@@ -5,11 +5,11 @@ import './assets/main.css'
 import App from './App.svelte'
 import { initTheme } from './lib/theme.svelte.js'
 import { initViewerSettings } from './lib/viewerSettings.svelte.js'
-import { syncIllustrativeSceneLighting } from './lib/illustrativeSceneLighting.svelte.js'
+import { syncGoodsellSceneLighting } from './lib/goodsellSceneLighting.svelte.js'
 
 initTheme()
 initViewerSettings()
-syncIllustrativeSceneLighting(false)
+syncGoodsellSceneLighting(false)
 
 const platform = window.electron?.process?.platform
 if (platform === 'win32') {

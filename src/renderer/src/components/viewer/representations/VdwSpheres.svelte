@@ -14,7 +14,7 @@
     Vector3
   } from 'three'
   import { defaultColorScheme } from '../../../lib/colorSchemes.js'
-  import { getToonGradientMap } from '../../../lib/viewer/illustrativeMaterial.js'
+  import { getToonGradientMap } from '../../../lib/viewer/goodsellMaterial.js'
   import { applyGlowMaterial } from '../../../lib/viewer/glowMaterial.js'
   import { untrack } from 'svelte'
 
@@ -61,7 +61,7 @@
   const VDW_SPHERE_Q = { 1: [12, 8], 2: [24, 16], 3: [48, 32], 4: [72, 48], 5: [128, 96] }
 
   /**
-   * @type {{atoms: Atom[], getColor?: ColorScheme, quality?: number, atomScale?: number, metalness?: number, roughness?: number, emissiveIntensity?: number, renderOrder?: number, depthTest?: boolean, opacity?: number, outline?: boolean, illustrative?: boolean, outlinesEnabled?: boolean, outlineColor?: string, outlineWidth?: number, glowBulb?: boolean}}
+   * @type {{atoms: Atom[], getColor?: ColorScheme, quality?: number, atomScale?: number, metalness?: number, roughness?: number, emissiveIntensity?: number, renderOrder?: number, depthTest?: boolean, opacity?: number, outline?: boolean, goodsell?: boolean, outlinesEnabled?: boolean, outlineColor?: string, outlineWidth?: number, glowBulb?: boolean}}
    */
   let {
     atoms = [],
@@ -75,7 +75,7 @@
     depthTest = true,
     opacity = 1.0,
     outline = false,
-    illustrative = false,
+    goodsell = false,
     outlinesEnabled = true,
     outlineColor = '#000000',
     outlineWidth = 0.12,
@@ -103,7 +103,7 @@
 
     /** @type {import('three').Material} */
     let material
-    if (illustrative) {
+    if (goodsell) {
       material = new MeshToonMaterial({ gradientMap: getToonGradientMap() })
     } else {
       const mat = new MeshStandardMaterial({
@@ -130,7 +130,7 @@
     const scale = new Vector3()
     const pos = new Vector3()
 
-    const showOutlines = illustrative && outlinesEnabled && outlineWidth > 0
+    const showOutlines = goodsell && outlinesEnabled && outlineWidth > 0
     /** @type {InstancedMesh | null} */
     let outlineMesh = null
     if (showOutlines) {

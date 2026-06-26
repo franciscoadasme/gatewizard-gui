@@ -63,7 +63,7 @@ export const MATERIAL_PRESETS = /** @type {Record<string, [number,number,number]
   Metallic: [0.80, 0.20, 0.0],
   Plastic:  [0.05, 0.30, 0.0],
   Glowing:  [0.00, 0.15, 2.5],
-  Illustrative: [0.0, 1.0, 0.0]
+  Goodsell: [0.0, 1.0, 0.0]
 })
 
 /** Per-view bulb options when preset is Glowing. */
@@ -90,26 +90,26 @@ export const GLOWING_UI_SLIDERS = [
   { label: 'Max bulbs', key: 'glowMaxLights', min: 1, max: 48, step: 1, decimals: 0 }
 ]
 
-/** Pastel chain palette inspired by Mol* / Goodsell illustrative style. */
-export const ILLUSTRATIVE_CHAIN_PALETTE_HEX = [
+/** Pastel chain palette for the Goodsell material (Mol* / David Goodsell style). */
+export const GOODSELL_CHAIN_PALETTE_HEX = [
   '#f4a3a8', '#a8d4a0', '#9ec5e8', '#f7d08a',
   '#c5a3d9', '#7ec8c8', '#f5b87a', '#b8c4e8',
   '#e8a0c8', '#98d4b0'
 ]
 
-/** Per-view illustrative options (stored on view.material when preset is Illustrative). */
-export const ILLUSTRATIVE_MATERIAL_DEFAULTS = {
+/** Per-view Goodsell options (stored on view.material when preset is Goodsell). */
+export const GOODSELL_MATERIAL_DEFAULTS = {
   outlinesEnabled: true,
   outlineColor: '#000000',
   outlineWidth: 0.12,
-  useIllustrativeLighting: true
+  useGoodsellLighting: true
 }
 
 /**
- * @param {{ preset?: string, metalness?: number, roughness?: number, emissiveIntensity?: number, outlinesEnabled?: boolean, outlineColor?: string, outlineWidth?: number, useIllustrativeLighting?: boolean }} material
+ * @param {{ preset?: string, metalness?: number, roughness?: number, emissiveIntensity?: number, outlinesEnabled?: boolean, outlineColor?: string, outlineWidth?: number, useGoodsellLighting?: boolean }} material
  */
-export function isIllustrativeMaterial(material) {
-  return material?.preset === 'Illustrative'
+export function isGoodsellMaterial(material) {
+  return material?.preset === 'Goodsell'
 }
 
 /**
@@ -134,8 +134,8 @@ export function resolveGlowingMaterial(material) {
 export function buildMaterialFromPreset(preset) {
   const values = MATERIAL_PRESETS[preset] ?? MATERIAL_PRESETS.Default
   const [metalness, roughness, emissiveIntensity] = values
-  if (preset === 'Illustrative') {
-    return { preset, metalness, roughness, emissiveIntensity, ...ILLUSTRATIVE_MATERIAL_DEFAULTS }
+  if (preset === 'Goodsell') {
+    return { preset, metalness, roughness, emissiveIntensity, ...GOODSELL_MATERIAL_DEFAULTS }
   }
   if (preset === 'Glowing') {
     return { preset, metalness, roughness, emissiveIntensity, ...GLOWING_MATERIAL_DEFAULTS }
@@ -272,14 +272,14 @@ export function chainScheme() {
  * Soft pastel chain colours for Goodsell / Molecule of the Month style cartoon.
  * @returns {(atom: AtomLike) => Color}
  */
-export function illustrativeChainScheme() {
+export function goodsellChainScheme() {
   /** @type {Map<string, Color>} */
   const cache = new Map()
   let chainIndex = 0
   return (atom) => {
     const key = atom.chain_id ?? atom.chainId ?? ''
     if (!cache.has(key)) {
-      const hex = ILLUSTRATIVE_CHAIN_PALETTE_HEX[chainIndex % ILLUSTRATIVE_CHAIN_PALETTE_HEX.length]
+      const hex = GOODSELL_CHAIN_PALETTE_HEX[chainIndex % GOODSELL_CHAIN_PALETTE_HEX.length]
       cache.set(key, new Color(hex))
       chainIndex++
     }
