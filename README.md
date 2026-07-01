@@ -20,7 +20,7 @@ The app uses the **[GateWizard API](https://github.com/maurobedoya/gatewizard)**
 - **Equilibration** — CHARMM-GUI-style protocols for NAMD, GROMACS, and OpenMM (NVT, NPT, NPAT, NPγT)
 - **Analysis** — trajectory metrics, structural analysis, and plotting helpers
 - **Force fields** — Amber protein models (e.g. ff14SB, ff19SB) and common water/lipid setups
-- **Cross-platform** — Linux, Windows, and macOS installers
+- **Cross-platform** — Linux (including WSL on Windows) and macOS installers
 
 ## Install
 
@@ -29,18 +29,22 @@ Download the installer for your platform from [Releases](https://github.com/fran
 **First launch** downloads Python packages in the background (several minutes). Keep the splash screen open — progress is shown there.
 
 Install logs:
-- **Windows:** `%APPDATA%\gatewizard-gui\runtime-install.log`
 - **Linux / WSL:** `~/.config/gatewizard-gui/runtime-install.log`
 - **macOS:** `~/Library/gatewizard-gui/runtime-install.log`
 
-### Windows
+### Windows (via WSL)
 
-1. Run `gatewizard-gui-*-win-x64-setup.exe`
-2. Open **GateWizard GUI (Windows)** from the Start menu or desktop
-3. Wait on the splash screen until the main window appears (first run: 5–15 min)
-4. **Full MD workflow** (membrane builder, AmberTools): use the **Linux/WSL** build on the same PC
+Native Windows installers are **not published**. On a Windows PC, install **WSL 2** and use the **Linux** build (full MD workflow: AmberTools, membrane builder, OpenMM).
 
-### Linux / WSL
+**Supported distros (tested):**
+
+| Environment | Ubuntu / Debian | Notes |
+|-------------|-----------------|-------|
+| **WSL** | **24.04** | Recommended — WSLg, Electron, and the embedded runtime work reliably |
+| WSL | 22.04 | Not recommended — GUI/display issues (WSLg, DBus) are common; upgrade to 24.04 |
+| **Native Linux** | 22.04 or newer | Full support on a standard desktop with X11 or Wayland |
+
+On WSL, use a recent **WSL 2** install with **WSLg** enabled (`wsl --version` should list WSLg). After `wsl --update`, run `wsl --shutdown` once if the app cannot open a window.
 
 **`.deb` (Ubuntu/Debian/WSL):**
 ```bash
@@ -54,7 +58,15 @@ chmod +x gatewizard-gui-*-linux-x86_64.AppImage
 ./gatewizard-gui-*-linux-x86_64.AppImage
 ```
 
-Do **not** run `gatewizard` in the terminal — that is the Python API CLI, not this app.
+If the splash screen appears but the main window never opens on WSL, try software rendering:
+
+```bash
+GATEWIZARD_GPU_SAFE_MODE=1 gatewizard-gui-linux --ozone-platform=wayland
+```
+
+The `gatewizard` PyPI package is the **Python API library** only (no console command). This app is launched as `gatewizard-gui-linux` or `gatewizard-gui-mac`.
+
+Use the same `.deb` or AppImage steps above on **native Linux** desktops (Ubuntu 22.04+).
 
 ### macOS
 
@@ -208,7 +220,7 @@ OpenMM needs no separate binary — provided by `gatewizard[full]` + conda above
 |----------|----------------------------------------|
 | Linux / WSL | Yes |
 | macOS | Yes, where AmberTools is available |
-| Native Windows | Limited — no AmberTools in embedded runtime; OpenMM GPU not set up by the installer; use WSL for full MD |
+| Native Windows | Not supported — use WSL with the Linux build |
 
 ### Python API (optional)
 
@@ -241,11 +253,10 @@ Install `npm` dependencies in **one environment only** (WSL or Windows), not bot
 
 | Platform | Command | Release artifact (example) |
 |----------|---------|----------------------------|
-| Linux / WSL | `npm run build:linux` | `gatewizard-gui-1.0.5-linux-x86_64.AppImage`, `.deb` |
-| Windows | `npm run build` then `npm run build:win:pack` | `gatewizard-gui-1.0.5-win-x64-setup.exe` |
-| macOS | `npm run build:mac` (on macOS) | `gatewizard-gui-1.0.5-mac-arm64.dmg` |
+| Linux / WSL | `npm run build:linux` | `gatewizard-gui-1.0.6-linux-x86_64.AppImage`, `.deb` |
+| macOS | `npm run build:mac` (on macOS) | `gatewizard-gui-1.0.6-mac-arm64.dmg` |
 
-Installers use platform suffixes (`-win-`, `-linux-`, `-mac-`) so Windows and WSL/Linux builds are easy to tell apart on one machine.
+CI publishes **Linux and macOS only**. A native Windows `.exe` can be built locally (`npm run build:win:pack`) but is not shipped on GitHub Releases.
 
 ## Community and support
 
