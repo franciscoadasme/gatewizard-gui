@@ -36,6 +36,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from gatewizard.utils.protein_capping import cap_protein
+from gatewizard.utils.helpers import resolve_pdb_chain_id
+from gatewizard.utils.logger import get_logger
 from gatewizard.core.structure_manager import (
     StructureManager,
     StructureError,
@@ -44,6 +46,8 @@ from gatewizard.core.structure_manager import (
 from gatewizard.core.mempro import MemProError
 from gatewizard.core.preparation import PreparationError, PreparationManager
 from gatewizard.core.builder import Builder
+
+logger = get_logger(__name__)
 
 try:
     from gatewizard.tools.equilibration import (
@@ -202,10 +206,9 @@ def get_atoms(atoms: mda.AtomGroup | mda.Universe) -> list[dict]:
             index=int(it.index),
             res_name=str(it.resname).strip(),
             res_id=int(it.resid),
-            chain_id=(
-                str(it.segid).strip()
-                or str(getattr(it, "chainID", "") or "").strip()
-                or "A"
+            chain_id=resolve_pdb_chain_id(
+                str(it.segid),
+                str(getattr(it, "chainID", "") or ""),
             ),
         )
         for it in atoms
@@ -218,6 +221,8 @@ def get_residues(
     source_path: str | None = None,
 ) -> list[dict]:
     residue_sec_table: dict[tuple[str, int, str | None], str] = {}
+    resid_unique: dict[int, str] = {}
+    resid_ambiguous: set[int] = set()
     if needs_secondary_structure:
         pdb_for_ss = source_path
         cleanup = False
@@ -230,10 +235,19 @@ def get_residues(
         try:
             # auto: PSIQUE first, then PDB HELIX/SHEET records, then CA-angle heuristic
             ss_map = assign_secondary_structure_map(pdb_for_ss, method="auto")
+            resid_unique: dict[int, str] = {}
+            resid_ambiguous: set[int] = set()
             for (chain, resid), sec in ss_map.items():
                 residue_sec_table[(chain, resid, None)] = sec
-        except Exception:
-            pass
+                rid = int(resid)
+                if rid in resid_unique and resid_unique[rid] != sec:
+                    resid_ambiguous.add(rid)
+                elif rid not in resid_ambiguous:
+                    resid_unique[rid] = sec
+        except Exception as exc:
+            logger.warning("Secondary structure assignment failed: %s", exc)
+            resid_unique = {}
+            resid_ambiguous = set()
         finally:
             if cleanup and pdb_for_ss:
                 try:
@@ -243,22 +257,23 @@ def get_residues(
 
     residues = []
     for res in u.residues:
-        chain = str(res.segid).strip()
-        if not chain:
-            # Standard PDB: chain in chainID (col 22), segid is empty
-            try:
-                chain = str(res.atoms[0].chainID or "").strip()
-            except (AttributeError, IndexError):
-                pass
-        chain = chain or "A"
+        try:
+            chain_id_attr = str(res.atoms[0].chainID or "")
+        except (AttributeError, IndexError):
+            chain_id_attr = ""
+        chain = resolve_pdb_chain_id(str(res.segid), chain_id_attr)
         ca_atoms = res.atoms.select_atoms("name CA")
+        rid = int(res.resid)
+        sec = residue_sec_table.get((chain, rid, None))
+        if sec is None and rid not in resid_ambiguous:
+            sec = resid_unique.get(rid)
         residues.append(
             dict(
                 chain=chain,
                 resname=str(res.resname).strip(),
                 number=int(res.resid),
                 atom_indices=sorted(int(i) for i in res.atoms.indices.tolist()),
-                sec=residue_sec_table.get((chain, res.resid, None)),
+                sec=sec,
                 ca_index=(int(ca_atoms.indices[0]) if ca_atoms.n_atoms == 1 else None),
             )
         )
