@@ -7,15 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-07-01
+
 ### Added
 
-- **Light / dark theme:** Sun/moon sliding toggle in the activity sidebar (above Dependency versions); preference persists across restarts; title bar and taskbar icons switch with theme (`app-window-light.png` / `app-window-dark.png`)
-- **Visualize — 3D scene settings:** Viewport background follows app theme by default; Representations toolbar sun button opens a left-docked panel for custom background color, hemisphere/ambient/directional lighting, illustrative outlines, and reset to defaults (persisted in `gw_viewer_settings`)
-- **Visualize — Illustrative material:** Goodsell-style preset (cartoon, tube, ball-and-stick, vdW) with per-view outline and flat-lighting options in View settings; scene lighting restores when switching materials
+- **Light / dark theme:** Sun/moon toggle in the activity sidebar; preference persists across restarts; title bar and taskbar icons follow the theme
+- **Visualize — 3D scene settings:** Viewport background follows app theme by default; sun button on the Representations toolbar opens a panel for background color, lighting, Goodsell outlines, and reset (saved in `gw_viewer_settings`)
+- **Visualize — Goodsell material:** David Goodsell–style preset (cartoon, tube, ball-and-stick, vdW) with per-view outline and flat-lighting options
+- **Visualize — Glowing material:** Emissive preset for highlighting regions in the 3D view
+- **GitHub:** Issue templates and community docs for bug reports and feature requests
 
 ### Fixed
 
-- **macOS runtime — broken SSL / pip:** Detect corrupted OpenSSL (`libcrypto` / SSL module unavailable), repair or wipe `mamba-env` and reinstall; migration no longer rewrites binary `.dylib` files as text
+- **Visualize — secondary structure (CHARMM/NAMD):** Align atom/residue chain IDs in `/get-structure` with gatewizard SS assignment (`resolve_pdb_chain_id` for long segids like `PROT`), so cartoon/tube coloring works when PSIQUE fails or falls back
+- **Visualize — Glowing material:** Fix freezes and WebGL bulb shader overflow on some GPUs
+- **Dev — CSP:** Allow Vite dev server and Threlte WebAssembly in the renderer content security policy
+- **macOS runtime — broken SSL / pip:** Detect corrupted OpenSSL, repair or wipe `mamba-env` and reinstall; migration no longer rewrites binary `.dylib` files as text
+
+### Changed
+
+- **Splash:** Placeholder circle logo with “GateWizard” label inside the hex; key-flip animation removed; spark progress border kept while the brand is being redesigned
+- **Branding:** Temporary circle logos for title bar, taskbar, installer, and README header
+- **Releases:** Linux (AppImage + `.deb`) and macOS (`.dmg`) only — **no native Windows `.exe`**; Windows users install via **WSL**
+- **README:** Windows/WSL install guidance; native Windows marked unsupported
+- Requires gatewizard API **1.0.43** (library-only package; no `gatewizard` console command)
 
 ## [1.0.5] - 2026-06-19
 

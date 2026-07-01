@@ -1,6 +1,6 @@
 {
   "name": "gatewizard-gui",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "GateWizard desktop GUI — API: https://github.com/maurobedoya/gatewizard",
   "main": "./out/main/index.js",
   "author": {
