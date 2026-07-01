@@ -58,6 +58,37 @@
         clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
       }
 
+      .logo-wrap {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        width: 100%;
+        height: 100%;
+        padding: 0 1rem;
+        box-sizing: border-box;
+      }
+
+      .splash-logo {
+        display: block;
+        width: 88px;
+        height: 88px;
+        object-fit: contain;
+        pointer-events: none;
+        flex-shrink: 0;
+      }
+
+      .wordmark {
+        margin: 0;
+        white-space: nowrap;
+        font-size: 0.72rem;
+        font-weight: 300;
+        letter-spacing: 0.06em;
+        color: #ececec;
+        line-height: 1;
+      }
+
       /* Glowing progress border, drawn on top and NOT clipped, so its halo
          and sparks can bloom slightly outside the hex edge. */
       .hex-border {
@@ -78,98 +109,6 @@
         stroke: #ffffff;
         stroke-width: 3;
         stroke-linecap: round;
-      }
-
-      .scene {
-        position: relative;
-        width: 260px;
-        height: 200px;
-        perspective: 850px;
-        perspective-origin: 50% 50%;
-      }
-
-      /* CAMERA: slide-in, then zoom while centering the binding on hex centre. */
-      .camera {
-        position: absolute;
-        inset: 0;
-        transform-style: preserve-3d;
-        transform-origin: 27.6% 50%;
-        transform: translateX(330px) scale(1);
-        transition: transform 1.05s cubic-bezier(0.22, 1, 0.36, 1);
-        will-change: transform;
-      }
-      body.phase-slide .camera {
-        transform: translateX(0) scale(1);
-      }
-      body.phase-zoom .camera {
-        transform: translateX(58px) scale(1.2);
-        transition: transform 0.9s cubic-bezier(0.33, 0, 0.2, 1);
-      }
-
-      /* CARD: one plane, key on the front, logo on the back. A real 3D turn. */
-      .card {
-        position: absolute;
-        inset: 0;
-        transform-style: preserve-3d;
-        transform-origin: 27.6% 50%;
-        transform: rotateY(0deg);
-      }
-
-      .face {
-        position: absolute;
-        inset: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        backface-visibility: hidden;
-        -webkit-backface-visibility: hidden;
-      }
-      .face-key {
-        transform: rotateY(0deg);
-      }
-      .face-logo {
-        transform: rotateY(180deg);
-      }
-      .logo-inner {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        transform: translateX(58.3px) translateY(-6px);
-      }
-
-      .key-svg {
-        display: block;
-        width: 190px;
-        height: auto;
-        overflow: visible;
-      }
-      .key-svg :is(line, path, circle, ellipse) {
-        fill: none;
-        stroke: #ffffff;
-        stroke-linecap: round;
-        stroke-linejoin: round;
-      }
-      .key-bit { stroke-width: 7; }
-      .key-shaft { stroke-width: 6; }
-      .key-bow { stroke-width: 7; }
-
-      .gw-emblem {
-        display: block;
-        width: 74px;
-        height: auto;
-        overflow: visible;
-      }
-      .gw-fill {
-        fill: #ffffff;
-        stroke: none;
-      }
-      .wordmark {
-        margin-top: 8px;
-        white-space: nowrap;
-        font-size: 0.6rem;
-        font-weight: 300;
-        letter-spacing: 0.05em;
-        color: #ececec;
       }
 
       .status {
@@ -211,40 +150,13 @@
     <div class="splash">
       <div class="stage-wrap">
         <div class="panel">
-          <div class="scene">
-            <div class="camera" id="camera">
-              <div class="card" id="card">
-                <!-- FRONT: key -->
-                <div class="face face-key">
-                  <svg class="key-svg" viewBox="0 0 300 240" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
-                    <g class="key-bit">
-                      <line x1="46" y1="50" x2="46" y2="120" />
-                      <line x1="72" y1="95" x2="72" y2="140" />
-                    </g>
-                    <line class="key-shaft" x1="46" y1="120" x2="163" y2="120" />
-                    <circle class="key-shaft" cx="173" cy="120" r="6" />
-                    <g class="key-bow">
-                      <circle cx="198" cy="120" r="20" />
-                      <circle cx="250" cy="120" r="20" />
-                      <circle cx="224" cy="94" r="20" />
-                      <circle cx="224" cy="146" r="20" />
-                    </g>
-                  </svg>
-                </div>
-
-                <!-- BACK: GateWizard emblem -->
-                <div class="face face-logo">
-                  <div class="logo-inner">
-                    <svg class="gw-emblem" viewBox="0 0 1204.5 1006" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="GateWizard">
-                      <g transform="translate(-48.506239,1161) scale(0.1,-0.1)">
-                        <path class="gw-fill" d="M4523 9628 c-1913 -1914 -1983 -1985 -2013 -2051 -65 -144 -63 -293 6 -437 36 -73 71 -109 1658 -1698 l1621 -1622 -530 -530 -530 -530 -1770 1770 -1770 1770 -355 -355 -355 -355 1960 -1960 c1078 -1078 1983 -1976 2010 -1995 88 -61 155 -80 280 -79 126 0 183 17 282 84 34 23 360 341 773 754 l715 716 735 -733 c622 -621 744 -738 796 -765 155 -80 313 -83 473 -6 49 23 312 282 2039 2008 l1982 1981 -352 352 -353 353 -1772 -1772 -1773 -1773 -532 532 -533 533 1621 1622 c1592 1594 1622 1624 1659 1700 72 147 71 298 -1 448 -35 73 -66 104 -948 988 -501 502 -937 933 -969 957 -145 111 -338 130 -512 53 -68 -31 -100 -62 -1168 -1127 l-1097 -1096 352 -352 353 -353 885 885 885 885 533 -532 532 -533 -1417 -1417 -1418 -1418 -1417 1417 -1418 1418 1772 1772 1773 1773 -350 350 c-192 192 -352 350 -355 350 -3 0 -897 -892 -1987 -1982z" />
-                      </g>
-                    </svg>
-                    <span class="wordmark">GateWizard</span>
-                  </div>
-                </div>
-              </div>
-            </div>
+          <div class="logo-wrap">
+            <img
+              class="splash-logo"
+              src="brand/logos/app-window-dark.png"
+              alt=""
+            />
+            <p class="wordmark">GateWizard</p>
           </div>
         </div>
 
@@ -283,47 +195,10 @@
     </div>
 
     <script>
-      const SLIDE_MS = 1050
-      const ZOOM_MS = 900
-      const SEG_MS = 1600
-      const HOLD_MS = 900
-
-      const card = document.getElementById('card')
-
-      /* ---------- Key / logo 3D flip ---------- */
-      const SEQ = [180, 0]
-      let rafId = null
-      let idx = 0
-      let fromA = 0
-      let toA = SEQ[0]
-      let segStart = null
-      let holding = false
-      let holdStart = 0
-      let theta = 0
-      const easeInOut = (p) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2)
-
-      function applyFlip() {
-        card.style.transform = 'rotateY(' + theta + 'deg)'
-      }
-      function flipFrame(ts) {
-        if (segStart === null) segStart = ts
-        if (!holding) {
-          const p = Math.min(1, (ts - segStart) / SEG_MS)
-          theta = fromA + (toA - fromA) * easeInOut(p)
-          if (p >= 1) { theta = toA; holding = true; holdStart = ts }
-        } else if (ts - holdStart >= HOLD_MS) {
-          holding = false; segStart = ts; fromA = toA
-          idx = (idx + 1) % SEQ.length; toA = SEQ[idx]
-        }
-        applyFlip()
-        rafId = requestAnimationFrame(flipFrame)
-      }
-
       /* ---------- Glowing progress border ---------- */
       const SVGNS = 'http://www.w3.org/2000/svg'
       const progressPath = document.getElementById('hexProgress')
       const sparkLayer = document.getElementById('sparkLayer')
-      const headLayer = document.getElementById('headLayer')
       const headDot = document.getElementById('headDot')
       const headHalo = document.getElementById('headHalo')
       const totalLen = progressPath.getTotalLength()
@@ -344,6 +219,7 @@
       const DEMO_HOLD = 1400
       const DEMO_FADE = 700
       const DEMO_CYCLE = DEMO_FILL + DEMO_HOLD + DEMO_FADE
+      const easeInOut = (p) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2)
 
       function spawnSparks(x, y, n) {
         for (let i = 0; i < n; i++) {
@@ -424,20 +300,10 @@
         borderRafId = requestAnimationFrame(borderFrame)
       }
 
-      /* ---------- Boot ---------- */
       function startSplashAnimation() {
-        if (rafId) cancelAnimationFrame(rafId)
-        rafId = null
-        idx = 0; fromA = 0; toA = SEQ[0]; segStart = null; holding = false; theta = 0
-        applyFlip()
-        document.body.classList.remove('phase-slide', 'phase-zoom')
-        void document.body.offsetWidth
-        requestAnimationFrame(() => document.body.classList.add('phase-slide'))
-        setTimeout(() => document.body.classList.add('phase-zoom'), SLIDE_MS + 150)
-        setTimeout(() => { rafId = requestAnimationFrame(flipFrame) }, SLIDE_MS + 150 + ZOOM_MS)
-
         if (!borderRafId) {
-          lastTs = 0; demoStart = 0
+          lastTs = 0
+          demoStart = 0
           borderRafId = requestAnimationFrame(borderFrame)
         }
       }
@@ -449,12 +315,8 @@
         target = Math.max(0, Math.min(1, p))
       }
 
-      // Stop the flip and settle on the logo; fill the border to 100%.
+      // Fill the border to 100% when the app is ready.
       window.stopSplashLoop = () => {
-        if (rafId) cancelAnimationFrame(rafId)
-        rafId = null
-        theta = 180
-        applyFlip()
         window.setSplashProgress(1)
       }
 
