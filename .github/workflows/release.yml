@@ -40,36 +40,6 @@ jobs:
             dist/*linux*.deb
           if-no-files-found: error
 
-  build-win:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Sync app icons
-        run: npm run sync:icons
-
-      - name: Build app bundle
-        run: npm run build
-
-      - name: Package Windows installer
-        run: npx electron-builder --win --publish never
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: win-dist
-          path: dist/*win*-setup.exe
-          if-no-files-found: error
-
   build-mac:
     runs-on: macos-latest
     steps:
@@ -101,7 +71,8 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: [build-linux, build-win, build-mac]
+    # Native Windows installers are not published — Windows users install via WSL (Linux build).
+    needs: [build-linux, build-mac]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -141,6 +112,8 @@ jobs:
             echo "" >> release_notes.md
             echo "See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details." >> release_notes.md
           fi
+          echo "" >> release_notes.md
+          echo "**Windows:** no native `.exe` — install the Linux `.deb` or AppImage inside **WSL 2** (Ubuntu 24.04 recommended)." >> release_notes.md
           echo "" >> release_notes.md
           echo "---" >> release_notes.md
           echo "" >> release_notes.md

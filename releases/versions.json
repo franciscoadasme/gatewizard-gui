@@ -1,8 +1,8 @@
 {
   "gatewizard": {
-    "latest": "1.0.40",
-    "min_for_gui": "1.0.40",
-    "install": "gatewizard[full]>=1.0.40"
+    "latest": "1.0.43",
+    "min_for_gui": "1.0.43",
+    "install": "gatewizard[full]>=1.0.43"
   },
   "mempro": {
     "latest": "0.1.0",
@@ -10,5 +10,5 @@
     "install": "mempro @ git+https://github.com/pstansfeld/MemPrO.git@v0.1.0",
     "notes": "Optional; installed from requirements-orientation.txt on Linux/macOS only."
   },
-  "notes": "Bump gatewizard before each GUI release. MemPrO is optional and must not block startup."
+  "notes": "Bump gatewizard before each GUI release. MemPrO is optional and must not block startup. GUI releases: Linux + macOS only; Windows users install via WSL (no native .exe)."
 }

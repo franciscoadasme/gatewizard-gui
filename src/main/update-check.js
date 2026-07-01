@@ -42,14 +42,15 @@ export function compareSemver(a, b) {
  */
 export function pickGuiDownloadUrl(platform, downloads = {}) {
   if (!downloads) return null
-  if (platform === 'win32') return downloads.win ?? null
+  // No native Windows releases — users on Windows install the Linux build in WSL.
+  if (platform === 'win32') return null
   if (platform === 'darwin') {
     return process.arch === 'arm64'
       ? downloads.mac_arm64 ?? downloads.mac ?? null
       : downloads.mac_x64 ?? downloads.mac ?? null
   }
   if (platform === 'linux') return downloads.linux ?? null
-  return downloads.linux ?? downloads.win ?? downloads.mac ?? null
+  return downloads.linux ?? downloads.mac ?? null
 }
 
 /**

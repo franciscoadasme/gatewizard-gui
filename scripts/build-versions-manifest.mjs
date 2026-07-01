@@ -36,10 +36,13 @@ const manifest = {
       linux_appimage: `${downloadBase}/gatewizard-gui-${version}-linux-x86_64.AppImage`,
       linux_deb: `${downloadBase}/gatewizard-gui-${version}-linux-amd64.deb`,
       linux: `${downloadBase}/gatewizard-gui-${version}-linux-x86_64.AppImage`,
-      win: `${downloadBase}/gatewizard-gui-${version}-win-x64-setup.exe`,
       mac: `${downloadBase}/gatewizard-gui-${version}-mac-arm64.dmg`,
       mac_arm64: `${downloadBase}/gatewizard-gui-${version}-mac-arm64.dmg`,
       mac_x64: `${downloadBase}/gatewizard-gui-${version}-mac-x64.dmg`
+    },
+    platform_notes: {
+      win:
+        'No native Windows installer. Install the Linux .deb or AppImage inside WSL 2 (Ubuntu 24.04 recommended).'
     }
   }
 }
