@@ -34,11 +34,11 @@ Install logs:
 
 ### Windows (via WSL)
 
-Native Windows installers are **not published**. On a Windows PC, install **WSL 2** and use the **Linux** build (full MD workflow: AmberTools, membrane builder, OpenMM).
+Native Windows installers are **not published**. On a Windows PC, install **WSL 2** and use the **Linux** build (full MD workflow: ``AmberTools, membrane builder, OpenMM).
 
 **Supported distros (tested):**
 
-| Environment | Ubuntu / Debian | Notes |
+| Environment | Ubuntu / Debian / Fedora | Notes |
 |-------------|-----------------|-------|
 | **WSL** | **24.04** | Recommended — WSLg, Electron, and the embedded runtime work reliably |
 | WSL | 22.04 | Not recommended — GUI/display issues (WSLg, DBus) are common; upgrade to 24.04 |
@@ -56,6 +56,23 @@ gatewizard-gui-linux
 ```bash
 chmod +x gatewizard-gui-*-linux-x86_64.AppImage
 ./gatewizard-gui-*-linux-x86_64.AppImage
+```
+**Fedora Linux:**
+
+Install FUSE support, then run the AppImage:
+
+```bash
+sudo dnf install -y fuse fuse-libs
+chmod +x gatewizard-gui-*-linux-x86_64.AppImage
+./gatewizard-gui-*-linux-x86_64.AppImage
+```
+
+On first launch, the app creates its internal Python environment and may download about 1 GB of packages. Keep the splash screen open until setup finishes.
+
+Install log:
+
+```bash
+~/.config/gatewizard-gui/runtime-install.log
 ```
 
 If the splash screen appears but the main window never opens on WSL, try software rendering:
