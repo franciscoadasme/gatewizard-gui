@@ -48,7 +48,7 @@ body:
     id: gui_version
     attributes:
       label: GUI version
-      description: From the release installer name or the **Dependency versions** dialog (e.g. 1.0.6)
+      description: From the release installer name or the **Dependency versions** dialog (e.g. 1.0.7)
     validations:
       required: true
 

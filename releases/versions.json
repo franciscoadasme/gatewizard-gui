@@ -1,8 +1,8 @@
 {
   "gatewizard": {
-    "latest": "1.0.43",
-    "min_for_gui": "1.0.43",
-    "install": "gatewizard[full]>=1.0.43"
+    "latest": "1.0.44",
+    "min_for_gui": "1.0.44",
+    "install": "gatewizard[full]>=1.0.44"
   },
   "mempro": {
     "latest": "0.1.0",

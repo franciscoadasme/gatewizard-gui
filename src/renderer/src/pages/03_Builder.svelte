@@ -43,7 +43,8 @@
   let saltConcentration = $state(0.15)
   let cation = $state('K+')
   let anion = $state('Cl-')
-  let distWat = $state(17.5)
+  let dist = $state(12)
+  let distWat = $state(26)
   let boxSizingMode = $state('water_layer')
   let boxDimX = $state(100)
   let boxDimY = $state(100)
@@ -375,6 +376,7 @@
       saltConcentration: addSalt ? parseFloat(saltConcentration) : 0,
       cation,
       anion,
+      dist: parseFloat(dist),
       distWat: parseFloat(distWat),
       dims:
         boxSizingMode === 'explicit'
@@ -533,7 +535,8 @@
     saltConcentration = 0.15
     cation = 'K+'
     anion = 'Cl-'
-    distWat = 17.5
+    dist = 12
+    distWat = 26
     boxSizingMode = 'water_layer'
     boxDimX = 100
     boxDimY = 100
@@ -901,7 +904,9 @@
       </div>
       {#if boxSizingMode === 'water_layer'}
         <div class="flex items-center gap-1 pl-6">
-          <span class="dark:text-neutral-500">Thickness</span>
+          <span class="dark:text-neutral-500" title="packmol-memgen --dist_wat">
+            Water thickness
+          </span>
           <input
             type="text"
             inputmode="decimal"
@@ -936,6 +941,21 @@
           <span class="dark:text-neutral-500">Å</span>
         </div>
       {/if}
+      <div class="flex items-center gap-1 pl-6">
+        <span
+          class="dark:text-neutral-500"
+          title="packmol-memgen --dist: minimum distance between solute extents and box boundaries"
+        >
+          Boundary distance
+        </span>
+        <input
+          type="text"
+          inputmode="decimal"
+          class="w-14 rounded-md border p-1 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+          bind:value={dist}
+        />
+        <span class="dark:text-neutral-500">Å</span>
+      </div>
     </div>
     <Divider />
 

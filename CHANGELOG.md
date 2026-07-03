@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-07-03
+
+### Added
+
+- **Builder:** Add packmol-memgen `--dist` as “Boundary distance” with default `12 Å`
+
+### Fixed
+
+- **Linux / WSL runtime startup:** Persist dependency cache state after requirements updates so MemPrO and OpenMM checks do not repeat on every launch
+
+### Changed
+
+- **Builder:** Default water layer thickness (`--dist_wat`) is now `26 Å`
+- Requires gatewizard API **1.0.44**
+
 ## [1.0.6] - 2026-07-01
 
 ### Added

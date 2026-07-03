@@ -466,6 +466,11 @@ class ValidateBuilderRequest(BaseModel):
     cation: str = "K+"
     anion: str = "Cl-"
     add_salt: bool = True
+    dist: float = Field(
+        12,
+        description="Minimum solute-to-box-boundary distance in Angstroms (--dist)",
+    )
+    dist_wat: float = Field(26, description="Water layer thickness in Angstroms")
 
 
 class StartPreparationRequest(BaseModel):
@@ -485,7 +490,11 @@ class StartPreparationRequest(BaseModel):
     salt_concentration: float = 0.15
     cation: str = "K+"
     anion: str = "Cl-"
-    dist_wat: float = 17.5
+    dist: float = Field(
+        12,
+        description="Minimum solute-to-box-boundary distance in Angstroms (--dist)",
+    )
+    dist_wat: float = Field(26, description="Water layer thickness in Angstroms")
     dims: List[float] | None = None
     output_folder_name: str | None = None
     ligand_params: list | None = None
@@ -959,6 +968,8 @@ def validate_builder(payload: ValidateBuilderRequest) -> dict:
             salt_concentration=payload.salt_concentration,
             cation=payload.cation,
             anion=payload.anion,
+            dist=payload.dist,
+            dist_wat=payload.dist_wat,
         )
         # Distinguish warning (valid but message present) from clean success
         is_warning = is_valid and bool(error_msg)
@@ -979,6 +990,7 @@ def _configure_builder(payload: StartPreparationRequest) -> Builder:
         salt_concentration=payload.salt_concentration,
         cation=payload.cation,
         anion=payload.anion,
+        dist=payload.dist,
         dist_wat=payload.dist_wat,
         dims=payload.dims,
         output_folder_name=payload.output_folder_name or None,

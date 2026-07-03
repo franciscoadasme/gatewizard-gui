@@ -358,10 +358,14 @@ async function syncCondaOpenmmGpuIfNeeded({
   statePath,
   extraState = {}
 }) {
-  if (process.platform === 'win32') return state
-  if (state.openmmCondaRev === OPENMM_CONDA_REV) return state
-  await installCondaOpenmmGpu(micromambaDest, runtimePrefix, mmEnv, onStatus)
-  const nextState = { ...state, ...extraState, openmmCondaRev: OPENMM_CONDA_REV }
+  const nextState =
+    process.platform === 'win32'
+      ? { ...state, ...extraState }
+      : { ...state, ...extraState, openmmCondaRev: OPENMM_CONDA_REV }
+  if (process.platform !== 'win32' && state.openmmCondaRev !== OPENMM_CONDA_REV) {
+    await installCondaOpenmmGpu(micromambaDest, runtimePrefix, mmEnv, onStatus)
+  }
+  if (JSON.stringify(nextState) === JSON.stringify(state)) return state
   await fs.writeFile(statePath, JSON.stringify(nextState, null, 2), 'utf-8')
   return nextState
 }
