@@ -435,6 +435,12 @@ class RunPropKaRequest(BaseModel):
     path: str = Field(..., description="Absolute path to a PDB/mmCIF file")
     target_ph: float = Field(..., description="Target pH")
     cap_protein: bool = Field(False, description="Cap the protein")
+    working_dir: str | None = Field(
+        None, description="Project working directory from the GUI top bar"
+    )
+    output_folder_name: str | None = Field(
+        None, description="Output folder name under working_dir"
+    )
 
 
 class DetectLigandsRequest(BaseModel):
@@ -497,6 +503,9 @@ class StartPreparationRequest(BaseModel):
     dist_wat: float = Field(26, description="Water layer thickness in Angstroms")
     dims: List[float] | None = None
     output_folder_name: str | None = None
+    working_dir: str | None = Field(
+        None, description="Project working directory from the GUI top bar"
+    )
     ligand_params: list | None = None
     nloop: int = Field(20, description="GENCAN loops for PACKMOL (--nloop)")
     nloop_all: int = Field(
@@ -574,17 +583,25 @@ def run_propka(payload: RunPropKaRequest) -> dict:
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
     try:
+        job_dir, path_obj = _resolve_preparation_workspace(
+            payload.working_dir,
+            payload.output_folder_name,
+            path,
+        )
+        path = str(path_obj)
         residue_renumbering_table = {}
         if payload.cap_protein:
-            path, residue_renumbering_table = cap_protein(path)
+            capped_path = path_obj.parent / f"{path_obj.stem}_capped.pdb"
+            path, residue_renumbering_table = cap_protein(path, str(capped_path))
+            path_obj = Path(path)
             residue_renumbering_table = {
                 "_".join(map(str, old)): new[2]  # (name, chain, id) -> new_id
                 for old, new in residue_renumbering_table.items()
                 if old != new
             }
         manager = PreparationManager(propka_version="3")
-        pka_file = manager.run_analysis(path)
-        summary_file = manager.extract_summary(pka_file)
+        manager.run_analysis(path, output_dir=str(job_dir))
+        summary_file = manager.extract_summary(manager.last_analysis_file)
         residues = manager.parse_summary(summary_file)
         for data in residues:
             state = manager.get_default_protonation_state(data, payload.target_ph)
@@ -596,6 +613,8 @@ def run_propka(payload: RunPropKaRequest) -> dict:
         return dict(
             residues=residues,
             residue_renumbering_table=residue_renumbering_table,
+            job_dir=str(job_dir),
+            working_path=path,
         )
 
     except Exception as ex:
@@ -1010,7 +1029,8 @@ def generate_preparation(payload: StartPreparationRequest) -> dict:
     path = os.path.abspath(os.path.expanduser(payload.path))
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
-    working_dir = os.path.dirname(path)
+    working_dir = payload.working_dir or os.path.dirname(path)
+    working_dir = os.path.abspath(os.path.expanduser(working_dir))
     try:
         builder = _configure_builder(payload)
         success, message, job_dir = builder.generate_preparation_inputs(
@@ -1047,7 +1067,8 @@ def start_preparation(payload: StartPreparationRequest) -> dict:
     path = os.path.abspath(os.path.expanduser(payload.path))
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
-    working_dir = os.path.dirname(path)
+    working_dir = payload.working_dir or os.path.dirname(path)
+    working_dir = os.path.abspath(os.path.expanduser(working_dir))
     try:
         builder = _configure_builder(payload)
         success, message, job_dir = builder.prepare_system(
@@ -1067,6 +1088,12 @@ class DetectDisulfideBondsRequest(BaseModel):
     max_disulfide_distance: float = Field(
         2.5, description="Maximum distance between disulfide bonds"
     )
+    working_dir: str | None = Field(
+        None, description="Project working directory from the GUI top bar"
+    )
+    output_folder_name: str | None = Field(
+        None, description="Output folder name under working_dir"
+    )
 
 
 @app.post("/detect-disulfide-bonds")
@@ -1074,11 +1101,20 @@ def detect_disulfide_bonds(payload: DetectDisulfideBondsRequest) -> dict:
     path = os.path.abspath(os.path.expanduser(payload.path))
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    _, path_obj = _resolve_preparation_workspace(
+        payload.working_dir,
+        payload.output_folder_name,
+        path,
+    )
     manager = PreparationManager()
     disulfide_bonds = manager.detect_disulfide_bonds(
-        path, payload.max_disulfide_distance
+        str(path_obj), payload.max_disulfide_distance
     )
-    return {"disulfide_bonds": disulfide_bonds}
+    return {
+        "disulfide_bonds": disulfide_bonds,
+        "job_dir": str(path_obj.parent),
+        "working_path": str(path_obj),
+    }
 
 
 class PreparePDBRequest(BaseModel):
@@ -1089,6 +1125,17 @@ class PreparePDBRequest(BaseModel):
     disulfide_bonds: list[tuple[tuple[str, int], tuple[str, int]]] = Field(
         description="Disulfide bonds"
     )
+    working_dir: str | None = Field(
+        None, description="Project working directory from the GUI top bar"
+    )
+    output_folder_name: str | None = Field(
+        None, description="Output folder name under working_dir"
+    )
+
+
+class EnsureOutputFolderRequest(BaseModel):
+    working_dir: str = Field(description="Project working directory from the GUI top bar")
+    output_folder_name: str = Field(description="Output folder name to create under working_dir")
 
 
 def _ensure_conda_tools_on_path() -> None:
@@ -1103,13 +1150,29 @@ def _ensure_conda_tools_on_path() -> None:
         os.environ["PATH"] = bin_dir + (os.pathsep + path if path else "")
 
 
+@app.post("/ensure-output-folder")
+def ensure_output_folder(payload: EnsureOutputFolderRequest) -> dict:
+    out = _ensure_output_folder(payload.working_dir, payload.output_folder_name)
+    return {"output_dir": str(out)}
+
+
 @app.post("/prepare-pdb")
 def prepare_pdb(payload: PreparePDBRequest) -> dict:
     _ensure_conda_tools_on_path()
     path = os.path.abspath(os.path.expanduser(payload.path))
-    output_path = _ensure_writable_output_file(payload.output_path)
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
+
+    job_dir, path_obj = _resolve_preparation_workspace(
+        payload.working_dir,
+        payload.output_folder_name,
+        path,
+    )
+    path = str(path_obj)
+    if payload.working_dir:
+        output_path = _protonated_output_path(job_dir, path_obj)
+    else:
+        output_path = _ensure_writable_output_file(payload.output_path)
 
     def get_residue_id(info: dict) -> str:
         resid = info["residue"] + str(info["res_id"])
@@ -1145,6 +1208,8 @@ def prepare_pdb(payload: PreparePDBRequest) -> dict:
         return dict(
             output=result["stdout"] + "\n" + result["stderr"],
             output_path=str(output_path),
+            job_dir=str(job_dir),
+            working_path=path,
         )
     except (PreparationError, FileNotFoundError, OSError, ValueError) as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
@@ -2628,6 +2693,71 @@ def run_energetic_analysis(payload: EnergeticAnalysisRequest) -> dict:
         return sanitize_value(result)
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+def _ensure_output_folder(working_dir: str, output_folder_name: str) -> Path:
+    """Create (if needed) an output folder under the project working directory."""
+    base = Path(os.path.abspath(os.path.expanduser(working_dir)))
+    folder_name = output_folder_name.strip()
+    if not folder_name:
+        raise HTTPException(status_code=400, detail="Output folder name cannot be empty")
+    out = base / folder_name
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+    except OSError as ex:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Cannot create output folder ({out}): {ex}",
+        ) from ex
+    if not os.access(out, os.W_OK):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot write to output folder: {out}",
+        )
+    return out
+
+
+def _resolve_preparation_workspace(
+    working_dir: str | None,
+    output_folder_name: str | None,
+    source_path: str,
+    *,
+    default_prefix: str = "01_preparation",
+) -> tuple[Path, Path]:
+    """Return (job_dir, local_pdb) under working_dir, copying the source PDB when needed."""
+    source = Path(os.path.abspath(os.path.expanduser(source_path)))
+    if not source.is_file():
+        raise HTTPException(status_code=404, detail=f"File not found: {source}")
+
+    if not working_dir:
+        return source.parent, source
+
+    base = Path(os.path.abspath(os.path.expanduser(working_dir)))
+    base.mkdir(parents=True, exist_ok=True)
+
+    if output_folder_name and output_folder_name.strip():
+        job_dir = base / output_folder_name.strip()
+    else:
+        job_dir = base / f"{default_prefix}_{source.stem}"
+
+    job_dir.mkdir(parents=True, exist_ok=True)
+    local_pdb = job_dir / source.name
+    if source.resolve() != local_pdb.resolve() and not local_pdb.exists():
+        shutil.copy2(source, local_pdb)
+    elif local_pdb.exists():
+        pass
+    else:
+        local_pdb = source
+
+    return job_dir, local_pdb
+
+
+def _protonated_output_path(job_dir: Path, input_pdb: Path) -> Path:
+    """Standard protonated PDB name inside a preparation output folder."""
+    stem = input_pdb.stem
+    if stem.endswith("_capped"):
+        stem = stem[: -len("_capped")]
+    return job_dir / f"{stem}_protonated.pdb"
 
 
 def _ensure_writable_output_file(output_path: str) -> Path:
