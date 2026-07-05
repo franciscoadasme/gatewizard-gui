@@ -23,6 +23,7 @@
 
   let wrapEl = $state(null)
   let controls = $state(null)
+  let resizeFrame = 0
 
   $effect(() => {
     mainViewerControls.current = controls
@@ -35,6 +36,32 @@
     if (!controls) return
     controls.mouseButtons.MIDDLE = MOUSE.PAN
     controls.mouseButtons.RIGHT = -1
+  })
+
+  function refreshControlsSize() {
+    if (!controls) return
+    controls.handleResize?.()
+    controls.update?.()
+  }
+
+  $effect(() => {
+    if (!wrapEl || !controls || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => {
+      if (resizeFrame) cancelAnimationFrame(resizeFrame)
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = 0
+        refreshControlsSize()
+      })
+    })
+    observer.observe(wrapEl)
+    refreshControlsSize()
+    return () => {
+      observer.disconnect()
+      if (resizeFrame) {
+        cancelAnimationFrame(resizeFrame)
+        resizeFrame = 0
+      }
+    }
   })
 
   /** @type {{ x: number, y: number }} */
@@ -62,6 +89,7 @@
     onAtomHover({ ..._coords(e), clientX: e.clientX, clientY: e.clientY })
   }}
   onpointerdown={(e) => {
+    refreshControlsSize()
     dragStart = { x: e.clientX, y: e.clientY }
   }}
   onpointerup={(e) => {
