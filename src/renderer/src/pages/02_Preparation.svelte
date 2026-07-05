@@ -159,10 +159,12 @@
 <div class="flex min-w-0 flex-1 divide-x divide-neutral-200 overflow-hidden select-none dark:divide-neutral-800">
   <aside class="w-80 shrink-0 space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs">
     <div class="space-y-2">
-      <p class="mb-1">Working file:</p>
+      <h2 class="sidebar-heading">Input</h2>
+      <div class="space-y-1">
+        <p class="sidebar-label">Working file</p>
       {#if workingFile}
         <p
-          class="w-full rounded-md border border-neutral-200 p-2 wrap-break-word text-neutral-600 dark:border-neutral-800 dark:text-neutral-400"
+          class="w-full rounded-md border border-neutral-200 p-2 wrap-break-word sidebar-label dark:border-neutral-800"
         >
           {workingFile}
         </p>
@@ -174,10 +176,10 @@
           >Select a file...</Button
         >
       {/if}
-      <div>
-        <p class="mb-1">Export Protonated File:</p>
+      <div class="space-y-1">
+        <p class="sidebar-label">Export protonated file</p>
         <p
-          class="rounded-md border border-neutral-200 p-2 wrap-break-word text-neutral-600 dark:border-neutral-800 dark:text-neutral-400"
+          class="rounded-md border border-neutral-200 p-2 wrap-break-word sidebar-label dark:border-neutral-800"
         >
           {protonatedFile ? protonatedFile : 'It will be auto-generated'}
         </p>
@@ -191,9 +193,9 @@
         onRunPropKa()
       }}
     >
-      <h2 class="font-semibold">PropKa Analysis</h2>
+      <h2 class="sidebar-heading">PropKa Analysis</h2>
       <div class="flex items-center gap-1">
-        <label for="target-ph" class="flex-1">Target pH:</label>
+        <label for="target-ph" class="sidebar-label flex-1">Target pH</label>
         <input
           type="text"
           inputmode="decimal"
@@ -208,7 +210,7 @@
       </div>
       <div class="flex items-center gap-1">
         <Checkbox name="protein-cap" bind:checked={capProtein} />
-        <label for="protein-cap">Cap protein termini (ACE/NME)</label>
+        <label for="protein-cap" class="sidebar-label">Cap protein termini (ACE/NME)</label>
       </div>
       <Button type="submit" className="w-full" disabled={!workingFile || runningPropKa}>
         {runningPropKa ? 'Running PropKa...' : 'Run PropKa'}
@@ -222,9 +224,9 @@
         onDetectDisulfideBonds()
       }}
     >
-      <h2 class="font-semibold">Disulfide Bonding</h2>
+      <h2 class="sidebar-heading">Disulfide Bonding</h2>
       <div class="flex items-center gap-1">
-        <label for="max-ss-distance" class="flex-1">Max S-S distance (Å):</label>
+        <label for="max-ss-distance" class="sidebar-label flex-1">Max S-S distance (Å)</label>
         <input
           type="text"
           inputmode="decimal"
@@ -238,14 +240,14 @@
     {#if preparationStatus.bondsChecked}
       <div class="space-y-2">
         {#if disulfideBonds.length > 0}
-          <p>Detected S-S bonds:</p>
+          <p class="sidebar-label">Detected S-S bonds</p>
           <ol class="list-inside list-decimal rounded-md border border-neutral-200 p-2 dark:border-neutral-800">
             {#each disulfideBonds as bond}
               <li>{bond[0][0]}{bond[0][1]} → {bond[1][0]}{bond[1][1]}</li>
             {/each}
           </ol>
         {:else}
-          <p class="rounded-md border border-neutral-200 px-2 py-1.5 text-neutral-500 dark:border-neutral-800">
+          <p class="sidebar-hint rounded-md border border-neutral-200 px-2 py-1.5 dark:border-neutral-800">
             No disulfide bonds detected
           </p>
         {/if}

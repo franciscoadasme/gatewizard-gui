@@ -999,8 +999,8 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
   <!-- ===== SIDEBAR ===== -->
   <aside class="w-80 shrink-0 space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs">
     <div class="space-y-2">
-      <h2 class="font-semibold">Analysis Mode</h2>
-      <Select className="w-full" bind:value={mode}>
+      <h2 class="sidebar-heading">Analysis Mode</h2>
+      <Select size="sm" className="w-full" bind:value={mode}>
         <option value="structural">Structural</option>
         <option value="energetic">Energetic (Logs)</option>
       </Select>
@@ -1011,11 +1011,11 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
     {#if mode === 'structural'}
       <!-- Structural Input -->
       <div class="space-y-2">
-        <h2 class="font-semibold">Structural Input</h2>
+        <h2 class="sidebar-heading">Structural Input</h2>
         <div class="space-y-1">
-          <p class="text-neutral-500">Topology file</p>
+          <p class="sidebar-label">Topology file</p>
           <div class="flex gap-1">
-            <Input value={basename(topologyPath) || '—'} disabled className="min-w-0 flex-1" />
+            <Input size="sm" value={basename(topologyPath) || '—'} disabled className="min-w-0 flex-1" />
             <Button size="sm" variant="outline" onclick={pickTopologyFile}>Browse</Button>
             <Button
               size="sm"
@@ -1030,11 +1030,11 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
         <div class="space-y-1">
           <div class="flex items-center justify-between">
-            <p class="text-neutral-500">Trajectory files</p>
+            <p class="sidebar-label">Trajectory files</p>
             <Button size="sm" variant="outline" onclick={addTrajectoryFile}>+ Add</Button>
           </div>
           {#if trajectoryFiles.length === 0}
-            <p class="text-neutral-600">No trajectory files selected.</p>
+            <p class="sidebar-hint">No trajectory files selected.</p>
           {:else}
             <div class="space-y-0.5">
               {#each trajectoryFiles as file, i (file.path)}
@@ -1065,7 +1065,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     bind:value={trajectoryFiles[i].timeNs}
                     className="w-14 shrink-0"
                   />
-                  <span class="shrink-0 text-neutral-500">ns</span>
+                  <span class="sidebar-label shrink-0">ns</span>
                   <button
                     class="shrink-0 px-1 text-red-500 hover:text-red-400"
                     onclick={() => removeTrajectory(i)}
@@ -1082,8 +1082,9 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
       <!-- Structural Options -->
       <div class="space-y-2">
-        <h2 class="font-semibold">Structural Options</h2>
+        <h2 class="sidebar-heading">Structural Options</h2>
         <Select
+          size="sm"
           className="w-full"
           bind:value={structuralType}
           onchange={(e) => onStructuralTypeChange(e.currentTarget.value)}
@@ -1099,7 +1100,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
         {#if isBilayerType(structuralType)}
           <div class="space-y-2">
             <div class="flex items-center justify-between gap-2">
-              <p class="text-neutral-500">Headgroup atoms</p>
+              <p class="sidebar-label">Headgroup atoms</p>
               <Button
                 size="sm"
                 variant="ghost"
@@ -1113,10 +1114,10 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             {#if headgroupDetecting}
               <div class="flex items-center gap-2 rounded border p-2 dark:border-neutral-800">
                 <Spinner />
-                <span class="text-neutral-500">Detecting…</span>
+                <span class="sidebar-hint">Detecting…</span>
               </div>
             {:else if lipidHeadgroupAtoms.length === 0}
-              <p class="text-xs text-neutral-600">
+              <p class="sidebar-hint">
                 {#if headgroupDetectAttempted}
                   None detected — use Advanced settings to add atom names.
                 {:else if !topologyPath}
@@ -1151,14 +1152,15 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               class="flex w-full items-center justify-between rounded border border-neutral-200 px-2 py-1.5 text-left hover:bg-neutral-100 dark:border-neutral-800 dark:hover:bg-neutral-900"
               onclick={() => (bilayerAdvancedOpen = !bilayerAdvancedOpen)}
             >
-              <span class="text-neutral-400">Advanced settings</span>
-              <span class="text-neutral-600">{bilayerAdvancedOpen ? '▲' : '▼'}</span>
+              <span class="sidebar-subheading">Advanced settings</span>
+              <span class="sidebar-hint">{bilayerAdvancedOpen ? '▲' : '▼'}</span>
             </button>
 
             {#if bilayerAdvancedOpen}
               <div class="space-y-2 rounded border p-2 dark:border-neutral-800">
                 <div class="flex gap-1">
                   <Input
+                    size="sm"
                     bind:value={manualHeadgroupName}
                     placeholder="Add atom name"
                     className="min-w-0 flex-1"
@@ -1190,12 +1192,13 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 {/if}
 
                 {#if selection}
-                  <p class="text-xs text-neutral-600">
+                  <p class="sidebar-hint">
                     Selection: <span class="font-mono text-neutral-500">{selection}</span>
                   </p>
                 {/if}
 
                 <Input
+                  size="sm"
                   bind:value={leafletLipidSel}
                   placeholder="Leaflet assignment (optional)"
                   className="w-full"
@@ -1203,17 +1206,18 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
                 {#if structuralType === 'membrane_thickness'}
                   <Input
+                    size="sm"
                     bind:value={leafletFilterSel}
                     placeholder="Leaflet filter (optional)"
                     className="w-full"
                   />
                   <div class="flex items-center gap-2">
-                    <span class="shrink-0 text-neutral-500">Grid bins</span>
+                    <span class="sidebar-label shrink-0">Grid bins</span>
                     <Input size="sm" type="number" min="1" step="1" bind:value={nBins} className="w-20" />
                   </div>
                   <label class="flex items-center gap-2">
                     <Checkbox name="interpolate-thickness" bind:checked={interpolate} />
-                    <span>Interpolate missing grid values</span>
+                    <span class="sidebar-label">Interpolate missing grid values</span>
                   </label>
                 {/if}
               </div>
@@ -1223,6 +1227,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           <!-- Selection 1 row with help button -->
           <div class="flex gap-1">
             <Input
+              size="sm"
               bind:value={selection}
               placeholder={structuralType === 'distance' ? 'Atom group 1' : 'MDAnalysis selection'}
               className="min-w-0 flex-1"
@@ -1236,24 +1241,24 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
         {/if}
 
         {#if structuralType === 'distance'}
-          <Input bind:value={selection2} placeholder="Atom group 2" className="w-full" />
+          <Input size="sm" bind:value={selection2} placeholder="Atom group 2" className="w-full" />
         {/if}
 
         {#if structuralType === 'rmsd'}
           <div class="flex items-center gap-2">
-            <span class="shrink-0 text-neutral-500">Ref. frame</span>
+            <span class="sidebar-label shrink-0">Ref. frame</span>
             <Input size="sm" type="number" min="0" bind:value={referenceFrame} className="w-20" />
           </div>
           <label class="flex items-center gap-2">
             <Checkbox name="align-rmsd" bind:checked={align} />
-            <span>Align before RMSD</span>
+            <span class="sidebar-label">Align before RMSD</span>
           </label>
         {/if}
 
         {#if structuralType === 'rmsf'}
           <div class="space-y-1">
-            <p class="text-neutral-500">X axis type</p>
-            <Select className="w-full" bind:value={rmsfXaxisType}>
+            <p class="sidebar-label">X axis type</p>
+            <Select size="sm" className="w-full" bind:value={rmsfXaxisType}>
               <option value="residue_number">Residue number</option>
               <option value="residue_type_number">Residue name + number</option>
               <option value="atom_index">Atom index</option>
@@ -1264,24 +1269,24 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
     {:else}
       <!-- Energetic Input -->
       <div class="space-y-2">
-        <h2 class="font-semibold">Energetic Input</h2>
+        <h2 class="sidebar-heading">Energetic Input</h2>
         <div class="space-y-1">
-          <p class="text-neutral-500">MD Engine</p>
-          <Select className="w-full" bind:value={energeticEngine}>
+          <p class="sidebar-label">MD Engine</p>
+          <Select size="sm" className="w-full" bind:value={energeticEngine}>
             <option value="namd">NAMD</option>
             <option value="openmm">OpenMM</option>
             <option value="gromacs">GROMACS</option>
           </Select>
         </div>
         <div class="flex items-center justify-between">
-          <p class="text-neutral-500">
+          <p class="sidebar-label">
             {{ namd: 'NAMD', openmm: 'OpenMM', gromacs: 'GROMACS' }[energeticEngine]} log files
           </p>
           <Button size="sm" variant="outline" onclick={addLogFile}>+ Add</Button>
         </div>
 
         {#if logFiles.length === 0}
-          <p class="text-neutral-600">No log files selected.</p>
+          <p class="sidebar-hint">No log files selected.</p>
         {:else}
           <div class="space-y-0.5">
             {#each logFiles as file, i (file.path)}
@@ -1312,7 +1317,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   bind:value={logFiles[i].timeNs}
                   className="w-14 shrink-0"
                 />
-                <span class="shrink-0 text-neutral-500">ns</span>
+                <span class="sidebar-label shrink-0">ns</span>
                 <button
                   class="shrink-0 px-1 text-red-500 hover:text-red-400"
                   onclick={() => removeLog(i)}
@@ -1337,26 +1342,26 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
       <!-- Energetic Options -->
       <div class="space-y-2">
-        <h2 class="font-semibold">Energetic Options</h2>
+        <h2 class="sidebar-heading">Energetic Options</h2>
         <div class="grid grid-cols-2 gap-x-2 gap-y-1.5">
           <div>
-            <p class="mb-0.5 text-neutral-500">Time</p>
-            <Select bind:value={timeUnits} className="w-full">
+            <p class="sidebar-label mb-0.5">Time</p>
+            <Select size="sm" bind:value={timeUnits} className="w-full">
               <option value="ns">ns</option>
               <option value="ps">ps</option>
               <option value="µs">µs</option>
             </Select>
           </div>
           <div>
-            <p class="mb-0.5 text-neutral-500">Energy</p>
-            <Select bind:value={energyUnits} className="w-full">
+            <p class="sidebar-label mb-0.5">Energy</p>
+            <Select size="sm" bind:value={energyUnits} className="w-full">
               <option value="kcal/mol">kcal/mol</option>
               <option value="kJ/mol">kJ/mol</option>
             </Select>
           </div>
           <div>
-            <p class="mb-0.5 text-neutral-500">Pressure</p>
-            <Select bind:value={pressureUnits} className="w-full">
+            <p class="sidebar-label mb-0.5">Pressure</p>
+            <Select size="sm" bind:value={pressureUnits} className="w-full">
               <option value="atm">atm</option>
               <option value="bar">bar</option>
               <option value="kPa">kPa</option>
@@ -1364,16 +1369,16 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             </Select>
           </div>
           <div>
-            <p class="mb-0.5 text-neutral-500">Temperature</p>
-            <Select bind:value={temperatureUnits} className="w-full">
+            <p class="sidebar-label mb-0.5">Temperature</p>
+            <Select size="sm" bind:value={temperatureUnits} className="w-full">
               <option value="K">K</option>
               <option value="°C">°C</option>
               <option value="°F">°F</option>
             </Select>
           </div>
           <div class="col-span-2">
-            <p class="mb-0.5 text-neutral-500">Volume</p>
-            <Select bind:value={volumeUnits} className="w-full">
+            <p class="sidebar-label mb-0.5">Volume</p>
+            <Select size="sm" bind:value={volumeUnits} className="w-full">
               <option value="Å³">Å³</option>
               <option value="nm³">nm³</option>
               <option value="mL">mL</option>
@@ -1383,9 +1388,9 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
         </div>
 
         <div class="sidebar-panel space-y-1 p-2">
-          <p class="font-medium">Properties</p>
+          <p class="sidebar-subheading">Properties</p>
           {#if availableProperties.length === 0}
-            <p class="text-neutral-600">Detect properties after adding log files.</p>
+            <p class="sidebar-hint">Detect properties after adding log files.</p>
           {:else}
             {#each availableProperties as prop (prop)}
               {@const checked = selectedProperties.includes(prop)}
@@ -1408,11 +1413,11 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
     <!-- ===== PLOT SETTINGS (collapsible) ===== -->
     <div class="space-y-2">
       <button
-        class="flex w-full items-center justify-between font-semibold hover:text-neutral-200"
+        class="sidebar-heading flex w-full items-center justify-between hover:text-neutral-700 dark:hover:text-neutral-200"
         onclick={() => (plotSettingsOpen = !plotSettingsOpen)}
       >
         <span>⚙ Plot Settings</span>
-        <span class="text-neutral-500">{plotSettingsOpen ? '▲' : '▼'}</span>
+        <span class="sidebar-hint">{plotSettingsOpen ? '▲' : '▼'}</span>
       </button>
 
       {#if plotSettingsOpen}
@@ -1420,8 +1425,8 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           <div class="grid grid-cols-2 gap-1">
             {#if mode === 'structural' && (activeStructRes?.lastAnalysisHasTimeX ?? false)}
               <div>
-                <p class="mb-0.5 text-neutral-500">X units</p>
-                <Select bind:value={ps.xUnit} className="w-full">
+                <p class="sidebar-label mb-0.5">X units</p>
+                <Select size="sm" bind:value={ps.xUnit} className="w-full">
                   <option value="ns">ns</option>
                   <option value="ps">ps</option>
                   <option value="µs">µs</option>
@@ -1430,8 +1435,8 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             {/if}
             {#if mode === 'structural'}
               <div>
-                <p class="mb-0.5 text-neutral-500">Y units</p>
-                <Select bind:value={ps.yUnit} className="w-full">
+                <p class="sidebar-label mb-0.5">Y units</p>
+                <Select size="sm" bind:value={ps.yUnit} className="w-full">
                   {#if structuralType === 'area_per_lipid'}
                     <option value="Å²">Å²</option>
                     <option value="nm²">nm²</option>
@@ -1446,8 +1451,8 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
           {#if mode === 'structural' && structuralType === 'rmsf' && rmsfXaxisType === 'residue_type_number'}
             <div>
-              <p class="mb-0.5 text-neutral-500">Residue code format</p>
-              <Select bind:value={ps.residueCodeFormat} className="w-full">
+              <p class="sidebar-label mb-0.5">Residue code format</p>
+              <Select size="sm" bind:value={ps.residueCodeFormat} className="w-full">
                 <option value="three">Three-letter (ALA123)</option>
                 <option value="one">One-letter (A123)</option>
               </Select>
@@ -1456,17 +1461,18 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
           <!-- Axis limits -->
           <div>
-            <p class="mb-0.5 text-neutral-500">X min / max</p>
+            <p class="sidebar-label mb-0.5">X min / max</p>
             <div class="flex gap-1">
-              <Input bind:value={ps.xMin} placeholder="auto" className="w-full" />
-              <Input bind:value={ps.xMax} placeholder="auto" className="w-full" />
+              <Input size="sm" bind:value={ps.xMin} placeholder="auto" className="w-full" />
+              <Input size="sm" bind:value={ps.xMax} placeholder="auto" className="w-full" />
             </div>
           </div>
 
           <div class="grid grid-cols-2 gap-1">
             <div>
-              <p class="mb-0.5 text-neutral-500">X tick labels</p>
+              <p class="sidebar-label mb-0.5">X tick labels</p>
               <Input
+                size="sm"
                 type="number"
                 min="2"
                 max="20"
@@ -1476,8 +1482,9 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               />
             </div>
             <div>
-              <p class="mb-0.5 text-neutral-500">Y tick labels</p>
+              <p class="sidebar-label mb-0.5">Y tick labels</p>
               <Input
+                size="sm"
                 type="number"
                 min="2"
                 max="20"
@@ -1488,52 +1495,52 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             </div>
           </div>
           <div>
-            <p class="mb-0.5 text-neutral-500">Y min / max</p>
+            <p class="sidebar-label mb-0.5">Y min / max</p>
             <div class="flex gap-1">
-              <Input bind:value={ps.yMin} placeholder="auto" className="w-full" />
-              <Input bind:value={ps.yMax} placeholder="auto" className="w-full" />
+              <Input size="sm" bind:value={ps.yMin} placeholder="auto" className="w-full" />
+              <Input size="sm" bind:value={ps.yMax} placeholder="auto" className="w-full" />
             </div>
           </div>
 
           <!-- Colors + transparency -->
           <div class="grid grid-cols-2 gap-1">
             <div>
-              <p class="mb-0.5 text-neutral-500">Line color</p>
+              <p class="sidebar-label mb-0.5">Line color</p>
               <div class="flex items-center gap-1">
                 <input
                   type="color"
                   bind:value={ps.lineColor}
                   class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
                 />
-                <Input bind:value={ps.lineColor} className="min-w-0 flex-1 font-mono" />
+                <Input size="sm" bind:value={ps.lineColor} className="min-w-0 flex-1 font-mono" />
               </div>
             </div>
             <div>
-              <p class="mb-0.5 text-neutral-500">Plot bg</p>
+              <p class="sidebar-label mb-0.5">Plot bg</p>
               <div class="flex items-center gap-1">
                 <input
                   type="color"
                   bind:value={ps.plotBg}
                   class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
                 />
-                <Input bind:value={ps.plotBg} className="min-w-0 flex-1 font-mono" />
+                <Input size="sm" bind:value={ps.plotBg} className="min-w-0 flex-1 font-mono" />
               </div>
             </div>
             <div>
-              <p class="mb-0.5 text-neutral-500">Text/axes color</p>
+              <p class="sidebar-label mb-0.5">Text/axes color</p>
               <div class="flex items-center gap-1">
                 <input
                   type="color"
                   bind:value={ps.textColor}
                   class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
                 />
-                <Input bind:value={ps.textColor} className="min-w-0 flex-1 font-mono" />
+                <Input size="sm" bind:value={ps.textColor} className="min-w-0 flex-1 font-mono" />
               </div>
             </div>
             <div class="flex items-end pb-1">
               <label class="flex items-center gap-2">
                 <Checkbox name="show-grid" bind:checked={ps.showGrid} />
-                <span>Show grid</span>
+                <span class="sidebar-label">Show grid</span>
               </label>
             </div>
           </div>
@@ -1541,8 +1548,9 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           <!-- Aspect ratio + transparent bg + DPI + font -->
           <div class="grid grid-cols-2 gap-1">
             <div>
-              <p class="mb-0.5 text-neutral-500">Aspect ratio (W/H)</p>
+              <p class="sidebar-label mb-0.5">Aspect ratio (W/H)</p>
               <Input
+                size="sm"
                 type="number"
                 min="0.5"
                 max="10"
@@ -1552,8 +1560,8 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               />
             </div>
             <div>
-              <p class="mb-0.5 text-neutral-500">Export DPI</p>
-              <Select bind:value={ps.dpi} className="w-full">
+              <p class="sidebar-label mb-0.5">Export DPI</p>
+              <Select size="sm" bind:value={ps.dpi} className="w-full">
                 <option value="72">72 dpi (screen)</option>
                 <option value="96">96 dpi</option>
                 <option value="150">150 dpi</option>
@@ -1564,12 +1572,12 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             <div class="flex items-end pb-1">
               <label class="flex items-center gap-2">
                 <Checkbox name="transparent-bg" bind:checked={ps.transparentBg} />
-                <span>Transparent bg</span>
+                <span class="sidebar-label">Transparent bg</span>
               </label>
             </div>
             <div>
-              <p class="mb-0.5 text-neutral-500">Font</p>
-              <Select bind:value={ps.fontFamily} className="w-full">
+              <p class="sidebar-label mb-0.5">Font</p>
+              <Select size="sm" bind:value={ps.fontFamily} className="w-full">
                 <option value="sans-serif">Sans-serif</option>
                 <option value="serif">Serif</option>
                 <option value="monospace">Monospace</option>
@@ -1584,8 +1592,8 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
           <!-- Legend position -->
           <div>
-            <p class="mb-0.5 text-neutral-500">Legend position</p>
-            <Select bind:value={ps.legendPosition} className="w-full">
+            <p class="sidebar-label mb-0.5">Legend position</p>
+            <Select size="sm" bind:value={ps.legendPosition} className="w-full">
               <option value="bottom">Below chart</option>
               <option value="top-left">Inside — top left</option>
               <option value="top-right">Inside — top right</option>
@@ -1598,8 +1606,9 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           <!-- Margin extra (for long tick labels) -->
           <div class="grid grid-cols-2 gap-1">
             <div>
-              <p class="mb-0.5 text-neutral-500">Extra left margin</p>
+              <p class="sidebar-label mb-0.5">Extra left margin</p>
               <Input
+                size="sm"
                 type="number"
                 min="0"
                 max="120"
@@ -1610,8 +1619,9 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               />
             </div>
             <div>
-              <p class="mb-0.5 text-neutral-500">Extra bottom margin</p>
+              <p class="sidebar-label mb-0.5">Extra bottom margin</p>
               <Input
+                size="sm"
                 type="number"
                 min="0"
                 max="80"
@@ -1720,19 +1730,19 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
         {#if activePrimaryStats}
           <div class="grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
             <div class="sidebar-panel p-2">
-              <p class="text-neutral-500">Mean</p>
+              <p class="sidebar-label">Mean</p>
               <p class="font-semibold">{Number(activePrimaryStats.mean).toFixed(4)}</p>
             </div>
             <div class="sidebar-panel p-2">
-              <p class="text-neutral-500">Std</p>
+              <p class="sidebar-label">Std</p>
               <p class="font-semibold">{Number(activePrimaryStats.std).toFixed(4)}</p>
             </div>
             <div class="sidebar-panel p-2">
-              <p class="text-neutral-500">Min</p>
+              <p class="sidebar-label">Min</p>
               <p class="font-semibold">{Number(activePrimaryStats.min).toFixed(4)}</p>
             </div>
             <div class="sidebar-panel p-2">
-              <p class="text-neutral-500">Max</p>
+              <p class="sidebar-label">Max</p>
               <p class="font-semibold">{Number(activePrimaryStats.max).toFixed(4)}</p>
             </div>
           </div>

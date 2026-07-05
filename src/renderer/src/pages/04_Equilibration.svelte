@@ -616,9 +616,10 @@
 <div class="flex min-w-0 flex-1 divide-x divide-neutral-200 overflow-hidden select-none dark:divide-neutral-800">
   <aside class="w-80 shrink-0 space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs">
     <div class="space-y-2">
+      <h2 class="sidebar-heading">Input</h2>
       <div class="space-y-1">
-        <p class="text-xs">Input directory:</p>
-        <p class="text-xs text-neutral-500">
+        <p class="sidebar-label">Input directory</p>
+        <p class="sidebar-hint">
           Must contain <code>.prmtop</code> and <code>.inpcrd</code> files.
         </p>
         {#if inputDir}
@@ -626,7 +627,7 @@
             {inputDir}
           </div>
           {#if systemSize !== null}
-            <p class="mb-2 text-xs">System size: {systemSize.toLocaleString()} atoms</p>
+            <p class="sidebar-hint mb-2">System size: {systemSize.toLocaleString()} atoms</p>
           {/if}
           <Button variant="outline" className="w-full" onclick={selectInputDir}
             >Select another directory...</Button
@@ -638,16 +639,17 @@
         {/if}
       </div>
       <div class="space-y-1">
-        <p class="text-xs">Output directory:</p>
-        <Input type="text" bind:value={outputName} className="w-full" placeholder="equilibration" />
+        <p class="sidebar-label">Output directory</p>
+        <Input type="text" size="sm" bind:value={outputName} className="w-full" placeholder="equilibration" />
       </div>
     </div>
     <Divider />
     <div class="space-y-2">
-      <h2 class="font-semibold">Molecular Dynamics</h2>
+      <h2 class="sidebar-heading">Molecular Dynamics</h2>
       <div class="space-y-1">
-        <p class="text-xs">Engine:</p>
+        <p class="sidebar-label">Engine</p>
         <Select
+          size="sm"
           className="w-full"
           bind:value={engine}
           onchange={() => {
@@ -660,16 +662,17 @@
           {/each}
         </Select>
         {#if engine === 'namd'}
-          <p class="text-xs text-neutral-500 dark:text-neutral-400">
+          <p class="sidebar-hint">
             NAMD + OPC builds: waterModel tip4 is added automatically from the builder
             job (FlexibleWater prmtop).
           </p>
         {/if}
       </div>
       <div class="space-y-1">
-        <p class="text-xs">Executable:</p>
+        <p class="sidebar-label">Executable</p>
         <Input
           type="text"
+          size="sm"
           value={selectedExecutable}
           oninput={(e) => {
             executableByEngine[engine] = e.target.value
@@ -695,7 +698,7 @@
         {/if}
         {#if engine === 'openmm' && openmmPlatforms !== null}
           <div class="space-y-1 pt-0.5">
-            <p class="text-xs text-zinc-400">Platform:</p>
+            <p class="sidebar-label">Platform</p>
             <div class="flex flex-wrap gap-1">
               {#each openmmPlatforms.filter((p) => p.name !== 'Reference') as p}
                 {@const isGpu = GPU_PLATFORMS.includes(p.name)}
@@ -722,14 +725,14 @@
                 >
               {/each}
               {#if openmmPlatforms.filter((p) => p.name !== 'Reference').length === 0}
-                <span class="text-xs text-zinc-400">No platforms detected</span>
+                <span class="sidebar-hint">No platforms detected</span>
               {/if}
             </div>
             {#if openmmPlatform === null}
-              <p class="text-xs text-zinc-500">Auto-detect (fastest available)</p>
+              <p class="sidebar-hint">Auto-detect (fastest available)</p>
             {:else}
-              <p class="text-xs text-zinc-400">
-                Selected: <span class="text-zinc-200">{openmmPlatform}</span>
+              <p class="sidebar-hint">
+                Selected: <span class="text-neutral-800 dark:text-neutral-200">{openmmPlatform}</span>
               </p>
             {/if}
           </div>
@@ -743,13 +746,14 @@
             if (addComRestraint) addRotationRestraint = true
           }}
         />
-        <label for="add-com-restraint">Generate COM restraint during input generation</label>
+        <label for="add-com-restraint" class="sidebar-label">Generate COM restraint during input generation</label>
       </div>
       {#if addComRestraint}
         <div class="space-y-1">
-          <p class="text-xs">COM reference selection (MDAnalysis):</p>
+          <p class="sidebar-label">COM reference selection (MDAnalysis)</p>
           <Input
             type="text"
+            size="sm"
             bind:value={comSelection}
             className="w-full"
             placeholder="name CA"
@@ -778,23 +782,24 @@
               {comSelectionValidation.message}
             </p>
           {/if}
-          <p class="text-[11px] text-neutral-500">
+          <p class="sidebar-hint">
             Used to define COM translation target and optional rotation reference atoms.
           </p>
         </div>
         <div class="space-y-1">
-          <p class="text-xs">COM translation k (kcal/mol/A^2):</p>
-          <Input type="number" min="0" step="0.1" bind:value={comRestraintK} className="w-full" />
+          <p class="sidebar-label">COM translation k (kcal/mol/A^2)</p>
+          <Input type="number" size="sm" min="0" step="0.1" bind:value={comRestraintK} className="w-full" />
         </div>
         <div class="col-span-2 flex items-center gap-2">
           <Checkbox id="add-rotation-restraint" bind:checked={addRotationRestraint} />
-          <label for="add-rotation-restraint">Also generate rotation restraint</label>
+          <label for="add-rotation-restraint" class="sidebar-label">Also generate rotation restraint</label>
         </div>
         {#if addRotationRestraint}
           <div class="space-y-1">
-            <p class="text-xs">Rotation k (kcal/mol/A^2):</p>
+            <p class="sidebar-label">Rotation k (kcal/mol/A^2)</p>
             <Input
               type="number"
+              size="sm"
               min="0"
               step="1"
               bind:value={rotationRestraintK}
@@ -808,20 +813,20 @@
     <Divider />
 
     <div class="grid grid-cols-[1fr_--spacing(15)] items-center gap-2">
-      <h2 class="col-span-2 font-semibold">Computational Resources</h2>
-      <label for="cpu-cores" class="flex-1">CPU Cores:</label>
+      <h2 class="sidebar-heading col-span-2">Computational Resources</h2>
+      <label for="cpu-cores" class="sidebar-label flex-1">CPU Cores</label>
       <Input id="cpu-cores" type="number" size="sm" bind:value={totalCpus} />
 
       <div class="col-span-2 flex items-center gap-2">
         <Checkbox id="use-gpu" bind:checked={useGpu} />
-        <label for="use-gpu">Enable GPU acceleration</label>
+        <label for="use-gpu" class="sidebar-label">Enable GPU acceleration</label>
       </div>
 
       {#if useGpu}
-        <label for="gpu_id">GPU ID:</label>
+        <label for="gpu_id" class="sidebar-label">GPU ID</label>
         <Input id="gpu-id" type="number" size="sm" bind:value={gpuDevice} />
 
-        <label for="num-gpus">Number of GPUs:</label>
+        <label for="num-gpus" class="sidebar-label">Number of GPUs</label>
         <Input id="num-gpus" type="number" size="sm" bind:value={totalGpus} />
       {/if}
     </div>
