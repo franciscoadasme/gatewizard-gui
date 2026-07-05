@@ -227,30 +227,49 @@ export function getStructure(payload) {
  * @param {string} filePath
  * @param {float} targetPh
  * @param {boolean} capProtein
- * @returns {Promise<{ residues: {residue: string, res_id: number, chain: string, pka: number, atom: string, atom_type: string, model_pka: number, current_state: string, initial_state: string, all_states: string[]}[], residue_renumbering_table: Record<string, number> }>}
+ * @param {{ workingDir?: string|null, outputFolderName?: string|null }} [opts]
+ * @returns {Promise<{ residues: object[], residue_renumbering_table: Record<string, number>, job_dir?: string, working_path?: string }>}
  */
-export async function runPropKa(filePath, targetPh, capProtein) {
-  return backendJson('/run-propka', { path: filePath, targetPh, capProtein })
+export async function runPropKa(filePath, targetPh, capProtein, opts = {}) {
+  return backendJson('/run-propka', {
+    path: filePath,
+    targetPh,
+    capProtein,
+    workingDir: opts.workingDir ?? null,
+    outputFolderName: opts.outputFolderName ?? null
+  })
 }
 
 /**
  * @param {string} filePath
  * @param {number} maxDisulfideDistance
- * @returns {Promise<{ disulfide_bonds: [[ [string, number], [string, number] ]] }>}
+ * @param {{ workingDir?: string|null, outputFolderName?: string|null }} [opts]
+ * @returns {Promise<{ disulfide_bonds: [[ [string, number], [string, number] ]], job_dir?: string, working_path?: string }>}
  */
-export async function detectDisulfideBonds(filePath, maxDisulfideDistance) {
+export async function detectDisulfideBonds(filePath, maxDisulfideDistance, opts = {}) {
   return backendJson('/detect-disulfide-bonds', {
     path: filePath,
-    maxDisulfideDistance
+    maxDisulfideDistance,
+    workingDir: opts.workingDir ?? null,
+    outputFolderName: opts.outputFolderName ?? null
   })
 }
 
 /**
- * @param {{ path: string, outputPath: string, protonationStates: object, targetPh: number, disulfideBonds: [[ [string, number], [string, number] ]] }} props
- * @returns {Promise<{ output: string, output_path?: string }>}
+ * @param {{ path: string, outputPath: string, protonationStates: object, targetPh: number, disulfideBonds: [[ [string, number], [string, number] ]], workingDir?: string|null, outputFolderName?: string|null }} props
+ * @returns {Promise<{ output: string, output_path?: string, job_dir?: string, working_path?: string }>}
  */
 export async function preparePDB(props) {
   return backendJson('/prepare-pdb', props)
+}
+
+/**
+ * @param {string} workingDir
+ * @param {string} outputFolderName
+ * @returns {Promise<{ output_dir: string }>}
+ */
+export function ensureOutputFolder(workingDir, outputFolderName) {
+  return backendJson('/ensure-output-folder', { workingDir, outputFolderName })
 }
 
 /**
