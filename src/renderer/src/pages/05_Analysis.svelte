@@ -10,16 +10,46 @@
   import {
     analyzeTopology,
     detectLipidHeadgroups,
+    ensureOutputFolder,
     getEnergeticProperties,
     runEnergeticAnalysis,
     runStructuralAnalysis
   } from '../lib/backendApi'
+  import {
+    defaultAnalysisFolderName,
+    outputFolderPath
+  } from '../lib/outputFolders.js'
+  import { logEvent } from '../lib/pageStatus.svelte.js'
 
   /** @type {{ workingDir?: string }} */
   let { workingDir = '' } = $props()
 
   let mode = $state('structural')
   let running = $state(false)
+  let outputFolderName = $state('')
+
+  function resolveOutputFolderName() {
+    if (outputFolderName.trim()) return outputFolderName.trim()
+    return defaultAnalysisFolderName(topologyPath)
+  }
+
+  function syncOutputFolderName() {
+    const resolved = resolveOutputFolderName()
+    if (resolved && resolved !== outputFolderName.trim()) {
+      outputFolderName = resolved
+    }
+    return resolved
+  }
+
+  const outputDir = $derived(outputFolderPath(workingDir, resolveOutputFolderName()))
+
+  $effect(() => {
+    if (workingDir && topologyPath && !outputFolderName.trim()) {
+      outputFolderName = defaultAnalysisFolderName(topologyPath)
+    }
+  })
+
+  const canRunAnalysis = $derived(workingDir !== '')
 
   // --- Structural state ---
   let topologyPath = $state('')
@@ -460,6 +490,7 @@
     )
     if (!result.canceled) {
       topologyPath = result.filePath
+      outputFolderName = defaultAnalysisFolderName(result.filePath)
       lipidHeadgroupAtoms = []
       headgroupDetectAttempted = false
       if (isBilayerType(structuralType)) {
@@ -633,6 +664,7 @@
     try {
       running = true
       lastError = ''
+      syncOutputFolderName()
       if (mode === 'structural') {
         structResults[structuralType] = null // clear to show loading state
       } else {
@@ -724,6 +756,7 @@
         const first = result.series?.[0]?.key
         primaryStats = first && result.statistics ? result.statistics[first] || null : null
       }
+      await saveAnalysisCsvToOutputFolder()
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error)
     } finally {
@@ -736,48 +769,76 @@
     return (displayTitle || chartTitle || 'analysis').replace(/[^a-z0-9_\-]/gi, '_').toLowerCase()
   }
 
+  function buildCsvContent(series) {
+    if (series.length === 0) return null
+    const header = ['x', ...series.map((s) => s.name)].join(',')
+    const rows = series[0].x.map((xv, i) =>
+      [xv, ...series.map((s) => s.y[i] ?? '')].join(',')
+    )
+    return [header, ...rows].join('\n')
+  }
+
+  async function resolveExportPath(fileName, prompt, filters) {
+    syncOutputFolderName()
+    if (outputDir) {
+      await ensureOutputFolder(workingDir, resolveOutputFolderName())
+      return `${outputDir}/${fileName}`.replace(/\\/g, '/')
+    }
+    const result = await window.api.saveFileDialog(prompt, filters, fileName)
+    if (result.canceled) return null
+    return result.filePath
+  }
+
+  async function saveAnalysisCsvToOutputFolder() {
+    if (!canRunAnalysis) return
+    syncOutputFolderName()
+    const folderName = resolveOutputFolderName()
+    const csv = buildCsvContent(displaySeries)
+    if (!csv) return
+    try {
+      const { output_dir } = await ensureOutputFolder(workingDir, folderName)
+      const filePath = `${output_dir}/${exportBaseName()}.csv`.replace(/\\/g, '/')
+      await window.api.writeText(filePath, csv)
+      logEvent('info', 'analysis', 'Saved analysis results', filePath)
+    } catch {
+      // Non-fatal if auto-save fails
+    }
+  }
+
   async function exportCsv() {
     if (displaySeries.length === 0) return
-    const suggestedName = exportBaseName() + '.csv'
-    const defaultPath = workingDir ? `${workingDir}/${suggestedName}` : suggestedName
-    const result = await window.api.saveFileDialog(
+    const csv = buildCsvContent(displaySeries)
+    if (!csv) return
+    const filePath = await resolveExportPath(
+      `${exportBaseName()}.csv`,
       'Export CSV — file will be saved as .csv',
-      [{ name: 'CSV', extensions: ['csv'] }],
-      defaultPath
+      [{ name: 'CSV', extensions: ['csv'] }]
     )
-    if (result.canceled) return
-    const header = ['x', ...displaySeries.map((s) => s.name)].join(',')
-    const rows = displaySeries[0].x.map((xv, i) =>
-      [xv, ...displaySeries.map((s) => s.y[i] ?? '')].join(',')
-    )
-    await window.api.writeText(result.filePath, [header, ...rows].join('\n'))
+    if (!filePath) return
+    await window.api.writeText(filePath, csv)
   }
 
   async function exportSvg() {
     if (!svgEl) return
-    const suggestedName = exportBaseName() + '.svg'
-    const defaultPath = workingDir ? `${workingDir}/${suggestedName}` : suggestedName
-    const result = await window.api.saveFileDialog(
+    const filePath = await resolveExportPath(
+      `${exportBaseName()}.svg`,
       'Export SVG — file will be saved as .svg',
-      [{ name: 'SVG', extensions: ['svg'] }],
-      defaultPath
+      [{ name: 'SVG', extensions: ['svg'] }]
     )
-    if (result.canceled) return
+    if (!filePath) return
     const svgStr = '<?xml version="1.0" encoding="UTF-8"?>\n' + svgEl.outerHTML
-    await window.api.writeText(result.filePath, svgStr)
+    await window.api.writeText(filePath, svgStr)
   }
 
   async function exportPng() {
     if (!svgEl) return
     try {
-      const suggestedName = exportBaseName() + '.png'
-      const defaultPath = workingDir ? `${workingDir}/${suggestedName}` : suggestedName
-      const result = await window.api.saveFileDialog(
+      const filePath = await resolveExportPath(
+        `${exportBaseName()}.png`,
         'Export PNG — file will be saved as .png',
-        [{ name: 'PNG Image', extensions: ['png'] }],
-        defaultPath
+        [{ name: 'PNG Image', extensions: ['png'] }]
       )
-      if (result.canceled) return
+      if (!filePath) return
 
       // Get intrinsic dimensions from viewBox (SVG may have no width/height attrs)
       const vb = svgEl.viewBox?.baseVal
@@ -824,7 +885,7 @@
 
       const dataUrl = canvas.toDataURL('image/png')
       const base64 = dataUrl.replace(/^data:image\/png;base64,/, '')
-      await window.api.writeBinary(result.filePath, base64)
+      await window.api.writeBinary(filePath, base64)
     } catch (err) {
       lastError = 'PNG export failed: ' + (err instanceof Error ? err.message : String(err))
     }
@@ -1673,7 +1734,40 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
     <Divider />
 
-    <Button className="w-full" onclick={runAnalysis} disabled={running}>
+    <div class="space-y-2">
+      <h2 class="sidebar-heading">Output</h2>
+      <div class="space-y-1">
+        <p class="sidebar-label">Output folder</p>
+        <Input
+          type="text"
+          size="sm"
+          bind:value={outputFolderName}
+          className="w-full"
+          placeholder="04_analysis_topology"
+        />
+        <p
+          class="rounded-md border border-neutral-200 p-2 wrap-break-word sidebar-label dark:border-neutral-800"
+        >
+          {#if outputDir}
+            {outputDir}
+          {:else if workingDir}
+            Files will be written under the working directory
+          {:else}
+            Set a working directory in the top bar
+          {/if}
+        </p>
+      </div>
+    </div>
+
+    {#if workingDir === ''}
+      <p
+        class="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-400"
+      >
+        Set a <strong>Working Directory</strong> in the top bar to write analysis output.
+      </p>
+    {/if}
+
+    <Button className="w-full" onclick={runAnalysis} disabled={running || !canRunAnalysis}>
       {#if running}
         <Spinner className="mr-1" />Running...
       {:else}

@@ -22,6 +22,10 @@
     stopEquilibration,
     getStructure
   } from '../lib/backendApi'
+  import {
+    defaultEquilibrationFolderName,
+    outputFolderPath
+  } from '../lib/outputFolders.js'
 
   /** @typedef {{ id: string, name: string, force_constant: number, selection: string }} Constraint */
 
@@ -40,8 +44,28 @@
   let ensemble = $state('npt')
   let gpuDevice = $state(0)
   let inputDir = $state('')
-  let outputName = $state('equilibration')
+  let outputName = $state('')
   let protocol = $state(prepareProtocolForRendering(baseProtocol))
+
+  function resolveOutputFolderName() {
+    if (outputName.trim()) return outputName.trim()
+    return defaultEquilibrationFolderName(inputDir)
+  }
+
+  function syncOutputFolderName() {
+    const resolved = resolveOutputFolderName()
+    if (resolved && resolved !== outputName.trim()) {
+      outputName = resolved
+    }
+    return resolved
+  }
+
+  $effect(() => {
+    if (workingDir && inputDir && !outputName.trim()) {
+      outputName = defaultEquilibrationFolderName(inputDir)
+    }
+  })
+
   let addComRestraint = $state(false)
   let comSelection = $state('name CA')
   let comRestraintK = $state(10)
@@ -99,7 +123,7 @@
   )
   const isEngineSupported = $derived(['namd', 'gromacs', 'openmm'].includes(engine))
   const isProtocolValid = $derived(Array.isArray(protocol.stages) && protocol.stages.length > 0)
-  const outputDir = $derived([workingDir, outputName].join('/'))
+  const outputDir = $derived(outputFolderPath(workingDir, resolveOutputFolderName()))
   const equilibrationRunning = $derived(equilibrationStatus === 'running')
   const selectedExecutable = $derived(executableByEngine[engine] ?? '')
   const resources = $derived({
@@ -235,6 +259,7 @@
 
   async function generateInput() {
     try {
+      syncOutputFolderName()
       const { status } = await getEquilibrationStatus({ workingDir: outputDir, engine })
       if (status === 'running') {
         alert('Equilibration is running. Wait for it to finish.')
@@ -388,6 +413,7 @@
       return
     }
     inputDir = dirPath
+    outputName = defaultEquilibrationFolderName(dirPath)
   }
 
   async function checkEngineExecutable() {
@@ -439,6 +465,7 @@
 
   async function startEquilibration() {
     try {
+      syncOutputFolderName()
       // TODO: write protocol and compare existing protocol with new one so to enable run button, otherwise disable it
       // as it already run
       const payload = { workingDir: outputDir, engine }
@@ -639,8 +666,19 @@
         {/if}
       </div>
       <div class="space-y-1">
-        <p class="sidebar-label">Output directory</p>
-        <Input type="text" size="sm" bind:value={outputName} className="w-full" placeholder="equilibration" />
+        <p class="sidebar-label">Output folder</p>
+        <Input type="text" size="sm" bind:value={outputName} className="w-full" placeholder="03_equilibration_input" />
+        <p
+          class="rounded-md border border-neutral-200 p-2 wrap-break-word sidebar-label dark:border-neutral-800"
+        >
+          {#if outputDir}
+            {outputDir}
+          {:else if workingDir}
+            Files will be written under the working directory
+          {:else}
+            Set a working directory in the top bar
+          {/if}
+        </p>
       </div>
     </div>
     <Divider />

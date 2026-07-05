@@ -18,12 +18,31 @@
     getJobLog,
     scanJobs
   } from '../lib/backendApi'
+  import {
+    defaultBuildFolderName,
+    outputFolderPath
+  } from '../lib/outputFolders.js'
 
   /** @type {{ workingDir?: string }} */
   let { workingDir = '' } = $props()
 
   let workingFile = $state('')
   let outputFolderName = $state('')
+
+  function resolveOutputFolderName() {
+    if (outputFolderName.trim()) return outputFolderName.trim()
+    return defaultBuildFolderName(workingFile)
+  }
+
+  function syncOutputFolderName() {
+    const resolved = resolveOutputFolderName()
+    if (resolved && resolved !== outputFolderName.trim()) {
+      outputFolderName = resolved
+    }
+    return resolved
+  }
+
+  const outputDir = $derived(outputFolderPath(workingDir, resolveOutputFolderName()))
 
   const lipidsPromise = getAvailableLipids().then((data) => data.lipids)
   const ffPromise = getAvailableForceFields()
@@ -70,7 +89,8 @@
   let pollIntervalId = $state(null)
 
   const canGenerateInput = $derived(
-    workingFile !== '' &&
+    workingDir !== '' &&
+      workingFile !== '' &&
       validationResult?.valid === true &&
       !generatingInputFiles &&
       !launching
@@ -82,7 +102,10 @@
     )
   )
   const canStartPreparation = $derived(
-    pendingJob !== undefined && !launching && !generatingInputFiles
+    workingDir !== '' &&
+      pendingJob !== undefined &&
+      !launching &&
+      !generatingInputFiles
   )
 
   // ── Sync to shared status bar store ──
@@ -99,6 +122,12 @@
   })
 
   // When workingDir changes from App, scan for existing preparation jobs
+  $effect(() => {
+    if (workingDir && workingFile && !outputFolderName.trim()) {
+      outputFolderName = defaultBuildFolderName(workingFile)
+    }
+  })
+
   $effect(() => {
     if (!workingDir) return
     scanJobs(workingDir)
@@ -353,6 +382,7 @@
   }
 
   function buildParams() {
+    syncOutputFolderName()
     const upperLipids = upperLeaflet.map((e) => e.lipid)
     const lowerLipids = lowerLeaflet.map((e) => e.lipid)
     const upperRatios = upperLeaflet.map((e) => e.ratio).join(':')
@@ -382,7 +412,8 @@
         boxSizingMode === 'explicit'
           ? [parseFloat(boxDimX), parseFloat(boxDimY), parseFloat(boxDimZ)]
           : null,
-      outputFolderName: outputFolderName || null,
+      outputFolderName: outputFolderName.trim() || null,
+      workingDir: workingDir || null,
       ligandParams: ligands
         .filter((l) => l.frcmod && l.lib && l.name)
         .map((l) => ({ name: l.name, frcmod: l.frcmod, lib: l.lib }))
@@ -450,7 +481,8 @@
       const params = buildParams()
       const result = await generatePreparation(params)
       if (result.success && result.job_dir) {
-        const dirName = result.job_dir.split('/').pop() || result.job_dir
+        const dirName = result.job_dir.split(/[/\\]/).pop() || result.job_dir
+        outputFolderName = dirName
         /** @type {Job} */
         const newJob = {
           jobDir: result.job_dir,
@@ -567,6 +599,7 @@
     const result = await window.api.openPdbDialog()
     if (!result.canceled) {
       workingFile = result.filePath
+      outputFolderName = defaultBuildFolderName(result.filePath)
     }
   }
 </script>
@@ -593,13 +626,24 @@
         </div>
       </div>
       <div class="space-y-1">
-        <span class="sidebar-label">Output Folder</span>
+        <span class="sidebar-label">Output folder</span>
         <input
           type="text"
-          placeholder="Auto-generated if empty"
+          placeholder="02_build_structure"
           class="sidebar-control w-full p-2"
           bind:value={outputFolderName}
         />
+        <p
+          class="rounded-md border border-neutral-200 p-2 wrap-break-word sidebar-label dark:border-neutral-800"
+        >
+          {#if outputDir}
+            {outputDir}
+          {:else if workingDir}
+            Files will be written under the working directory
+          {:else}
+            Set a working directory in the top bar
+          {/if}
+        </p>
       </div>
     </div>
     <Divider />
@@ -1038,7 +1082,10 @@
             : 'border-red-700 bg-red-950 text-red-300'}"
         >
           {#if validationResult.valid && !validationResult.warning}
-            ✓ All inputs are valid.
+            <p>✓ All inputs are valid.</p>
+            {#if pendingJob}
+              <p class="mt-1">Click <strong>Start Preparation</strong> to proceed.</p>
+            {/if}
           {:else}
             {validationResult.message}
           {/if}
@@ -1081,6 +1128,13 @@
           class="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-400"
         >
           Input files have not been generated yet. Click <strong>Generate Input Files</strong> first.
+        </p>
+      {/if}
+      {#if workingDir === '' && workingFile}
+        <p
+          class="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-400"
+        >
+          Set a <strong>Working Directory</strong> in the top bar to generate output folders.
         </p>
       {/if}
       <button

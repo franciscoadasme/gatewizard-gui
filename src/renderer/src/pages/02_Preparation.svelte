@@ -2,8 +2,13 @@
   import Button from '../components/ui/Button.svelte'
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Divider from '../components/ui/Divider.svelte'
+  import Input from '../components/ui/Input.svelte'
   import { detectDisulfideBonds, preparePDB, runPropKa } from '../lib/backendApi'
-  import { preparationStatus } from '../lib/pageStatus.svelte.js'
+  import {
+    defaultPreparationFolderName,
+    outputFolderPath
+  } from '../lib/outputFolders.js'
+  import { logEvent, preparationStatus } from '../lib/pageStatus.svelte.js'
 
   /** @type {{ workingDir?: string }} */
   let { workingDir = '' } = $props()
@@ -13,9 +18,55 @@
   let maxDisulfideDistance = $state(2.5)
   let targetPh = $state(7.0)
   let workingFile = $state('')
+  let outputFolderName = $state('')
+  /** @type {string} PDB path used inside the output folder after workspace setup */
+  let activeWorkingFile = $state('')
+  /** @type {string} Resolved output folder path returned by the backend */
+  let preparationJobDir = $state('')
+
+  function resolveOutputFolderName() {
+    if (outputFolderName.trim()) return outputFolderName.trim()
+    if (preparationJobDir) {
+      const name = preparationJobDir.replace(/[/\\]+$/, '').split(/[/\\]/).pop()
+      if (name) return name
+    }
+    return defaultPreparationFolderName(workingFile)
+  }
+
+  /** Pin the output folder name in the UI before the first preparation step runs. */
+  function syncOutputFolderName() {
+    const resolved = resolveOutputFolderName()
+    if (resolved && resolved !== outputFolderName.trim()) {
+      outputFolderName = resolved
+    }
+    return resolved
+  }
+
+  function buildOutputOptions() {
+    syncOutputFolderName()
+    return {
+      workingDir: workingDir || null,
+      outputFolderName: outputFolderName.trim() || null
+    }
+  }
+
+  function adoptJobDir(jobDir) {
+    if (!jobDir) return
+    preparationJobDir = jobDir
+    syncOutputFolderName()
+  }
+
+  const outputDir = $derived(outputFolderPath(workingDir, resolveOutputFolderName()))
+
+  const canRunPreparationSteps = $derived(workingDir !== '' && workingFile !== '')
 
   // derived values
   let protonatedFile = $derived.by(() => {
+    if (outputDir) {
+      const basename = (activeWorkingFile || workingFile).split(/[/\\]/).pop() ?? 'structure.pdb'
+      const stem = basename.replace(/\.pdb$/i, '').replace(/_capped$/i, '')
+      return `${outputDir.replace(/[/\\]+$/, '')}/${stem}_protonated.pdb`
+    }
     if (!workingFile) return ''
     const basename = workingFile.split(/[/\\]/).pop() ?? 'structure.pdb'
     const outName = basename.replace(/\.pdb$/i, '_protonated.pdb')
@@ -74,11 +125,21 @@
   async function onRunPropKa() {
     try {
       runningPropKa = true
-      const data = await runPropKa(workingFile, parseFloat(targetPh), capProtein)
+      const data = await runPropKa(
+        workingFile,
+        parseFloat(targetPh),
+        capProtein,
+        buildOutputOptions()
+      )
       protonationStates = data.residues
       residueRenumberingTable = data.residue_renumbering_table
+      adoptJobDir(data.job_dir)
+      if (data.working_path) activeWorkingFile = data.working_path
       preparationStatus.propkaDone = true
       preparationStatus.propkaPh = targetPh
+      if (data.job_dir) {
+        logEvent('info', 'prep', `PropKa output folder: "${outputFolderName}"`, data.job_dir)
+      }
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
     } finally {
@@ -93,12 +154,18 @@
     }
     workingFile = filePath
     resetOutput()
+    if (workingDir) {
+      outputFolderName = defaultPreparationFolderName(filePath)
+    }
   }
 
   async function onDetectDisulfideBonds() {
     try {
-      const data = await detectDisulfideBonds(workingFile, maxDisulfideDistance)
+      const pdbPath = activeWorkingFile || workingFile
+      const data = await detectDisulfideBonds(pdbPath, maxDisulfideDistance, buildOutputOptions())
       disulfideBonds = data.disulfide_bonds
+      adoptJobDir(data.job_dir)
+      if (data.working_path) activeWorkingFile = data.working_path
       preparationStatus.bondsChecked = true
       preparationStatus.bondsCount = disulfideBonds.length
     } catch (error) {
@@ -109,18 +176,26 @@
   async function onPreparePDB() {
     try {
       preparingPDB = true
+      const pdbPath = activeWorkingFile || workingFile
+      const prepareInput = capProtein
+        ? pdbPath.replace(/\.pdb$/i, '_capped.pdb')
+        : pdbPath
       const data = await preparePDB({
-        path: capProtein
-          ? workingFile.replace(/\.pdb$/i, '_capped.pdb')
-          : workingFile,
+        path: prepareInput,
         outputPath: protonatedFile,
         protonationStates,
         targetPh,
-        disulfideBonds
+        disulfideBonds,
+        ...buildOutputOptions()
       })
       preparationOutput = data.output.trim()
       preparationStatus.prepareDone = true
       preparationStatus.outputFile = data.output_path ?? protonatedFile
+      adoptJobDir(data.job_dir)
+      if (data.working_path) activeWorkingFile = data.working_path
+      if (data.job_dir) {
+        logEvent('info', 'prep', 'Preparation complete', data.output_path ?? data.job_dir)
+      }
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
     } finally {
@@ -134,6 +209,9 @@
     maxDisulfideDistance = 2.5
     targetPh = 7.0
     workingFile = ''
+    activeWorkingFile = ''
+    preparationJobDir = ''
+    outputFolderName = ''
 
     // reset state
     preparingPDB = false
@@ -153,7 +231,16 @@
     preparationStatus.bondsCount = 0
     preparationStatus.prepareDone = false
     preparationStatus.outputFile = ''
+    activeWorkingFile = ''
+    preparationJobDir = ''
+    outputFolderName = ''
   }
+
+  $effect(() => {
+    if (workingDir && workingFile && !outputFolderName.trim() && !preparationJobDir) {
+      outputFolderName = defaultPreparationFolderName(workingFile)
+    }
+  })
 </script>
 
 <div class="flex min-w-0 flex-1 divide-x divide-neutral-200 overflow-hidden select-none dark:divide-neutral-800">
@@ -176,13 +263,30 @@
           >Select a file...</Button
         >
       {/if}
+      </div>
       <div class="space-y-1">
-        <p class="sidebar-label">Export protonated file</p>
+        <p class="sidebar-label">Output folder</p>
+        <Input
+          type="text"
+          size="sm"
+          bind:value={outputFolderName}
+          className="w-full"
+          placeholder="01_preparation_structure"
+        />
         <p
           class="rounded-md border border-neutral-200 p-2 wrap-break-word sidebar-label dark:border-neutral-800"
         >
-          {protonatedFile ? protonatedFile : 'It will be auto-generated'}
+          {#if outputDir}
+            {outputDir}
+          {:else if workingDir}
+            Files will be written under the working directory
+          {:else}
+            Set a working directory in the top bar
+          {/if}
         </p>
+        {#if protonatedFile && outputDir}
+          <p class="sidebar-hint">Protonated PDB: {protonatedFile.split(/[/\\]/).pop()}</p>
+        {/if}
       </div>
     </div>
     <Divider />
@@ -212,7 +316,7 @@
         <Checkbox name="protein-cap" bind:checked={capProtein} />
         <label for="protein-cap" class="sidebar-label">Cap protein termini (ACE/NME)</label>
       </div>
-      <Button type="submit" className="w-full" disabled={!workingFile || runningPropKa}>
+      <Button type="submit" className="w-full" disabled={!canRunPreparationSteps || runningPropKa}>
         {runningPropKa ? 'Running PropKa...' : 'Run PropKa'}
       </Button>
     </form>
@@ -235,7 +339,9 @@
           bind:value={maxDisulfideDistance}
         />
       </div>
-      <Button type="submit" variant="outline" className="w-full">Detect bonds</Button>
+      <Button type="submit" variant="outline" className="w-full" disabled={!canRunPreparationSteps}
+        >Detect bonds</Button
+      >
     </form>
     {#if preparationStatus.bondsChecked}
       <div class="space-y-2">
@@ -255,7 +361,7 @@
     {/if}
     <Divider />
     <div class="space-y-2">
-      <Button className="w-full" onclick={onPreparePDB} disabled={!workingFile || preparingPDB}
+      <Button className="w-full" onclick={onPreparePDB} disabled={!canRunPreparationSteps || preparingPDB}
         >{preparingPDB ? 'Preparing...' : 'Prepare'}</Button
       >
       <Button className="w-full" variant="ghost" onclick={onReset}>Reset</Button>

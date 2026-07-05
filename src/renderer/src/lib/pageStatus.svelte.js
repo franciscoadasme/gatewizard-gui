@@ -62,7 +62,7 @@ export const builderStatus = $state({
 export const equilibrationPageStatus = $state({
   /** MD engine selected */
   engine: '',
-  /** Output directory name */
+  /** Output folder name */
   outputName: '',
   /** Overall equilibration status */
   status: /** @type {'not_started'|'empty'|'running'|'completed'|'error'|''} */ (''),
