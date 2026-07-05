@@ -9,3 +9,4 @@ check-env.sh
 run_check.sh
 to-do.txt
 backend/__pycache__
+gatewizard-gui.code-workspace
