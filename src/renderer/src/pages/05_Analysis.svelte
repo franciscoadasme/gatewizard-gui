@@ -1382,7 +1382,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           </div>
         </div>
 
-        <div class="space-y-1 rounded-md border p-2 dark:border-neutral-800">
+        <div class="sidebar-panel space-y-1 p-2">
           <p class="font-medium">Properties</p>
           {#if availableProperties.length === 0}
             <p class="text-neutral-600">Detect properties after adding log files.</p>
@@ -1416,7 +1416,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
       </button>
 
       {#if plotSettingsOpen}
-        <div class="space-y-2 rounded-md border p-2 dark:border-neutral-800">
+        <div class="sidebar-panel space-y-2 p-2">
           <div class="grid grid-cols-2 gap-1">
             {#if mode === 'structural' && (activeStructRes?.lastAnalysisHasTimeX ?? false)}
               <div>
@@ -1719,19 +1719,19 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
         {#if activePrimaryStats}
           <div class="grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
-            <div class="rounded-md border p-2 dark:border-neutral-800">
+            <div class="sidebar-panel p-2">
               <p class="text-neutral-500">Mean</p>
               <p class="font-semibold">{Number(activePrimaryStats.mean).toFixed(4)}</p>
             </div>
-            <div class="rounded-md border p-2 dark:border-neutral-800">
+            <div class="sidebar-panel p-2">
               <p class="text-neutral-500">Std</p>
               <p class="font-semibold">{Number(activePrimaryStats.std).toFixed(4)}</p>
             </div>
-            <div class="rounded-md border p-2 dark:border-neutral-800">
+            <div class="sidebar-panel p-2">
               <p class="text-neutral-500">Min</p>
               <p class="font-semibold">{Number(activePrimaryStats.min).toFixed(4)}</p>
             </div>
-            <div class="rounded-md border p-2 dark:border-neutral-800">
+            <div class="sidebar-panel p-2">
               <p class="text-neutral-500">Max</p>
               <p class="font-semibold">{Number(activePrimaryStats.max).toFixed(4)}</p>
             </div>

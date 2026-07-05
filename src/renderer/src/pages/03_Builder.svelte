@@ -583,7 +583,7 @@
           <input
             type="text"
             placeholder="Select PDB file..."
-            class="flex-1 rounded-md border p-2 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:placeholder-neutral-600"
+            class="sidebar-control flex-1 p-2"
             bind:value={workingFile}
             readonly
           />
@@ -597,7 +597,7 @@
         <input
           type="text"
           placeholder="Auto-generated if empty"
-          class="w-full rounded-md border p-2 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:placeholder-neutral-600"
+          class="sidebar-control w-full p-2"
           bind:value={outputFolderName}
         />
       </div>
@@ -629,14 +629,14 @@
         </p>
       {/if}
       {#each ligands as lig, i (i)}
-        <div class="space-y-1.5 rounded-md border p-2 dark:border-neutral-700">
+        <div class="sidebar-panel space-y-1.5 p-2">
           <div class="flex items-center justify-between">
             <div class="flex items-center gap-1.5">
               {#if lig.status === 'manual'}
                 <input
                   type="text"
                   placeholder="LIG"
-                  class="w-14 rounded-md border p-1 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+                  class="sidebar-control w-14 p-1"
                   bind:value={lig.name}
                 />
               {:else}
@@ -669,13 +669,13 @@
             <span class="dark:text-neutral-500">Charge</span>
             <input
               type="number"
-              class="w-12 rounded-md border p-1 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+              class="sidebar-control w-12 p-1"
               bind:value={lig.charge}
             />
             <span class="dark:text-neutral-500">Mult.</span>
             <input
               type="number"
-              class="w-12 rounded-md border p-1 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+              class="sidebar-control w-12 p-1"
               bind:value={lig.multiplicity}
             />
           </div>
@@ -683,7 +683,7 @@
             <span class="w-12 shrink-0 dark:text-neutral-500">frcmod</span>
             <input
               type="text"
-              class="flex-1 rounded-md border p-1 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+              class="sidebar-control flex-1 p-1"
               bind:value={lig.frcmod}
               readonly
               placeholder="Auto or browse..."
@@ -697,7 +697,7 @@
             <span class="w-12 shrink-0 dark:text-neutral-500">lib</span>
             <input
               type="text"
-              class="flex-1 rounded-md border p-1 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+              class="sidebar-control flex-1 p-1"
               bind:value={lig.lib}
               readonly
               placeholder="Auto or browse..."
@@ -731,7 +731,7 @@
         <div class="flex items-center gap-1">
           <span class="w-20 shrink-0 dark:text-neutral-500">Water</span>
           <select
-            class="flex-1 rounded-md border p-2 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+            class="sidebar-control flex-1 p-2"
             bind:value={waterModel}
           >
             {#each ff.water_models as wm (wm)}
@@ -742,7 +742,7 @@
         <div class="flex items-center gap-1">
           <span class="w-20 shrink-0 dark:text-neutral-500">MD engine</span>
           <select
-            class="flex-1 rounded-md border p-2 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+            class="sidebar-control flex-1 p-2"
             bind:value={mdEngine}
           >
             <option value="namd">namd</option>
@@ -758,7 +758,7 @@
         <div class="flex items-center gap-1">
           <span class="w-20 shrink-0 dark:text-neutral-500">Protein FF</span>
           <select
-            class="flex-1 rounded-md border p-2 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+            class="sidebar-control flex-1 p-2"
             bind:value={proteinFf}
           >
             {#each ff.protein_ffs as pff (pff)}
@@ -769,7 +769,7 @@
         <div class="flex items-center gap-1">
           <span class="w-20 shrink-0 dark:text-neutral-500">Lipid FF</span>
           <select
-            class="flex-1 rounded-md border p-2 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+            class="sidebar-control flex-1 p-2"
             bind:value={lipidFf}
           >
             {#each ff.lipid_ffs as lff (lff)}
@@ -784,7 +784,7 @@
     <!-- Lipid Composition -->
     <div class="space-y-2">
       <h2 class="font-semibold">Lipid Composition</h2>
-      <div class="space-y-1.5 rounded-md border p-2 dark:border-neutral-700">
+      <div class="sidebar-panel space-y-1.5 p-2">
         <div class="flex items-center justify-between">
           <span class="font-semibold dark:text-neutral-300">Upper Leaflet</span>
           <button
@@ -796,7 +796,7 @@
           <div class="flex items-center gap-1">
             {#await lipidsPromise then lipids}
               <select
-                class="flex-1 rounded-md border p-1 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+                class="sidebar-control flex-1 p-1"
                 bind:value={entry.lipid}
               >
                 {#each lipids as lipid (lipid)}
@@ -807,7 +807,7 @@
             <input
               type="text"
               inputmode="decimal"
-              class="w-10 rounded-md border p-1 text-center dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+              class="sidebar-control w-10 p-1 text-center"
               bind:value={entry.ratio}
             />
             {#if upperLeaflet.length > 1}
@@ -819,7 +819,7 @@
           </div>
         {/each}
       </div>
-      <div class="space-y-1.5 rounded-md border p-2 dark:border-neutral-700">
+      <div class="sidebar-panel space-y-1.5 p-2">
         <div class="flex items-center justify-between">
           <span class="font-semibold dark:text-neutral-300">Lower Leaflet</span>
           <button
@@ -831,7 +831,7 @@
           <div class="flex items-center gap-1">
             {#await lipidsPromise then lipids}
               <select
-                class="flex-1 rounded-md border p-1 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+                class="sidebar-control flex-1 p-1"
                 bind:value={entry.lipid}
               >
                 {#each lipids as lipid (lipid)}
@@ -842,7 +842,7 @@
             <input
               type="text"
               inputmode="decimal"
-              class="w-10 rounded-md border p-1 text-center dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+              class="sidebar-control w-10 p-1 text-center"
               bind:value={entry.ratio}
             />
             {#if lowerLeaflet.length > 1}
@@ -873,19 +873,19 @@
           <input
             type="text"
             inputmode="decimal"
-            class="w-14 rounded-md border p-1 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+            class="sidebar-control w-14 p-1"
             bind:value={saltConcentration}
           />
           <span class="dark:text-neutral-500">M</span>
           <select
-            class="rounded-md border p-1 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+            class="sidebar-control p-1"
             bind:value={cation}
           >
             <option value="K+">K+</option>
             <option value="Na+">Na+</option>
           </select>
           <select
-            class="rounded-md border p-1 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+            class="sidebar-control p-1"
             bind:value={anion}
           >
             <option value="Cl-">Cl-</option>
@@ -910,7 +910,7 @@
           <input
             type="text"
             inputmode="decimal"
-            class="w-14 rounded-md border p-1 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+            class="sidebar-control w-14 p-1"
             bind:value={distWat}
           />
           <span class="dark:text-neutral-500">Å</span>
@@ -921,21 +921,21 @@
           <input
             type="text"
             inputmode="decimal"
-            class="w-12 rounded-md border p-1 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+            class="sidebar-control w-12 p-1"
             bind:value={boxDimX}
           />
           <span class="dark:text-neutral-500">Y</span>
           <input
             type="text"
             inputmode="decimal"
-            class="w-12 rounded-md border p-1 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+            class="sidebar-control w-12 p-1"
             bind:value={boxDimY}
           />
           <span class="dark:text-neutral-500">Z</span>
           <input
             type="text"
             inputmode="decimal"
-            class="w-12 rounded-md border p-1 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+            class="sidebar-control w-12 p-1"
             bind:value={boxDimZ}
           />
           <span class="dark:text-neutral-500">Å</span>
@@ -951,7 +951,7 @@
         <input
           type="text"
           inputmode="decimal"
-          class="w-14 rounded-md border p-1 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+          class="sidebar-control w-14 p-1"
           bind:value={dist}
         />
         <span class="dark:text-neutral-500">Å</span>
@@ -962,7 +962,7 @@
     <!-- Advanced settings -->
     <details
       bind:open={advancedOpen}
-      class="group rounded-md border dark:border-neutral-700 [&>summary::-webkit-details-marker]:hidden"
+      class="sidebar-panel group [&>summary::-webkit-details-marker]:hidden"
     >
       <summary
         class="cursor-pointer list-none px-3 py-2 text-sm font-semibold dark:text-neutral-300 dark:hover:text-neutral-100"
@@ -972,7 +972,7 @@
           <span class="text-xs font-normal dark:text-neutral-500 group-open:rotate-180">▾</span>
         </span>
       </summary>
-      <div class="space-y-3 border-t px-3 py-3 dark:border-neutral-700">
+      <div class="space-y-3 border-t border-neutral-200 px-3 py-3 dark:border-neutral-800">
         <div class="flex items-center gap-2">
           <Checkbox name="parametrize" bind:checked={parametrize} />
           <span class="dark:text-neutral-400">Parametrize with tleap</span>
@@ -989,7 +989,7 @@
                 type="number"
                 min="1"
                 step="1"
-                class="w-20 rounded-md border p-1 text-right dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+                class="sidebar-control w-20 p-1 text-right"
                 bind:value={nloop}
               />
             </label>
@@ -999,7 +999,7 @@
                 type="number"
                 min="1"
                 step="1"
-                class="w-20 rounded-md border p-1 text-right dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+                class="sidebar-control w-20 p-1 text-right"
                 bind:value={nloopAll}
               />
             </label>
@@ -1009,7 +1009,7 @@
                 type="number"
                 min="0"
                 step="0.1"
-                class="w-20 rounded-md border p-1 text-right dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+                class="sidebar-control w-20 p-1 text-right"
                 bind:value={tolerance}
               />
             </label>
@@ -1099,7 +1099,7 @@
         <div class="flex flex-wrap gap-3">
           {#each ligands as lig (lig.name)}
             {#if lig.imageBase64}
-              <div class="space-y-1 rounded-md border p-2 dark:border-neutral-700">
+              <div class="sidebar-panel space-y-1 p-2">
                 <div class="flex items-center gap-1.5 text-xs">
                   <span class="font-semibold dark:text-neutral-300">{lig.name}</span>
                   <span
@@ -1134,7 +1134,7 @@
       <div class="mx-4 mb-4 min-h-0 flex-1 space-y-3 overflow-y-auto">
       {#each jobs as job, ji (job.jobDir)}
         <div
-          class="rounded-lg border p-3 text-xs dark:border-neutral-700"
+          class="sidebar-panel rounded-lg p-3 text-xs"
           class:dark:border-green-800={job.status === 'completed'}
           class:dark:border-red-800={job.status === 'error'}
           class:dark:border-yellow-800={job.status === 'running'}
@@ -1225,7 +1225,7 @@
               </button>
             </div>
             <pre
-              class="mt-1 max-h-60 overflow-auto rounded border p-2 text-xs whitespace-pre-wrap dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-500">{job
+              class="sidebar-panel mt-1 max-h-60 overflow-auto p-2 text-xs whitespace-pre-wrap dark:bg-neutral-950 dark:text-neutral-500">{job
                 .logLines.length > 0
                 ? job.logLines.join('\n')
                 : 'No log output yet...'}</pre>

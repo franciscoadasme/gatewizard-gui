@@ -880,11 +880,14 @@
       {/if}
     </div>
   </aside>
-  <div class="flex min-h-0 min-w-0 flex-1 flex-col">
-    <div class="flex min-h-0 flex-1 flex-col space-y-4 p-4">
+  <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+    <h1 class="m-4 text-xl font-semibold">Equilibration protocol</h1>
+    <div class="flex min-h-0 flex-1 flex-col space-y-4 overflow-auto px-4 pb-4">
       <div>
-        <h3 class="font-semibold">{isProtocolValid ? protocol.name : 'Protocol'}</h3>
-        <p class="mb-2 text-sm text-neutral-500">
+        {#if isProtocolValid}
+          <p class="text-sm font-medium text-neutral-800 dark:text-neutral-200">{protocol.name}</p>
+        {/if}
+        <p class="mb-2 text-sm text-neutral-500 dark:text-neutral-400">
           {isProtocolValid ? protocol.description : 'Load a protocol to get started'}
         </p>
         <div class="flex items-center gap-2">

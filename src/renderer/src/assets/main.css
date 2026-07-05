@@ -73,4 +73,12 @@
   .dialog-label {
     @apply text-neutral-600 dark:text-neutral-400;
   }
+
+  .sidebar-control {
+    @apply rounded-md border border-neutral-300 bg-transparent text-neutral-900 placeholder:text-neutral-500 hover:border-neutral-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-300 dark:placeholder-neutral-600 dark:hover:border-neutral-700 dark:focus-visible:ring-neutral-600;
+  }
+
+  .sidebar-panel {
+    @apply rounded-md border border-neutral-200 dark:border-neutral-800;
+  }
 }
