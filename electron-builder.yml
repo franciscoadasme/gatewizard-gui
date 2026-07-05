@@ -42,6 +42,7 @@ linux:
     - AppImage
     - deb
   executableName: gatewizard-gui-linux
+  icon: build/icons
   maintainer: gatewizard
   category: Science
   desktop:

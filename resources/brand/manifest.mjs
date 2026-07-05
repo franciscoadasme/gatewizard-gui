@@ -60,6 +60,7 @@ export const brandAssets = {
     outputs: {
       png: 'build/icon.png',
       ico: 'build/icon.ico',
+      linuxIcons: 'build/icons/',
     },
   },
 
