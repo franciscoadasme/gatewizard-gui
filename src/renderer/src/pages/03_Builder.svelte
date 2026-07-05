@@ -576,9 +576,9 @@
   <aside class="w-80 shrink-0 space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs">
     <!-- Input -->
     <div class="space-y-2">
-      <h2 class="font-semibold">Input</h2>
+      <h2 class="sidebar-heading">Input</h2>
       <div class="space-y-1">
-        <span class="dark:text-neutral-500">PDB File</span>
+        <span class="sidebar-label">PDB File</span>
         <div class="flex items-center gap-1">
           <input
             type="text"
@@ -593,7 +593,7 @@
         </div>
       </div>
       <div class="space-y-1">
-        <span class="dark:text-neutral-500">Output Folder</span>
+        <span class="sidebar-label">Output Folder</span>
         <input
           type="text"
           placeholder="Auto-generated if empty"
@@ -607,7 +607,7 @@
     <!-- Ligand Parametrization (must run before packmol-memgen) -->
     <div class="space-y-2">
       <div class="flex items-center justify-between">
-        <h2 class="font-semibold">Ligand Parametrization</h2>
+        <h2 class="sidebar-heading">Ligand Parametrization</h2>
         <div class="flex gap-1">
           <Button
             variant="outline"
@@ -624,7 +624,7 @@
         </div>
       </div>
       {#if ligands.length === 0}
-        <p class="dark:text-neutral-500">
+        <p class="sidebar-hint">
           No ligands. Click "Detect" after selecting a PDB, or add manually.
         </p>
       {/if}
@@ -640,7 +640,7 @@
                   bind:value={lig.name}
                 />
               {:else}
-                <span class="font-semibold dark:text-neutral-300">{lig.name}</span>
+                <span class="sidebar-subheading">{lig.name}</span>
               {/if}
               <span
                 class="rounded px-1 py-0.5"
@@ -666,13 +666,13 @@
             >
           </div>
           <div class="flex items-center gap-2">
-            <span class="dark:text-neutral-500">Charge</span>
+            <span class="sidebar-label">Charge</span>
             <input
               type="number"
               class="sidebar-control w-12 p-1"
               bind:value={lig.charge}
             />
-            <span class="dark:text-neutral-500">Mult.</span>
+            <span class="sidebar-label">Mult.</span>
             <input
               type="number"
               class="sidebar-control w-12 p-1"
@@ -680,7 +680,7 @@
             />
           </div>
           <div class="flex items-center gap-1">
-            <span class="w-12 shrink-0 dark:text-neutral-500">frcmod</span>
+            <span class="sidebar-label w-12 shrink-0">frcmod</span>
             <input
               type="text"
               class="sidebar-control flex-1 p-1"
@@ -694,7 +694,7 @@
             >
           </div>
           <div class="flex items-center gap-1">
-            <span class="w-12 shrink-0 dark:text-neutral-500">lib</span>
+            <span class="sidebar-label w-12 shrink-0">lib</span>
             <input
               type="text"
               class="sidebar-control flex-1 p-1"
@@ -726,10 +726,10 @@
 
     <!-- Membrane & Force Fields -->
     <div class="space-y-2">
-      <h2 class="font-semibold">Force Fields</h2>
+      <h2 class="sidebar-heading">Force Fields</h2>
       {#await ffPromise then ff}
         <div class="flex items-center gap-1">
-          <span class="w-20 shrink-0 dark:text-neutral-500">Water</span>
+          <span class="sidebar-label w-20 shrink-0">Water</span>
           <select
             class="sidebar-control flex-1 p-2"
             bind:value={waterModel}
@@ -740,7 +740,7 @@
           </select>
         </div>
         <div class="flex items-center gap-1">
-          <span class="w-20 shrink-0 dark:text-neutral-500">MD engine</span>
+          <span class="sidebar-label w-20 shrink-0">MD engine</span>
           <select
             class="sidebar-control flex-1 p-2"
             bind:value={mdEngine}
@@ -751,12 +751,12 @@
           </select>
         </div>
         {#if waterModel === 'opc' && mdEngine === 'namd'}
-          <p class="text-xs text-neutral-500 dark:text-neutral-400">
+          <p class="sidebar-hint">
             OPC + NAMD: tleap uses FlexibleWater and equilibration adds waterModel tip4.
           </p>
         {/if}
         <div class="flex items-center gap-1">
-          <span class="w-20 shrink-0 dark:text-neutral-500">Protein FF</span>
+          <span class="sidebar-label w-20 shrink-0">Protein FF</span>
           <select
             class="sidebar-control flex-1 p-2"
             bind:value={proteinFf}
@@ -767,7 +767,7 @@
           </select>
         </div>
         <div class="flex items-center gap-1">
-          <span class="w-20 shrink-0 dark:text-neutral-500">Lipid FF</span>
+          <span class="sidebar-label w-20 shrink-0">Lipid FF</span>
           <select
             class="sidebar-control flex-1 p-2"
             bind:value={lipidFf}
@@ -783,10 +783,10 @@
 
     <!-- Lipid Composition -->
     <div class="space-y-2">
-      <h2 class="font-semibold">Lipid Composition</h2>
+      <h2 class="sidebar-heading">Lipid Composition</h2>
       <div class="sidebar-panel space-y-1.5 p-2">
         <div class="flex items-center justify-between">
-          <span class="font-semibold dark:text-neutral-300">Upper Leaflet</span>
+          <span class="sidebar-subheading">Upper Leaflet</span>
           <button
             class="dark:text-neutral-500 dark:hover:text-neutral-300"
             onclick={() => addLipid('upper')}>+ Add</button
@@ -821,7 +821,7 @@
       </div>
       <div class="sidebar-panel space-y-1.5 p-2">
         <div class="flex items-center justify-between">
-          <span class="font-semibold dark:text-neutral-300">Lower Leaflet</span>
+          <span class="sidebar-subheading">Lower Leaflet</span>
           <button
             class="dark:text-neutral-500 dark:hover:text-neutral-300"
             onclick={() => addLipid('lower')}>+ Add</button
@@ -859,14 +859,14 @@
 
     <!-- System Options -->
     <div class="space-y-2">
-      <h2 class="font-semibold">System Options</h2>
+      <h2 class="sidebar-heading">System Options</h2>
       <div class="flex items-center gap-2">
         <Checkbox name="preoriented" bind:checked={preoriented} />
-        <span class="dark:text-neutral-400">Pre-oriented in membrane</span>
+        <span class="sidebar-label">Pre-oriented in membrane</span>
       </div>
       <div class="flex items-center gap-2">
         <Checkbox name="add-salt" bind:checked={addSalt} />
-        <span class="dark:text-neutral-400">Add salt</span>
+        <span class="sidebar-label">Add salt</span>
       </div>
       {#if addSalt}
         <div class="flex flex-wrap items-center gap-1 pl-6">
@@ -876,7 +876,7 @@
             class="sidebar-control w-14 p-1"
             bind:value={saltConcentration}
           />
-          <span class="dark:text-neutral-500">M</span>
+          <span class="sidebar-label">M</span>
           <select
             class="sidebar-control p-1"
             bind:value={cation}
@@ -893,18 +893,18 @@
         </div>
       {/if}
       <div class="flex items-center gap-2">
-        <label class="flex items-center gap-1 dark:text-neutral-400">
+        <label class="sidebar-label flex items-center gap-1">
           <input type="radio" name="box-sizing" value="water_layer" bind:group={boxSizingMode} />
           Water layer
         </label>
-        <label class="flex items-center gap-1 dark:text-neutral-400">
+        <label class="sidebar-label flex items-center gap-1">
           <input type="radio" name="box-sizing" value="explicit" bind:group={boxSizingMode} />
           Explicit dims
         </label>
       </div>
       {#if boxSizingMode === 'water_layer'}
         <div class="flex items-center gap-1 pl-6">
-          <span class="dark:text-neutral-500" title="packmol-memgen --dist_wat">
+          <span class="sidebar-label" title="packmol-memgen --dist_wat">
             Water thickness
           </span>
           <input
@@ -913,49 +913,49 @@
             class="sidebar-control w-14 p-1"
             bind:value={distWat}
           />
-          <span class="dark:text-neutral-500">Å</span>
+          <span class="sidebar-label">Å</span>
+        </div>
+        <div class="flex items-center gap-1 pl-6">
+          <span
+            class="sidebar-label"
+            title="packmol-memgen --dist: minimum distance between solute extents and box boundaries"
+          >
+            Boundary distance
+          </span>
+          <input
+            type="text"
+            inputmode="decimal"
+            class="sidebar-control w-14 p-1"
+            bind:value={dist}
+          />
+          <span class="sidebar-label">Å</span>
         </div>
       {:else}
         <div class="flex items-center gap-1 pl-6">
-          <span class="dark:text-neutral-500">X</span>
+          <span class="sidebar-label">X</span>
           <input
             type="text"
             inputmode="decimal"
             class="sidebar-control w-12 p-1"
             bind:value={boxDimX}
           />
-          <span class="dark:text-neutral-500">Y</span>
+          <span class="sidebar-label">Y</span>
           <input
             type="text"
             inputmode="decimal"
             class="sidebar-control w-12 p-1"
             bind:value={boxDimY}
           />
-          <span class="dark:text-neutral-500">Z</span>
+          <span class="sidebar-label">Z</span>
           <input
             type="text"
             inputmode="decimal"
             class="sidebar-control w-12 p-1"
             bind:value={boxDimZ}
           />
-          <span class="dark:text-neutral-500">Å</span>
+          <span class="sidebar-label">Å</span>
         </div>
       {/if}
-      <div class="flex items-center gap-1 pl-6">
-        <span
-          class="dark:text-neutral-500"
-          title="packmol-memgen --dist: minimum distance between solute extents and box boundaries"
-        >
-          Boundary distance
-        </span>
-        <input
-          type="text"
-          inputmode="decimal"
-          class="sidebar-control w-14 p-1"
-          bind:value={dist}
-        />
-        <span class="dark:text-neutral-500">Å</span>
-      </div>
     </div>
     <Divider />
 
@@ -965,25 +965,25 @@
       class="sidebar-panel group [&>summary::-webkit-details-marker]:hidden"
     >
       <summary
-        class="cursor-pointer list-none px-3 py-2 text-sm font-semibold dark:text-neutral-300 dark:hover:text-neutral-100"
+        class="sidebar-heading cursor-pointer list-none px-3 py-2 hover:text-neutral-700 dark:hover:text-neutral-100"
       >
         <span class="flex items-center justify-between gap-2">
           Advanced settings
-          <span class="text-xs font-normal dark:text-neutral-500 group-open:rotate-180">▾</span>
+          <span class="sidebar-hint font-normal group-open:rotate-180">▾</span>
         </span>
       </summary>
       <div class="space-y-3 border-t border-neutral-200 px-3 py-3 dark:border-neutral-800">
         <div class="flex items-center gap-2">
           <Checkbox name="parametrize" bind:checked={parametrize} />
-          <span class="dark:text-neutral-400">Parametrize with tleap</span>
+          <span class="sidebar-label">Parametrize with tleap</span>
         </div>
 
         <div class="space-y-2">
-          <h3 class="text-xs font-semibold uppercase tracking-wide dark:text-neutral-500">
+          <h3 class="sidebar-group-heading">
             PACKMOL options
           </h3>
           <div class="space-y-2 pl-1">
-            <label class="flex items-center justify-between gap-2 text-xs dark:text-neutral-400">
+            <label class="sidebar-label flex items-center justify-between gap-2">
               <span title="GENCAN loops for PACKMOL; increase to improve packing">--nloop</span>
               <input
                 type="number"
@@ -993,7 +993,7 @@
                 bind:value={nloop}
               />
             </label>
-            <label class="flex items-center justify-between gap-2 text-xs dark:text-neutral-400">
+            <label class="sidebar-label flex items-center justify-between gap-2">
               <span title="GENCAN loops for all-together packing">--nloop_all</span>
               <input
                 type="number"
@@ -1003,7 +1003,7 @@
                 bind:value={nloopAll}
               />
             </label>
-            <label class="flex items-center justify-between gap-2 text-xs dark:text-neutral-400">
+            <label class="sidebar-label flex items-center justify-between gap-2">
               <span title="Clash tolerance (radius1 + radius2)">--tolerance</span>
               <input
                 type="number"
@@ -1101,7 +1101,7 @@
             {#if lig.imageBase64}
               <div class="sidebar-panel space-y-1 p-2">
                 <div class="flex items-center gap-1.5 text-xs">
-                  <span class="font-semibold dark:text-neutral-300">{lig.name}</span>
+                  <span class="sidebar-subheading">{lig.name}</span>
                   <span
                     class="rounded px-1 py-0.5 text-xs"
                     class:bg-green-800={lig.status === 'completed'}
