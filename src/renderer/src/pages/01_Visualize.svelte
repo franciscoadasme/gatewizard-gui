@@ -7,6 +7,7 @@
     Canvas,
     Cartoon,
     AtomGlowLights,
+    AtomPoints,
     MeasureOverlay,
     Tube,
     VdwSpheres,
@@ -107,7 +108,7 @@
 
   /** @typedef {{ x: number, y: number, z: number, element: string, name: string }} Atom */
   /** @typedef {{ chain: string, resname: string, number: number, atom_indices: number[], ca_index?: number, sec?: string }} Residue */
-  /** @typedef {{ type: 'cartoon' | 'ball-stick' | 'vdw' }} Representation */
+  /** @typedef {{ type: 'cartoon' | 'ball-stick' | 'vdw' | 'tube' | 'points' }} Representation */
   /** @typedef {{ name: string, color?: string, resolver: (atom: Atom) => import('three').Color }} ColorScheme */
   /** @typedef {{ id: string, selection: string, representation: Representation, atoms: Atom[], bonds?: [number, number][], residues?: Residue[], visible: boolean, colorScheme: ColorScheme }} View */
   /** @typedef {ReturnType<typeof getCameraForAtoms> & { framingZoom: number, framingGeneration: number, poseResetGeneration: number }} ViewerFraming */
@@ -597,6 +598,7 @@
         tubeRadius: 0.9,
         atomScale: 1.0,
         bondScale: 1.0,
+        pointSize: 3,
         quality: 3,
         material: { ...DEFAULT_VIEW_MATERIAL },
         _prefetched: true
@@ -630,8 +632,13 @@
 
   /** @param {string} selection */
   /** @param {Representation} representation */
-  function addView(selection = 'all', representation = { type: 'vdw' }) {
-    logEvent('detail', 'view', `Added view: ${selection}`, `Representation: ${representation.type}`)
+  function addView(selection = 'all', representation = { type: 'points' }) {
+    logEvent(
+      'detail',
+      'view',
+      `Added representation: ${selection}`,
+      `Representation: ${representation.type}`
+    )
     views = [
       ...views,
       {
@@ -655,6 +662,7 @@
         tubeRadius: 0.9,
         atomScale: 1.0,
         bondScale: 1.0,
+        pointSize: 3,
         quality: 3,
         material: { ...DEFAULT_VIEW_MATERIAL }
       }
@@ -746,7 +754,7 @@
       atomLabels = []
       measureMode = null
       ctxMenu = null
-      addView('all', { type: 'vdw' })
+      addView('all', { type: 'points' })
       if (resetCamera || !camera) {
         const base = getCameraForAtoms(structure.atoms)
         camera = base
@@ -1048,8 +1056,128 @@
 
   /** @param {string} id */
   function removeView(id) {
-    logEvent('detail', 'view', 'Removed view', id)
+    logEvent('detail', 'view', 'Removed representation', id)
     views = views.filter((it) => it.id !== id)
+  }
+
+  /** Duplicate a representation so the copy can be edited independently (e.g. selection). */
+  /** @param {string} id */
+  function duplicateView(id) {
+    const src = views.find((v) => v.id === id)
+    if (!src || src._isSelHighlight) return
+    const dup = {
+      ...src,
+      id: crypto.randomUUID(),
+      representation: { ...src.representation },
+      colorScheme: { ...src.colorScheme },
+      material: src.material ? { ...src.material } : { ...DEFAULT_VIEW_MATERIAL },
+      ssColors: src.ssColors ? { ...src.ssColors } : null,
+      atoms: src.atoms,
+      bonds: src.bonds,
+      residues: src.residues,
+      visible: true
+    }
+    const idx = views.findIndex((v) => v.id === id)
+    const next = [...views]
+    next.splice(idx + 1, 0, dup)
+    views = next
+    logEvent(
+      'detail',
+      'view',
+      `Duplicated representation: ${src.selection || src.baseSelection || 'all'}`,
+      `Representation: ${dup.representation?.type}`
+    )
+  }
+
+  /** Effective MDAnalysis selection currently driving a representation. */
+  /** @param {any} view */
+  function effectiveViewSelection(view) {
+    const sel = String(view?.selection || '').trim()
+    if (sel) return sel
+    const base = String(view?.baseSelection || '').trim()
+    if (base) return base
+    return 'all'
+  }
+
+  /**
+   * Replace one representation with one per chainID, keeping the same style.
+   * @param {string} id
+   */
+  function splitViewByChain(id) {
+    const src = views.find((v) => v.id === id)
+    if (!src || src._isSelHighlight) return
+    if (!src.atoms?.length) {
+      alert('This representation has no atoms to split.')
+      return
+    }
+
+    const chainKey = (/** @type {{ chain_id?: string }} */ a) =>
+      String(a.chain_id ?? '').trim()
+    /** @type {string[]} */
+    const chains = [...new Set(src.atoms.map(chainKey))]
+    chains.sort((a, b) => {
+      if (a === '' && b !== '') return 1
+      if (b === '' && a !== '') return -1
+      return a.localeCompare(b, undefined, { numeric: true })
+    })
+
+    if (chains.length <= 1) {
+      alert('Only one chainID in this representation — nothing to split.')
+      return
+    }
+
+    const effective = effectiveViewSelection(src)
+    const nonEmpty = chains.filter((c) => c !== '')
+
+    /** @param {string} chain */
+    function selectionForChain(chain) {
+      if (chain === '') {
+        if (nonEmpty.length === 0) return effective === 'all' ? 'all' : effective
+        const exclude = nonEmpty.map((c) => `chainID ${c}`).join(' or ')
+        if (!effective || effective === 'all') return `not (${exclude})`
+        return `(${effective}) and not (${exclude})`
+      }
+      const chainSel = `chainID ${chain}`
+      if (!effective || effective === 'all') return chainSel
+      if (/^chainID\s+\S+$/i.test(effective)) return chainSel
+      return `(${effective}) and ${chainSel}`
+    }
+
+    const parts = chains.map((chain) => {
+      const selection = selectionForChain(chain)
+      const atoms = src.atoms.filter((a) => chainKey(a) === chain)
+      const atomIdx = new Set(atoms.map((a) => a.index))
+      return {
+        ...src,
+        id: crypto.randomUUID(),
+        selection,
+        baseSelection: selection,
+        representation: { ...src.representation },
+        colorScheme: { ...src.colorScheme },
+        material: src.material ? { ...src.material } : { ...DEFAULT_VIEW_MATERIAL },
+        ssColors: src.ssColors ? { ...src.ssColors } : null,
+        atoms,
+        bonds: Array.isArray(src.bonds)
+          ? src.bonds.filter(([i, j]) => atomIdx.has(i) && atomIdx.has(j))
+          : src.bonds,
+        residues: Array.isArray(src.residues)
+          ? src.residues.filter((r) => String(r.chain ?? r.chain_id ?? '').trim() === chain)
+          : src.residues,
+        visible: true,
+        _prefetched: true
+      }
+    })
+
+    const idx = views.findIndex((v) => v.id === id)
+    const next = [...views]
+    next.splice(idx, 1, ...parts)
+    views = next
+    logEvent(
+      'detail',
+      'view',
+      `Split representation by chain (${parts.length})`,
+      parts.map((p) => p.selection).join(' · ')
+    )
   }
 
   function resetCamera() {
@@ -1197,6 +1325,7 @@
               tubeRadius: 0.9,
               atomScale: 1.0,
               bondScale: 1.0,
+              pointSize: 3,
               quality: 3,
               material: { ...DEFAULT_VIEW_MATERIAL }
             })
@@ -2361,6 +2490,14 @@
                 outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
                 highlightIndices={editHoverGroupIndices}
               />
+            {:else if view.representation.type === 'points'}
+              <AtomPoints
+                atoms={viewAtoms(view)}
+                getColor={view.colorScheme.resolver}
+                pointSize={view.pointSize ?? 3}
+                atomScale={view.atomScale ?? 1.0}
+                highlightIndices={editHoverGroupIndices}
+              />
             {/if}
             {/key}
             {#if isGlowingMaterial(view.material) && resolveGlowingMaterial(view.material).glowEmitLight !== false}
@@ -2394,6 +2531,14 @@
                     renderOrder={8}
                     opacity={1}
                     outline={true}
+                  />
+                {:else if _sv.representation.type === 'points'}
+                  <AtomPoints
+                    atoms={_svAtoms}
+                    getColor={_outlineGetColor}
+                    pointSize={(_sv.pointSize ?? 3) * 1.4}
+                    atomScale={_sv.atomScale ?? 1.0}
+                    renderOrder={8}
                   />
                 {:else if _sv.representation.type === 'ball-stick'}
                   <!-- Match covalent radius: BALL_STICK_ATOM_SCALE=0.5, VDW_C=1.7, coval_C=0.76 → ratio≈0.26 with margin -->
@@ -2559,6 +2704,8 @@
             <ViewItem
               bind:view={views[i]}
               onremove={() => removeView(view.id)}
+              onduplicate={() => duplicateView(view.id)}
+              onsplitbychain={() => splitViewByChain(view.id)}
               oncenter={() => centerCameraOnAtoms(view.atoms)}
             />
           {/each}
@@ -2576,7 +2723,7 @@
             </button>
           {/snippet}
 
-          {@render toolbarBtn('Add view', () => addView(), Plus, 'size-3 fill-neutral-800 dark:fill-white')}
+          {@render toolbarBtn('Add representation', () => addView(), Plus, 'size-3 fill-neutral-800 dark:fill-white')}
           {@render toolbarBtn(
             'Auto-generate representations',
             onAutoGenerateViews,

@@ -51,8 +51,14 @@
     'ligand',
     'other'
   ]
-  const REPR_TYPES = ['ball-stick', 'cartoon', 'tube', 'vdw']
-  const REPR_LABELS = { 'ball-stick': 'Ball & Stick', cartoon: 'Cartoon', tube: 'Tube', vdw: 'vdW' }
+  const REPR_TYPES = ['points', 'ball-stick', 'cartoon', 'tube', 'vdw']
+  const REPR_LABELS = {
+    points: 'Points',
+    'ball-stick': 'Ball & Stick',
+    cartoon: 'Cartoon',
+    tube: 'Tube',
+    vdw: 'vdW'
+  }
 
   const MDA_HELP = `Basic:
   protein · backbone · nucleic · water
@@ -78,7 +84,7 @@ Distance:
 
   /** @typedef {{ x: number, y: number, z: number, element: string, name: string, index?: number, res_name?: string, chain_id?: string }} Atom */
   /** @typedef {{ chain: string, resname: string, number: number, atom_indices: number[], ca_index?: number, sec?: string }} Residue */
-  /** @typedef {{ type: 'cartoon' | 'ball-stick' | 'vdw' | 'tube' }} Representation */
+  /** @typedef {{ type: 'cartoon' | 'ball-stick' | 'vdw' | 'tube' | 'points' }} Representation */
   /** @typedef {{ name: string, color?: string, resolver: (atom: Atom) => import('three').Color }} ColorScheme */
   /**
    * @typedef {{
@@ -91,15 +97,18 @@ Distance:
    *   tubeRadius: number,
    *   atomScale: number,
    *   bondScale: number,
+   *   pointSize: number,
    *   material: { preset?: string, metalness: number, roughness: number, emissiveIntensity: number },
    *   quality: number
    * }} View
    */
 
-  /** @type {{ view: View, onremove: () => void, oncenter?: () => void }} */
-  let { view = $bindable(), onremove, oncenter } = $props()
+  /** @type {{ view: View, onremove: () => void, onduplicate?: () => void, onsplitbychain?: () => void, oncenter?: () => void }} */
+  let { view = $bindable(), onremove, onduplicate, onsplitbychain, oncenter } = $props()
 
   let colorPickerOpen = $state(false)
+  /** @type {{ x: number, y: number } | null} */
+  let rowCtxMenu = $state(null)
   /** @type {HTMLDialogElement|null} */
   let gearDialog = $state(null)
   /** @type {HTMLDialogElement|null} */
@@ -112,6 +121,11 @@ Distance:
   let namedSelection = $state(NAMED_SELECTIONS.includes(view.selection) ? view.selection : 'other')
   let gearBackdropPointerDown = $state(false)
   let helpBackdropPointerDown = $state(false)
+  /** Inline selection edit (double-click the label). */
+  let editingSelection = $state(false)
+  let selectionDraft = $state('')
+  /** @type {HTMLInputElement | null} */
+  let selectionInputEl = $state(null)
   /** Ignore stale /get-structure responses when a newer request was started. */
   let structureFetchGen = 0
 
@@ -243,6 +257,45 @@ Distance:
   function cycleRepr() {
     const idx = REPR_TYPES.indexOf(view.representation.type)
     view.representation = { type: REPR_TYPES[(idx + 1) % REPR_TYPES.length] }
+  }
+
+  function currentSelectionLabel() {
+    if (namedSelection === 'other' && view.selection) return view.selection
+    if (namedSelection && namedSelection !== 'other') return namedSelection
+    return view.selection || view.baseSelection || 'all'
+  }
+
+  function beginSelectionEdit() {
+    selectionDraft = currentSelectionLabel()
+    editingSelection = true
+    requestAnimationFrame(() => {
+      selectionInputEl?.focus()
+      selectionInputEl?.select()
+    })
+  }
+
+  function cancelSelectionEdit() {
+    editingSelection = false
+    selectionDraft = ''
+  }
+
+  function commitSelectionEdit() {
+    if (!editingSelection) return
+    const next = selectionDraft.trim()
+    editingSelection = false
+    if (!next) {
+      selectionDraft = ''
+      return
+    }
+    if (NAMED_SELECTIONS.includes(next) && next !== 'other') {
+      namedSelection = next
+      view.baseSelection = next
+    } else {
+      namedSelection = 'other'
+      view.selection = next
+      view.baseSelection = next
+    }
+    selectionDraft = ''
   }
 
   function applyMaterialPreset(preset) {
@@ -383,10 +436,16 @@ Distance:
     >
   </div>
 {:else}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
-    class="gap-2 border-b border-neutral-200 p-2 select-none dark:border-neutral-800 {view.visible
+    class="relative gap-2 border-b border-neutral-200 p-2 select-none dark:border-neutral-800 {view.visible
       ? 'bg-neutral-50 text-neutral-900 dark:bg-neutral-900 dark:text-white'
       : 'text-neutral-500 dark:text-neutral-400'}"
+    oncontextmenu={(e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      rowCtxMenu = { x: e.clientX, y: e.clientY }
+    }}
   >
     <div class="flex items-center gap-2">
       <!-- Visibility toggle -->
@@ -406,14 +465,46 @@ Distance:
         ></div>
       </div>
 
-      <!-- Selection label -->
-      <div
-        class="min-w-0 flex-1 truncate text-xs {namedSelection === 'other' && view.selection
-          ? 'font-mono'
-          : 'capitalize'}"
-      >
-        {namedSelection === 'other' && view.selection ? view.selection : namedSelection}
-      </div>
+      <!-- Selection label — double-click to edit inline -->
+      {#if editingSelection}
+        <input
+          bind:this={selectionInputEl}
+          type="text"
+          class="min-w-0 flex-1 rounded border border-yellow-500/70 bg-white px-1 py-0.5 font-mono text-xs text-neutral-900 outline-none select-text dark:bg-neutral-950 dark:text-neutral-100 {invalidSelection
+            ? 'border-red-500'
+            : ''}"
+          bind:value={selectionDraft}
+          placeholder="chainID A · resid 1:20"
+          title="Enter MDAnalysis selection · Enter to apply · Esc to cancel"
+          onclick={(e) => e.stopPropagation()}
+          onkeydown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              commitSelectionEdit()
+            } else if (e.key === 'Escape') {
+              e.preventDefault()
+              cancelSelectionEdit()
+            }
+          }}
+          onblur={() => commitSelectionEdit()}
+        />
+      {:else}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="min-w-0 flex-1 cursor-text truncate text-xs {namedSelection === 'other' &&
+          view.selection
+            ? 'font-mono'
+            : 'capitalize'}"
+          title="Double-click to edit selection"
+          ondblclick={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            beginSelectionEdit()
+          }}
+        >
+          {currentSelectionLabel()}
+        </div>
+      {/if}
 
       <!-- Repr badge — click to cycle; spinner shown while loading -->
       <div class="relative flex shrink-0 items-center">
@@ -477,7 +568,7 @@ Distance:
     {#if colorPickerOpen}
       <div class="mt-2 flex flex-col gap-2">
         <div class="flex flex-wrap gap-1">
-          {#each [{ v: 'cpk', l: 'CPK' }, { v: 'chain', l: 'Chain' }, { v: 'goodsell', l: 'Goodsell' }, { v: 'residue_nature', l: 'Residue' }, { v: 'ss', l: 'SS' }, { v: 'cpk-carbon', l: 'CPK+C' }, { v: 'constant', l: 'Uniform' }] as opt (opt.v)}
+          {#each [{ v: 'cpk', l: 'CPK' }, { v: 'chain', l: 'Chain' }, { v: 'goodsell', l: 'Pastel' }, { v: 'residue_nature', l: 'Residue' }, { v: 'ss', l: 'SS' }, { v: 'cpk-carbon', l: 'CPK+C' }, { v: 'constant', l: 'Uniform' }] as opt (opt.v)}
             <button
               type="button"
               class="rounded px-2 py-0.5 text-[10px] transition-colors {colorSchemeName === opt.v
@@ -514,6 +605,57 @@ Distance:
       </div>
     {/if}
   </div>
+
+  {#if rowCtxMenu}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="fixed inset-0 z-50"
+      onpointerdown={() => {
+        rowCtxMenu = null
+      }}
+    >
+      <div
+        class="absolute z-50 min-w-40 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+        style="left:{rowCtxMenu.x}px;top:{rowCtxMenu.y}px"
+        role="menu"
+        onpointerdown={(e) => e.stopPropagation()}
+      >
+        <button
+          type="button"
+          role="menuitem"
+          class="block w-full px-3 py-1.5 text-left text-neutral-800 hover:bg-neutral-100 dark:text-neutral-100 dark:hover:bg-neutral-800"
+          onclick={() => {
+            rowCtxMenu = null
+            onduplicate?.()
+          }}
+        >
+          Duplicate representation
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          class="block w-full px-3 py-1.5 text-left text-neutral-800 hover:bg-neutral-100 dark:text-neutral-100 dark:hover:bg-neutral-800"
+          onclick={() => {
+            rowCtxMenu = null
+            onsplitbychain?.()
+          }}
+        >
+          Split by chain
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          class="block w-full px-3 py-1.5 text-left text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
+          onclick={() => {
+            rowCtxMenu = null
+            onremove()
+          }}
+        >
+          Remove
+        </button>
+      </div>
+    </div>
+  {/if}
 
   <!-- ── Gear dialog ──────────────────────────────────────────────────────────-->
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -561,7 +703,7 @@ Distance:
                 type="text"
                 size="sm"
                 className="flex-1 {invalidSelection ? 'border-red-500!' : ''}"
-                placeholder="chain A  ·  resid 1:20  ·  ..."
+                placeholder="chainID A  ·  resid 1:20  ·  ..."
                 bind:value={view.selection}
               />
               <button
@@ -572,6 +714,17 @@ Distance:
               >
             </div>
           {/if}
+          <button
+            type="button"
+            class="w-full rounded border border-neutral-300 px-2 py-1 text-left text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-100 dark:border-neutral-600 dark:text-neutral-300 dark:hover:border-neutral-500 dark:hover:bg-neutral-800"
+            title="Replace this representation with one per chainID, keeping the same style"
+            onclick={() => {
+              closeGearDialog()
+              onsplitbychain?.()
+            }}
+          >
+            Split by chain
+          </button>
         </section>
 
         <!-- Representation -->
@@ -587,12 +740,35 @@ Distance:
               }
             }
           >
+            <option value="points">Points</option>
             <option value="ball-stick">Ball &amp; Stick</option>
             <option value="cartoon">Cartoon</option>
             <option value="tube">Tube</option>
             <option value="vdw">vdW</option>
           </Select>
         </section>
+
+        <!-- Points size -->
+        {#if view.representation.type === 'points'}
+          <section class="space-y-2">
+            <p class="font-medium text-neutral-800 dark:text-neutral-300">Point size</p>
+            <div class="flex items-center gap-2">
+              <span class="w-10 shrink-0 text-neutral-600 dark:text-neutral-400">Size</span>
+              <input
+                type="range"
+                class="flex-1 accent-blue-500"
+                min={1}
+                max={10}
+                step={0.5}
+                value={view.pointSize ?? 3}
+                oninput={(e) => {
+                  view.pointSize = +e.target.value
+                }}
+              />
+              <span class="w-8 text-right tabular-nums">{(view.pointSize ?? 3).toFixed(1)}</span>
+            </div>
+          </section>
+        {/if}
 
         <!-- VdW atom size -->
         {#if view.representation.type === 'vdw'}
