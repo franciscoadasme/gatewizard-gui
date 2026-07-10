@@ -17,7 +17,8 @@
     checkLigandParametrization,
     getJobStatus,
     getJobLog,
-    scanJobs
+    scanJobs,
+    getProteinHydrogenStatus
   } from '../lib/backendApi'
   import {
     defaultBuildFolderName,
@@ -55,6 +56,11 @@
 
   let preoriented = $state(true)
   let parametrize = $state(true)
+  /** Skip packmol-memgen re-protonation; keep PropKa residue names (default on). */
+  let notProtonate = $state(true)
+  /** Strip protein H before packmol-memgen (keeps ligand / hetero H). Default off. */
+  let removeProteinH = $state(false)
+  let proteinHCount = $state(0)
   let nloop = $state(20)
   let nloopAll = $state(100)
   let tolerance = $state(2.0)
@@ -400,6 +406,8 @@
       lipidFf,
       preoriented,
       parametrize,
+      notProtonate,
+      removeProteinH,
       nloop: parseInt(String(nloop), 10),
       nloopAll: parseInt(String(nloopAll), 10),
       tolerance: parseFloat(String(tolerance)),
@@ -443,6 +451,9 @@
       validationResult = null
       const params = buildParams()
       const result = await validateBuilder(params)
+      if (typeof result.protein_hydrogen_count === 'number') {
+        proteinHCount = result.protein_hydrogen_count
+      }
       validationResult = {
         valid: result.valid,
         warning: result.warning ?? false,
@@ -561,6 +572,9 @@
     lipidFf = 'lipid21'
     preoriented = true
     parametrize = true
+    notProtonate = true
+    removeProteinH = false
+    proteinHCount = 0
     nloop = 20
     nloopAll = 100
     tolerance = 2.0
@@ -596,11 +610,37 @@
     else lowerLeaflet = lowerLeaflet.filter((_, i) => i !== index)
   }
 
+  async function refreshProteinHydrogenStatus(filePath) {
+    if (!filePath) {
+      proteinHCount = 0
+      return
+    }
+    try {
+      const status = await getProteinHydrogenStatus(filePath)
+      proteinHCount = status.count ?? 0
+    } catch {
+      proteinHCount = 0
+    }
+  }
+
+  function openAdvancedRemoveProteinH() {
+    advancedOpen = true
+    requestAnimationFrame(() => {
+      document.getElementById('remove-protein-h-option')?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest'
+      })
+    })
+  }
+
+  const showProteinHWarning = $derived(proteinHCount > 0 && !removeProteinH)
+
   async function onBrowse() {
     const result = await window.api.openPdbDialog()
     if (!result.canceled) {
       workingFile = result.filePath
       outputFolderName = defaultBuildFolderName(result.filePath)
+      await refreshProteinHydrogenStatus(result.filePath)
     }
   }
 </script>
@@ -625,6 +665,23 @@
             >Browse</Button
           >
         </div>
+        {#if showProteinHWarning}
+          <div
+            class="rounded-md border border-amber-500/60 bg-amber-500/10 px-2 py-1.5 text-[11px] leading-snug text-amber-800 dark:border-amber-500/40 dark:bg-amber-950/40 dark:text-amber-200"
+          >
+            <p>
+              Protein has {proteinHCount} hydrogen atom{proteinHCount === 1 ? '' : 's'}. Non-Amber H
+              (e.g. from Schrödinger) can break tleap after packmol-memgen.
+            </p>
+            <button
+              type="button"
+              class="mt-1 font-medium text-amber-900 underline underline-offset-2 hover:text-amber-700 dark:text-amber-100 dark:hover:text-white"
+              onclick={openAdvancedRemoveProteinH}
+            >
+              Open Advanced settings → Remove protein hydrogens
+            </button>
+          </div>
+        {/if}
       </div>
       <div class="space-y-1">
         <span class="sidebar-label">Output folder</span>
@@ -1025,6 +1082,26 @@
           <span class="sidebar-label">Parametrize with tleap</span>
         </div>
 
+        <div class="flex items-center gap-2">
+          <Checkbox name="not-protonate" bind:checked={notProtonate} />
+          <span
+            class="sidebar-label"
+            title="Recommended when the protein was prepared with PropKa first. Passes --notprotonate to packmol-memgen so residue names like GLH/ASH/HIP are kept. Without this, reduce may re-protonate and rename atoms (e.g. HA→HCA), which breaks tleap."
+          >
+            Skip protonation (preserve PropKa)
+          </span>
+        </div>
+
+        <div id="remove-protein-h-option" class="flex items-center gap-2">
+          <Checkbox name="remove-protein-h" bind:checked={removeProteinH} />
+          <span
+            class="sidebar-label"
+            title="Strip hydrogens from protein residues only before packmol-memgen. Ligands and other heteroatoms keep their hydrogens. Use when the PDB has non-Amber H (e.g. Schrödinger) that would break tleap."
+          >
+            Remove protein hydrogens
+          </span>
+        </div>
+
         <div class="space-y-2">
           <h3 class="sidebar-group-heading">
             PACKMOL options
@@ -1090,7 +1167,16 @@
               <p class="mt-1">Click <strong>Start Preparation</strong> to proceed.</p>
             {/if}
           {:else}
-            {validationResult.message}
+            <p class="whitespace-pre-wrap">{validationResult.message}</p>
+            {#if validationResult.warning && showProteinHWarning}
+              <button
+                type="button"
+                class="mt-2 font-medium underline underline-offset-2"
+                onclick={openAdvancedRemoveProteinH}
+              >
+                Open Advanced settings → Remove protein hydrogens
+              </button>
+            {/if}
           {/if}
         </div>
       {/if}

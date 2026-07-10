@@ -128,6 +128,15 @@ export function detectLigands(filePath) {
 }
 
 /**
+ * Count protein-only hydrogens in a PDB (ligands / hetero H ignored).
+ * @param {string} filePath
+ * @returns {Promise<{ count: number, has_protein_hydrogens: boolean }>}
+ */
+export function getProteinHydrogenStatus(filePath) {
+  return backendJson('/protein-hydrogen-status', { path: filePath })
+}
+
+/**
  * @param {string} filePath
  * @param {string} ligandName
  * @param {number} charge
@@ -256,8 +265,8 @@ export async function detectDisulfideBonds(filePath, maxDisulfideDistance, opts 
 }
 
 /**
- * @param {{ path: string, outputPath: string, protonationStates: object, targetPh: number, disulfideBonds: [[ [string, number], [string, number] ]], workingDir?: string|null, outputFolderName?: string|null }} props
- * @returns {Promise<{ output: string, output_path?: string, job_dir?: string, working_path?: string }>}
+ * @param {{ path: string, outputPath: string, protonationStates: object, targetPh: number, disulfideBonds: [[ [string, number], [string, number] ]], removeProteinHydrogens?: boolean, workingDir?: string|null, outputFolderName?: string|null }} props
+ * @returns {Promise<{ output: string, output_path?: string, job_dir?: string, working_path?: string, protein_hydrogens_removed?: number }>}
  */
 export async function preparePDB(props) {
   return backendJson('/prepare-pdb', props)

@@ -44,7 +44,12 @@ from gatewizard.core.structure_manager import (
     assign_secondary_structure_map,
 )
 from gatewizard.core.mempro import MemProError
-from gatewizard.core.preparation import PreparationError, PreparationManager
+from gatewizard.core.preparation import (
+    PreparationError,
+    PreparationManager,
+    count_protein_hydrogens,
+    strip_protein_hydrogens,
+)
 from gatewizard.core.builder import Builder
 
 logger = get_logger(__name__)
@@ -477,6 +482,10 @@ class ValidateBuilderRequest(BaseModel):
         description="Minimum solute-to-box-boundary distance in Angstroms (--dist)",
     )
     dist_wat: float = Field(26, description="Water layer thickness in Angstroms")
+    remove_protein_h: bool = Field(
+        False,
+        description="When True, skip the protein-hydrogen warning (user will strip H).",
+    )
 
 
 class StartPreparationRequest(BaseModel):
@@ -493,6 +502,21 @@ class StartPreparationRequest(BaseModel):
     )
     preoriented: bool = True
     parametrize: bool = True
+    not_protonate: bool = Field(
+        True,
+        description=(
+            "Pass --notprotonate to packmol-memgen. Recommended when the PDB was "
+            "prepared with PropKa (GLH/ASH/…); avoids reduce re-protonation that "
+            "can break tleap (e.g. HCA atom names)."
+        ),
+    )
+    remove_protein_h: bool = Field(
+        False,
+        description=(
+            "Strip protein hydrogens before packmol-memgen. Keeps ligand / hetero "
+            "hydrogens. Recommended when the PDB has non-Amber H (e.g. Schrödinger output)."
+        ),
+    )
     salt_concentration: float = 0.15
     cation: str = "K+"
     anion: str = "Cl-"
@@ -647,6 +671,19 @@ def detect_ligands_endpoint(payload: DetectLigandsRequest) -> dict:
                 for lig in ligands
             ]
         }
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+@app.post("/protein-hydrogen-status")
+def protein_hydrogen_status(payload: DetectLigandsRequest) -> dict:
+    """Count protein-only hydrogens (ligands / hetero H are ignored)."""
+    path = os.path.abspath(os.path.expanduser(payload.path))
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    try:
+        count = count_protein_hydrogens(path)
+        return {"count": count, "has_protein_hydrogens": count > 0}
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
 
@@ -993,10 +1030,23 @@ def validate_builder(payload: ValidateBuilderRequest) -> dict:
             anion=payload.anion,
             dist=payload.dist,
             dist_wat=payload.dist_wat,
+            remove_protein_h=payload.remove_protein_h,
         )
         # Distinguish warning (valid but message present) from clean success
         is_warning = is_valid and bool(error_msg)
-        return {"valid": is_valid, "warning": is_warning, "message": error_msg or ""}
+        protein_h_count = 0
+        try:
+            protein_h_count = count_protein_hydrogens(path)
+        except OSError:
+            protein_h_count = 0
+        return {
+            "valid": is_valid,
+            "warning": is_warning,
+            "message": error_msg or "",
+            "protein_hydrogen_count": protein_h_count,
+            "protein_hydrogen_warning": is_warning
+            and "Remove protein hydrogens" in (error_msg or ""),
+        }
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
 
@@ -1010,6 +1060,8 @@ def _configure_builder(payload: StartPreparationRequest) -> Builder:
         md_engine=payload.md_engine,
         preoriented=payload.preoriented,
         parametrize=payload.parametrize,
+        notprotonate=payload.not_protonate,
+        remove_protein_h=payload.remove_protein_h,
         salt_concentration=payload.salt_concentration,
         cation=payload.cation,
         anion=payload.anion,
@@ -1129,6 +1181,14 @@ class PreparePDBRequest(BaseModel):
     disulfide_bonds: list[tuple[tuple[str, int], tuple[str, int]]] = Field(
         description="Disulfide bonds"
     )
+    remove_protein_hydrogens: bool = Field(
+        True,
+        description=(
+            "Strip protein hydrogens before pdb4amber. Ligands and other hetero "
+            "atoms keep their hydrogens. Recommended to avoid non-Amber H "
+            "(e.g. Schrödinger) breaking later tleap parametrization."
+        ),
+    )
     working_dir: str | None = Field(
         None, description="Project working directory from the GUI top bar"
     )
@@ -1204,16 +1264,25 @@ def prepare_pdb(payload: PreparePDBRequest) -> dict:
 
         manager.apply_disulfide_bonds(tmp_path, tmp_path, payload.disulfide_bonds)
 
+        removed_h = 0
+        if payload.remove_protein_hydrogens:
+            strip_result = strip_protein_hydrogens(tmp_path, tmp_path)
+            removed_h = int(strip_result.get("removed", 0))
+
         result = manager.run_pdb4amber_with_cap_fix(
             input_pdb=tmp_path,
             output_pdb=str(output_path),
             fix_caps="capped" in path,
         )
+        note = ""
+        if payload.remove_protein_hydrogens:
+            note = f"\nRemoved {removed_h} protein hydrogen atom(s) before pdb4amber."
         return dict(
-            output=result["stdout"] + "\n" + result["stderr"],
+            output=result["stdout"] + "\n" + result["stderr"] + note,
             output_path=str(output_path),
             job_dir=str(job_dir),
             working_path=path,
+            protein_hydrogens_removed=removed_h,
         )
     except (PreparationError, FileNotFoundError, OSError, ValueError) as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex

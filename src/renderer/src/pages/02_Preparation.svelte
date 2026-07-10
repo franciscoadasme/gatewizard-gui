@@ -15,6 +15,8 @@
 
   // form fields
   let capProtein = $state(false)
+  /** Strip protein H before pdb4amber (keeps ligand / hetero H). Default on. */
+  let removeProteinHydrogens = $state(true)
   let maxDisulfideDistance = $state(2.5)
   let targetPh = $state(7.0)
   let workingFile = $state('')
@@ -185,6 +187,7 @@
         protonationStates,
         targetPh,
         disulfideBonds,
+        removeProteinHydrogens,
         ...buildOutputOptions()
       })
       preparationOutput = data.output.trim()
@@ -205,6 +208,7 @@
   async function onReset() {
     // reset form fields
     capProtein = false
+    removeProteinHydrogens = true
     maxDisulfideDistance = 2.5
     targetPh = 7.0
     workingFile = ''
@@ -363,6 +367,16 @@
     {/if}
     <Divider />
     <div class="space-y-2">
+      <div class="flex items-center gap-1">
+        <Checkbox name="remove-protein-h" bind:checked={removeProteinHydrogens} />
+        <label
+          for="remove-protein-h"
+          class="sidebar-label"
+          title="Removes hydrogens from protein residues only before pdb4amber. Ligands and other heteroatoms keep their hydrogens. Recommended when the structure came from Schrödinger or similar tools — foreign H names often break tleap after Builder."
+        >
+          Remove protein hydrogens
+        </label>
+      </div>
       <Button className="w-full" onclick={onPreparePDB} disabled={!canRunPreparationSteps || preparingPDB}
         >{preparingPDB ? 'Preparing...' : 'Prepare'}</Button
       >
@@ -433,7 +447,7 @@
       </p>
     {/if}
     {#if preparationOutput}
-      <div class="max-h-2/5 overflow-y-auto border-t border-neutral-200 p-4 text-xs dark:border-neutral-800">
+      <div class="max-h-2/5 overflow-y-auto border-t border-neutral-200 p-4 text-xs select-text dark:border-neutral-800">
         <pre>{preparationOutput}</pre>
       </div>
     {/if}
