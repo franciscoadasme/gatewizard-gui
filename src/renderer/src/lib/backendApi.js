@@ -541,6 +541,57 @@ export function memproApply(payload) {
   return backendJson('/mempro/apply', payload)
 }
 
+// ── Packmol hydration ────────────────────────────────────────────────────────
+
+/**
+ * Check whether the PACKMOL executable is available.
+ * @returns {Promise<{ available: boolean, version: string|null, resolved_path: string|null }>}
+ */
+export function packmolCheck() {
+  return backendJson('/packmol/check')
+}
+
+/**
+ * Estimate cavity free volume and suggested water count inside a box.
+ * @param {{ path: string, boxMin: number[], boxMax: number[], soluteRadius?: number|null, exclusionMode?: string|null, gridSpacing?: number|null, atomIndices?: number[]|null }} payload
+ */
+export function packmolEstimateVolume(payload) {
+  return backendJson('/packmol/estimate-volume', payload)
+}
+
+/**
+ * Preview PACKMOL input text and job file layout (no subprocess).
+ * @param {{ path: string, workingDir?: string|null, boxMin: number[], boxMax: number[], nWaters: number, soluteRadius?: number|null, exclusionMode?: string|null, tolerance?: number, nloop?: number, gridSpacing?: number|null }} payload
+ */
+export function packmolPreviewInp(payload) {
+  return backendJson('/packmol/preview-inp', payload)
+}
+
+/**
+ * Run PACKMOL cavity hydration into working_dir/output_folder_name.
+ * @param {{ path: string, workingDir: string, outputFolderName: string, boxMin: number[], boxMax: number[], nWaters?: number|null, soluteRadius?: number|null, exclusionMode?: string|null, tolerance?: number, nloop?: number, gridSpacing?: number|null }} payload
+ */
+export function packmolHydrateCavity(payload) {
+  return backendJson('/packmol/hydrate-cavity', payload)
+}
+
+/**
+ * Run user-supplied PACKMOL input text.
+ * @param {{ inpText: string, workingDir: string, outputFolderName: string, inpFilename?: string, path?: string|null }} payload
+ */
+export function packmolRunCustom(payload) {
+  return backendJson('/packmol/run-custom', payload)
+}
+
+/**
+ * List previous hydration output folders in a working directory.
+ * @param {{ workingDir: string }} payload
+ * @returns {Promise<{ jobs: Array<{ job_dir: string, name: string, type: string, created: string, output_pdb: string, output_pdb_name: string, output_exists: boolean, success: boolean, message: string, n_waters?: number, exclusion_mode?: string, volumes?: object, box_min?: number[], box_max?: number[] }> }>}
+ */
+export function packmolScanJobs(payload) {
+  return backendJson('/packmol/scan-jobs', payload)
+}
+
 /**
  * @template T
  * @param {string} path

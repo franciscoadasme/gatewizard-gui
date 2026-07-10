@@ -49,3 +49,9 @@ export function defaultAnalysisFolderName(topologyPath = '') {
   if (!topologyPath) return '04_analysis'
   return `04_analysis_${topologyStem(topologyPath)}`
 }
+
+/** @param {string} workingFile */
+export function defaultHydrationFolderName(workingFile) {
+  if (!workingFile) return ''
+  return `hydration_${pdbStem(workingFile).toLowerCase()}`
+}

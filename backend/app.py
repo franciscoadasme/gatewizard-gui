@@ -591,14 +591,18 @@ def run_propka(payload: RunPropKaRequest) -> dict:
         path = str(path_obj)
         residue_renumbering_table = {}
         if payload.cap_protein:
-            capped_path = path_obj.parent / f"{path_obj.stem}_capped.pdb"
-            path, residue_renumbering_table = cap_protein(path, str(capped_path))
-            path_obj = Path(path)
-            residue_renumbering_table = {
-                "_".join(map(str, old)): new[2]  # (name, chain, id) -> new_id
-                for old, new in residue_renumbering_table.items()
-                if old != new
-            }
+            # Avoid *_capped_capped.pdb when the workspace PDB is already capped.
+            if path_obj.stem.endswith("_capped"):
+                path = str(path_obj)
+            else:
+                capped_path = path_obj.parent / f"{path_obj.stem}_capped.pdb"
+                path, residue_renumbering_table = cap_protein(path, str(capped_path))
+                path_obj = Path(path)
+                residue_renumbering_table = {
+                    "_".join(map(str, old)): new[2]  # (name, chain, id) -> new_id
+                    for old, new in residue_renumbering_table.items()
+                    if old != new
+                }
         manager = PreparationManager(propka_version="3")
         manager.run_analysis(path, output_dir=str(job_dir))
         summary_file = manager.extract_summary(manager.last_analysis_file)
@@ -1423,10 +1427,37 @@ def _resolve_constraint_selection(selection: str) -> str:
     return sel
 
 
+_VALID_ENSEMBLES = frozenset({"NVT", "NPT", "NPAT", "NPgT"})
+_ENSEMBLE_ALIASES = {
+    "nvt": "NVT",
+    "npt": "NPT",
+    "npat": "NPAT",
+    "npgt": "NPgT",
+}
+
+
+def _normalize_ensemble(value: str) -> str:
+    """Map GUI/API ensemble strings to gatewizard scheme_type values."""
+    key = value.strip()
+    if key in _VALID_ENSEMBLES:
+        return key
+    mapped = _ENSEMBLE_ALIASES.get(key.lower())
+    if mapped:
+        return mapped
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            f"Invalid ensemble '{value}'. Must be one of {sorted(_VALID_ENSEMBLES)}"
+        ),
+    )
+
+
 def _build_stage_params(stages: list[Stage]) -> list[dict[str, Any]]:
     params = []
     for stage in stages:
         stage_dump = stage.model_dump()
+        if stage_dump.get("ensemble"):
+            stage_dump["ensemble"] = _normalize_ensemble(stage_dump["ensemble"])
         stage_dump["constraints"] = {
             _normalize_constraint_key(item.name): item.force_constant
             for item in stage.constraints
@@ -1653,7 +1684,7 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
             stage_params_list=stage_params,
             selections=selections,
             output_name=str(output_dir),
-            scheme_type=payload.ensemble.upper(),
+            scheme_type=_normalize_ensemble(payload.ensemble),
             gmx_executable=resolved_exec,
             add_com_restraint=payload.add_com_restraint,
             com_selection=payload.com_selection,
@@ -1675,7 +1706,7 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
             stage_params_list=stage_params,
             selections=selections,
             output_name=str(output_dir),
-            scheme_type=payload.ensemble.upper(),
+            scheme_type=_normalize_ensemble(payload.ensemble),
             add_com_restraint=payload.add_com_restraint,
             com_selection=payload.com_selection,
             com_restraint_k=payload.com_restraint_k,
@@ -1708,11 +1739,12 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
     water_model = payload.water_model or read_water_model_from_builder_status(
         input_dir
     )
+    scheme_type = _normalize_ensemble(payload.ensemble)
     manager.setup_namd_equilibration(
         system_files=system_files,
         stage_params_list=stage_params,
         output_name=str(output_dir),
-        scheme_type=payload.ensemble.upper(),
+        scheme_type=scheme_type,
         namd_executable=resolved_exec,
         add_com_restraint=payload.add_com_restraint,
         com_selection=payload.com_selection,
@@ -3539,6 +3571,307 @@ def mempro_apply(payload: MemProApplyRequest) -> dict:
         return data
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# ── Packmol cavity hydration ─────────────────────────────────────────────
+
+
+class PackmolEstimateVolumeRequest(BaseModel):
+    path: str
+    box_min: list[float]
+    box_max: list[float]
+    solute_radius: float | None = None
+    exclusion_mode: str | None = None
+    grid_spacing: float | None = None
+    atom_indices: list[int] | None = None
+
+
+class PackmolPreviewInpRequest(BaseModel):
+    path: str
+    working_dir: str | None = None
+    box_min: list[float]
+    box_max: list[float]
+    n_waters: int
+    solute_radius: float | None = None
+    exclusion_mode: str | None = None
+    tolerance: float = 2.0
+    nloop: int = 20
+    grid_spacing: float | None = None
+
+
+class PackmolHydrateCavityRequest(BaseModel):
+    path: str
+    working_dir: str
+    output_folder_name: str
+    box_min: list[float]
+    box_max: list[float]
+    n_waters: int | None = None
+    solute_radius: float | None = None
+    exclusion_mode: str | None = None
+    tolerance: float = 2.0
+    nloop: int = 20
+    grid_spacing: float | None = None
+
+
+class PackmolRunCustomRequest(BaseModel):
+    inp_text: str
+    working_dir: str
+    output_folder_name: str
+    inp_filename: str = "packmol_custom.inp"
+    path: str | None = Field(
+        None,
+        description="Source structure PDB referenced by the custom input (staged into the run folder).",
+    )
+
+
+@app.get("/packmol/check")
+def packmol_check() -> dict:
+    from gatewizard.tools.packmol_hydration import check_packmol_available  # noqa: PLC0415
+
+    return check_packmol_available()
+
+
+@app.post("/packmol/estimate-volume")
+def packmol_estimate_volume(payload: PackmolEstimateVolumeRequest) -> dict:
+    from gatewizard.tools.packmol_hydration import (  # noqa: PLC0415
+        PackmolHydrationError,
+        estimate_cavity_volume,
+    )
+
+    if not os.path.isfile(payload.path):
+        raise HTTPException(404, f"PDB not found: {payload.path}")
+    try:
+        result = estimate_cavity_volume(
+            pdb_file=payload.path,
+            box_min=payload.box_min,
+            box_max=payload.box_max,
+            solute_radius=payload.solute_radius,
+            exclusion_mode=payload.exclusion_mode,
+            grid_spacing=payload.grid_spacing,
+            atom_indices=payload.atom_indices,
+        )
+        return result.as_dict()
+    except (ValueError, PackmolHydrationError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/packmol/preview-inp")
+def packmol_preview_inp(payload: PackmolPreviewInpRequest) -> dict:
+    import tempfile  # noqa: PLC0415
+
+    from gatewizard.tools.packmol_hydration import (  # noqa: PLC0415
+        PackmolHydrationError,
+        preview_hydrate_inp,
+    )
+
+    if not os.path.isfile(payload.path):
+        raise HTTPException(404, f"PDB not found: {payload.path}")
+    tmp_parent = payload.working_dir if payload.working_dir and os.path.isdir(payload.working_dir) else None
+    try:
+        with tempfile.TemporaryDirectory(dir=tmp_parent) as tmp:
+            return preview_hydrate_inp(
+                pdb_file=payload.path,
+                job_dir=tmp,
+                box_min=payload.box_min,
+                box_max=payload.box_max,
+                n_waters=payload.n_waters,
+                solute_radius=payload.solute_radius,
+                exclusion_mode=payload.exclusion_mode,
+                tolerance=payload.tolerance,
+                nloop=payload.nloop,
+                grid_spacing=payload.grid_spacing,
+            )
+    except (ValueError, PackmolHydrationError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+_HYDRATION_MARKER = "hydration.json"
+
+
+def _write_hydration_marker(job_dir: str, marker: dict) -> None:
+    """Persist a hydration-job metadata marker used to list hydration outputs."""
+    from datetime import datetime, timezone  # noqa: PLC0415
+
+    marker.setdefault("gatewizard_hydration", True)
+    marker.setdefault("created", datetime.now(timezone.utc).isoformat())
+    try:
+        (Path(job_dir) / _HYDRATION_MARKER).write_text(
+            json.dumps(marker, indent=2), encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
+@app.post("/packmol/hydrate-cavity")
+def packmol_hydrate_cavity(payload: PackmolHydrateCavityRequest) -> dict:
+    from gatewizard.tools.packmol_hydration import (  # noqa: PLC0415
+        PackmolHydrationError,
+        hydrate_cavity,
+    )
+
+    if not payload.working_dir:
+        raise HTTPException(400, "working_dir is required")
+    if not os.path.isfile(payload.path):
+        raise HTTPException(404, f"PDB not found: {payload.path}")
+    try:
+        _ensure_output_folder(payload.working_dir, payload.output_folder_name)
+        result = hydrate_cavity(
+            pdb_file=payload.path,
+            working_dir=payload.working_dir,
+            output_folder_name=payload.output_folder_name,
+            box_min=payload.box_min,
+            box_max=payload.box_max,
+            n_waters=payload.n_waters,
+            solute_radius=payload.solute_radius,
+            exclusion_mode=payload.exclusion_mode,
+            tolerance=payload.tolerance,
+            nloop=payload.nloop,
+            grid_spacing=payload.grid_spacing,
+        )
+        data = result.as_dict()
+        _write_hydration_marker(
+            data.get("job_dir", ""),
+            {
+                "type": "hydrate",
+                "source_pdb": payload.path,
+                "output_pdb": data.get("output_pdb", ""),
+                "output_pdb_name": os.path.basename(data.get("output_pdb", "")),
+                "packmol_log": data.get("packmol_log", ""),
+                "success": bool(data.get("success")),
+                "message": data.get("message", ""),
+                "box_min": list(payload.box_min),
+                "box_max": list(payload.box_max),
+                "n_waters": data.get("volumes", {}).get("suggested_waters")
+                if payload.n_waters is None
+                else payload.n_waters,
+                "exclusion_mode": data.get("exclusion_mode"),
+                "volumes": data.get("volumes"),
+            },
+        )
+        return data
+    except (ValueError, PackmolHydrationError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+def _stage_custom_packmol_inputs(
+    inp_text: str, job_dir: Path, source_pdb: str | None
+) -> list[str]:
+    """Copy structure files referenced by a custom PACKMOL input into ``job_dir``.
+
+    The preview step generates job-relative filenames (the loaded structure PDB
+    and ``TIP3P.pdb``) that only exist in a temporary preview directory. Copy the
+    referenced files into the run folder so PACKMOL can find them; otherwise it
+    aborts with "Could not find file".
+    """
+    referenced = re.findall(
+        r"^\s*structure\s+(.+?)\s*$", inp_text, re.MULTILINE | re.IGNORECASE
+    )
+    tip3p_template: Path | None = None
+    missing: list[str] = []
+    for raw in referenced:
+        name = raw.strip().strip('"')
+        if not name:
+            continue
+        dest = job_dir / Path(name).name
+        if dest.is_file():
+            continue
+        candidate = Path(os.path.expanduser(name))
+        if candidate.is_file():
+            shutil.copy2(candidate, dest)
+            continue
+        base = Path(name).name
+        if (
+            source_pdb
+            and base == Path(source_pdb).name
+            and os.path.isfile(source_pdb)
+        ):
+            shutil.copy2(source_pdb, dest)
+            continue
+        if base.lower() == "tip3p.pdb":
+            if tip3p_template is None:
+                from gatewizard.tools.packmol_hydration import (  # noqa: PLC0415
+                    _resolve_tip3p_template,
+                )
+
+                tip3p_template = _resolve_tip3p_template()
+            shutil.copy2(tip3p_template, dest)
+            continue
+        missing.append(name)
+    return missing
+
+
+@app.post("/packmol/run-custom")
+def packmol_run_custom(payload: PackmolRunCustomRequest) -> dict:
+    from gatewizard.tools.packmol_hydration import (  # noqa: PLC0415
+        PackmolHydrationError,
+        run_custom_packmol,
+    )
+
+    if not payload.working_dir:
+        raise HTTPException(400, "working_dir is required")
+    try:
+        job_dir = _ensure_output_folder(
+            payload.working_dir, payload.output_folder_name
+        )
+        missing = _stage_custom_packmol_inputs(
+            payload.inp_text, job_dir, payload.path
+        )
+        if missing:
+            raise HTTPException(
+                400,
+                "Custom PACKMOL input references files that could not be located: "
+                + ", ".join(missing)
+                + ". Regenerate the preset template or place the files in the output folder.",
+            )
+        result = run_custom_packmol(
+            inp_text=payload.inp_text,
+            working_dir=payload.working_dir,
+            output_folder_name=payload.output_folder_name,
+            inp_filename=payload.inp_filename,
+        )
+        _write_hydration_marker(
+            result.get("job_dir", str(job_dir)),
+            {
+                "type": "custom",
+                "source_pdb": payload.path,
+                "output_pdb": result.get("output_pdb", ""),
+                "output_pdb_name": os.path.basename(result.get("output_pdb", "")),
+                "packmol_log": result.get("packmol_log", ""),
+                "success": bool(result.get("success")),
+                "message": result.get("message", ""),
+            },
+        )
+        return result
+    except (ValueError, PackmolHydrationError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+class PackmolScanJobsRequest(BaseModel):
+    working_dir: str
+
+
+@app.post("/packmol/scan-jobs")
+def packmol_scan_jobs(payload: PackmolScanJobsRequest) -> dict:
+    """List hydration output folders (sub-dirs containing a hydration.json marker)."""
+    base = Path(os.path.abspath(os.path.expanduser(payload.working_dir)))
+    if not base.is_dir():
+        return {"jobs": []}
+    jobs: list[dict] = []
+    for marker_file in base.glob(f"*/{_HYDRATION_MARKER}"):
+        job_dir = marker_file.parent
+        try:
+            data = json.loads(marker_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not data.get("gatewizard_hydration"):
+            continue
+        output_pdb = data.get("output_pdb", "")
+        data["job_dir"] = str(job_dir)
+        data["name"] = job_dir.name
+        data["output_exists"] = bool(output_pdb) and os.path.isfile(output_pdb)
+        jobs.append(data)
+    jobs.sort(key=lambda j: j.get("created") or "", reverse=True)
+    return {"jobs": jobs}
 
 
 if __name__ == "__main__":

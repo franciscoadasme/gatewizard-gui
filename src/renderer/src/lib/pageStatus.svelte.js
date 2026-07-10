@@ -23,6 +23,11 @@ export const visualizeStatus = $state({
   memproStartedAt: /** @type {string|null} */ (null),
   /** Set to true to trigger the results dialog from the status bar */
   openMemproDialog: false,
+  /** Packmol hydration job status */
+  packmolStatus: /** @type {'running'|'done'|'error'|null} */ (null),
+  packmolStartedAt: /** @type {string|null} */ (null),
+  packmolMessage: '',
+  openPackmolDialog: false,
 })
 
 // ── 02 Preparation ───────────────────────────────────────────────────────────

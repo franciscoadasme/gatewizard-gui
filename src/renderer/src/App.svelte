@@ -234,6 +234,29 @@
       })
     }
 
+    if (visualizeStatus.packmolStatus) {
+      const pkRunning = visualizeStatus.packmolStatus === 'running'
+      const pkDone = visualizeStatus.packmolStatus === 'done'
+      const pkError = visualizeStatus.packmolStatus === 'error'
+      const pkElapsed = visualizeStatus.packmolStartedAt
+        ? elapsed(visualizeStatus.packmolStartedAt)
+        : ''
+      chips.push({
+        id: 'packmol',
+        type: 'packmol',
+        label: 'Packmol',
+        detail: pkRunning
+          ? `running${pkElapsed ? ` · ${pkElapsed}` : ''}`
+          : pkDone
+            ? 'done — click to view'
+            : 'error',
+        fullDetail: visualizeStatus.packmolMessage || 'Packmol hydration',
+        status: pkError ? 'error' : pkRunning ? 'running' : 'done',
+        dismissible: !pkRunning,
+        clickable: pkDone || pkError
+      })
+    }
+
     // 02 Preparation
     if (
       preparationStatus.propkaDone ||
@@ -918,6 +941,7 @@
                     : 'bg-neutral-200 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-500'}"
               onclick={() => {
                 if (chip.id === 'mempro') visualizeStatus.openMemproDialog = true
+                if (chip.id === 'packmol') visualizeStatus.openPackmolDialog = true
               }}
             >
               {@render chipInner()}
