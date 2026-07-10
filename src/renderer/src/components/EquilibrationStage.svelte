@@ -3,6 +3,7 @@
   import Divider from './ui/Divider.svelte'
   import Gear from './icons/Gear.svelte'
   import Input from './ui/Input.svelte'
+  import { canonicalEnsemble } from '../lib/ensemble.js'
 
   /** @typedef {{ id: string, name: string, force_constant: number, selection: string }} Constraint */
 
@@ -78,7 +79,7 @@
     <Input
       id="{uid}-ensemble"
       size="sm"
-      value={stage.ensemble ?? ensemble.toUpperCase()}
+      value={stage.ensemble ?? canonicalEnsemble(ensemble)}
       disabled
     />
     <p></p>
