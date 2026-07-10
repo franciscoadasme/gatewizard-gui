@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Workflow output folders** with numbered defaults per tab (`01_preparation_*`, …, `04_analysis_*`)
+- **Visualize — Packmol hydration** (Tools menu, interactive box, volume estimate, fill cavity, custom input)
+- Packmol hydration output history (load prior jobs from the working directory)
+- Shared sidebar styling across workflow tabs
+- Linux multi-size icon generation for packaging
+
+### Fixed
+
+- **Visualize:** 3D viewer stays aligned on panel resize; MemPro/Packmol panels close correctly after reload
+- **Visualize:** Ghost water preview matches calculated free volume, not the full box
+- **Equilibration:** NPgT ensemble sent correctly (`NPgT`, not `NPGT`)
+- **Equilibration:** Sidebar scroll layout
+- **Preparation:** Prepare no longer looks for `*_capped_capped.pdb` after PropKa capping
+
+### Changed
+
+- **Builder:** Sticky job log follow (pauses when scrolled up); number steppers for water/boundary distance
+- **Preparation:** Number steppers for target pH and max S–S distance
+- **Builder:** Cleaner sidebar; explicit box mode hides water/boundary fields
+- **README:** Fedora AppImage install notes
+
 ## [1.0.7] - 2026-07-03
 
 ### Added
