@@ -48,6 +48,6 @@
 
 <pre
   bind:this={preEl}
-  class="sidebar-panel mt-1 max-h-60 overflow-auto p-2 text-xs whitespace-pre-wrap dark:bg-neutral-950 dark:text-neutral-500 {className}"
+  class="sidebar-panel mt-1 max-h-60 overflow-auto p-2 text-xs whitespace-pre-wrap select-text dark:bg-neutral-950 dark:text-neutral-500 {className}"
   onscroll={onScroll}
 >{text}</pre>
