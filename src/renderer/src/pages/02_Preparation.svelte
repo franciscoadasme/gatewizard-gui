@@ -176,12 +176,11 @@
   async function onPreparePDB() {
     try {
       preparingPDB = true
+      // Use the active working PDB as-is. If PropKa already capped the structure,
+      // activeWorkingFile points at *_capped.pdb — do not append _capped again.
       const pdbPath = activeWorkingFile || workingFile
-      const prepareInput = capProtein
-        ? pdbPath.replace(/\.pdb$/i, '_capped.pdb')
-        : pdbPath
       const data = await preparePDB({
-        path: prepareInput,
+        path: pdbPath,
         outputPath: protonatedFile,
         protonationStates,
         targetPh,
@@ -300,16 +299,16 @@
       <h2 class="sidebar-heading">PropKa Analysis</h2>
       <div class="flex items-center gap-1">
         <label for="target-ph" class="sidebar-label flex-1">Target pH</label>
-        <input
-          type="text"
-          inputmode="decimal"
+        <Input
+          id="target-ph"
           name="target-ph"
-          class="w-20 rounded-md border border-neutral-300 p-2 hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-700"
-          value={targetPh.toFixed(1)}
-          onchange={(e) => {
-            targetPh = parseFloat(e.target.value) || 0
-            e.target.value = targetPh.toFixed(1)
-          }}
+          type="number"
+          size="sm"
+          className="w-20"
+          min="0"
+          max="14"
+          step="0.1"
+          bind:value={targetPh}
         />
       </div>
       <div class="flex items-center gap-1">
@@ -331,11 +330,14 @@
       <h2 class="sidebar-heading">Disulfide Bonding</h2>
       <div class="flex items-center gap-1">
         <label for="max-ss-distance" class="sidebar-label flex-1">Max S-S distance (Å)</label>
-        <input
-          type="text"
-          inputmode="decimal"
+        <Input
+          id="max-ss-distance"
           name="max-ss-distance"
-          class="w-20 rounded-md border border-neutral-300 p-2 hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-700"
+          type="number"
+          size="sm"
+          className="w-20"
+          min="0"
+          step="0.1"
           bind:value={maxDisulfideDistance}
         />
       </div>
