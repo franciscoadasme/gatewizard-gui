@@ -3,6 +3,7 @@
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Divider from '../components/ui/Divider.svelte'
   import Spinner from '../components/ui/Spinner.svelte'
+  import FollowLog from '../components/FollowLog.svelte'
   import { builderStatus, logEvent } from '../lib/pageStatus.svelte.js'
   import {
     getAvailableLipids,
@@ -952,9 +953,10 @@
             Water thickness
           </span>
           <input
-            type="text"
-            inputmode="decimal"
-            class="sidebar-control w-14 p-1"
+            type="number"
+            min="0"
+            step="1"
+            class="sidebar-control w-16 p-1"
             bind:value={distWat}
           />
           <span class="sidebar-label">Å</span>
@@ -967,9 +969,10 @@
             Boundary distance
           </span>
           <input
-            type="text"
-            inputmode="decimal"
-            class="sidebar-control w-14 p-1"
+            type="number"
+            min="0"
+            step="1"
+            class="sidebar-control w-16 p-1"
             bind:value={dist}
           />
           <span class="sidebar-label">Å</span>
@@ -1278,11 +1281,7 @@
                 ↻
               </button>
             </div>
-            <pre
-              class="sidebar-panel mt-1 max-h-60 overflow-auto p-2 text-xs whitespace-pre-wrap dark:bg-neutral-950 dark:text-neutral-500">{job
-                .logLines.length > 0
-                ? job.logLines.join('\n')
-                : 'No log output yet...'}</pre>
+            <FollowLog lines={job.logLines} />
           {/if}
         </div>
       {/each}
