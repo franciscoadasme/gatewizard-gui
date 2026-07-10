@@ -1,6 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte'
   import { Vector3 } from 'three'
+  import { VIEWER_AXES as AXES } from '../lib/viewer/axisColors.js'
 
   /**
    * @type {{
@@ -61,12 +62,6 @@
       [0, 1, 0]
     ]
   }
-
-  const AXES = [
-    { key: 'x', color: '#f05050', label: 'X' },
-    { key: 'y', color: '#48c748', label: 'Y' },
-    { key: 'z', color: '#5878f8', label: 'Z' }
-  ]
 
   // ── Reactive state ─────────────────────────────────────────────────────────
   let sc = $state({ x: 0, y: 0 })

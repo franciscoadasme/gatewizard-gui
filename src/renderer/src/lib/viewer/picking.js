@@ -8,7 +8,7 @@ const VDW = {
 }
 const DEFAULT_VDW = 1.7
 
-function vdwRadius(el) {
+export function vdwRadius(el) {
   const k = String(el || 'C').trim().toUpperCase().slice(0, 2)
   if (VDW[k] !== undefined) return VDW[k]
   if (k.length >= 1 && VDW[k[0]] !== undefined) return VDW[k[0]]

@@ -9,7 +9,8 @@
     AtomGlowLights,
     MeasureOverlay,
     Tube,
-    VdwSpheres
+    VdwSpheres,
+    HydrationBoxOverlay
   } from '../components/viewer'
   import { mainViewerCamera } from '../components/viewer/CameraRig.svelte'
   import { mainViewerControls } from '../components/viewer/Canvas.svelte'
@@ -18,6 +19,8 @@
   import { COLOR_PALETTE, cpkScheme, defaultColorScheme, ssScheme, DEFAULT_VIEW_MATERIAL, isGoodsellMaterial, isGlowingMaterial, resolveGlowingMaterial, GOODSELL_MATERIAL_DEFAULTS, GLOWING_MATERIAL_DEFAULTS } from '../lib/colorSchemes.js'
   import { getCameraForAtoms } from '../lib/viewer/base.js'
   import { pickAtomFromViews } from '../lib/viewer/picking.js'
+  import { boundsFromAtomsWithVdw } from '../lib/viewer/hydrationBoxManipulator.js'
+  import { PADDING_FIELD_STYLE, VIEWER_AXES, axisInputStyle } from '../lib/viewer/axisColors.js'
   import { measureDistance, measureAngle, measureDihedral } from '../lib/viewer/measure.js'
   import { Color } from 'three'
   import { untrack } from 'svelte'
@@ -44,8 +47,15 @@
     memproRun,
     memproStatus,
     memproScan,
-    memproApply
+    memproApply,
+    packmolCheck,
+    packmolEstimateVolume,
+    packmolPreviewInp,
+    packmolHydrateCavity,
+    packmolRunCustom,
+    packmolScanJobs
   } from '../lib/backendApi.js'
+  import { defaultHydrationFolderName } from '../lib/outputFolders.js'
   import DetectIcon from '../components/icons/Detect.svelte'
   import Empty from '../components/ui/Empty.svelte'
   import Plus from '../components/icons/Plus.svelte'
@@ -57,6 +67,7 @@
   import ViewerSettingsDialog from '../components/ViewerSettingsDialog.svelte'
   import RadialMenu from '../components/RadialMenu.svelte'
   import TransformGizmo from '../components/TransformGizmo.svelte'
+  import HydrationBoxManipulatorOverlay from '../components/viewer/HydrationBoxManipulatorOverlay.svelte'
   import { visualizeStatus, logEvent } from '../lib/pageStatus.svelte.js'
   import { syncGoodsellSceneLighting } from '../lib/goodsellSceneLighting.svelte.js'
   import { themeState } from '../lib/theme.svelte.js'
@@ -179,6 +190,7 @@
   /** Hover-open timers for dropdown menus */
   let _selectHoverTimer = null
   let _editMenuHoverTimer = null
+  let _toolsMenuHoverTimer = null
   /** @type {HTMLElement | null} */
   let viewerEl = $state(null)
 
@@ -299,8 +311,9 @@
   let tfTy = $state(0)
   let tfTz = $state(0)
   // Transform enhanced state
-  /** @type {HTMLDialogElement | null} */
-  let dlgMempro = $state(null)
+  let memproDialogOpen = $state(false)
+  let packmolDialogOpen = $state(false)
+  let toolsMenuOpen = $state(false)
   let transformTab = $state('rotate') // 'rotate' | 'translate' | 'align'
   /** @type {number[][] | null} positions[atom.index] = [x,y,z] */
   let previewPositions = $state(null)
@@ -331,6 +344,57 @@
   let memproUseWeights = $state(false)
   let memproFlip = $state(false)
   let memproMembrane = $state('')
+  // Packmol hydration
+  let packmolTab = $state('hydrate')
+  /** @type {{ available: boolean, version?: string|null, resolved_path?: string|null }|null} */
+  let packmolAvailable = $state(null)
+  let packmolBusy = $state(false)
+  let packmolBoxMin = $state({ x: 0, y: 0, z: 0 })
+  let packmolBoxMax = $state({ x: 10, y: 10, z: 10 })
+  let packmolBoxPadding = $state(2)
+  let packmolShowBox = $state(true)
+  let packmolShowGhost = $state(false)
+  /** @type {object|null} */
+  let packmolVolume = $state(null)
+  let packmolHydrogenStatus = $state('')
+  let packmolExclusionMode = $state('')
+  let packmolTolerance = $state(2)
+  let packmolNloop = $state(20)
+  let packmolSoluteRadius = $state(2.5)
+  let packmolNWaters = $state(0)
+  let packmolOutputFolder = $state('')
+  let packmolLog = $state('')
+  let packmolResultPath = $state('')
+  let packmolCustomInp = $state('')
+  let packmolPreviewBusy = $state(false)
+  let packmolError = $state('')
+  /** Box bounds used for the last successful volume calculation. */
+  /** @type {{ min: number[], max: number[] } | null} */
+  let packmolVolumeBox = $state(null)
+  /** @type {Array<object>} */
+  let packmolJobs = $state([])
+  const packmolBoxValid = $derived.by(
+    () =>
+      packmolBoxMax.x > packmolBoxMin.x &&
+      packmolBoxMax.y > packmolBoxMin.y &&
+      packmolBoxMax.z > packmolBoxMin.z
+  )
+  const packmolBoxMinArr = $derived([packmolBoxMin.x, packmolBoxMin.y, packmolBoxMin.z])
+  const packmolBoxMaxArr = $derived([packmolBoxMax.x, packmolBoxMax.y, packmolBoxMax.z])
+  const packmolBoxMatchesVolume = $derived.by(() => {
+    if (!packmolVolumeBox) return false
+    const [x0, y0, z0] = packmolBoxMinArr
+    const [x1, y1, z1] = packmolBoxMaxArr
+    const [a0, b0, c0] = packmolVolumeBox.min
+    const [a1, b1, c1] = packmolVolumeBox.max
+    return x0 === a0 && y0 === b0 && z0 === c0 && x1 === a1 && y1 === b1 && z1 === c1
+  })
+
+  $effect(() => {
+    if (packmolVolumeBox && !packmolBoxMatchesVolume && packmolVolume) {
+      packmolVolume = null
+    }
+  })
   const isPdbIdValid = $derived.by(() => pdbId.trim().length === 4)
 
   // Debounced atom-count lookups for transform selections
@@ -420,12 +484,43 @@
       .catch(() => {})
   })
 
-  // ── MemPro: open results dialog when status bar chip triggers it ─────────
+  // ── MemPro: open panel when status bar chip triggers it ───────────────────
   $effect(() => {
     if (visualizeStatus.openMemproDialog) {
       visualizeStatus.openMemproDialog = false
-      if (memproJobStatus === 'done') dlgMempro?.showModal()
+      openMemproDialog()
     }
+  })
+
+  // ── Packmol: open panel from status bar ─────────────────────────────────
+  $effect(() => {
+    if (visualizeStatus.openPackmolDialog) {
+      visualizeStatus.openPackmolDialog = false
+      openPackmolDialog()
+    }
+  })
+
+  // Reset tool panels when leaving Visualize (avoids stale open state on HMR / tab switch).
+  $effect(() => {
+    return () => {
+      memproDialogOpen = false
+      visualizeStatus.openMemproDialog = false
+      packmolDialogOpen = false
+      visualizeStatus.openPackmolDialog = false
+    }
+  })
+
+  // Close tool panels on Escape while open.
+  $effect(() => {
+    if (!memproDialogOpen && !packmolDialogOpen) return
+    /** @param {KeyboardEvent} e */
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return
+      if (packmolDialogOpen) closePackmolDialog()
+      else if (memproDialogOpen) closeMemproDialog()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
   })
 
   // ── MemPro job polling ───────────────────────────────────────────────────
@@ -1880,6 +1975,250 @@
     }
   }
 
+  function _boundsFromAtoms(atoms, padding = 0) {
+    return boundsFromAtomsWithVdw(atoms, padding)
+  }
+
+  function _applyPackmolBoxBounds(min, max) {
+    packmolBoxMin = { x: min[0], y: min[1], z: min[2] }
+    packmolBoxMax = { x: max[0], y: max[1], z: max[2] }
+  }
+
+  function fitPackmolBoxToStructure() {
+    if (!structure?.atoms?.length) return
+    const b = _boundsFromAtoms(structure.atoms, packmolBoxPadding)
+    if (b) {
+      _applyPackmolBoxBounds(b.min, b.max)
+      packmolVolume = null
+    }
+  }
+
+  function fitPackmolBoxToSelection() {
+    if (!structure) return
+    if (selectedGroupIndices.size === 0) {
+      packmolError =
+        'No selection yet. Use Select in the bottom toolbar, click atoms in the viewer, then try Fit to selection again.'
+      return
+    }
+    packmolError = ''
+    const atoms = structure.atoms.filter((a) => selectedGroupIndices.has(a.index))
+    const b = _boundsFromAtoms(atoms, packmolBoxPadding)
+    if (b) {
+      _applyPackmolBoxBounds(b.min, b.max)
+      packmolVolume = null
+    }
+  }
+
+  /** @param {number[]} min @param {number[]} max */
+  function onPackmolBoxChange(min, max) {
+    _applyPackmolBoxBounds(min, max)
+  }
+
+  function onPackmolBoxDragEnd() {
+    packmolVolume = null
+  }
+
+  function closeMemproDialog() {
+    memproDialogOpen = false
+    visualizeStatus.openMemproDialog = false
+  }
+
+  function openMemproDialog() {
+    toolsMenuOpen = false
+    memproDialogOpen = true
+  }
+
+  function closePackmolDialog() {
+    packmolDialogOpen = false
+    visualizeStatus.openPackmolDialog = false
+  }
+
+  async function openPackmolDialog() {
+    toolsMenuOpen = false
+    packmolError = ''
+    packmolLog = ''
+    if (filePath) packmolOutputFolder = defaultHydrationFolderName(filePath)
+    packmolBusy = true
+    try {
+      packmolAvailable = await packmolCheck()
+    } catch (ex) {
+      packmolAvailable = { available: false }
+      packmolError = ex instanceof Error ? ex.message : String(ex)
+    } finally {
+      packmolBusy = false
+    }
+    if (structure?.atoms?.length && !packmolBoxValid) fitPackmolBoxToStructure()
+    packmolDialogOpen = true
+    refreshPackmolJobs()
+  }
+
+  async function refreshPackmolJobs() {
+    if (!workingDir) {
+      packmolJobs = []
+      return
+    }
+    try {
+      const { jobs } = await packmolScanJobs({ workingDir })
+      packmolJobs = jobs ?? []
+    } catch {
+      /* ignore scan errors; history is best-effort */
+    }
+  }
+
+  /** @param {string} outputPdb */
+  async function onPackmolLoadJob(outputPdb) {
+    if (!outputPdb) return
+    await loadStructure(outputPdb)
+    closePackmolDialog()
+    logEvent('info', 'view', 'Loaded hydration output', outputPdb)
+  }
+
+  async function onPackmolCalculateVolume() {
+    if (!filePath || !packmolBoxValid) return
+    packmolBusy = true
+    packmolError = ''
+    try {
+      const r = await packmolEstimateVolume({
+        path: filePath,
+        boxMin: packmolBoxMinArr,
+        boxMax: packmolBoxMaxArr,
+        soluteRadius: packmolSoluteRadius,
+        exclusionMode: packmolExclusionMode || null
+      })
+      packmolVolume = r
+      packmolHydrogenStatus = r.hydrogen_status ?? ''
+      packmolExclusionMode = r.exclusion_mode ?? ''
+      packmolNWaters = r.suggested_waters ?? 0
+      packmolVolumeBox = {
+        min: [...packmolBoxMinArr],
+        max: [...packmolBoxMaxArr]
+      }
+      logEvent(
+        'info',
+        'view',
+        'Packmol volume calculated',
+        `${r.suggested_waters} waters suggested`
+      )
+    } catch (ex) {
+      packmolError = ex instanceof Error ? ex.message : String(ex)
+    } finally {
+      packmolBusy = false
+    }
+  }
+
+  async function onPackmolHydrate() {
+    if (!filePath || !workingDir || !packmolBoxValid) return
+    if (!packmolAvailable?.available) return
+    if (!packmolBoxMatchesVolume) {
+      const msg = packmolVolumeBox
+        ? 'The hydration box changed since volume was last calculated. Recalculate volume for an updated water count.\n\nFill with water anyway?'
+        : 'Cavity volume has not been calculated for the current box.\n\nFill with water anyway?'
+      if (!confirm(msg)) return
+    }
+    const nWaters = packmolNWaters > 0 ? packmolNWaters : packmolVolume?.suggested_waters ?? 0
+    if (nWaters < 1) return
+    packmolBusy = true
+    packmolError = ''
+    visualizeStatus.packmolStatus = 'running'
+    visualizeStatus.packmolStartedAt = new Date().toISOString()
+    try {
+      const r = await packmolHydrateCavity({
+        path: filePath,
+        workingDir,
+        outputFolderName: packmolOutputFolder || defaultHydrationFolderName(filePath),
+        boxMin: packmolBoxMinArr,
+        boxMax: packmolBoxMaxArr,
+        nWaters,
+        soluteRadius: packmolSoluteRadius,
+        exclusionMode: packmolExclusionMode || null,
+        tolerance: packmolTolerance,
+        nloop: packmolNloop
+      })
+      packmolResultPath = r.output_pdb ?? ''
+      packmolLog = r.packmol_log ?? ''
+      if (r.success) {
+        visualizeStatus.packmolStatus = 'done'
+        visualizeStatus.packmolMessage = r.message ?? 'Hydration complete'
+        logEvent('info', 'view', 'Packmol hydration complete', packmolResultPath)
+      } else {
+        visualizeStatus.packmolStatus = 'error'
+        visualizeStatus.packmolMessage = r.message ?? 'PACKMOL failed'
+        packmolError = r.message ?? 'PACKMOL failed'
+      }
+    } catch (ex) {
+      visualizeStatus.packmolStatus = 'error'
+      visualizeStatus.packmolMessage = ex instanceof Error ? ex.message : String(ex)
+      packmolError = visualizeStatus.packmolMessage
+    } finally {
+      packmolBusy = false
+      refreshPackmolJobs()
+    }
+  }
+
+  async function onPackmolLoadResult() {
+    if (!packmolResultPath) return
+    await loadStructure(packmolResultPath)
+    closePackmolDialog()
+    logEvent('info', 'view', 'Loaded hydrated PDB', packmolResultPath)
+  }
+
+  async function onPackmolPreviewCustomInp() {
+    if (!filePath || !packmolBoxValid || packmolPreviewBusy) return
+    const nWaters = Math.max(1, packmolNWaters || packmolVolume?.suggested_waters || 1)
+    packmolPreviewBusy = true
+    packmolError = ''
+    try {
+      const r = await packmolPreviewInp({
+        path: filePath,
+        workingDir: workingDir || null,
+        boxMin: packmolBoxMinArr,
+        boxMax: packmolBoxMaxArr,
+        nWaters,
+        soluteRadius: packmolSoluteRadius,
+        tolerance: packmolTolerance,
+        nloop: packmolNloop
+      })
+      packmolCustomInp = r.inp_text ?? ''
+    } catch (ex) {
+      packmolError = ex instanceof Error ? ex.message : String(ex)
+    } finally {
+      packmolPreviewBusy = false
+    }
+  }
+
+  async function onPackmolRunCustom() {
+    if (!workingDir || !packmolCustomInp.trim()) return
+    if (!packmolAvailable?.available) return
+    packmolBusy = true
+    packmolError = ''
+    visualizeStatus.packmolStatus = 'running'
+    visualizeStatus.packmolStartedAt = new Date().toISOString()
+    try {
+      const r = await packmolRunCustom({
+        inpText: packmolCustomInp,
+        workingDir,
+        outputFolderName:
+          packmolOutputFolder || defaultHydrationFolderName(filePath) || 'hydration_custom',
+        path: filePath || null
+      })
+      packmolLog = r.packmol_log ?? ''
+      packmolResultPath = r.output_pdb ?? ''
+      if (r.success) {
+        visualizeStatus.packmolStatus = 'done'
+        visualizeStatus.packmolMessage = r.message ?? 'Custom PACKMOL complete'
+      } else {
+        visualizeStatus.packmolStatus = 'error'
+        packmolError = r.message ?? 'PACKMOL failed'
+      }
+    } catch (ex) {
+      visualizeStatus.packmolStatus = 'error'
+      packmolError = ex instanceof Error ? ex.message : String(ex)
+    } finally {
+      packmolBusy = false
+      refreshPackmolJobs()
+    }
+  }
+
   async function onMemproRun() {
     if (!filePath) return
     memproBusy = true
@@ -1918,7 +2257,7 @@
         sourcePath: filePath,
         pdbPath: result.pdb_path
       })
-      dlgMempro?.close()
+      closeMemproDialog()
       await applyEditResult(res)
       logEvent(
         'info',
@@ -2091,6 +2430,13 @@
           {#if axesLinesVisible}
             <AxesLines length={camera.extent * 2} />
           {/if}
+          {#if packmolDialogOpen && packmolShowBox && packmolBoxValid}
+            <HydrationBoxOverlay
+              visible={true}
+              ghostWaters={packmolShowGhost && !!packmolVolume}
+              ghostPoints={packmolVolume?.free_grid_points ?? null}
+            />
+          {/if}
         </Canvas>
         {#if viewerBusy.active}
           <div
@@ -2164,8 +2510,20 @@
           </div>
         {/if}
 
-        <!-- Transform gizmo overlay (shown when atoms are selected in edit mode) -->
-        {#if gizmoCentroid && showGizmo && !measureMode && !editBusy}
+        {#if packmolDialogOpen && packmolShowBox && packmolBoxValid}
+          <HydrationBoxManipulatorOverlay
+            visible={true}
+            boxMin={packmolBoxMinArr}
+            boxMax={packmolBoxMaxArr}
+            width={canvasWidth}
+            height={canvasHeight}
+            onBoxChange={onPackmolBoxChange}
+            onDragEnd={onPackmolBoxDragEnd}
+          />
+        {/if}
+
+        <!-- Transform gizmo overlay (hidden while Packmol box editor is active) -->
+        {#if gizmoCentroid && showGizmo && !measureMode && !editBusy && !packmolDialogOpen}
           <TransformGizmo
             centroid={gizmoCentroid}
             cameraContainer={mainViewerCamera}
@@ -2925,14 +3283,48 @@
       {/if}
     </div>
 
-    <!-- MemPro orientation -->
-    <button
-      type="button"
-      class="rounded border border-neutral-300 bg-neutral-100 px-2 py-0.5 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
-      onclick={() => dlgMempro?.showModal()}
-      disabled={!filePath || editBusy}
-      title="MemPro membrane protein orientation">MemPro</button
-    >
+    <!-- Tools dropdown (MemPro + Packmol) -->
+    <div class="relative">
+      <button
+        type="button"
+        class="rounded border border-neutral-300 bg-neutral-100 px-2 py-0.5 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
+        disabled={!filePath || editBusy}
+        onpointerenter={() => {
+          clearTimeout(_toolsMenuHoverTimer)
+          if (filePath && !editBusy) toolsMenuOpen = true
+        }}
+        onpointerleave={() => {
+          _toolsMenuHoverTimer = setTimeout(() => (toolsMenuOpen = false), 280)
+        }}
+        onclick={() => {
+          selectMenuOpen = false
+          editMenuOpen = false
+          toolsMenuOpen = !toolsMenuOpen
+        }}
+        title="Structure tools">Tools ▾</button
+      >
+      {#if toolsMenuOpen}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="absolute bottom-full left-0 z-40 mb-0.5 min-w-[10rem] overflow-hidden rounded border border-neutral-200 bg-white py-1 text-[11px] shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
+          onpointerenter={() => clearTimeout(_toolsMenuHoverTimer)}
+          onpointerleave={() => {
+            _toolsMenuHoverTimer = setTimeout(() => (toolsMenuOpen = false), 280)
+          }}
+        >
+          <button
+            type="button"
+            class="w-full px-3 py-1 text-left hover:bg-neutral-100 dark:hover:bg-neutral-800"
+            onclick={openMemproDialog}>MemPro orientation</button
+          >
+          <button
+            type="button"
+            class="w-full px-3 py-1 text-left hover:bg-neutral-100 dark:hover:bg-neutral-800"
+            onclick={() => openPackmolDialog()}>Packmol hydration</button
+          >
+        </div>
+      {/if}
+    </div>
 
     <div class="h-4 w-px bg-neutral-300 dark:bg-neutral-700"></div>
 
@@ -3508,24 +3900,34 @@
   </div>
 </dialog>
 
-<!-- MemPro orientation dialog -->
-<dialog
-  bind:this={dlgMempro}
-  class="rounded-lg border border-neutral-300 bg-white p-0 text-neutral-900 shadow-2xl backdrop:bg-black/60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
->
+<!-- MemPro orientation panel (non-modal — viewer stays interactive) -->
+{#if memproDialogOpen}
+  <div
+    class="viewer-side-panel--nonmodal fixed top-10 bottom-10 left-16 z-50 flex w-[520px] max-w-[calc(100vw-5rem)] flex-col overflow-hidden rounded-lg border border-neutral-300 bg-white p-0 text-neutral-900 shadow-2xl dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
+    role="dialog"
+    aria-labelledby="mempro-panel-title"
+  >
   <!-- Header -->
   <div class="flex items-center justify-between border-b dialog-divider px-4 py-2.5">
-    <h3 class="text-sm font-semibold">MemPro Orientation</h3>
+    <h3 id="mempro-panel-title" class="text-sm font-semibold">MemPro Orientation</h3>
     <button
       type="button"
       class="text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
-      onclick={() => dlgMempro?.close()}>✕</button
+      onclick={closeMemproDialog}>✕</button
     >
   </div>
 
+  {#if !workingDir}
+    <div
+      class="mx-4 mb-2 rounded border border-yellow-600/40 bg-yellow-50 px-3 py-2 text-xs text-yellow-900 dark:bg-yellow-950/30 dark:text-yellow-200"
+    >
+      No working directory selected. MemPro job state may not persist across restarts.
+    </div>
+  {/if}
+
   {#if memproJobStatus === 'running'}
     <!-- Running -->
-    <div class="flex w-[380px] flex-col items-center gap-3 px-6 py-8 text-center">
+    <div class="flex flex-1 flex-col items-center gap-3 overflow-y-auto px-6 py-8 text-center">
       <Spinner className="size-6" />
       <p class="text-sm">Running MemPro orientation…</p>
       <p class="text-xs text-neutral-400">
@@ -3537,7 +3939,7 @@
     </div>
   {:else if memproJobStatus === 'done'}
     <!-- Results -->
-    <div class="w-[520px] p-4">
+    <div class="min-h-0 flex-1 overflow-y-auto p-4">
       <p class="mb-2 text-xs text-neutral-600 dark:text-neutral-400">
         Orientation results — Apply transforms the loaded structure (keeps ligands, water, etc.):
       </p>
@@ -3578,7 +3980,7 @@
     </div>
   {:else if memproJobStatus === 'error'}
     <!-- Error -->
-    <div class="w-[380px] p-4">
+    <div class="flex-1 overflow-y-auto p-4">
       <p class="mb-1 text-xs text-red-600 dark:text-red-400">MemPro failed:</p>
       <p class="rounded border border-red-200 bg-red-50 px-2 py-1.5 font-mono text-xs text-red-900 dark:border-transparent dark:bg-neutral-800 dark:text-neutral-300">
         {memproError}
@@ -3586,7 +3988,7 @@
     </div>
   {:else}
     <!-- Setup form -->
-    <div class="w-[380px] space-y-2.5 p-4">
+    <div class="min-h-0 flex-1 space-y-2.5 overflow-y-auto p-4">
       <div class="flex items-center gap-2">
         <label for="mp-iters" class="dialog-label w-36 shrink-0 text-xs">Iterations</label>
         <input
@@ -3665,14 +4067,400 @@
           >{#if memproBusy}<Spinner />{/if} Run MemPro</button
         >
       {/if}
+      <button type="button" class="dialog-btn-outline" onclick={closeMemproDialog}>Close</button>
+    </div>
+  </div>
+  </div>
+{/if}
+
+{#snippet packmolJobsHistory()}
+  <div class="mt-3 border-t dialog-divider pt-3">
+    <div class="mb-1.5 flex items-center justify-between">
+      <h4 class="font-semibold text-neutral-700 dark:text-neutral-300">Hydration outputs</h4>
+      <button
+        type="button"
+        class="text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
+        title="Refresh list"
+        onclick={refreshPackmolJobs}
+        aria-label="Refresh hydration outputs">↻</button
+      >
+    </div>
+    {#if !workingDir}
+      <p class="text-[11px] text-neutral-500">Select a working directory to see saved outputs.</p>
+    {:else if packmolJobs.length === 0}
+      <p class="text-[11px] text-neutral-500">
+        No hydration outputs yet. Fill a cavity or run a custom job to create one.
+      </p>
+    {:else}
+      <div class="space-y-1.5">
+        {#each packmolJobs as job (job.job_dir)}
+          <div class="sidebar-panel rounded-md p-2 text-[11px]">
+            <div class="flex items-center justify-between gap-2">
+              <div class="flex min-w-0 items-center gap-1.5">
+                {#if job.success && job.output_exists}
+                  <span class="inline-block h-2 w-2 shrink-0 rounded-full bg-green-500"></span>
+                {:else if job.success}
+                  <span
+                    class="inline-block h-2 w-2 shrink-0 rounded-full bg-yellow-500"
+                    title="Marked complete but output file missing"
+                  ></span>
+                {:else}
+                  <span class="inline-block h-2 w-2 shrink-0 rounded-full bg-red-500"></span>
+                {/if}
+                <span class="truncate font-semibold" title={job.job_dir}>{job.name}</span>
+                <span
+                  class="shrink-0 rounded bg-neutral-200 px-1 text-[9px] uppercase text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400"
+                  >{job.type}</span
+                >
+              </div>
+              <button
+                type="button"
+                class="dialog-btn-outline shrink-0 px-2 py-0.5 text-[10px] disabled:opacity-40"
+                disabled={!job.output_exists}
+                onclick={() => onPackmolLoadJob(job.output_pdb)}>Load</button
+              >
+            </div>
+            <p class="mt-1 break-all text-neutral-500 dark:text-neutral-400">
+              <span class="font-mono">{job.output_pdb_name || '(no output)'}</span>
+              {#if job.n_waters}· {job.n_waters} waters{/if}
+              {#if job.volumes?.free_volume_A3 != null}
+                · {job.volumes.free_volume_A3.toFixed(0)} Å³ free
+              {/if}
+            </p>
+          </div>
+        {/each}
+      </div>
+    {/if}
+  </div>
+{/snippet}
+
+{#snippet packmolResultBlock()}
+  {#if packmolResultPath}
+    <div
+      class="rounded border border-green-600/40 bg-green-50 px-3 py-2 text-green-800 dark:border-green-800/60 dark:bg-green-950/30 dark:text-green-300"
+    >
+      <p class="font-semibold">PACKMOL run complete</p>
+      <p class="mt-0.5 break-all font-mono text-[11px]">{packmolResultPath}</p>
+    </div>
+  {/if}
+{/snippet}
+
+<!-- Packmol hydration panel (non-modal — viewer stays interactive for box placement) -->
+{#if packmolDialogOpen}
+  <div
+    class="viewer-side-panel--nonmodal fixed top-10 bottom-10 left-16 z-50 flex w-[520px] max-w-[calc(100vw-5rem)] flex-col overflow-hidden rounded-lg border border-neutral-300 bg-white p-0 text-neutral-900 shadow-2xl dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
+    role="dialog"
+    aria-labelledby="packmol-panel-title"
+  >
+  <div class="flex items-center justify-between border-b dialog-divider px-4 py-2.5">
+    <div>
+      <h3 id="packmol-panel-title" class="text-sm font-semibold">Packmol Hydration</h3>
+      <p class="text-[10px] text-neutral-500 dark:text-neutral-400">
+        Rotate and pan the structure in the viewer while this panel is open.
+      </p>
+    </div>
+    <button
+      type="button"
+      class="text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
+      onclick={closePackmolDialog}>✕</button
+    >
+  </div>
+
+  <div class="flex border-b dialog-divider text-xs">
+    <button
+      type="button"
+      class="px-4 py-2 {packmolTab === 'hydrate'
+        ? 'border-b-2 border-yellow-500 font-semibold'
+        : 'text-neutral-500'}"
+      onclick={() => (packmolTab = 'hydrate')}>Hydrate cavity</button
+    >
+    <button
+      type="button"
+      class="px-4 py-2 {packmolTab === 'custom'
+        ? 'border-b-2 border-yellow-500 font-semibold'
+        : 'text-neutral-500'}"
+      onclick={() => (packmolTab = 'custom')}>Custom input</button
+    >
+  </div>
+
+  <div class="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-4 text-xs">
+    {#if !workingDir}
+      <div
+        class="mb-3 rounded border border-yellow-600/40 bg-yellow-50 px-3 py-2 text-yellow-900 dark:bg-yellow-950/30 dark:text-yellow-200"
+      >
+        Select a working directory before running Packmol. Hydration output cannot be saved.
+      </div>
+    {/if}
+
+    {#if packmolAvailable && !packmolAvailable.available}
+      <div
+        class="mb-3 rounded border border-red-300 bg-red-50 px-3 py-2 text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300"
+      >
+        PACKMOL not found. Install AmberTools (e.g. <code class="font-mono">conda install -c conda-forge ambertools</code>).
+      </div>
+    {/if}
+
+    {#if packmolHydrogenStatus === 'none' || packmolHydrogenStatus === 'partial'}
+      <div
+        class="mb-3 rounded border border-sky-600/30 bg-sky-50 px-3 py-2 text-sky-900 dark:bg-sky-950/30 dark:text-sky-200"
+      >
+        No (or minimal) hydrogens on protein. Using inflated exclusion radii to leave room for H added in Builder.
+      </div>
+    {/if}
+
+    {#if packmolError}
+      <p class="mb-2 text-red-600 dark:text-red-400">{packmolError}</p>
+    {/if}
+
+    {#if packmolTab === 'hydrate'}
+      <div class="space-y-3">
+        <div class="grid grid-cols-3 gap-2">
+          <div class="col-span-3 flex flex-col gap-0.5">
+            <span class="text-neutral-500">Box min (Å)</span>
+            <div class="flex gap-1">
+              <label class="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span class="text-[10px] font-bold leading-none" style="color:{VIEWER_AXES[0].color}"
+                  >{VIEWER_AXES[0].label}</span
+                >
+                <input
+                  type="number"
+                  step="0.1"
+                  class="field-input w-full"
+                  style={axisInputStyle(VIEWER_AXES[0].color)}
+                  bind:value={packmolBoxMin.x}
+                />
+              </label>
+              <label class="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span class="text-[10px] font-bold leading-none" style="color:{VIEWER_AXES[1].color}"
+                  >{VIEWER_AXES[1].label}</span
+                >
+                <input
+                  type="number"
+                  step="0.1"
+                  class="field-input w-full"
+                  style={axisInputStyle(VIEWER_AXES[1].color)}
+                  bind:value={packmolBoxMin.y}
+                />
+              </label>
+              <label class="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span class="text-[10px] font-bold leading-none" style="color:{VIEWER_AXES[2].color}"
+                  >{VIEWER_AXES[2].label}</span
+                >
+                <input
+                  type="number"
+                  step="0.1"
+                  class="field-input w-full"
+                  style={axisInputStyle(VIEWER_AXES[2].color)}
+                  bind:value={packmolBoxMin.z}
+                />
+              </label>
+            </div>
+          </div>
+          <div class="col-span-3 flex flex-col gap-0.5">
+            <span class="text-neutral-500">Box max (Å)</span>
+            <div class="flex gap-1">
+              <label class="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span class="text-[10px] font-bold leading-none" style="color:{VIEWER_AXES[0].color}"
+                  >{VIEWER_AXES[0].label}</span
+                >
+                <input
+                  type="number"
+                  step="0.1"
+                  class="field-input w-full"
+                  style={axisInputStyle(VIEWER_AXES[0].color)}
+                  bind:value={packmolBoxMax.x}
+                />
+              </label>
+              <label class="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span class="text-[10px] font-bold leading-none" style="color:{VIEWER_AXES[1].color}"
+                  >{VIEWER_AXES[1].label}</span
+                >
+                <input
+                  type="number"
+                  step="0.1"
+                  class="field-input w-full"
+                  style={axisInputStyle(VIEWER_AXES[1].color)}
+                  bind:value={packmolBoxMax.y}
+                />
+              </label>
+              <label class="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span class="text-[10px] font-bold leading-none" style="color:{VIEWER_AXES[2].color}"
+                  >{VIEWER_AXES[2].label}</span
+                >
+                <input
+                  type="number"
+                  step="0.1"
+                  class="field-input w-full"
+                  style={axisInputStyle(VIEWER_AXES[2].color)}
+                  bind:value={packmolBoxMax.z}
+                />
+              </label>
+            </div>
+          </div>
+          <label class="flex flex-col gap-0.5">
+            <span class="flex flex-wrap items-center gap-1 text-neutral-500">
+              Padding (Å)
+              <span class="font-semibold">
+                {#each VIEWER_AXES as ax, i}
+                  {#if i > 0}<span class="text-neutral-400">+</span>{/if}
+                  <span style="color:{ax.color}">{ax.label}</span>
+                {/each}
+              </span>
+            </span>
+            <input
+              type="number"
+              step="0.5"
+              min="0"
+              class="field-input"
+              style={PADDING_FIELD_STYLE}
+              bind:value={packmolBoxPadding}
+            />
+          </label>
+          <div class="col-span-2 flex items-end gap-1">
+            <button type="button" class="dialog-btn-outline flex-1" onclick={fitPackmolBoxToStructure}
+              >Fit to structure</button
+            >
+            <button
+              type="button"
+              class="dialog-btn-outline flex-1"
+              onclick={fitPackmolBoxToSelection}>Fit to selection</button
+            >
+          </div>
+          <p class="col-span-2 text-[10px] text-neutral-500 dark:text-neutral-400">
+            Drag a box face to move the cavity; drag a colored handle to resize along
+            <span class="font-semibold" style="color:{VIEWER_AXES[0].color}">X</span>,
+            <span class="font-semibold" style="color:{VIEWER_AXES[1].color}">Y</span>, or
+            <span class="font-semibold" style="color:{VIEWER_AXES[2].color}">Z</span>.
+          </p>
+        </div>
+
+        <div class="flex flex-wrap gap-3">
+          <label class="flex items-center gap-1.5">
+            <input type="checkbox" bind:checked={packmolShowBox} class="accent-yellow-400" />
+            Show hydration box
+          </label>
+          <label class="flex items-center gap-1.5">
+            <input type="checkbox" bind:checked={packmolShowGhost} class="accent-yellow-400" />
+            Ghost water grid
+          </label>
+        </div>
+
+        {#if packmolVolume}
+          <div class="rounded border border-neutral-200 p-2 font-mono dark:border-neutral-800">
+            <div>Box: {packmolVolume.box_volume_A3?.toFixed(1)} Å³</div>
+            <div>Free: {packmolVolume.free_volume_A3?.toFixed(1)} Å³</div>
+            <div>Suggested waters: {packmolVolume.suggested_waters}</div>
+            <div>Mode: {packmolExclusionMode || packmolVolume.exclusion_mode}</div>
+          </div>
+        {/if}
+
+        <div class="grid grid-cols-2 gap-2">
+          <label class="flex flex-col gap-0.5">
+            <span class="text-neutral-500">Tolerance</span>
+            <input type="number" step="0.1" class="field-input" bind:value={packmolTolerance} />
+          </label>
+          <label class="flex flex-col gap-0.5">
+            <span class="text-neutral-500">nloop</span>
+            <input type="number" step="1" min="1" class="field-input" bind:value={packmolNloop} />
+          </label>
+          <label class="flex flex-col gap-0.5">
+            <span class="text-neutral-500">Solute radius (Å)</span>
+            <input type="number" step="0.1" min="0.5" class="field-input" bind:value={packmolSoluteRadius} />
+          </label>
+          <label class="flex flex-col gap-0.5">
+            <span class="text-neutral-500">Water count</span>
+            <input type="number" step="1" min="0" class="field-input" bind:value={packmolNWaters} />
+          </label>
+          <label class="col-span-2 flex flex-col gap-0.5">
+            <span class="text-neutral-500">Output folder</span>
+            <input type="text" class="field-input" bind:value={packmolOutputFolder} />
+          </label>
+        </div>
+
+        {@render packmolResultBlock()}
+      </div>
+    {:else}
+      <div class="space-y-2">
+        <div class="flex gap-2">
+          <button
+            type="button"
+            class="dialog-btn-outline flex items-center gap-1.5"
+            disabled={packmolPreviewBusy || !filePath || !packmolBoxValid}
+            onclick={onPackmolPreviewCustomInp}
+          >
+            {#if packmolPreviewBusy}<Spinner className="size-3.5" />{/if}
+            {packmolPreviewBusy ? 'Loading template…' : 'Load preset template'}
+          </button>
+        </div>
+        <div class="relative">
+          <textarea
+            class="field-input h-48 w-full font-mono text-[11px]"
+            bind:value={packmolCustomInp}
+            placeholder="PACKMOL input…"
+          ></textarea>
+          {#if packmolPreviewBusy}
+            <div
+              class="absolute inset-0 flex items-center justify-center gap-2 rounded bg-white/70 text-xs text-neutral-600 dark:bg-neutral-900/70 dark:text-neutral-300"
+            >
+              <Spinner className="size-4" />
+              <span>Preparing template…</span>
+            </div>
+          {/if}
+        </div>
+        <label class="flex flex-col gap-0.5">
+          <span class="text-neutral-500">Output folder</span>
+          <input type="text" class="field-input" bind:value={packmolOutputFolder} />
+        </label>
+        {@render packmolResultBlock()}
+      </div>
+    {/if}
+
+    {@render packmolJobsHistory()}
+  </div>
+
+  <div class="flex flex-wrap justify-end gap-2 border-t dialog-divider px-4 py-2.5">
+    {#if packmolTab === 'hydrate'}
       <button
         type="button"
         class="dialog-btn-outline"
-        onclick={() => dlgMempro?.close()}>Close</button
+        disabled={packmolBusy || !filePath || !packmolBoxValid}
+        onclick={onPackmolCalculateVolume}
+        >{#if packmolBusy}<Spinner />{/if} Calculate volume</button
       >
-    </div>
+      <button
+        type="button"
+        class="flex items-center gap-1 rounded bg-yellow-600 px-3 py-1 text-xs font-semibold text-black hover:bg-yellow-500 disabled:opacity-40"
+        disabled={packmolBusy ||
+          !workingDir ||
+          !packmolAvailable?.available ||
+          !packmolBoxValid ||
+          (packmolNWaters < 1 && !(packmolVolume?.suggested_waters > 0))}
+        onclick={onPackmolHydrate}
+        >{#if packmolBusy}<Spinner />{/if} Fill with water</button
+      >
+      {#if packmolResultPath}
+        <button type="button" class="dialog-btn-outline" onclick={onPackmolLoadResult}
+          >Load result</button
+        >
+      {/if}
+    {:else}
+      <button
+        type="button"
+        class="flex items-center gap-1 rounded bg-yellow-600 px-3 py-1 text-xs font-semibold text-black hover:bg-yellow-500 disabled:opacity-40"
+        disabled={packmolBusy || !workingDir || !packmolAvailable?.available || !packmolCustomInp.trim()}
+        onclick={onPackmolRunCustom}
+        >{#if packmolBusy}<Spinner />{/if} Run custom PACKMOL</button
+      >
+      {#if packmolResultPath}
+        <button type="button" class="dialog-btn-outline" onclick={onPackmolLoadResult}
+          >Load result</button
+        >
+      {/if}
+    {/if}
+    <button type="button" class="dialog-btn-outline" onclick={closePackmolDialog}>Close</button>
   </div>
-</dialog>
+  </div>
+{/if}
 
 <!-- Custom MDAnalysis selection dialog -->
 <dialog
