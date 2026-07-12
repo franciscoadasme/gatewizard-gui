@@ -135,6 +135,8 @@
   /** @type {ViewerFraming | null} */
   let camera = $state(null)
   let loadingPDB = $state(false)
+  /** True while Auto-generate representations is fetching/building views. */
+  let autoGeneratingViews = $state(false)
   /** @type {null | Awaited<ReturnType<typeof getStructure>>} */
   let structure = $state(null)
   /** @type {View[]} */
@@ -562,56 +564,65 @@
   })
 
   async function onAutoGenerateViews() {
-    const data = await detectMolecules(filePath)
-    /** @type {View[]} */
-    const next = []
-    for (const [i, struc] of data.entries()) {
-      const representation = struc.selection === 'protein' ? { type: 'cartoon' } : { type: 'vdw' }
-      let colorScheme
-      if (struc.selection === 'protein' && struc.residues?.length) {
-        colorScheme = { name: 'ss', resolver: ssScheme(struc.residues, {}) }
-      } else if (struc.selection.startsWith('resname')) {
-        const color = `#${COLOR_PALETTE[i % COLOR_PALETTE.length].getHexString()}`
-        colorScheme = {
-          name: 'cpk-carbon',
-          color,
-          resolver: cpkScheme({ carbonColor: color })
+    if (!filePath || autoGeneratingViews) return
+    autoGeneratingViews = true
+    try {
+      const data = await detectMolecules(filePath)
+      /** @type {View[]} */
+      const next = []
+      for (const [i, struc] of data.entries()) {
+        const representation = struc.selection === 'protein' ? { type: 'cartoon' } : { type: 'vdw' }
+        let colorScheme
+        if (struc.selection === 'protein' && struc.residues?.length) {
+          colorScheme = { name: 'ss', resolver: ssScheme(struc.residues, {}) }
+        } else if (struc.selection.startsWith('resname')) {
+          const color = `#${COLOR_PALETTE[i % COLOR_PALETTE.length].getHexString()}`
+          colorScheme = {
+            name: 'cpk-carbon',
+            color,
+            resolver: cpkScheme({ carbonColor: color })
+          }
+        } else {
+          colorScheme = { name: 'cpk', resolver: cpkScheme() }
         }
-      } else {
-        colorScheme = { name: 'cpk', resolver: cpkScheme() }
+        next.push({
+          id: crypto.randomUUID(),
+          selection: struc.selection,
+          baseSelection: struc.selection,
+          representation,
+          path: filePath,
+          atoms: struc.atoms,
+          bonds: struc.bonds ?? [],
+          residues: struc.residues ?? null,
+          visible: struc.selection !== 'water',
+          colorScheme,
+          helixWidth: 1.0,
+          sheetWidth: 0.875,
+          coilWidth: 0.125,
+          ssColors: null,
+          tubeRadius: 0.9,
+          atomScale: 1.0,
+          bondScale: 1.0,
+          pointSize: 3,
+          quality: 3,
+          material: { ...DEFAULT_VIEW_MATERIAL },
+          _prefetched: true
+        })
       }
-      next.push({
-        id: crypto.randomUUID(),
-        selection: struc.selection,
-        baseSelection: struc.selection,
-        representation,
-        path: filePath,
-        atoms: struc.atoms,
-        bonds: struc.bonds ?? [],
-        residues: struc.residues ?? null,
-        visible: struc.selection !== 'water',
-        colorScheme,
-        helixWidth: 1.0,
-        sheetWidth: 0.875,
-        coilWidth: 0.125,
-        ssColors: null,
-        tubeRadius: 0.9,
-        atomScale: 1.0,
-        bondScale: 1.0,
-        pointSize: 3,
-        quality: 3,
-        material: { ...DEFAULT_VIEW_MATERIAL },
-        _prefetched: true
-      })
+      views = next
+      reframeCameraOnAtoms(collectVisibleViewAtoms(next))
+      logEvent(
+        'detail',
+        'view',
+        'Auto-generated views',
+        `${next.length} view(s) from detected molecules`
+      )
+    } catch (err) {
+      console.error(err)
+      logEvent('error', 'view', 'Auto-generate failed', String(err?.message ?? err))
+    } finally {
+      autoGeneratingViews = false
     }
-    views = next
-    reframeCameraOnAtoms(collectVisibleViewAtoms(next))
-    logEvent(
-      'detail',
-      'view',
-      'Auto-generated views',
-      `${next.length} view(s) from detected molecules`
-    )
   }
 
   async function onFetchPDB() {
@@ -2654,6 +2665,14 @@
             </div>
           </div>
         {/if}
+        {#if autoGeneratingViews}
+          <div class="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
+            <div class="flex items-center gap-2 rounded-full bg-black/50 px-4 py-2 shadow-xl">
+              <Spinner className="size-5 text-yellow-400" />
+              <span class="text-xs font-medium text-yellow-300">Generating representations…</span>
+            </div>
+          </div>
+        {/if}
 
         {#if packmolDialogOpen && packmolShowBox && packmolBoxValid}
           <HydrationBoxManipulatorOverlay
@@ -2697,7 +2716,14 @@
     ></div>
 
     <div class="flex shrink-0 flex-col border-l border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950" style="width:{rightW}px">
-      <h2 class="border-b border-neutral-200 p-2 text-xs font-semibold text-neutral-800 dark:border-neutral-800 dark:text-neutral-100">Representations</h2>
+      <h2 class="border-b border-neutral-200 p-2 text-xs font-semibold text-neutral-800 dark:border-neutral-800 dark:text-neutral-100">
+        Representations
+        {#if structure?.atoms?.length}
+          <span class="ml-1 font-normal text-neutral-500 tabular-nums dark:text-neutral-500"
+            >· {structure.atoms.length.toLocaleString()} atoms</span
+          >
+        {/if}
+      </h2>
       {#if views.length > 0 || filePath}
         <div class="min-h-0 flex-1 overflow-y-auto">
           {#each views as view, i (view.id)}
@@ -2711,25 +2737,39 @@
           {/each}
         </div>
         <div class="flex gap-1 border-t border-neutral-200 p-2 dark:border-neutral-800">
-          {#snippet toolbarBtn(title, onclick, Icon, className)}
+          {#snippet toolbarBtn(title, onclick, Icon, className, disabled = false)}
             <button
               type="button"
-              class="flex size-7 items-center justify-center rounded-lg border border-neutral-200 bg-neutral-100 transition-colors hover:border-neutral-300 hover:bg-neutral-200 active:translate-y-0.5 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:border-neutral-700 dark:hover:bg-neutral-800"
+              class="flex size-7 items-center justify-center rounded-lg border border-neutral-200 bg-neutral-100 transition-colors hover:border-neutral-300 hover:bg-neutral-200 active:translate-y-0.5 disabled:pointer-events-none disabled:opacity-40 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:border-neutral-700 dark:hover:bg-neutral-800"
               aria-label={title}
               {title}
               {onclick}
+              {disabled}
             >
               <Icon {className} />
             </button>
           {/snippet}
 
           {@render toolbarBtn('Add representation', () => addView(), Plus, 'size-3 fill-neutral-800 dark:fill-white')}
-          {@render toolbarBtn(
-            'Auto-generate representations',
-            onAutoGenerateViews,
-            DetectIcon,
-            'size-4 stroke-2 stroke-neutral-800 dark:stroke-white'
-          )}
+          {#if autoGeneratingViews}
+            <button
+              type="button"
+              class="flex size-7 items-center justify-center rounded-lg border border-neutral-200 bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-900"
+              aria-label="Generating representations"
+              title="Generating representations…"
+              disabled
+            >
+              <Spinner className="size-3.5 text-neutral-700 dark:text-neutral-200" />
+            </button>
+          {:else}
+            {@render toolbarBtn(
+              'Auto-generate representations',
+              onAutoGenerateViews,
+              DetectIcon,
+              'size-4 stroke-2 stroke-neutral-800 dark:stroke-white',
+              !filePath
+            )}
+          {/if}
           {@render toolbarBtn(
             axesVisible ? 'Hide axes gizmo' : 'Show axes gizmo',
             () => (axesVisible = !axesVisible),

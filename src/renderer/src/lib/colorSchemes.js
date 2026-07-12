@@ -183,7 +183,7 @@ export function cpkScheme({ carbonColor = undefined } = {}) {
   if (carbonColor) {
     carbonColor = parseColor(carbonColor)
   }
-  /** CPK-style colors (hex sRGB). */
+  /** CPK-style colors (hex sRGB). Keys are title-case element symbols (H, Cl, Na, …). */
   const colors = /** @type {Record<string, Color>} */ ({
     H: new Color(0xffffff),
     C: carbonColor ?? new Color(0x8f8f8f),
@@ -192,7 +192,7 @@ export function cpkScheme({ carbonColor = undefined } = {}) {
     S: new Color(0xfafa33),
     P: new Color(0xff8000),
     F: new Color(0x8fe04f),
-    Cl: new Color(0x1ff01f),
+    Cl: new Color(0x48b85c),
     Br: new Color(0xa62929),
     I: new Color(0x940094),
     Fe: new Color(0xe06633),
@@ -216,7 +216,17 @@ export function cpkScheme({ carbonColor = undefined } = {}) {
   })
   const fallback = new Color(0xcccccc) // gray
 
-  return (atom) => colors[atom.element] ?? fallback
+  return (atom) => {
+    const raw = String(atom.element ?? '').trim()
+    if (!raw) return fallback
+    // Exact match first (H, Cl, …), then title-case so MDA's "CL"/"NA" resolve
+    if (colors[raw]) return colors[raw]
+    const key =
+      raw.length === 1
+        ? raw.toUpperCase()
+        : raw[0].toUpperCase() + raw.slice(1).toLowerCase()
+    return colors[key] ?? fallback
+  }
 }
 
 /**

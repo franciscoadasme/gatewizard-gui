@@ -618,6 +618,7 @@ Distance:
         class="absolute z-50 min-w-40 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
         style="left:{rowCtxMenu.x}px;top:{rowCtxMenu.y}px"
         role="menu"
+        tabindex="-1"
         onpointerdown={(e) => e.stopPropagation()}
       >
         <button
