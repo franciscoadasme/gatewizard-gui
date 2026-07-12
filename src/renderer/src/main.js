@@ -3,10 +3,12 @@ import { mount } from 'svelte'
 import './assets/main.css'
 
 import App from './App.svelte'
+import { initAppSettings } from './lib/appSettings.svelte.js'
 import { initTheme } from './lib/theme.svelte.js'
 import { initViewerSettings } from './lib/viewerSettings.svelte.js'
 import { syncGoodsellSceneLighting } from './lib/goodsellSceneLighting.svelte.js'
 
+initAppSettings()
 initTheme()
 initViewerSettings()
 syncGoodsellSceneLighting(false)

@@ -2,13 +2,19 @@
   import Cauldron from './icons/Cauldron.svelte'
   import CrystalBall from './icons/CrystalBall.svelte'
   import Eye from './icons/Eye.svelte'
-  import Grimoire from './icons/Grimoire.svelte'
+  import Gear from './icons/Gear.svelte'
   import MagicWand from './icons/MagicWand.svelte'
   import Hourglass from './icons/Hourglass.svelte'
   import ThemeToggle from './ThemeToggle.svelte'
 
-  /** @type {{ id: string, label: string }[], currentId?: string, onNavigate?: (id: string) => void, onVersions?: () => void }} */
-  let { stages = [], currentId = '', onNavigate = (_id) => {}, onVersions = () => {} } = $props()
+  /** @type {{ id: string, label: string }[], currentId?: string, onNavigate?: (id: string) => void, onSettings?: () => void, updatesPending?: boolean }} */
+  let {
+    stages = [],
+    currentId = '',
+    onNavigate = () => {},
+    onSettings = () => {},
+    updatesPending = false
+  } = $props()
 
   /** @type {Record<string, typeof Eye>} */
   const STAGE_ICONS = {
@@ -62,11 +68,17 @@
     <button
       type="button"
       class="activity-item group relative flex size-12 items-center justify-center rounded-md border-0 bg-transparent text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-800 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
-      aria-label="Dependency versions"
-      onclick={onVersions}
+      aria-label="Settings"
+      onclick={onSettings}
     >
-      <Grimoire className="size-8" />
-      <span class="activity-tooltip" role="tooltip">Dependency versions</span>
+      <Gear className="size-8" />
+      {#if updatesPending}
+        <span
+          class="absolute top-2 right-2 size-2 rounded-full bg-amber-500 ring-2 ring-white dark:ring-neutral-950"
+          aria-hidden="true"
+        ></span>
+      {/if}
+      <span class="activity-tooltip" role="tooltip">Settings</span>
     </button>
   </div>
 </aside>
@@ -103,20 +115,6 @@
     border-color: rgb(64 64 64);
     background: rgb(23 23 23);
     color: rgb(245 245 245);
-    box-shadow: 0 4px 12px rgb(0 0 0 / 0.35);
-  }
-
-  .activity-tooltip::before {
-    content: '';
-    position: absolute;
-    right: 100%;
-    top: 50%;
-    transform: translateY(-50%);
-    border: 5px solid transparent;
-    border-right-color: rgb(229 229 229);
-  }
-
-  :global(.dark) .activity-tooltip::before {
-    border-right-color: rgb(64 64 64);
+    box-shadow: 0 4px 12px rgb(0 0 0 / 0.4);
   }
 </style>

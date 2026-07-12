@@ -1,7 +1,8 @@
 /**
  * Saves / restores global scene lighting when Goodsell views request flat lighting.
+ * In-memory only — does not write localStorage (defaults are owned by Settings).
  */
-import { persistViewerSettings, viewerSettings } from './viewerSettings.svelte.js'
+import { viewerSettings } from './viewerSettings.svelte.js'
 
 /** Whether flat Goodsell lighting is currently applied to the scene. */
 export const goodsellLightingState = $state({ active: false })
@@ -62,11 +63,9 @@ export function syncGoodsellSceneLighting(active) {
       savedLightingSnapshot = snapshotLighting()
       applyFlatLighting()
       goodsellLightingState.active = true
-      persistViewerSettings()
     }
   } else if (goodsellLightingState.active) {
     restoreLighting()
     goodsellLightingState.active = false
-    persistViewerSettings()
   }
 }

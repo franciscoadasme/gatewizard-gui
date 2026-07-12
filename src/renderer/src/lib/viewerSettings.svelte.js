@@ -1,6 +1,9 @@
 /**
  * Global 3D scene settings (background, lighting). Using .svelte.js so $state works outside components.
+ * Persistence is gated by appSettings.rememberViewerDefaults (Settings only writes when on).
  */
+
+import { appSettings } from './appSettings.svelte.js'
 
 /** @typedef {'dark' | 'light'} BrandTheme */
 /** @typedef {'theme' | 'custom'} BackgroundMode */
@@ -29,7 +32,21 @@ export const DEFAULT_VIEWER_SETTINGS = {
   }))
 }
 
-export const viewerSettings = $state({ ...DEFAULT_VIEWER_SETTINGS })
+/**
+ * @returns {typeof DEFAULT_VIEWER_SETTINGS}
+ */
+function cloneDefaults() {
+  return {
+    ...DEFAULT_VIEWER_SETTINGS,
+    directionalLights: DEFAULT_VIEWER_SETTINGS.directionalLights.map((l) => ({
+      enabled: l.enabled,
+      position: [...l.position],
+      intensity: l.intensity
+    }))
+  }
+}
+
+export const viewerSettings = $state(cloneDefaults())
 
 /**
  * @param {BrandTheme} theme
@@ -78,7 +95,7 @@ function normalizeDirectionalLight(src, fallback) {
  * @returns {typeof DEFAULT_VIEWER_SETTINGS}
  */
 function normalizeLoaded(raw) {
-  if (!raw || typeof raw !== 'object') return { ...DEFAULT_VIEWER_SETTINGS }
+  if (!raw || typeof raw !== 'object') return cloneDefaults()
 
   const o = /** @type {Record<string, unknown>} */ (raw)
   const lights = Array.isArray(o.directionalLights) ? o.directionalLights : []
@@ -112,7 +129,9 @@ function normalizeLoaded(raw) {
   }
 }
 
+/** Write current scene settings when Remember scene defaults is on. */
 export function persistViewerSettings() {
+  if (!appSettings.rememberViewerDefaults) return
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(viewerSettings))
   } catch {
@@ -120,28 +139,33 @@ export function persistViewerSettings() {
   }
 }
 
+export function clearPersistedViewerSettings() {
+  try {
+    localStorage.removeItem(STORAGE_KEY)
+  } catch {
+    /* ignore */
+  }
+}
+
 export function initViewerSettings() {
+  if (!appSettings.rememberViewerDefaults) {
+    Object.assign(viewerSettings, cloneDefaults())
+    return
+  }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
-      const loaded = normalizeLoaded(JSON.parse(raw))
-      Object.assign(viewerSettings, loaded)
+      Object.assign(viewerSettings, normalizeLoaded(JSON.parse(raw)))
+    } else {
+      Object.assign(viewerSettings, cloneDefaults())
     }
   } catch {
-    Object.assign(viewerSettings, { ...DEFAULT_VIEWER_SETTINGS })
+    Object.assign(viewerSettings, cloneDefaults())
   }
 }
 
 export function resetViewerSettings() {
-  Object.assign(viewerSettings, {
-    ...DEFAULT_VIEWER_SETTINGS,
-    directionalLights: DEFAULT_VIEWER_SETTINGS.directionalLights.map((l) => ({
-      enabled: l.enabled,
-      position: [...l.position],
-      intensity: l.intensity
-    }))
-  })
-  persistViewerSettings()
+  Object.assign(viewerSettings, cloneDefaults())
 }
 
 export function addDirectionalLight() {
@@ -150,12 +174,10 @@ export function addDirectionalLight() {
     ...viewerSettings.directionalLights,
     { enabled: true, position: [5, 8, 5], intensity: 0.35 }
   ]
-  persistViewerSettings()
 }
 
 /** @param {number} index */
 export function removeDirectionalLight(index) {
   if (viewerSettings.directionalLights.length <= 1) return
   viewerSettings.directionalLights = viewerSettings.directionalLights.filter((_, i) => i !== index)
-  persistViewerSettings()
 }

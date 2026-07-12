@@ -10,7 +10,8 @@
   type="button"
   role="switch"
   aria-checked={isDark}
-  aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+  aria-label={isDark ? 'Switch to light mode for this session' : 'Switch to dark mode for this session'}
+  title={isDark ? 'Light mode (this session)' : 'Dark mode (this session)'}
   class="relative isolate flex h-7 w-12 shrink-0 items-center rounded-full p-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 dark:focus-visible:ring-neutral-600 {isDark
     ? 'bg-neutral-900'
     : 'bg-neutral-200'}"
