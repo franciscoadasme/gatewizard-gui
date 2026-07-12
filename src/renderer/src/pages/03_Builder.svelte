@@ -594,6 +594,32 @@
     ligands = []
   }
 
+  /** Clear tab state (input, jobs, ligands) and restore form defaults. */
+  function onClear() {
+    if (pollIntervalId) {
+      clearInterval(pollIntervalId)
+      pollIntervalId = null
+    }
+    workingFile = ''
+    outputFolderName = ''
+    jobs = []
+    ligands = []
+    validationResult = null
+    launching = false
+    generatingInputFiles = false
+    validating = false
+    advancedOpen = false
+    onLoadDefaults()
+    builderStatus.jobCount = 0
+    builderStatus.runningCount = 0
+    builderStatus.completedCount = 0
+    builderStatus.errorCount = 0
+    builderStatus.latestName = ''
+    builderStatus.latestStatus = ''
+    builderStatus.latestElapsed = ''
+    builderStatus.generatingInput = false
+  }
+
   /** @type {{ lipid: string, ratio: number }[]} */
   let upperLeaflet = $state([{ lipid: 'POPC', ratio: 1.0 }])
   /** @type {{ lipid: string, ratio: number }[]} */
@@ -1226,6 +1252,7 @@
           Set a <strong>Working Directory</strong> in the top bar to generate output folders.
         </p>
       {/if}
+      <Button className="w-full" variant="ghost" onclick={onClear}>Clear</Button>
       <button
         class="w-full text-center dark:text-neutral-500 dark:hover:text-neutral-300"
         onclick={onLoadDefaults}>Reset Defaults</button
