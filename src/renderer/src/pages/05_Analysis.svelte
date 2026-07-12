@@ -192,6 +192,7 @@
     analysisStatus.analysisType = mode === 'structural' ? structuralType : 'energetic'
     analysisStatus.resultAvailable =
       mode === 'structural' ? activeStructRes !== null : chartSeries.length > 0
+    analysisStatus.error = lastError || ''
   })
 
   const BILAYER_TYPES = new Set(['area_per_lipid', 'membrane_thickness'])
@@ -626,6 +627,75 @@
     } finally {
       topoLoading = false
     }
+  }
+
+  function onClear() {
+    mode = 'structural'
+    running = false
+    outputFolderName = ''
+    topologyPath = ''
+    trajectoryFiles = []
+    structuralType = 'rmsd'
+    selection = 'protein and backbone'
+    selection2 = 'protein and resid 50'
+    referenceFrame = '0'
+    align = true
+    rmsfXaxisType = 'residue_number'
+    leafletLipidSel = ''
+    leafletFilterSel = ''
+    nBins = '1'
+    interpolate = false
+    lipidHeadgroupAtoms = []
+    headgroupDetecting = false
+    headgroupDetectAttempted = false
+    manualHeadgroupName = ''
+    bilayerAdvancedOpen = false
+    logFiles = []
+    energeticEngine = 'namd'
+    availableProperties = []
+    selectedProperties = []
+    timeUnits = 'ns'
+    energyUnits = 'kcal/mol'
+    pressureUnits = 'atm'
+    temperatureUnits = 'K'
+    volumeUnits = 'Å³'
+    chartSeries = []
+    chartXLabel = 'X'
+    chartYLabel = 'Y'
+    chartTitle = ''
+    lastError = ''
+    primaryStats = null
+    rawX = []
+    rawY = []
+    rawSeries = []
+    rawXTimeUnit = 'ns'
+    plotSettingsOpen = false
+    sPlots = {
+      rmsd: { ...structDefaults },
+      rmsf: { ...structDefaults },
+      distance: { ...structDefaults },
+      radius_of_gyration: { ...structDefaults },
+      area_per_lipid: { ...structDefaults, yUnit: 'Å²' },
+      membrane_thickness: { ...structDefaults }
+    }
+    ePlot = { ...energDefaults }
+    structResults = {
+      rmsd: null,
+      rmsf: null,
+      distance: null,
+      radius_of_gyration: null,
+      area_per_lipid: null,
+      membrane_thickness: null
+    }
+    showSelectionHelp = false
+    showTopoInfo = false
+    topoInfo = null
+    topoLoading = false
+    analysisStatus.running = false
+    analysisStatus.mode = ''
+    analysisStatus.analysisType = ''
+    analysisStatus.resultAvailable = false
+    analysisStatus.error = ''
   }
 
   // ---- Energetic properties ----
@@ -1774,6 +1844,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
         Run Analysis
       {/if}
     </Button>
+    <Button className="w-full" variant="ghost" onclick={onClear}>Clear</Button>
   </aside>
 
   <!-- ===== CHART AREA ===== -->

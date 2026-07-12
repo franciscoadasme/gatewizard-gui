@@ -27,6 +27,8 @@
     fontFamily = 'sans-serif',
     // Optional chart title rendered inside the SVG
     chartTitle = '',
+    // Optional subtitle under the title (e.g. atom selection)
+    chartSubtitle = '',
     // Custom string labels for x-axis ticks (e.g. residue names for RMSF)
     xTickLabels = [],
     // Extra pixels added to left/bottom margin to fit long tick labels
@@ -43,8 +45,9 @@
 
   const width = 900
   const height = $derived(Math.round(width / aspectRatio))
+  const titleBand = $derived(chartTitle || chartSubtitle ? (chartSubtitle ? 34 : 22) : 0)
   const margin = $derived({
-    top: 36,
+    top: 36 + (titleBand > 22 ? 12 : 0),
     right: 16,
     bottom: 42 + (Number(extraBottomMargin) || 0),
     left: 56 + (Number(extraLeftMargin) || 0)
@@ -279,16 +282,29 @@
 
         {#if !transparentBg}<rect x="0" y="0" {width} {height} fill={plotBg} />{/if}
 
-        {#if chartTitle}
-          <text
-            x={margin.left + plotWidth / 2}
-            y="20"
-            text-anchor="middle"
-            font-size="13"
-            font-weight="600"
-            font-family={fontFamily}
-            fill={labelColor}>{chartTitle}</text
-          >
+        {#if chartTitle || chartSubtitle}
+          {#if chartTitle}
+            <text
+              x={margin.left + plotWidth / 2}
+              y={chartSubtitle ? 16 : 20}
+              text-anchor="middle"
+              font-size="13"
+              font-weight="600"
+              font-family={fontFamily}
+              fill={labelColor}>{chartTitle}</text
+            >
+          {/if}
+          {#if chartSubtitle}
+            <text
+              x={margin.left + plotWidth / 2}
+              y={chartTitle ? 30 : 18}
+              text-anchor="middle"
+              font-size="10"
+              font-family={fontFamily}
+              fill={labelColor}
+              opacity="0.85">{chartSubtitle}</text
+            >
+          {/if}
         {/if}
 
         <!-- static axes -->
