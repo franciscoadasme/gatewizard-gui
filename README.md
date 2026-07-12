@@ -123,7 +123,7 @@ Do **not** click **Move to Trash** in the Gatekeeper dialog — that deletes the
 
 Wait on the splash screen until the main window appears (first run often **5–15 minutes** while Python packages install). Progress text appears below the logo.
 
-Update the API later from the left sidebar: open **Dependency versions**, then click **Check for updates**.
+Update the API later from the left sidebar: open **Settings** (gear), then **Versions & updates** → **Check for updates**.
 
 #### Troubleshooting: `pip upgrade (tools) failed` / SSL not available
 
@@ -270,8 +270,8 @@ Install `npm` dependencies in **one environment only** (WSL or Windows), not bot
 
 | Platform | Command | Release artifact (example) |
 |----------|---------|----------------------------|
-| Linux / WSL | `npm run build:linux` | `gatewizard-gui-1.0.7-linux-x86_64.AppImage`, `.deb` |
-| macOS | `npm run build:mac` (on macOS) | `gatewizard-gui-1.0.7-mac-arm64.dmg` |
+| Linux / WSL | `npm run build:linux` | `gatewizard-gui-1.0.8-linux-x86_64.AppImage`, `.deb` |
+| macOS | `npm run build:mac` (on macOS) | `gatewizard-gui-1.0.8-mac-arm64.dmg` |
 
 CI publishes **Linux and macOS only**. A native Windows `.exe` can be built locally (`npm run build:win:pack`) but is not shipped on GitHub Releases.
 

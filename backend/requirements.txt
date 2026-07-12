@@ -1,8 +1,10 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
-# PyPI install — no git required (works on Windows/macOS/Linux installers)
-gatewizard[full]>=1.0.44
-# DEV: editable local gatewizard
-# -e /mnt/d/Dropbox/comandos_2/github/gatewizard[full]
-# DEV: git pin (needs git on PATH)
-# gatewizard[full] @ git+https://github.com/maurobedoya/gatewizard.git@v1.0.44
+# RELEASE: PyPI pin (default for packaged installers)
+gatewizard[full]>=1.0.46
+# DEV: local editable clone
+# -e /mnt/d/github/gatewizard[full]
+# DEV: GitHub main branch
+# gatewizard[full] @ git+https://github.com/maurobedoya/gatewizard.git@main
+# RELEASE: GitHub tag pin
+# gatewizard[full] @ git+https://github.com/maurobedoya/gatewizard.git@v1.0.46

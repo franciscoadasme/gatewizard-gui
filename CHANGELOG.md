@@ -7,28 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.8] - 2026-07-11
+
 ### Added
 
+- **Settings hub** (gear icon): notifications, appearance (theme), scene startup defaults, versions & updates
+- **Desktop notifications** when preparation, equilibration, analysis, MemPro, Packmol, or PropKa finish (window unfocused/minimized, or a different sidebar tab; toggle in Settings). Green in-app banner above the status bar; system toasts when the window is away (not reliable on WSL).
+- **Startup update check** with badge on Settings and a dismissible “Updates available” dialog
+- **App-wide error dialog:** scrollable, bounded height, Copy + OK (replaces oversized native `alert` on Mac)
+- **Preparation:** warn when Cap termini is on and the PDB already has ACE/NME (or `*_capped` name); skip re-capping via backend
+- **Equilibration (GROMACS):** water, ions, other, and custom MDAnalysis constraint selections (requires gatewizard with GROMACS posres support)
 - **Workflow output folders** with numbered defaults per tab (`01_preparation_*`, …, `04_analysis_*`)
 - **Visualize — Packmol hydration** (Tools menu, interactive box, volume estimate, fill cavity, custom input)
 - Packmol hydration output history (load prior jobs from the working directory)
 - Shared sidebar styling across workflow tabs
 - Linux multi-size icon generation for packaging
+- **Preparation:** “Remove protein hydrogens” before pdb4amber (on by default; ligands/hetero kept)
+- **Builder:** Advanced “Remove protein hydrogens”; warning when protein H detected with link to Advanced
+- **Visualize:** Points representation (lightweight default for new reps); right-click Duplicate / Remove on representations
+- **Visualize:** Split representation by chainID (context menu + View settings)
+- **Visualize:** Subtle atom count when a structure is loaded
+- **Equilibration:** Loading indicator while system is loaded after selecting an input folder
+- **Clear** action on Preparation, Builder, Equilibration, and Analysis (replaces Preparation Reset)
+
+### Changed
+
+- Scene rendering settings no longer auto-persist from the Visualize panel; optional **Remember scene defaults** in Settings
+- Dependency versions UI moved into Settings (replaces the grimoire icon)
+- Sidebar theme toggle is session-only; startup theme is set in Settings → Appearance
+- **Builder:** Sticky job log follow (pauses when scrolled up); number steppers for water/boundary distance
+- **Preparation:** Number steppers for target pH and max S–S distance
+- **Builder:** Cleaner sidebar; explicit box mode hides water/boundary fields
+- **Builder:** `--notprotonate` restored in Advanced settings (on by default) to keep PropKa states
+- **Visualize:** “Add view” renamed to “Add representation”; new reps default to Points instead of vdW
+- **Visualize:** Selection placeholder uses valid MDAnalysis syntax (`chainID A · resid 1:20`)
+- **Visualize:** Double-click a representation label to edit its selection inline
+- **Visualize:** Color scheme label “Goodsell” renamed to “Pastel” (color only; material stays Goodsell)
+- **README:** Fedora AppImage install notes
+- Requires gatewizard API **1.0.46**
 
 ### Fixed
 
+- **Preparation:** PropKa with Cap on an already-capped PDB no longer fails with Topology `elements` errors
 - **Visualize:** 3D viewer stays aligned on panel resize; MemPro/Packmol panels close correctly after reload
 - **Visualize:** Ghost water preview matches calculated free volume, not the full box
 - **Equilibration:** NPgT ensemble sent correctly (`NPgT`, not `NPGT`)
 - **Equilibration:** Sidebar scroll layout
 - **Preparation:** Prepare no longer looks for `*_capped_capped.pdb` after PropKa capping
-
-### Changed
-
-- **Builder:** Sticky job log follow (pauses when scrolled up); number steppers for water/boundary distance
-- **Preparation:** Number steppers for target pH and max S–S distance
-- **Builder:** Cleaner sidebar; explicit box mode hides water/boundary fields
-- **README:** Fedora AppImage install notes
 
 ## [1.0.7] - 2026-07-03
 
