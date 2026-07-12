@@ -1,13 +1,21 @@
 <script>
   import { onDestroy, onMount, untrack } from 'svelte'
+  import AppErrorDialog from './components/AppErrorDialog.svelte'
   import Button from './components/ui/Button.svelte'
   import ActivitySidebar from './components/ActivitySidebar.svelte'
-  import Spinner from './components/ui/Spinner.svelte'
+  import SettingsDialog from './components/SettingsDialog.svelte'
   import TitleBarControls from './components/TitleBarControls.svelte'
   import WindowResizeHandles from './components/WindowResizeHandles.svelte'
-  import { getDependencyVersions, getProjectStatus } from './lib/backendApi'
-  import pkg from '../../../package.json'
+  import { getProjectStatus } from './lib/backendApi'
+  import { appSettings, updateAppSettings } from './lib/appSettings.svelte.js'
+  import {
+    notifyJobFinishedIfUnfocused,
+    jobToastState,
+    dismissJobToast,
+    notificationNav
+  } from './lib/jobNotifications.svelte.js'
   import { getAppWindowIconUrl } from '../../shared/brand.js'
+  import { installAppAlertOverride } from './lib/appDialog.svelte.js'
   import { themeState } from './lib/theme.svelte.js'
   import {
     analysisStatus,
@@ -47,6 +55,7 @@
   let currentId = $state(
     hashId && stages.some((s) => s.id === hashId) ? hashId : (stages[0]?.id ?? '')
   )
+  notificationNav.currentPageId = currentId
 
   // ── Working directory (shared with pages) ──
   let workingDir = $state('')
@@ -62,6 +71,7 @@
     const stage = stages.find((s) => s.id === id)
     if (!stage) return
     currentId = id
+    notificationNav.currentPageId = id
     if (typeof history !== 'undefined') {
       history.replaceState(null, '', `#${id}`)
     }
@@ -71,25 +81,150 @@
   // ── Status bar ──
   /** @type {import('./lib/backendApi').ProjectTask[]} */
   let statusTasks = $state([])
-  let statusActive = $state(false)
   /** @type {ReturnType<typeof setInterval> | null} */
   let statusPollId = null
 
   async function refreshStatus() {
     if (!workingDir) return
     try {
-      const { tasks, active } = await getProjectStatus(workingDir)
+      const { tasks } = await getProjectStatus(workingDir)
+      await maybeNotifyJobTransitions(tasks)
       statusTasks = tasks
-      statusActive = active
     } catch {
       // backend not yet ready — silently skip
     }
   }
 
+  /** @type {Record<string, string>} */
+  const prevTaskStatus = {}
+  /** @type {Record<string, true>} */
+  const notifiedTaskKeys = {}
+
+  /**
+   * @param {import('./lib/backendApi').ProjectTask[]} tasks
+   */
+  async function maybeNotifyJobTransitions(tasks) {
+    for (const task of tasks) {
+      const id = task.id || `${task.type}:${task.name}`
+      const prev = prevTaskStatus[id]
+      const next = task.status
+      prevTaskStatus[id] = next
+
+      if (next !== 'completed' && next !== 'error') continue
+      if (prev !== 'running') continue
+
+      const notifyKey = `${id}:${next}`
+      if (notifiedTaskKeys[notifyKey]) continue
+
+      const label = task.name || task.type || 'Job'
+      const title = next === 'completed' ? 'Job finished' : 'Job failed'
+      const body =
+        next === 'completed'
+          ? `${label} completed successfully.`
+          : `${label} ended with an error${task.error ? `: ${task.error}` : '.'}`
+
+      const sourcePage =
+        task.type === 'equilibration'
+          ? 'equilibration'
+          : task.type === 'preparation'
+            ? 'preparation'
+            : task.type
+
+      await notifyJobFinishedIfUnfocused({ id, title, body, sourcePage })
+      notifiedTaskKeys[notifyKey] = true
+    }
+
+    const liveIds = new Set(tasks.map((t) => t.id || `${t.type}:${t.name}`))
+    for (const key of Object.keys(prevTaskStatus)) {
+      if (!liveIds.has(key)) delete prevTaskStatus[key]
+    }
+  }
+
+  // Live UI jobs (not in /project-status): MemPro, Packmol, PropKa, Analysis
+  /** @type {'running'|'done'|'error'|null} */
+  let prevMemproStatus = null
+  /** @type {'running'|'done'|'error'|null} */
+  let prevPackmolStatus = null
+  let prevPropkaRunning = false
+  let prevAnalysisRunning = false
+
+  $effect(() => {
+    const s = visualizeStatus.memproStatus
+    const prev = prevMemproStatus
+    prevMemproStatus = s
+    if (prev === 'running' && (s === 'done' || s === 'error')) {
+      void notifyJobFinishedIfUnfocused({
+        id: `mempro:${visualizeStatus.memproJobId ?? 'job'}`,
+        title: s === 'done' ? 'MemPro finished' : 'MemPro failed',
+        body:
+          s === 'done'
+            ? 'Membrane protein orientation completed successfully.'
+            : 'Membrane protein orientation ended with an error.',
+        sourcePage: 'visualize'
+      })
+    }
+  })
+
+  $effect(() => {
+    const s = visualizeStatus.packmolStatus
+    const prev = prevPackmolStatus
+    prevPackmolStatus = s
+    if (prev === 'running' && (s === 'done' || s === 'error')) {
+      void notifyJobFinishedIfUnfocused({
+        id: `packmol:${visualizeStatus.packmolStartedAt ?? 'job'}`,
+        title: s === 'done' ? 'Packmol finished' : 'Packmol failed',
+        body:
+          s === 'done'
+            ? visualizeStatus.packmolMessage || 'Packmol hydration completed successfully.'
+            : visualizeStatus.packmolMessage || 'Packmol hydration ended with an error.',
+        sourcePage: 'visualize'
+      })
+    }
+  })
+
+  $effect(() => {
+    const running = preparationStatus.propkaRunning
+    const prev = prevPropkaRunning
+    prevPropkaRunning = running
+    if (prev && !running) {
+      const err = preparationStatus.propkaError
+      const ph = preparationStatus.propkaPh
+      void notifyJobFinishedIfUnfocused({
+        id: `propka:${ph ?? 'run'}`,
+        title: err ? 'PropKa failed' : 'PropKa finished',
+        body: err
+          ? `PropKa ended with an error: ${err}`
+          : `PropKa completed successfully${ph != null ? ` (pH ${ph})` : ''}.`,
+        sourcePage: 'preparation'
+      })
+    }
+  })
+
+  $effect(() => {
+    const running = analysisStatus.running
+    const prev = prevAnalysisRunning
+    prevAnalysisRunning = running
+    if (!prev || running) return
+
+    // Skip Clear / reset (no mode, no result, no error)
+    const label = analysisStatus.analysisType || analysisStatus.mode || 'Analysis'
+    const err = analysisStatus.error
+    const hasResult = analysisStatus.resultAvailable
+    if (!err && !hasResult && !analysisStatus.mode) return
+
+    void notifyJobFinishedIfUnfocused({
+      id: `analysis:${label}`,
+      title: err ? 'Analysis failed' : 'Analysis finished',
+      body: err
+        ? `${label} ended with an error: ${err}`
+        : `${label} completed successfully.`,
+      sourcePage: 'analysis'
+    })
+  })
+
   $effect(() => {
     if (statusPollId) clearInterval(statusPollId)
     statusTasks = []
-    statusActive = false
     if (!workingDir) return
     refreshStatus()
     statusPollId = setInterval(refreshStatus, 5000)
@@ -110,15 +245,129 @@
     return `${s}s`
   }
 
+  $effect(() => {
+    const items = jobToastState.items
+    if (items.length === 0) return
+    const latest = items[items.length - 1]
+    const timer = setTimeout(() => dismissJobToast(latest.id), 10000)
+    return () => clearTimeout(timer)
+  })
+
   onMount(() => {
     if (currentId) loadPage(currentId)
 
     const removeBoundsListener = window.electron?.ipcRenderer?.on('window:bounds-changed', () => {
       window.dispatchEvent(new Event('resize'))
     })
+    const restoreAlert = installAppAlertOverride()
+    const removeOpenPageListener = window.api?.onNotificationOpenPage?.((data) => {
+      const page = typeof data?.sourcePage === 'string' ? data.sourcePage : ''
+      if (page) loadPage(page)
+    })
 
-    return () => removeBoundsListener?.()
+    void runStartupUpdateCheck()
+
+    return () => {
+      removeBoundsListener?.()
+      restoreAlert()
+      removeOpenPageListener?.()
+    }
   })
+
+  // ── Settings / updates ──
+  let showSettings = $state(false)
+  /** @type {'notifications' | 'appearance' | 'scene' | 'versions'} */
+  let settingsSection = $state('notifications')
+  let updatesPending = $state(false)
+  let showUpdateAvailableDialog = $state(false)
+  /** @type {string | null} */
+  let updateAvailableSummary = $state(null)
+
+  function openSettings(section = 'notifications') {
+    settingsSection = section
+    showSettings = true
+  }
+
+  /**
+   * @param {any} result
+   */
+  function onUpdatesResult(result) {
+    if (!result || result.error) {
+      if (result == null) updatesPending = false
+      return
+    }
+    const pending = Boolean(result.gui?.updateAvailable || result.gatewizard?.updateAvailable)
+    updatesPending = pending
+    if (!pending) {
+      updateAppSettings({ dismissedUpdateKey: null })
+    }
+  }
+
+  /**
+   * @param {any} result
+   */
+  function updateKeyFromResult(result) {
+    return `${result?.remote?.gui ?? ''}|${result?.remote?.gatewizard ?? ''}`
+  }
+
+  async function runStartupUpdateCheck() {
+    if (!appSettings.updateCheckOnLaunch || !window.api?.checkForUpdates) return
+
+    // Wait briefly for the backend so API version is available
+    for (let i = 0; i < 20; i++) {
+      try {
+        const result = await window.api.checkForUpdates()
+        if (result?.error && /fetch|network|ECONNREFUSED/i.test(result.error)) {
+          await new Promise((r) => setTimeout(r, 500))
+          continue
+        }
+        onUpdatesResult(result)
+        if (result && !result.error) {
+          const pending = Boolean(
+            result.gui?.updateAvailable || result.gatewizard?.updateAvailable
+          )
+          if (pending) {
+            const key = updateKeyFromResult(result)
+            if (appSettings.dismissedUpdateKey !== key) {
+              const parts = []
+              if (result.gui?.updateAvailable) {
+                parts.push(`GUI ${result.remote.gui} (installed ${result.local.gui})`)
+              }
+              if (result.gatewizard?.updateAvailable) {
+                parts.push(
+                  `API ${result.remote.gatewizard}` +
+                    (result.local.gatewizard ? ` (installed ${result.local.gatewizard})` : '')
+                )
+              }
+              updateAvailableSummary = parts.join(' · ')
+              showUpdateAvailableDialog = true
+            }
+          }
+        }
+        return
+      } catch {
+        await new Promise((r) => setTimeout(r, 500))
+      }
+    }
+  }
+
+  function dismissUpdateDialog() {
+    showUpdateAvailableDialog = false
+    if (updateAvailableSummary) {
+      // Persist dismissal for this remote version pair when user clicks Later
+      // Key set from last check via updatesPending path — re-check lightly
+      void (async () => {
+        try {
+          const result = await window.api?.checkForUpdates?.()
+          if (result && !result.error) {
+            updateAppSettings({ dismissedUpdateKey: updateKeyFromResult(result) })
+          }
+        } catch {
+          /* ignore */
+        }
+      })()
+    }
+  }
 
   /**
    * Suppress file-based poll tasks for a type that the reactive store is already
@@ -417,133 +666,6 @@
     const ids = allChips.filter((c) => c.dismissible).map((c) => c.id)
     barDismissed = new Set([...barDismissed, ...ids])
   }
-
-  // ── Dependency versions dialog ──
-  let showVersions = $state(false)
-  let versionsLoading = $state(false)
-  /** @type {string | null} */
-  let versionsError = $state(null)
-  /** @type {Awaited<ReturnType<typeof getDependencyVersions>> | null} */
-  let versionsData = $state(null)
-
-  async function openVersionsDialog() {
-    showVersions = true
-    versionsLoading = true
-    versionsError = null
-    try {
-      versionsData = await getDependencyVersions()
-    } catch (err) {
-      versionsData = null
-      versionsError = err instanceof Error ? err.message : 'Failed to load dependency versions'
-    } finally {
-      versionsLoading = false
-    }
-  }
-
-  /** @param {Record<string, import('./lib/backendApi').DependencyInfo>} dependencies */
-  function sortedDependencies(dependencies) {
-    return Object.entries(dependencies).sort(([aName, aInfo], [bName, bInfo]) => {
-      const groupOrder = { core: 0, md: 1, orientation: 2, gui: 3 }
-      const aGroup = groupOrder[aInfo.install_group] ?? 9
-      const bGroup = groupOrder[bInfo.install_group] ?? 9
-      if (aGroup !== bGroup) return aGroup - bGroup
-      return aName.localeCompare(bName)
-    })
-  }
-
-  /** @param {string} group */
-  function installGroupLabel(group) {
-    switch (group) {
-      case 'md':
-        return 'MD extra'
-      case 'orientation':
-        return 'Orientation extra'
-      case 'gui':
-        return 'GUI'
-      default:
-        return 'Core'
-    }
-  }
-
-  // ── Updates (manifest on public gatewizard repo) ──
-  let updatesChecking = $state(false)
-  let updatesUpgrading = $state(false)
-  /** @type {string | null} */
-  let updatesMessage = $state(null)
-  /** @type {string | null} */
-  let updatesError = $state(null)
-  /** @type {Awaited<ReturnType<NonNullable<typeof window.api>['checkForUpdates']>> | null} */
-  let updatesResult = $state(null)
-
-  async function onCheckForUpdates() {
-    if (!window.api?.checkForUpdates) {
-      updatesError = 'Update API is not available in this build.'
-      return
-    }
-    updatesChecking = true
-    updatesError = null
-    updatesMessage = null
-    try {
-      updatesResult = await window.api.checkForUpdates()
-      if (updatesResult.error) {
-        updatesError = updatesResult.error
-        return
-      }
-      if (!updatesResult.gui.updateAvailable && !updatesResult.gatewizard.updateAvailable) {
-        updatesMessage = 'You are up to date.'
-      } else {
-        const parts = []
-        if (updatesResult.gui.updateAvailable) {
-          parts.push(`GUI ${updatesResult.remote.gui} available (installed ${updatesResult.local.gui})`)
-        }
-        if (updatesResult.gatewizard.updateAvailable) {
-          parts.push(
-            `gatewizard ${updatesResult.remote.gatewizard} available` +
-              (updatesResult.local.gatewizard
-                ? ` (installed ${updatesResult.local.gatewizard})`
-                : '')
-          )
-        }
-        updatesMessage = parts.join(' · ')
-      }
-    } catch (err) {
-      updatesResult = null
-      updatesError = err instanceof Error ? err.message : 'Failed to check for updates'
-    } finally {
-      updatesChecking = false
-    }
-  }
-
-  async function onDownloadGuiUpdate() {
-    const url =
-      updatesResult?.gui.downloadUrl || updatesResult?.gui.releasePage || null
-    if (!url || !window.api?.openExternalUrl) return
-    await window.api.openExternalUrl(url)
-  }
-
-  async function onUpgradeGatewizard() {
-    if (!window.api?.upgradeGatewizard) return
-    updatesUpgrading = true
-    updatesError = null
-    try {
-      const installSpec = updatesResult?.gatewizard.installSpec ?? undefined
-      const result = await window.api.upgradeGatewizard(installSpec)
-      updatesMessage = result.gatewizardVersion
-        ? `gatewizard upgraded to ${result.gatewizardVersion}. Backend restarted.`
-        : 'gatewizard upgrade finished. Backend restarted.'
-      updatesResult = null
-      versionsLoading = true
-      try {
-        versionsData = await getDependencyVersions()
-      } finally {
-        versionsLoading = false
-      }
-    } catch (err) {
-      updatesError = err instanceof Error ? err.message : 'Failed to upgrade gatewizard'
-    } finally {
-      updatesUpgrading = false
-    }
-  }
 </script>
 
 <div
@@ -586,190 +708,49 @@
 
   <WindowResizeHandles />
 
-  {#if showVersions}
+  <SettingsDialog
+    bind:open={showSettings}
+    {updatesPending}
+    initialSection={settingsSection}
+    onUpdatesResult={onUpdatesResult}
+  />
+
+  {#if showUpdateAvailableDialog}
     <div
       role="dialog"
       aria-modal="true"
-      aria-labelledby="dependency-versions-title"
+      aria-labelledby="updates-available-title"
       tabindex="-1"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+      class="fixed inset-0 z-[60] flex items-center justify-center bg-black/60"
       onmousedown={(e) => {
-        if (e.target === e.currentTarget) showVersions = false
+        if (e.target === e.currentTarget) dismissUpdateDialog()
       }}
     >
       <div
-        class="mx-4 flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg border border-neutral-300 bg-white text-xs dark:border-neutral-700 dark:bg-neutral-900"
+        class="mx-4 w-full max-w-md rounded-lg border border-neutral-300 bg-white p-5 text-xs dark:border-neutral-700 dark:bg-neutral-900"
       >
-        <div class="border-b border-neutral-200 px-5 py-4 dark:border-neutral-800">
-          <h2 id="dependency-versions-title" class="text-base font-semibold text-neutral-900 dark:text-neutral-100">
-            Dependency Versions
-          </h2>
-          <p class="mt-1 text-neutral-500 dark:text-neutral-500">
-            Record these versions for reproducibility, compatibility checks, or citations.
-          </p>
-        </div>
-
-        <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-          {#if versionsLoading}
-            <div class="flex items-center justify-center gap-2 py-10 text-neutral-500 dark:text-neutral-400">
-              <Spinner />
-              Loading dependency versions...
-            </div>
-          {:else if versionsError}
-            <p class="rounded-md border border-red-700/50 bg-red-950/30 p-3 text-red-300">
-              {versionsError}
-            </p>
-          {:else if versionsData}
-            <div class="space-y-4">
-              <div class="grid grid-cols-2 gap-2 md:grid-cols-3">
-                <div class="rounded-md border border-neutral-200 p-2 dark:border-neutral-800">
-                  <p class="text-neutral-500">GUI</p>
-                  <p class="font-semibold text-neutral-800 dark:text-neutral-200">{pkg.version}</p>
-                </div>
-                {#if versionsData.platform?.python_version}
-                  <div class="rounded-md border border-neutral-200 p-2 dark:border-neutral-800">
-                    <p class="text-neutral-500">Python</p>
-                    <p class="font-semibold text-neutral-800 dark:text-neutral-200">
-                      {versionsData.platform.python_version}
-                    </p>
-                  </div>
-                {/if}
-                {#if versionsData.platform?.platform}
-                  <div class="rounded-md border border-neutral-200 p-2 md:col-span-1 dark:border-neutral-800">
-                    <p class="text-neutral-500">Platform</p>
-                    <p class="truncate font-semibold text-neutral-800 dark:text-neutral-200" title={versionsData.platform.platform}>
-                      {versionsData.platform.platform}
-                    </p>
-                  </div>
-                {/if}
-              </div>
-
-              <div>
-                <h3 class="mb-2 font-semibold text-neutral-700 dark:text-neutral-300">Python packages</h3>
-                <div class="overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800">
-                  <table class="w-full">
-                    <thead class="bg-neutral-100 text-neutral-500 dark:bg-neutral-950 dark:text-neutral-500">
-                      <tr>
-                        <th class="px-3 py-2 text-left font-medium">Package</th>
-                        <th class="px-3 py-2 text-left font-medium">Version</th>
-                        <th class="px-3 py-2 text-left font-medium">Install set</th>
-                        <th class="px-3 py-2 text-left font-medium">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody class="divide-y divide-neutral-200 dark:divide-neutral-800">
-                      {#each sortedDependencies(versionsData.dependencies) as [name, info] (name)}
-                        <tr>
-                          <td class="px-3 py-2 font-medium text-neutral-800 dark:text-neutral-200">{name}</td>
-                          <td class="px-3 py-2 font-mono text-neutral-600 dark:text-neutral-300">
-                            {info.version ?? '—'}
-                          </td>
-                          <td class="px-3 py-2 text-neutral-400">
-                            {installGroupLabel(info.install_group ?? 'core')}
-                          </td>
-                          <td class="px-3 py-2">
-                            {#if info.available}
-                              <span class="text-green-400">installed</span>
-                            {:else}
-                              <span class="text-neutral-500">not installed</span>
-                            {/if}
-                          </td>
-                        </tr>
-                      {/each}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              {#if versionsData.executables?.length}
-                <div>
-                  <h3 class="mb-2 font-semibold text-neutral-700 dark:text-neutral-300">External tools</h3>
-                  <div class="overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800">
-                    <table class="w-full">
-                      <thead class="bg-neutral-100 text-neutral-500 dark:bg-neutral-950 dark:text-neutral-500">
-                        <tr>
-                          <th class="px-3 py-2 text-left font-medium">Engine</th>
-                          <th class="px-3 py-2 text-left font-medium">Version</th>
-                          <th class="px-3 py-2 text-left font-medium">Path</th>
-                        </tr>
-                      </thead>
-                      <tbody class="divide-y divide-neutral-200 dark:divide-neutral-800">
-                        {#each versionsData.executables as exe (exe.name)}
-                          <tr>
-                            <td class="px-3 py-2 font-medium uppercase text-neutral-800 dark:text-neutral-200">
-                              {exe.name}
-                            </td>
-                            <td class="px-3 py-2 font-mono text-neutral-600 dark:text-neutral-300">
-                              {exe.version ?? '—'}
-                            </td>
-                            <td class="max-w-48 truncate px-3 py-2 text-neutral-500" title={exe.path ?? ''}>
-                              {exe.path ?? '—'}
-                            </td>
-                          </tr>
-                        {/each}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              {/if}
-            </div>
-          {/if}
-        </div>
-
-        <div class="space-y-3 border-t border-neutral-200 px-5 py-3 dark:border-neutral-800">
-          {#if updatesMessage}
-            <p class="rounded-md border border-green-300 bg-green-50 px-3 py-2 text-green-800 dark:border-green-800/60 dark:bg-green-950/20 dark:text-green-300">
-              {updatesMessage}
-            </p>
-          {/if}
-          {#if updatesError}
-            <p class="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-red-800 dark:border-red-700/50 dark:bg-red-950/30 dark:text-red-300">
-              {updatesError}
-            </p>
-          {/if}
-          <div class="flex flex-wrap gap-2">
-            <Button
-              className="flex-1 min-w-[8rem]"
-              disabled={updatesChecking || updatesUpgrading}
-              onclick={onCheckForUpdates}
-            >
-              {#if updatesChecking}
-                <Spinner className="mr-1.5" />
-                Checking...
-              {:else}
-                Check for updates
-              {/if}
-            </Button>
-            {#if updatesResult?.gui.updateAvailable}
-              <Button
-                className="flex-1 min-w-[8rem]"
-                variant="outline"
-                onclick={onDownloadGuiUpdate}
-              >
-                Download GUI
-              </Button>
-            {/if}
-            {#if updatesResult?.gatewizard.updateAvailable}
-              <Button
-                className="flex-1 min-w-[8rem]"
-                variant="outline"
-                disabled={updatesUpgrading}
-                onclick={onUpgradeGatewizard}
-              >
-                {#if updatesUpgrading}
-                  <Spinner className="mr-1.5" />
-                  Updating API...
-                {:else}
-                  Update API
-                {/if}
-              </Button>
-            {/if}
-            <Button className="flex-1 min-w-[8rem]" onclick={() => (showVersions = false)}
-              >Close</Button
-            >
-          </div>
-          <p class="text-center text-[10px] text-neutral-600">
-            Compares installed versions with the public update manifest on GitHub.
-          </p>
+        <h2
+          id="updates-available-title"
+          class="text-base font-semibold text-neutral-900 dark:text-neutral-100"
+        >
+          Updates available
+        </h2>
+        <p class="mt-2 text-neutral-600 dark:text-neutral-400">
+          {updateAvailableSummary || 'A newer version of GateWizard is available.'}
+        </p>
+        <div class="mt-4 flex flex-wrap gap-2">
+          <Button
+            className="min-w-[8rem] flex-1"
+            onclick={() => {
+              showUpdateAvailableDialog = false
+              openSettings('versions')
+            }}
+          >
+            Open Settings
+          </Button>
+          <Button className="min-w-[8rem] flex-1" variant="outline" onclick={dismissUpdateDialog}>
+            Later
+          </Button>
         </div>
       </div>
     </div>
@@ -780,7 +761,8 @@
       {stages}
       {currentId}
       onNavigate={loadPage}
-      onVersions={openVersionsDialog}
+      onSettings={() => openSettings()}
+      {updatesPending}
     />
 
     <!--
@@ -985,3 +967,43 @@
     {/if}
   </footer>
 </div>
+
+{#if jobToastState.items.length > 0}
+  <div
+    class="pointer-events-none fixed right-4 bottom-14 z-[70] flex w-96 max-w-[calc(100vw-2rem)] flex-col gap-2"
+    aria-live="polite"
+  >
+    {#each jobToastState.items as toast (toast.id)}
+      <div
+        class="pointer-events-auto flex w-full items-start gap-2 rounded-lg border border-emerald-600/50 bg-emerald-950/95 p-3 text-left text-emerald-50 shadow-xl backdrop-blur-sm transition-colors hover:border-emerald-400/70 hover:bg-emerald-900 dark:border-emerald-500/40"
+        role="status"
+      >
+        <button
+          type="button"
+          class="min-w-0 flex-1 border-0 bg-transparent p-0 text-left text-inherit"
+          title={toast.sourcePage ? `Open ${toast.sourcePage}` : undefined}
+          onclick={() => {
+            if (toast.sourcePage) loadPage(toast.sourcePage)
+            dismissJobToast(toast.id)
+          }}
+        >
+          <p class="text-sm font-semibold">{toast.title}</p>
+          <p class="mt-0.5 text-xs text-emerald-100/90">{toast.body}</p>
+          {#if toast.sourcePage}
+            <p class="mt-1 text-[10px] text-emerald-200/70">Click to open {toast.sourcePage}</p>
+          {/if}
+        </button>
+        <button
+          type="button"
+          class="shrink-0 rounded px-1.5 text-base leading-none text-emerald-200/80 hover:bg-emerald-800 hover:text-white"
+          aria-label="Dismiss"
+          onclick={() => dismissJobToast(toast.id)}
+        >
+          &times;
+        </button>
+      </div>
+    {/each}
+  </div>
+{/if}
+
+<AppErrorDialog />
