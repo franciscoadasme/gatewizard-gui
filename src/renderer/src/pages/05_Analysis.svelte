@@ -128,7 +128,9 @@
     legendPosition: 'bottom',
     xTickCount: '5',
     yTickCount: '5',
-    residueCodeFormat: 'three'
+    residueCodeFormat: 'three',
+    /** Show atom/residue selection under the plot title */
+    showSelectionSubtitle: true
   }
   // Energetic plot settings defaults
   const energDefaults = {
@@ -168,7 +170,7 @@
   let ePlot = $state({ ...energDefaults })
 
   // Per-type stored structural results (null = not yet run for that type)
-  /** @type {Record<string,{rawX:number[],rawY:number[],xLabels:string[],seriesName:string,primaryStats:any,chartXLabel:string,chartYLabel:string,chartTitle:string,lastAnalysisHasTimeX:boolean}|null>} */
+  /** @type {Record<string,{rawX:number[],rawY:number[],xLabels:string[],seriesName:string,primaryStats:any,chartXLabel:string,chartYLabel:string,chartTitle:string,selectionSubtitle:string,lastAnalysisHasTimeX:boolean}|null>} */
   let structResults = $state({
     rmsd: null,
     rmsf: null,
@@ -177,6 +179,38 @@
     area_per_lipid: null,
     membrane_thickness: null
   })
+
+  /**
+   * Build a short subtitle describing the selection(s) used for a structural run.
+   * @param {string} type
+   * @param {string} sel
+   * @param {string} sel2
+   * @param {string} leafletLipid
+   * @param {string} leafletFilter
+   */
+  function formatSelectionSubtitle(type, sel, sel2, leafletLipid, leafletFilter) {
+    const s1 = (sel || '').trim()
+    const s2 = (sel2 || '').trim()
+    let text = ''
+    if (type === 'distance') {
+      if (!s1 && !s2) return ''
+      text = `Selection: ${s1 || '—'}  ·  ${s2 || '—'}`
+    } else if (type === 'area_per_lipid' || type === 'membrane_thickness') {
+      const parts = []
+      if (s1) parts.push(s1)
+      if ((leafletLipid || '').trim()) parts.push(`lipid: ${leafletLipid.trim()}`)
+      if ((leafletFilter || '').trim()) parts.push(`filter: ${leafletFilter.trim()}`)
+      if (!parts.length) return ''
+      text = `Selection: ${parts.join(' · ')}`
+    } else if (s1) {
+      text = `Selection: ${s1}`
+    } else {
+      return ''
+    }
+    // Keep subtitle readable in the SVG title band
+    const max = 96
+    return text.length > max ? `${text.slice(0, max - 1)}…` : text
+  }
 
   // Derived: active plot settings for current mode+type
   const ps = $derived(mode === 'structural' ? sPlots[structuralType] : ePlot)
@@ -372,6 +406,12 @@
   const displayTitle = $derived(
     ps.title || (mode === 'structural' ? (activeStructRes?.chartTitle ?? '') : chartTitle)
   )
+  const displaySubtitle = $derived.by(() => {
+    if (mode !== 'structural') return ''
+    // Default on when the setting is missing (older session state)
+    if (ps.showSelectionSubtitle === false) return ''
+    return activeStructRes?.selectionSubtitle || ''
+  })
 
   // Axis overrides
   const xMinO = $derived(
@@ -787,6 +827,13 @@
           chartXLabel: result.x_label || 'X',
           chartYLabel: result.y_label || 'Y',
           chartTitle: `${(result.analysis_type || structuralType).replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())} Analysis`,
+          selectionSubtitle: formatSelectionSubtitle(
+            structuralType,
+            selection,
+            selection2,
+            leafletLipidSel,
+            leafletFilterSel
+          ),
           lastAnalysisHasTimeX: xLabelsResult.length === 0
         }
       } else {
@@ -1676,6 +1723,13 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             </div>
           </div>
 
+          {#if mode === 'structural'}
+            <label class="flex items-center gap-2">
+              <Checkbox name="show-selection-subtitle" bind:checked={ps.showSelectionSubtitle} />
+              <span class="sidebar-label">Show selection on plot</span>
+            </label>
+          {/if}
+
           <!-- Aspect ratio + transparent bg + DPI + font -->
           <div class="grid grid-cols-2 gap-1">
             <div>
@@ -1879,6 +1933,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           transparentBg={ps.transparentBg}
           fontFamily={ps.fontFamily || 'sans-serif'}
           chartTitle={displayTitle}
+          chartSubtitle={displaySubtitle}
           xTickLabels={displayXTickLabels}
           xTicks={Number(ps.xTickCount) || 5}
           yTicks={Number(ps.yTickCount) || 5}
