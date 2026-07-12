@@ -86,6 +86,7 @@
   })
   /** @type {number | null} */
   let systemSize = $state(null)
+  let loadingSystemSize = $state(false)
   let totalCpus = $state(4)
   let totalGpus = $state(1)
   let updateInterval = $state(5)
@@ -138,6 +139,8 @@
   let constraintEditor = $state(null)
   /** @type {'not_started' | 'empty' | 'running' | 'completed' | 'error'} */
   let equilibrationStatus = $state('not_started')
+  /** True after status has been read from the backend (or input was just generated). */
+  let statusSynced = $state(false)
   let generatingInputFiles = $state(false)
   /** @type {Array<{ name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, elapsed_time_seconds: number|null, output: string }>} */
   let stageStatuses = $state([])
@@ -191,9 +194,23 @@
   })
 
   $effect(() => {
+    const dir = inputDir
+    if (!dir) {
+      systemSize = null
+      loadingSystemSize = false
+      return
+    }
+    loadingSystemSize = true
+    systemSize = null
+    let cancelled = false
     countMatchingAtoms('all').then((n) => {
+      if (cancelled) return
       systemSize = n
+      loadingSystemSize = false
     })
+    return () => {
+      cancelled = true
+    }
   })
 
   onDestroy(unscheduleUpdate)
@@ -294,6 +311,7 @@
       if (equilibrationStatus === 'empty') {
         equilibrationStatus = 'not_started'
       }
+      statusSynced = true
       logEvent(
         'info',
         'eq',
@@ -563,6 +581,7 @@
     }
 
     equilibrationStatus = status
+    statusSynced = true
     if (status === 'empty') {
       equilibrationOutput = ''
       stageStatuses = []
@@ -638,6 +657,54 @@
     const c = protocol.stages[stageIndex].constraints[constraintIndex]
     constraintEditor = { stageIndex, constraintIndex, source: { ...c } }
   }
+
+  function onClear() {
+    unscheduleUpdate()
+    inputDir = ''
+    outputName = ''
+    systemSize = null
+    loadingSystemSize = false
+    autoMonitor = true
+    engine = 'namd'
+    ensemble = 'npt'
+    gpuDevice = 0
+    totalCpus = 4
+    totalGpus = 1
+    updateInterval = 5
+    useGpu = true
+    addComRestraint = false
+    comSelection = 'name CA'
+    comRestraintK = 10
+    addRotationRestraint = false
+    rotationRestraintK = 2000
+    validatingComSelection = false
+    comSelectionValidation = null
+    checkingExecutable = false
+    executableCheck = null
+    openmmPlatforms = null
+    openmmPlatform = null
+    executableByEngine = { namd: 'namd3', gromacs: 'gmx', openmm: 'python' }
+    protocol = prepareProtocolForRendering(baseProtocol)
+    constraintEditor = null
+    equilibrationStatus = 'not_started'
+    statusSynced = false
+    generatingInputFiles = false
+    stageStatuses = []
+    showProcessInfo = false
+    processInfo = null
+    loadingProcessInfo = false
+    stopping = false
+    equilibrationOutput = ''
+    showWorkingDirHint = false
+    equilibrationPageStatus.engine = ''
+    equilibrationPageStatus.outputName = ''
+    equilibrationPageStatus.status = ''
+    equilibrationPageStatus.stagesDone = 0
+    equilibrationPageStatus.stagesTotal = 0
+    equilibrationPageStatus.generatingInput = false
+    equilibrationPageStatus.wasKilled = false
+    equilibrationPageStatus.runStartedAt = null
+  }
 </script>
 
 <div class="flex min-w-0 flex-1 divide-x divide-neutral-200 overflow-hidden select-none dark:divide-neutral-800">
@@ -653,8 +720,17 @@
           <div class="w-full rounded-md border border-neutral-200 p-2 font-mono wrap-anywhere dark:border-neutral-800">
             {inputDir}
           </div>
-          {#if systemSize !== null}
+          {#if loadingSystemSize}
+            <p class="sidebar-hint mb-2 flex items-center gap-1.5">
+              <Spinner className="size-3" />
+              Loading system…
+            </p>
+          {:else if systemSize !== null}
             <p class="sidebar-hint mb-2">System size: {systemSize.toLocaleString()} atoms</p>
+          {:else if inputDir}
+            <p class="sidebar-hint mb-2 text-amber-600 dark:text-amber-400">
+              Could not read system size (check .prmtop / .inpcrd)
+            </p>
           {/if}
           <Button variant="outline" className="w-full" onclick={selectInputDir}
             >Select another directory...</Button
@@ -914,6 +990,14 @@
           Input files have not been generated yet. Click <strong>Generate Input Files</strong> first.
         </p>
       {/if}
+      {#if equilibrationStatus === 'not_started' && statusSynced && workingDir !== ''}
+        <div
+          class="rounded-md border border-green-700 bg-green-950 px-3 py-2 text-xs text-green-300"
+        >
+          <p>✓ Input files are ready.</p>
+          <p class="mt-1">Click <strong>Run Equilibration</strong> to proceed.</p>
+        </div>
+      {/if}
       {#if workingDir === '' && showWorkingDirHint}
         <p
           class="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-400"
@@ -921,6 +1005,7 @@
           Set a <strong>Working Directory</strong> in the top bar to enable these actions.
         </p>
       {/if}
+      <Button className="w-full" variant="ghost" onclick={onClear}>Clear</Button>
     </div>
   </aside>
   <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
