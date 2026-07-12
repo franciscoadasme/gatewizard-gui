@@ -7,7 +7,7 @@ const api = {
     ipcRenderer.invoke('dialog:openFile', title, filters, defaultPath),
   openFilesDialog: (title, filters, defaultPath = undefined) =>
     ipcRenderer.invoke('dialog:openFiles', title, filters, defaultPath),
-  openPdbDialog: () => ipcRenderer.invoke('dialog:openPdb'),
+  openPdbDialog: (defaultPath = undefined) => ipcRenderer.invoke('dialog:openPdb', defaultPath),
   openDirectoryDialog: (title = 'Select Directory', defaultPath = undefined) =>
     ipcRenderer.invoke('dialog:openDirectory', title, defaultPath),
   openLigandFileDialog: (title, extensions) =>
@@ -25,7 +25,20 @@ const api = {
   openExternalUrl: (url) => ipcRenderer.invoke('updates:open-url', url),
   upgradeGatewizard: (installSpec) => ipcRenderer.invoke('runtime:upgrade-gatewizard', installSpec),
 
-  setAppTheme: (theme) => ipcRenderer.invoke('theme:set', theme)
+  setAppTheme: (theme) => ipcRenderer.invoke('theme:set', theme),
+
+  isWindowFocused: () => ipcRenderer.invoke('window:isFocused'),
+  showJobNotification: (payload) => ipcRenderer.invoke('notifications:showJobFinished', payload),
+  onJobNotificationFallback: (callback) => {
+    const listener = (_event, data) => callback(data)
+    ipcRenderer.on('notifications:fallback', listener)
+    return () => ipcRenderer.removeListener('notifications:fallback', listener)
+  },
+  onNotificationOpenPage: (callback) => {
+    const listener = (_event, data) => callback(data)
+    ipcRenderer.on('notifications:open-page', listener)
+    return () => ipcRenderer.removeListener('notifications:open-page', listener)
+  }
 }
 
 function installTitlebarDoubleClickHandler() {

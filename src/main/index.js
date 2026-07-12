@@ -1,6 +1,6 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, screen, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, Notification, screen, shell } from 'electron'
 import { spawn } from 'child_process'
-import { watch } from 'fs'
+import { readFileSync, watch } from 'fs'
 import { readFile, writeFile } from 'fs/promises'
 import path, { join } from 'path'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
@@ -23,6 +23,42 @@ const SPLASH_FADE_MS = 350
 const SPLASH_WIDTH = 360
 const SPLASH_HEIGHT = 420
 const SPLASH_LINUX_SIZE = 440
+
+/** WSL has no org.freedesktop.Notifications service — native toasts fail with libnotify. */
+function isRunningUnderWsl() {
+  if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) return true
+  try {
+    return readFileSync('/proc/version', 'utf8').toLowerCase().includes('microsoft')
+  } catch {
+    return false
+  }
+}
+
+/**
+ * @param {{ title: string, body: string }} payload
+ */
+function deliverJobNotificationFallback(payload) {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  try {
+    mainWindow.flashFrame(true)
+  } catch {
+    /* ignore */
+  }
+  mainWindow.webContents.send('notifications:fallback', payload)
+}
+
+/**
+ * @param {string} [sourcePage]
+ */
+function focusMainWindowAndOpenPage(sourcePage) {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+  if (sourcePage) {
+    mainWindow.webContents.send('notifications:open-page', { sourcePage })
+  }
+}
 
 function getSplashWindowSize() {
   if (process.platform === 'linux') {
@@ -714,10 +750,18 @@ app.on('window-all-closed', () => {
 
 // In this file you can include the rest of your app's specific main process
 // code. You can also put them in separate files and require them here.
-ipcMain.handle('dialog:openPdb', async () => {
+ipcMain.handle('dialog:openPdb', async (_event, defaultPath = undefined) => {
+  let resolvedDefault = typeof defaultPath === 'string' && defaultPath.trim() ? defaultPath.trim() : ''
+  if (!resolvedDefault) {
+    resolvedDefault = process.cwd()
+  } else if (!path.isAbsolute(resolvedDefault)) {
+    resolvedDefault = join(process.cwd(), resolvedDefault)
+  }
+
   const win = BrowserWindow.getFocusedWindow()
   const result = await dialog.showOpenDialog(win ?? undefined, {
     title: 'Open PDB',
+    defaultPath: resolvedDefault,
     filters: [
       { name: 'Structure', extensions: ['pdb', 'ent', 'cif', 'mmcif'] },
       { name: 'All files', extensions: ['*'] }
@@ -811,11 +855,18 @@ ipcMain.handle('dialog:saveFile', async (_event, title, filters, defaultPath = u
     filters.push({ name: 'All files', extensions: ['*'] })
   }
 
+  let resolvedDefault = typeof defaultPath === 'string' && defaultPath.trim() ? defaultPath.trim() : ''
+  if (!resolvedDefault) {
+    resolvedDefault = process.cwd()
+  } else if (!path.isAbsolute(resolvedDefault)) {
+    resolvedDefault = join(process.cwd(), resolvedDefault)
+  }
+
   const win = BrowserWindow.getFocusedWindow()
   const result = await dialog.showSaveDialog(win ?? undefined, {
     title: title || 'Save File',
     filters: filters,
-    defaultPath: defaultPath || undefined,
+    defaultPath: resolvedDefault,
     properties: ['showOverwriteConfirmation', 'createDirectory']
   })
   if (result.canceled || !result.filePath) {
@@ -884,4 +935,40 @@ ipcMain.handle('runtime:upgrade-gatewizard', async (_event, installSpec) => {
 ipcMain.handle('theme:set', (_event, theme) => {
   if (theme !== 'light' && theme !== 'dark') return
   applyMainWindowTheme(theme)
+})
+
+ipcMain.handle('window:isFocused', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return false
+  return mainWindow.isFocused() && !mainWindow.isMinimized()
+})
+
+ipcMain.handle('notifications:showJobFinished', (_event, payload) => {
+  const title = typeof payload?.title === 'string' ? payload.title : 'GateWizard'
+  const body = typeof payload?.body === 'string' ? payload.body : ''
+  const sourcePage = typeof payload?.sourcePage === 'string' ? payload.sourcePage : ''
+  const toast = { title, body, sourcePage }
+
+  // WSL / headless Linux: skip libnotify (no D-Bus Notifications service)
+  if (process.platform === 'linux' && isRunningUnderWsl()) {
+    deliverJobNotificationFallback(toast)
+    return { ok: false, fallback: true, reason: 'wsl' }
+  }
+
+  if (!Notification.isSupported()) {
+    deliverJobNotificationFallback(toast)
+    return { ok: false, fallback: true, reason: 'unsupported' }
+  }
+
+  try {
+    const notification = new Notification({ title, body })
+    notification.on('click', () => focusMainWindowAndOpenPage(sourcePage))
+    notification.on('failed', () => {
+      deliverJobNotificationFallback(toast)
+    })
+    notification.show()
+    return { ok: true, fallback: false }
+  } catch {
+    deliverJobNotificationFallback(toast)
+    return { ok: false, fallback: true, reason: 'error' }
+  }
 })

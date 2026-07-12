@@ -36,6 +36,10 @@ export const preparationStatus = $state({
   propkaDone: false,
   /** pH that was used for the last PropKa run */
   propkaPh: /** @type {number|null} */ (null),
+  /** Whether PropKa is currently running */
+  propkaRunning: false,
+  /** Last PropKa error message, or null */
+  propkaError: /** @type {string|null} */ (null),
   /** Whether the "Detect bonds" button was clicked at least once */
   bondsChecked: false,
   /** Number of disulfide bonds found in the last detection run */
@@ -93,6 +97,8 @@ export const analysisStatus = $state({
   analysisType: '',
   /** Whether a result is available for the current type */
   resultAvailable: false,
+  /** Last analysis error message, or empty string */
+  error: '',
 })
 
 // ── Global history log ────────────────────────────────────────────────────────
