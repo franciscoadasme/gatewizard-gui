@@ -35,7 +35,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from gatewizard.utils.protein_capping import cap_protein
+from gatewizard.utils.protein_capping import (
+    cap_protein,
+    detect_terminal_caps,
+)
 from gatewizard.utils.helpers import resolve_pdb_chain_id
 from gatewizard.utils.logger import get_logger
 from gatewizard.core.structure_manager import (
@@ -614,9 +617,22 @@ def run_propka(payload: RunPropKaRequest) -> dict:
         )
         path = str(path_obj)
         residue_renumbering_table = {}
+        capping_warning = None
         if payload.cap_protein:
-            # Avoid *_capped_capped.pdb when the workspace PDB is already capped.
-            if path_obj.stem.endswith("_capped"):
+            caps_found = detect_terminal_caps(path_obj)
+            looks_capped = bool(caps_found) or path_obj.stem.endswith("_capped")
+            if looks_capped:
+                # Skip re-capping — ACE/NME already present (or filename marks it).
+                detail = (
+                    ", ".join(caps_found)
+                    if caps_found
+                    else "filename ends with _capped"
+                )
+                capping_warning = (
+                    "Structure already appears capped "
+                    f"({detail}). Skipping ACE/NME capping. "
+                    "Uncheck “Cap protein termini” if this was intentional."
+                )
                 path = str(path_obj)
             else:
                 capped_path = path_obj.parent / f"{path_obj.stem}_capped.pdb"
@@ -643,6 +659,7 @@ def run_propka(payload: RunPropKaRequest) -> dict:
             residue_renumbering_table=residue_renumbering_table,
             job_dir=str(job_dir),
             working_path=path,
+            capping_warning=capping_warning,
         )
 
     except Exception as ex:
@@ -670,6 +687,24 @@ def detect_ligands_endpoint(payload: DetectLigandsRequest) -> dict:
                 }
                 for lig in ligands
             ]
+        }
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+@app.post("/detect-terminal-caps")
+def detect_terminal_caps_endpoint(payload: DetectLigandsRequest) -> dict:
+    """Report ACE/NME/NMA caps already present in a PDB (skip re-capping)."""
+    path = os.path.abspath(os.path.expanduser(payload.path))
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    try:
+        caps = detect_terminal_caps(path)
+        stem_capped = Path(path).stem.endswith("_capped")
+        return {
+            "caps": caps,
+            "already_capped": bool(caps) or stem_capped,
+            "stem_ends_with_capped": stem_capped,
         }
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
@@ -1551,12 +1586,16 @@ def _build_selections(stages: list[Stage]) -> dict[str, str]:
     return selections
 
 
-_GROMACS_SUPPORTED_CONSTRAINT_KEYS = frozenset(
+_GROMACS_STD_CONSTRAINT_KEYS = frozenset(
     {
         "protein_backbone",
         "protein_sidechain",
         "lipid_head",
         "lipid_tail",
+        "water",
+        "ions",
+        "ion",
+        "other",
     }
 )
 
@@ -1574,46 +1613,23 @@ def _validate_constraint_support(
         if float(force) > 0
     }
 
-    if engine == "gromacs":
-        unsupported = sorted(active_keys - _GROMACS_SUPPORTED_CONSTRAINT_KEYS)
-        if unsupported:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "GROMACS currently supports positional restraints only for "
-                    "protein_backbone, protein_sidechain, lipid_head, and "
-                    "lipid_tail. Unsupported active constraints: "
-                    + ", ".join(unsupported)
-                ),
-            )
-        return
-
-    if engine == "openmm":
-        std_keys = {
-            "protein_backbone",
-            "protein_sidechain",
-            "lipid_head",
-            "lipid_tail",
-        }
-        defaults = {
-            "water",
-            "ions",
-            "ion",
-            "other",
-        }
+    if engine in ("gromacs", "openmm"):
+        std_keys = _GROMACS_STD_CONSTRAINT_KEYS
         missing = sorted(
             k
             for k in active_keys
-            if k not in std_keys and k not in defaults and k not in selections
+            if k not in std_keys and k not in selections
         )
         if missing:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "OpenMM custom constraints require a valid MDAnalysis "
-                    "selection. Missing selection for: " + ", ".join(missing)
+                    f"{engine.upper()} custom constraints require a valid "
+                    "MDAnalysis selection. Missing selection for: "
+                    + ", ".join(missing)
                 ),
             )
+        return
 
 
 def _collect_system_files(input_dir: Path) -> dict[str, str]:

@@ -137,6 +137,15 @@ export function getProteinHydrogenStatus(filePath) {
 }
 
 /**
+ * Detect ACE/NME/NMA terminal caps already present in a PDB.
+ * @param {string} filePath
+ * @returns {Promise<{ caps: string[], already_capped: boolean, stem_ends_with_capped: boolean }>}
+ */
+export function detectTerminalCaps(filePath) {
+  return backendJson('/detect-terminal-caps', { path: filePath })
+}
+
+/**
  * @param {string} filePath
  * @param {string} ligandName
  * @param {number} charge
@@ -237,7 +246,7 @@ export function getStructure(payload) {
  * @param {float} targetPh
  * @param {boolean} capProtein
  * @param {{ workingDir?: string|null, outputFolderName?: string|null }} [opts]
- * @returns {Promise<{ residues: object[], residue_renumbering_table: Record<string, number>, job_dir?: string, working_path?: string }>}
+ * @returns {Promise<{ residues: object[], residue_renumbering_table: Record<string, number>, job_dir?: string, working_path?: string, capping_warning?: string|null }>}
  */
 export async function runPropKa(filePath, targetPh, capProtein, opts = {}) {
   return backendJson('/run-propka', {

@@ -3,7 +3,7 @@
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Divider from '../components/ui/Divider.svelte'
   import Input from '../components/ui/Input.svelte'
-  import { detectDisulfideBonds, preparePDB, runPropKa } from '../lib/backendApi'
+  import { detectDisulfideBonds, detectTerminalCaps, preparePDB, runPropKa } from '../lib/backendApi'
   import {
     defaultPreparationFolderName,
     outputFolderPath
@@ -25,6 +25,30 @@
   let activeWorkingFile = $state('')
   /** @type {string} Resolved output folder path returned by the backend */
   let preparationJobDir = $state('')
+  /** Warning when Cap is on but the structure already has ACE/NME (or *_capped name). */
+  let cappingWarning = $state('')
+  /** Caps detected in the working PDB (ACE / NME / NMA). */
+  let detectedCaps = $state(/** @type {string[]} */ ([]))
+
+  const looksAlreadyCapped = $derived(
+    detectedCaps.length > 0 || /_capped$/i.test((workingFile.split(/[/\\]/).pop() ?? '').replace(/\.pdb$/i, ''))
+  )
+
+  const capRecapWarning = $derived.by(() => {
+    if (!capProtein) return ''
+    if (cappingWarning) return cappingWarning
+    if (!looksAlreadyCapped) return ''
+    if (detectedCaps.length > 0) {
+      return (
+        `This PDB already contains terminal caps (${detectedCaps.join(', ')}). ` +
+        'Capping again will be skipped. Uncheck “Cap protein termini” if that is intentional.'
+      )
+    }
+    return (
+      'This file name ends with “_capped”. Capping again will be skipped. ' +
+      'Uncheck “Cap protein termini” if that is intentional.'
+    )
+  })
 
   function resolveOutputFolderName() {
     if (outputFolderName.trim()) return outputFolderName.trim()
@@ -124,9 +148,26 @@
     }
   }
 
+  async function refreshTerminalCaps(path) {
+    if (!path) {
+      detectedCaps = []
+      return
+    }
+    try {
+      const data = await detectTerminalCaps(path)
+      detectedCaps = Array.isArray(data.caps) ? data.caps : []
+    } catch {
+      // Filename heuristic still works via looksAlreadyCapped
+      detectedCaps = []
+    }
+  }
+
   async function onRunPropKa() {
     try {
       runningPropKa = true
+      preparationStatus.propkaRunning = true
+      preparationStatus.propkaError = null
+      cappingWarning = ''
       const data = await runPropKa(
         workingFile,
         parseFloat(targetPh),
@@ -137,15 +178,22 @@
       residueRenumberingTable = data.residue_renumbering_table
       adoptJobDir(data.job_dir)
       if (data.working_path) activeWorkingFile = data.working_path
+      if (data.capping_warning) {
+        cappingWarning = data.capping_warning
+        logEvent('info', 'prep', data.capping_warning)
+      }
       preparationStatus.propkaDone = true
       preparationStatus.propkaPh = targetPh
       if (data.job_dir) {
         logEvent('info', 'prep', `PropKa output folder: "${outputFolderName}"`, data.job_dir)
       }
+      await refreshTerminalCaps(activeWorkingFile || workingFile)
     } catch (error) {
+      preparationStatus.propkaError = error instanceof Error ? error.message : String(error)
       alert(error instanceof Error ? error.message : String(error))
     } finally {
       runningPropKa = false
+      preparationStatus.propkaRunning = false
     }
   }
 
@@ -155,10 +203,12 @@
       return
     }
     workingFile = filePath
+    cappingWarning = ''
     resetOutput()
     if (workingDir) {
       outputFolderName = defaultPreparationFolderName(filePath)
     }
+    await refreshTerminalCaps(filePath)
   }
 
   async function onDetectDisulfideBonds() {
@@ -205,8 +255,8 @@
     }
   }
 
-  async function onReset() {
-    // reset form fields
+  async function onClear() {
+    // clear form fields
     capProtein = false
     removeProteinHydrogens = true
     maxDisulfideDistance = 2.5
@@ -215,8 +265,10 @@
     activeWorkingFile = ''
     preparationJobDir = ''
     outputFolderName = ''
+    cappingWarning = ''
+    detectedCaps = []
 
-    // reset state
+    // clear state
     preparingPDB = false
     runningPropKa = false
 
@@ -230,6 +282,8 @@
     residueRenumberingTable = {}
     preparationStatus.propkaDone = false
     preparationStatus.propkaPh = null
+    preparationStatus.propkaRunning = false
+    preparationStatus.propkaError = null
     preparationStatus.bondsChecked = false
     preparationStatus.bondsCount = 0
     preparationStatus.prepareDone = false
@@ -319,6 +373,13 @@
         <Checkbox name="protein-cap" bind:checked={capProtein} />
         <label for="protein-cap" class="sidebar-label">Cap protein termini (ACE/NME)</label>
       </div>
+      {#if capRecapWarning}
+        <p
+          class="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] leading-snug text-amber-800 dark:text-amber-300"
+        >
+          {capRecapWarning}
+        </p>
+      {/if}
       <Button type="submit" className="w-full" disabled={!canRunPreparationSteps || runningPropKa}>
         {runningPropKa ? 'Running PropKa...' : 'Run PropKa'}
       </Button>
@@ -380,7 +441,7 @@
       <Button className="w-full" onclick={onPreparePDB} disabled={!canRunPreparationSteps || preparingPDB}
         >{preparingPDB ? 'Preparing...' : 'Prepare'}</Button
       >
-      <Button className="w-full" variant="ghost" onclick={onReset}>Reset</Button>
+      <Button className="w-full" variant="ghost" onclick={onClear}>Clear</Button>
     </div>
   </aside>
   <div class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
