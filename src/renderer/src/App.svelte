@@ -55,7 +55,11 @@
   let currentId = $state(
     hashId && stages.some((s) => s.id === hashId) ? hashId : (stages[0]?.id ?? '')
   )
-  notificationNav.currentPageId = currentId
+
+  // Keep notification focus checks in sync with the active sidebar tab
+  $effect(() => {
+    notificationNav.currentPageId = currentId
+  })
 
   // ── Working directory (shared with pages) ──
   let workingDir = $state('')
@@ -71,7 +75,6 @@
     const stage = stages.find((s) => s.id === id)
     if (!stage) return
     currentId = id
-    notificationNav.currentPageId = id
     if (typeof history !== 'undefined') {
       history.replaceState(null, '', `#${id}`)
     }
