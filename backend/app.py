@@ -78,7 +78,7 @@ from gatewizard.tools.ligand_parametrization import (
 from gatewizard.utils import namd_analysis
 from gatewizard.utils import gromacs_analysis
 from gatewizard.utils import openmm_analysis
-from gatewizard.utils.optional_deps import get_dependency_versions
+from gatewizard.utils.optional_deps import get_dependency_versions, list_md_engine_candidates
 
 ION_NAMES = [
     "NA",
@@ -988,39 +988,40 @@ def project_status(directory: str) -> dict:
         completed_logs = [f for f in log_files if f.stat().st_size > 0]
         n_done = len(completed_logs)
 
-        # Determine overall status
+        # Determine overall status — prefer live process over log heuristics
         bg_log = eq_dir / "equilibration_background.log"
         error_msg = None
         if bg_log.exists():
             try:
-                tail = bg_log.read_text(
-                    encoding="utf-8", errors="replace"
-                ).splitlines()[-5:]
-                if any("failed" in l.lower() or "error" in l.lower() for l in tail):
-                    error_msg = next(
-                        (
-                            l
-                            for l in reversed(tail)
-                            if "failed" in l.lower() or "error" in l.lower()
-                        ),
-                        None,
-                    )
+                # Check a short tail for run-script failure echoes; avoid
+                # substring "error" (GROMACS warns about "spelling error").
+                tail = "\n".join(
+                    bg_log.read_text(
+                        encoding="utf-8", errors="replace"
+                    ).splitlines()[-40:]
+                )
+                error_msg = _equilibration_log_failure_line(tail)
             except Exception:
                 pass
 
-        if error_msg:
-            eq_status = "error"
-        elif pid_file.exists():
+        pid_alive = False
+        if pid_file.exists():
             try:
                 pid = int(pid_file.read_text().strip())
-                import signal
-
                 os.kill(pid, 0)
-                eq_status = "running"
-            except (ValueError, ProcessLookupError, PermissionError):
-                eq_status = "completed" if n_done >= total else "error"
+                pid_alive = True
+            except (ValueError, ProcessLookupError, PermissionError, OSError):
+                pid_alive = False
+
+        if pid_alive:
+            eq_status = "running"
+        elif error_msg:
+            eq_status = "error"
         elif n_done >= total > 0:
             eq_status = "completed"
+        elif pid_file.exists() and n_done < total:
+            # Stale pid, incomplete stages, no clear failure marker
+            eq_status = "error"
         else:
             eq_status = "not_started"
 
@@ -1336,6 +1337,10 @@ def prepare_pdb(payload: PreparePDBRequest) -> dict:
 class ProgramConfig(BaseModel):
     engine: str = Field(description="Engine name: namd, gromacs, or openmm")
     executable: str = Field(description="Executable path or command name")
+    gmxrc: str | None = Field(
+        None,
+        description="Optional GROMACS GMXRC path to source in run scripts",
+    )
 
 
 class Constraint(BaseModel):
@@ -1705,6 +1710,21 @@ def check_executable(payload: ExecutableCheckRequest) -> dict:
     }
 
 
+class ListEngineExecutablesRequest(BaseModel):
+    engine: str = Field(description="Engine name: namd, gromacs, or openmm")
+
+
+@app.post("/list-engine-executables")
+def list_engine_executables(payload: ListEngineExecutablesRequest) -> dict:
+    """Discover NAMD / GROMACS / OpenMM installs for the Equilibration picker."""
+    engine = payload.engine.lower().strip()
+    try:
+        candidates = list_md_engine_candidates(engine)
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    return {"engine": engine, "candidates": candidates}
+
+
 @app.get("/get-openmm-platforms")
 def get_openmm_platforms() -> dict:
     try:
@@ -1771,6 +1791,7 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
             output_name=str(output_dir),
             scheme_type=_normalize_ensemble(payload.ensemble),
             gmx_executable=resolved_exec,
+            gmxrc_path=(payload.program_config.gmxrc or None),
             add_com_restraint=payload.add_com_restraint,
             com_selection=payload.com_selection,
             com_restraint_k=payload.com_restraint_k,
@@ -1978,6 +1999,34 @@ def is_equilibration_process_running(workdir: Path, engine: str = "") -> bool:
     return _pid_file_alive(workdir) or (
         bool(engine) and _find_engine_pid(workdir, engine) is not None
     )
+
+
+# Real failure markers from engine logs / run_equilibration.sh — NOT bare
+# "error" (GROMACS unused-macro warnings say "spelling error").
+_EQ_FAILURE_RE = re.compile(
+    r"(?i)"
+    r"("
+    r"fatal error:"
+    r"|error in user input:"
+    r"|error in stage\b"
+    r"|error: namd executable"
+    r"|minimisation failed"
+    r"|minimization failed"
+    r"|production failed"
+    r"|stage\s+\d+.*failed"
+    r"|equilibration failed"
+    r"|command not found"
+    r"|segmentation fault"
+    r")"
+)
+
+
+def _equilibration_log_failure_line(text: str) -> str | None:
+    """Return the first line that indicates a real MD failure, else None."""
+    for line in text.splitlines():
+        if _EQ_FAILURE_RE.search(line):
+            return line.strip() or line
+    return None
 
 
 def _pid_file_alive(workdir: Path) -> bool:
@@ -2376,11 +2425,14 @@ def get_equilibration_status(payload: EquilibrationRequest) -> dict:
     ):
         response["status"] = "completed"
     elif engine in {"gromacs", "openmm"}:
-        output_lower = response["output"].lower()
-        if "failed" in output_lower or "error" in output_lower:
+        # Do not treat bare "error" as failure — GROMACS unused-macro
+        # warnings include the phrase "spelling error".
+        if _equilibration_log_failure_line(response["output"]):
             response["status"] = "error"
-        elif "complete" in output_lower or "finished" in output_lower:
-            response["status"] = "completed"
+        else:
+            output_lower = response["output"].lower()
+            if "complete" in output_lower or "finished" in output_lower:
+                response["status"] = "completed"
 
     return response
 

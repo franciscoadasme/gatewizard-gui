@@ -18,6 +18,7 @@
     getEquilibrationStatus,
     getOpenmmPlatforms,
     getProcessInfo,
+    listEngineExecutables,
     runEquilibration,
     stopEquilibration,
     getStructure
@@ -75,6 +76,13 @@
   let comSelectionValidation = $state(/** @type {{ ok: boolean, message: string } | null} */ (null))
   let checkingExecutable = $state(false)
   let executableCheck = $state(/** @type {{ ok: boolean, message: string } | null} */ (null))
+  /** @type {Array<{ id: string, label: string, executable: string, version?: string|null, source?: string, gmxrc?: string|null, available?: boolean }>} */
+  let engineCandidates = $state([])
+  let loadingEngineCandidates = $state(false)
+  /** Selected candidate id, or ``custom`` for free-text path */
+  let engineCandidateId = $state('custom')
+  /** GMXRC paired with the selected GROMACS candidate (if any) */
+  let selectedGmxrc = $state(/** @type {string|null} */ (null))
   /** @type {{ name: string, speed: number }[] | null} */
   let openmmPlatforms = $state(null)
   /** @type {string | null} null = auto-detect */
@@ -299,7 +307,8 @@
         ensemble,
         programConfig: {
           engine,
-          executable: selectedExecutable
+          executable: selectedExecutable,
+          ...(engine === 'gromacs' && selectedGmxrc ? { gmxrc: selectedGmxrc } : {})
         },
         addComRestraint,
         comSelection,
@@ -433,6 +442,40 @@
     inputDir = dirPath
     outputName = defaultEquilibrationFolderName(dirPath)
   }
+
+  async function refreshEngineCandidates() {
+    loadingEngineCandidates = true
+    try {
+      const { candidates } = await listEngineExecutables(engine)
+      engineCandidates = Array.isArray(candidates) ? candidates : []
+      const match = engineCandidates.find(
+        (c) => c.executable === selectedExecutable || c.executable.endsWith(`/${selectedExecutable}`)
+      )
+      if (match) {
+        engineCandidateId = match.id
+        selectedGmxrc = match.gmxrc ?? null
+      } else if (engineCandidates.length > 0 && engineCandidateId === 'custom') {
+        // Prefer first discovered install when still on defaults
+        const defaults = { namd: 'namd3', gromacs: 'gmx', openmm: 'python' }
+        if (selectedExecutable === defaults[engine]) {
+          const first = engineCandidates[0]
+          engineCandidateId = first.id
+          executableByEngine[engine] = first.executable
+          selectedGmxrc = first.gmxrc ?? null
+        }
+      }
+    } catch {
+      engineCandidates = []
+    } finally {
+      loadingEngineCandidates = false
+    }
+  }
+
+  $effect(() => {
+    // Refresh when engine changes
+    void engine
+    void refreshEngineCandidates()
+  })
 
   async function checkEngineExecutable() {
     if (!selectedExecutable.trim()) {
@@ -684,6 +727,12 @@
     openmmPlatforms = null
     openmmPlatform = null
     executableByEngine = { namd: 'namd3', gromacs: 'gmx', openmm: 'python' }
+    engineCandidates = []
+    engineCandidateId = 'custom'
+    selectedGmxrc = null
+    openmmPlatforms = null
+    openmmPlatform = null
+    executableCheck = null
     protocol = prepareProtocolForRendering(baseProtocol)
     constraintEditor = null
     equilibrationStatus = 'not_started'
@@ -769,6 +818,8 @@
           onchange={() => {
             executableCheck = null
             openmmPlatforms = null
+            engineCandidateId = 'custom'
+            selectedGmxrc = null
           }}
         >
           {#each engines as item (item.id)}
@@ -784,27 +835,73 @@
       </div>
       <div class="space-y-1">
         <p class="sidebar-label">Executable</p>
-        <Input
-          type="text"
-          size="sm"
-          value={selectedExecutable}
-          oninput={(e) => {
-            executableByEngine[engine] = e.target.value
-            executableCheck = null
-            openmmPlatforms = null
-            openmmPlatform = null
-          }}
-          className="w-full"
-          placeholder={engine === 'openmm' ? 'python' : engine === 'gromacs' ? 'gmx' : 'namd3'}
-        />
-        <Button variant="outline" className="w-full" onclick={checkEngineExecutable}>
-          {#if checkingExecutable}
-            <Spinner className="mr-1" />
-            Checking executable...
-          {:else}
-            Check Executable
-          {/if}
-        </Button>
+        {#if engineCandidates.length > 0}
+          <Select
+            size="sm"
+            className="w-full"
+            value={engineCandidateId}
+            onchange={(e) => {
+              const id = e.currentTarget.value
+              engineCandidateId = id
+              executableCheck = null
+              openmmPlatforms = null
+              openmmPlatform = null
+              if (id === 'custom') {
+                selectedGmxrc = null
+                return
+              }
+              const hit = engineCandidates.find((c) => c.id === id)
+              if (hit) {
+                executableByEngine[engine] = hit.executable
+                selectedGmxrc = hit.gmxrc ?? null
+              }
+            }}
+          >
+            {#each engineCandidates as c (c.id)}
+              <option value={c.id}>{c.label}</option>
+            {/each}
+            <option value="custom">Custom path…</option>
+          </Select>
+        {/if}
+        {#if engineCandidateId === 'custom' || engineCandidates.length === 0}
+          <Input
+            type="text"
+            size="sm"
+            value={selectedExecutable}
+            oninput={(e) => {
+              executableByEngine[engine] = e.target.value
+              engineCandidateId = 'custom'
+              selectedGmxrc = null
+              executableCheck = null
+              openmmPlatforms = null
+              openmmPlatform = null
+            }}
+            className="w-full"
+            placeholder={engine === 'openmm' ? 'python' : engine === 'gromacs' ? 'gmx' : 'namd3'}
+          />
+        {/if}
+        {#if selectedGmxrc}
+          <p class="sidebar-hint break-all">GMXRC: {selectedGmxrc}</p>
+        {/if}
+        <div class="flex gap-1">
+          <Button variant="outline" className="flex-1" onclick={checkEngineExecutable}>
+            {#if checkingExecutable}
+              <Spinner className="mr-1" />
+              Checking…
+            {:else}
+              Check Executable
+            {/if}
+          </Button>
+          <Button
+            variant="outline"
+            className="shrink-0"
+            onclick={refreshEngineCandidates}
+            disabled={loadingEngineCandidates}
+            title="Rescan PATH / conda / GMXRC installs"
+          >
+            {loadingEngineCandidates ? '…' : '↻'}
+          </Button>
+        </div>
         {#if executableCheck}
           <p class={executableCheck.ok ? 'text-xs text-green-400' : 'text-xs text-red-400'}>
             {executableCheck.message}
