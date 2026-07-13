@@ -7,9 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.9] - 2026-07-13
+
 ### Added
 
 - **Analysis:** structural plots show the atom/residue selection under the title; toggle in Plot Settings (“Show selection on plot”)
+- **Runtime:** conda-forge GROMACS in the embedded env (Linux: try CUDA then CPU; macOS: CPU). System `gmx` / GMXRC installs remain usable alongside.
+- **Equilibration:** engine version picker — scan PATH / conda / common prefixes (incl. GMXRC); optional Custom path
+
+### Fixed
+
+- **Equilibration:** false “Job failed” notification when GROMACS prints unused-macro warnings that contain the phrase “spelling error” (status poll no longer treats bare `error` as failure)
+
+### Changed
+
+- Requires gatewizard API **1.0.47**
 
 ## [1.0.8] - 2026-07-11
 

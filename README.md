@@ -270,8 +270,8 @@ Install `npm` dependencies in **one environment only** (WSL or Windows), not bot
 
 | Platform | Command | Release artifact (example) |
 |----------|---------|----------------------------|
-| Linux / WSL | `npm run build:linux` | `gatewizard-gui-1.0.8-linux-x86_64.AppImage`, `.deb` |
-| macOS | `npm run build:mac` (on macOS) | `gatewizard-gui-1.0.8-mac-arm64.dmg` |
+| Linux / WSL | `npm run build:linux` | `gatewizard-gui-1.0.9-linux-x86_64.AppImage`, `.deb` |
+| macOS | `npm run build:mac` (on macOS) | `gatewizard-gui-1.0.9-mac-arm64.dmg` |
 
 CI publishes **Linux and macOS only**. A native Windows `.exe` can be built locally (`npm run build:win:pack`) but is not shipped on GitHub Releases.
 
