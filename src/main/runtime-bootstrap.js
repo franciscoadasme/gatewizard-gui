@@ -134,6 +134,9 @@ function getMambaRoot() {
 /** Revision bumped when conda OpenMM GPU packages change (existing runtimes re-sync on next start). */
 const OPENMM_CONDA_REV = '1'
 
+/** Revision bumped when conda GROMACS install policy changes (existing runtimes re-sync). */
+const GROMACS_CONDA_REV = '1'
+
 /** conda-forge packages for the embedded runtime (platform-specific). */
 function getCondaOpenmmGpuPackages() {
   if (process.platform === 'win32') return []
@@ -141,6 +144,23 @@ function getCondaOpenmmGpuPackages() {
   if (process.platform === 'darwin') return ['openmm']
   // Linux / WSL: conda openmm + cudatoolkit for CUDA platform
   return ['openmm', 'cudatoolkit']
+}
+
+/**
+ * Matchspecs to try for GROMACS (first success wins).
+ * One conda env can only hold one ``gromacs`` build — try CUDA on Linux, else CPU.
+ * System / GMXRC installs remain selectable later via the engine version picker.
+ */
+function getCondaGromacsInstallAttempts() {
+  if (process.platform === 'win32') return []
+  if (process.platform === 'linux') {
+    return [
+      { label: 'GROMACS (CUDA)', matchspecs: ['gromacs=*=nompi_cuda*'] },
+      { label: 'GROMACS (CPU)', matchspecs: ['gromacs'] }
+    ]
+  }
+  // macOS: CPU builds only on conda-forge
+  return [{ label: 'GROMACS (CPU)', matchspecs: ['gromacs'] }]
 }
 
 function getCondaPackages() {
@@ -376,6 +396,88 @@ async function restoreCondaOpenmmAfterPip(micromambaDest, runtimePrefix, mmEnv, 
   await installCondaOpenmmGpu(micromambaDest, runtimePrefix, mmEnv, onStatus)
 }
 
+/**
+ * Install conda-forge GROMACS into the embedded runtime.
+ * Tries CUDA (Linux) then CPU; records which variant landed in runtime-state.
+ */
+async function installCondaGromacs(micromambaDest, runtimePrefix, mmEnv, onStatus) {
+  const attempts = getCondaGromacsInstallAttempts()
+  if (!attempts.length) {
+    onStatus('Skipping conda GROMACS on native Windows (use WSL or a system gmx).')
+    return { installed: false, variant: null }
+  }
+
+  let lastError = null
+  for (const attempt of attempts) {
+    onStatus(`Installing ${attempt.label} from conda-forge…`)
+    try {
+      await runProcess(
+        micromambaDest,
+        ['install', '-p', runtimePrefix, '-c', 'conda-forge', ...attempt.matchspecs, '-y'],
+        { env: mmEnv }
+      )
+      const gmxBin =
+        process.platform === 'win32'
+          ? path.join(runtimePrefix, 'Library', 'bin', 'gmx.exe')
+          : path.join(runtimePrefix, 'bin', 'gmx')
+      if (!(await fileExists(gmxBin))) {
+        throw new Error(`${attempt.label} installed but gmx binary not found at ${gmxBin}`)
+      }
+      onStatus(`${attempt.label} ready (${gmxBin})`)
+      await appendRuntimeLog(`[gromacs] installed ${attempt.label} → ${gmxBin}\n`)
+      return {
+        installed: true,
+        variant: attempt.label.includes('CUDA') ? 'cuda' : 'cpu'
+      }
+    } catch (err) {
+      lastError = err
+      await appendRuntimeLog(
+        `[gromacs] ${attempt.label} failed: ${err.message}\n`
+      )
+      onStatus(`${attempt.label} unavailable; trying next option…`)
+    }
+  }
+
+  onStatus(
+    `Could not install conda GROMACS (${lastError?.message || 'unknown error'}). ` +
+      'Equilibration can still use a system gmx if available on PATH.'
+  )
+  return { installed: false, variant: null }
+}
+
+async function syncCondaGromacsIfNeeded({
+  micromambaDest,
+  runtimePrefix,
+  mmEnv,
+  onStatus,
+  state,
+  statePath,
+  extraState = {}
+}) {
+  if (process.platform === 'win32') {
+    const nextState = { ...state, ...extraState }
+    if (JSON.stringify(nextState) === JSON.stringify(state)) return state
+    await fs.writeFile(statePath, JSON.stringify(nextState, null, 2), 'utf-8')
+    return nextState
+  }
+
+  let gromacsVariant = state.gromacsCondaVariant || null
+  if (state.gromacsCondaRev !== GROMACS_CONDA_REV) {
+    const result = await installCondaGromacs(micromambaDest, runtimePrefix, mmEnv, onStatus)
+    gromacsVariant = result.variant
+  }
+
+  const nextState = {
+    ...state,
+    ...extraState,
+    gromacsCondaRev: GROMACS_CONDA_REV,
+    gromacsCondaVariant: gromacsVariant
+  }
+  if (JSON.stringify(nextState) === JSON.stringify(state)) return state
+  await fs.writeFile(statePath, JSON.stringify(nextState, null, 2), 'utf-8')
+  return nextState
+}
+
 function getStatePath() {
   return path.join(getGatewizardDataRoot(), 'runtime-state.json')
 }
@@ -549,16 +651,32 @@ export async function ensureMambaRuntime(options) {
   const envReady = condaOk && state.requirementsHash === requirementsHash
 
   if (envReady) {
-    if (process.platform !== 'win32' && state.openmmCondaRev !== OPENMM_CONDA_REV) {
-      const micromambaDest = await ensureMicromambaBinary(onStatus)
-      state = await syncCondaOpenmmGpuIfNeeded({
-        micromambaDest,
-        runtimePrefix,
-        mmEnv,
-        onStatus,
-        state,
-        statePath
-      })
+    if (process.platform !== 'win32') {
+      const needsOpenmm = state.openmmCondaRev !== OPENMM_CONDA_REV
+      const needsGromacs = state.gromacsCondaRev !== GROMACS_CONDA_REV
+      if (needsOpenmm || needsGromacs) {
+        const micromambaDest = await ensureMicromambaBinary(onStatus)
+        if (needsOpenmm) {
+          state = await syncCondaOpenmmGpuIfNeeded({
+            micromambaDest,
+            runtimePrefix,
+            mmEnv,
+            onStatus,
+            state,
+            statePath
+          })
+        }
+        if (needsGromacs) {
+          state = await syncCondaGromacsIfNeeded({
+            micromambaDest,
+            runtimePrefix,
+            mmEnv,
+            onStatus,
+            state,
+            statePath
+          })
+        }
+      }
     }
     cachedLaunchPython = pyPath
     process.env.CONDA_PREFIX = runtimePrefix
@@ -598,6 +716,14 @@ export async function ensureMambaRuntime(options) {
         runtimePrefix
       }
     })
+    state = await syncCondaGromacsIfNeeded({
+      micromambaDest,
+      runtimePrefix,
+      mmEnv,
+      onStatus,
+      state,
+      statePath
+    })
     cachedLaunchPython = pyPath
     process.env.CONDA_PREFIX = runtimePrefix
     onStatus(`Runtime ready: ${runtimePrefix}`)
@@ -611,6 +737,9 @@ export async function ensureMambaRuntime(options) {
     )
   } else if (getCondaOpenmmGpuPackages().includes('cudatoolkit')) {
     onStatus('Linux/WSL: installing openmm + cudatoolkit from conda-forge for OpenMM CUDA support.')
+    onStatus('Will also try conda-forge GROMACS (CUDA, then CPU fallback).')
+  } else if (process.platform === 'darwin') {
+    onStatus('Will install conda-forge GROMACS (CPU) into the runtime.')
   }
 
   const micromambaDest = await ensureMicromambaBinary(onStatus)
@@ -661,6 +790,20 @@ export async function ensureMambaRuntime(options) {
     onStatus
   )
   await restoreCondaOpenmmAfterPip(micromambaDest, runtimePrefix, mmEnv, onStatus)
+  state = await syncCondaGromacsIfNeeded({
+    micromambaDest,
+    runtimePrefix,
+    mmEnv,
+    onStatus,
+    state: {
+      python: PYTHON_SPEC,
+      micromambaTag: MICROMAMBA_TAG,
+      requirementsHash,
+      runtimePrefix,
+      openmmCondaRev: OPENMM_CONDA_REV
+    },
+    statePath
+  })
 
   await fs.writeFile(
     statePath,
@@ -670,7 +813,9 @@ export async function ensureMambaRuntime(options) {
         micromambaTag: MICROMAMBA_TAG,
         requirementsHash,
         runtimePrefix,
-        openmmCondaRev: OPENMM_CONDA_REV
+        openmmCondaRev: OPENMM_CONDA_REV,
+        gromacsCondaRev: state.gromacsCondaRev ?? GROMACS_CONDA_REV,
+        gromacsCondaVariant: state.gromacsCondaVariant ?? null
       },
       null,
       2
