@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.10] - 2026-07-14
+
+### Fixed
+
+- **Release:** package installers use PyPI `gatewizard[full]>=1.0.47` (local editable `-e` was a silly mistake.)
+
+### Changed
+
+- Requires gatewizard API **1.0.47** (same as 1.0.9)
+
 ## [1.0.9] - 2026-07-13
 
 ### Added
