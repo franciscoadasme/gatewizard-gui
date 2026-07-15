@@ -500,7 +500,9 @@
       lowerLipids,
       lipidRatios,
       waterModel,
-      mdEngine: mdEngine || null,
+      mdEngine: ['opc', 'tip4pd', 'tip4pew'].includes(String(waterModel).toLowerCase())
+        ? mdEngine || null
+        : null,
       proteinFf,
       lipidFf,
       preoriented,
@@ -971,21 +973,29 @@
             {/each}
           </select>
         </div>
-        <div class="flex items-center gap-1">
-          <span class="sidebar-label w-20 shrink-0">MD engine</span>
-          <select
-            class="sidebar-control flex-1 p-2"
-            bind:value={mdEngine}
-          >
-            <option value="namd">namd</option>
-            <option value="gromacs">gromacs</option>
-            <option value="openmm">openmm</option>
-          </select>
-        </div>
-        {#if waterModel === 'opc' && mdEngine === 'namd'}
+        {#if ['opc', 'tip4pd', 'tip4pew'].includes(String(waterModel).toLowerCase())}
+          <div class="flex items-center gap-1">
+            <span class="sidebar-label w-20 shrink-0">MD engine</span>
+            <select
+              class="sidebar-control flex-1 p-2"
+              bind:value={mdEngine}
+            >
+              <option value="namd">namd</option>
+              <option value="gromacs">gromacs</option>
+              <option value="openmm">openmm</option>
+            </select>
+          </div>
           <p class="sidebar-hint">
-            OPC + NAMD: tleap uses FlexibleWater and equilibration adds waterModel tip4.
+            4-site water ({waterModel}) needs a target MD engine. Choose
+            <strong>namd</strong> so tleap uses FlexibleWater (and equilibration can use
+            waterModel tip4). For <strong>gromacs</strong> / <strong>openmm</strong>,
+            parametrization stays the standard Amber path — same as other water models.
           </p>
+          {#if mdEngine === 'namd'}
+            <p class="sidebar-hint">
+              NAMD selected: FlexibleWater will be applied in tleap for this water model.
+            </p>
+          {/if}
         {/if}
         <div class="flex items-center gap-1">
           <span class="sidebar-label w-20 shrink-0">Protein FF</span>
