@@ -33,6 +33,7 @@ import numpy as np
 import MDAnalysis as mda
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field
 
 from gatewizard.utils.protein_capping import (
@@ -179,14 +180,126 @@ NAMED_SELECTIONS = {
 
 @dataclass
 class FileCacheEntry:
-    mtime: int
+    mtime: float
     size: int
     universe: mda.Universe
     bond_guessed: bool = False
+    topology_path: str | None = None
+    topology_mtime: float | None = None
 
 
 FILE_CACHE: dict[str, FileCacheEntry] = {}
 FILE_CACHE_LOCK = threading.Lock()
+
+_TOPOLOGY_COMPANION_SUFFIXES = (".prmtop", ".parm7", ".psf")
+_WATER_RESNAMES = frozenset(
+    {
+        "HOH",
+        "WAT",
+        "TIP3",
+        "TIP3P",
+        "TIP4",
+        "TIP4P",
+        "TIP4PEW",
+        "OPC",
+        "OPC3",
+        "SOL",
+    }
+)
+
+
+def _file_cache_key(coord_path: Path, topology_path: Path | None) -> str:
+    if topology_path is None:
+        return str(coord_path)
+    return f"{coord_path}|top:{topology_path}"
+
+
+def _find_companion_topology(coord_path: Path) -> Path | None:
+    """Locate a topology file next to coordinate PDB/CIF (prepared systems)."""
+    directory = coord_path.parent
+    stem = coord_path.stem
+    candidates: list[Path] = []
+    for suffix in _TOPOLOGY_COMPANION_SUFFIXES:
+        candidates.append(directory / f"{stem}{suffix}")
+    # Builder / equilibration convention: system.pdb + system.prmtop
+    stem_l = stem.lower()
+    if stem_l == "system" or stem_l.endswith("_system"):
+        for suffix in _TOPOLOGY_COMPANION_SUFFIXES:
+            candidates.append(directory / f"system{suffix}")
+    for candidate in candidates:
+        if candidate.is_file() and candidate.resolve() != coord_path.resolve():
+            return candidate.resolve()
+    return None
+
+
+def _universe_has_bonds(u: mda.Universe) -> bool:
+    try:
+        return int(len(u.bonds)) > 0
+    except (mda.exceptions.NoDataError, AttributeError, TypeError, ValueError):
+        return False
+
+
+def _add_water_template_bonds(u: mda.Universe) -> int:
+    """Add cheap intra-residue O–H bonds for standard water residues (no KD-tree)."""
+    pairs: list[tuple[int, int]] = []
+    for res in u.residues:
+        rname = str(res.resname).strip().upper()
+        if rname not in _WATER_RESNAMES:
+            continue
+        oxygens: list[int] = []
+        hydrogens: list[int] = []
+        for atom in res.atoms:
+            el = ""
+            try:
+                el = str(atom.element).strip().upper()
+            except (mda.exceptions.NoDataError, AttributeError):
+                el = ""
+            name = str(atom.name).strip().upper()
+            if el == "O" or name in {"O", "OH2", "OW"}:
+                oxygens.append(int(atom.index))
+            elif el == "H" or name.startswith("H"):
+                hydrogens.append(int(atom.index))
+        if not oxygens or not hydrogens:
+            continue
+        o_idx = oxygens[0]
+        for h_idx in hydrogens[:3]:
+            pairs.append((o_idx, h_idx))
+    if not pairs:
+        return 0
+    try:
+        u.add_bonds(pairs)
+    except Exception:
+        # Older / restricted universes: best-effort only
+        return 0
+    return len(pairs)
+
+
+def _ensure_bonds_efficient(u: mda.Universe) -> str:
+    """Ensure covalent bonds without a full-system guess_bonds when possible.
+
+    Returns a short source label: ``topology``, ``solute+water``, or ``guessed``.
+    """
+    if _universe_has_bonds(u):
+        return "topology"
+    # Prefer guessing on solute only — water dominates atom count in prepared systems.
+    solute = None
+    try:
+        solute = u.select_atoms(
+            "not (water or resname HOH WAT TIP3 TIP3P TIP4 TIP4P TIP4PEW OPC OPC3 SOL)"
+        )
+    except Exception:
+        solute = None
+    if solute is not None and len(solute) > 0 and len(solute) < len(u.atoms):
+        print(
+            f"INFO:     /get-structure guessing bonds for solute "
+            f"({len(solute)}/{len(u.atoms)} atoms)"
+        )
+        solute.guess_bonds()
+        _add_water_template_bonds(u)
+        return "solute+water"
+    print(f"INFO:     /get-structure guessing bonds for all {len(u.atoms)} atoms")
+    u.atoms.guess_bonds()
+    return "guessed"
 
 
 def _ensure_elements(atoms: mda.AtomGroup) -> None:
@@ -201,26 +314,72 @@ def _ensure_elements(atoms: mda.AtomGroup) -> None:
 
 
 def get_atoms(atoms: mda.AtomGroup | mda.Universe) -> list[dict]:
+    """Legacy list-of-dicts atom payload (slower for large systems)."""
+    columnar = get_atoms_columnar(atoms)
+    n = len(columnar["index"])
+    return [
+        dict(
+            x=columnar["x"][i],
+            y=columnar["y"][i],
+            z=columnar["z"][i],
+            element=columnar["element"][i],
+            name=columnar["name"][i],
+            index=columnar["index"][i],
+            res_name=columnar["res_name"][i],
+            res_id=columnar["res_id"][i],
+            chain_id=columnar["chain_id"][i],
+        )
+        for i in range(n)
+    ]
+
+
+def get_atoms_columnar(atoms: mda.AtomGroup | mda.Universe) -> dict[str, list]:
+    """Fast columnar atom arrays for large Structure payloads."""
     if isinstance(atoms, mda.Universe):
         atoms = atoms.atoms
     _ensure_elements(atoms)
-    return [
-        dict(
-            x=float(it.position[0]),
-            y=float(it.position[1]),
-            z=float(it.position[2]),
-            element=str(it.element),
-            name=str(it.name).strip(),
-            index=int(it.index),
-            res_name=str(it.resname).strip(),
-            res_id=int(it.resid),
-            chain_id=resolve_pdb_chain_id(
-                str(it.segid),
-                str(getattr(it, "chainID", "") or ""),
-            ),
-        )
-        for it in atoms
+    n = len(atoms)
+    if n == 0:
+        return {
+            "x": [],
+            "y": [],
+            "z": [],
+            "element": [],
+            "name": [],
+            "index": [],
+            "res_name": [],
+            "res_id": [],
+            "chain_id": [],
+        }
+
+    pos = np.asarray(atoms.positions, dtype=np.float64)
+    names = [str(n).strip() for n in atoms.names]
+    elements = [str(e).strip() for e in atoms.elements]
+    indices = [int(i) for i in atoms.indices]
+    resnames = [str(r).strip() for r in atoms.resnames]
+    resids = [int(r) for r in atoms.resids]
+    try:
+        segids = [str(s) for s in atoms.segids]
+    except (mda.exceptions.NoDataError, AttributeError):
+        segids = [""] * n
+    try:
+        chain_ids_attr = [str(getattr(a, "chainID", "") or "") for a in atoms]
+    except Exception:
+        chain_ids_attr = [""] * n
+    chains = [
+        resolve_pdb_chain_id(segids[i], chain_ids_attr[i]) for i in range(n)
     ]
+    return {
+        "x": pos[:, 0].tolist(),
+        "y": pos[:, 1].tolist(),
+        "z": pos[:, 2].tolist(),
+        "element": elements,
+        "name": names,
+        "index": indices,
+        "res_name": resnames,
+        "res_id": resids,
+        "chain_id": chains,
+    }
 
 
 def get_residues(
@@ -383,34 +542,74 @@ def _load_structure_for_headgroup_detection(
         if companion is not None:
             return mda.Universe(str(topology.resolve()), str(companion.resolve()))
 
-    return load_structure(str(topology))
+    return load_structure(str(topology))[0]
+
+
 def load_structure(
-    path: Path | str, topology: str | None = None, needs_bonds: bool = False
-) -> mda.Universe:
-    """Return an MDAnalysis Universe for path, reusing a cache while mtime/size match."""
+    path: Path | str,
+    topology: str | None = None,
+    needs_bonds: bool = False,
+) -> tuple[mda.Universe, str | None, str]:
+    """Return (universe, topology_used_or_None, bond_source).
+
+    ``bond_source`` is ``topology``, ``solute+water``, ``guessed``, or ``none``.
+    """
     path = Path(path).resolve()
     stat = path.stat()
-    mtime = stat.st_mtime
-    file_size = stat.st_size
+    mtime = float(stat.st_mtime)
+    file_size = int(stat.st_size)
+
+    top_path: Path | None = None
+    top_mtime: float | None = None
+    if topology:
+        top_path = Path(os.path.abspath(os.path.expanduser(topology))).resolve()
+        if not top_path.is_file():
+            raise FileNotFoundError(f"Topology file not found: {top_path}")
+        top_mtime = float(top_path.stat().st_mtime)
+    elif not _is_topology_only_file(path):
+        top_path = _find_companion_topology(path)
+        if top_path is not None:
+            top_mtime = float(top_path.stat().st_mtime)
+
+    key = _file_cache_key(path, top_path)
+    bond_source = "none"
     with FILE_CACHE_LOCK:
-        key = str(path)
         entry = FILE_CACHE.get(key)
-        if entry is None or entry.mtime != mtime or entry.size != file_size:
-            top_path = Path(topology).resolve() if topology else None
-            if top_path and top_path != path:
+        cache_ok = (
+            entry is not None
+            and entry.mtime == mtime
+            and entry.size == file_size
+            and entry.topology_path == (str(top_path) if top_path else None)
+            and entry.topology_mtime == top_mtime
+        )
+        if not cache_ok:
+            if top_path is not None and top_path != path:
                 u = mda.Universe(str(top_path), str(path))
             else:
                 u = mda.Universe(str(path))
-            entry = FileCacheEntry(mtime, file_size, u, bond_guessed=False)
+            already = _universe_has_bonds(u)
+            entry = FileCacheEntry(
+                mtime,
+                file_size,
+                u,
+                bond_guessed=already,
+                topology_path=str(top_path) if top_path else None,
+                topology_mtime=top_mtime,
+            )
             FILE_CACHE[key] = entry
-        u = entry.universe
-        # ``entry`` is always the live cache object after the block above
-        # (was a bug: cache miss left local ``entry`` as None while guessing bonds).
+            if already:
+                bond_source = "topology"
+        else:
+            u = entry.universe
+            if entry.bond_guessed and _universe_has_bonds(u):
+                bond_source = "topology" if top_path else "guessed"
+
         if needs_bonds and not entry.bond_guessed:
-            print(f"INFO:     /get-structure guessing bonds for {path}")
-            u.atoms.guess_bonds()  # TODO: improve performance
+            bond_source = _ensure_bonds_efficient(u)
             entry.bond_guessed = True
-        return u
+        elif needs_bonds and entry.bond_guessed and bond_source == "none":
+            bond_source = "topology" if _universe_has_bonds(u) else "none"
+        return u, (str(top_path) if top_path else None), bond_source
 
 
 app = FastAPI(title="GateWizard Backend")
@@ -439,6 +638,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Compress large structure payloads (columnar atoms + bonds) over localhost.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 class RunPropKaRequest(BaseModel):
@@ -3116,7 +3317,9 @@ def get_structure(payload: StructureRequest) -> dict:
         raise HTTPException(status_code=404, detail=f"File not found: {payload.path}")
 
     try:
-        u = load_structure(payload.path, payload.topology, payload.needs_bonds)
+        u, topology_used, bond_source = load_structure(
+            payload.path, payload.topology, payload.needs_bonds
+        )
     except Exception as ex:
         raise HTTPException(status_code=400, detail=f"Could not read structure: {ex}")
 
@@ -3138,11 +3341,15 @@ def get_structure(payload: StructureRequest) -> dict:
         atoms = u.atoms
 
     data = dict(path=payload.path)
-    data["atoms"] = get_atoms(atoms)
+    # Columnar payload is much faster to build for 80k–150k atom systems.
+    data["atoms_format"] = "columnar"
+    data["atoms"] = get_atoms_columnar(atoms)
     try:
         data["bonds"] = atoms.bonds.indices.tolist()
     except mda.exceptions.NoDataError:
         data["bonds"] = []
+    data["topology_used"] = topology_used
+    data["bond_source"] = bond_source
     if payload.needs_secondary_structure:
         atom_indices = {int(i) for i in atoms.indices}
         all_residues = get_residues(
@@ -3163,7 +3370,7 @@ class DetectMoleculesRequest(BaseModel):
 
 @app.post("/detect-molecules")
 def detect_molecules(payload: DetectMoleculesRequest) -> list[dict]:
-    u = load_structure(payload.path)
+    u, _, _ = load_structure(payload.path)
 
     datalist = []
 
@@ -3227,6 +3434,11 @@ def _mv_edit(pdb_path: str, operation) -> dict:
     src_had_bonds = False
     with FILE_CACHE_LOCK:
         src_entry = FILE_CACHE.get(src_key)
+        if src_entry is None:
+            for key, entry in FILE_CACHE.items():
+                if key == src_key or key.startswith(src_key + "|top:"):
+                    src_entry = entry
+                    break
         if src_entry and src_entry.bond_guessed:
             try:
                 bonds = src_entry.universe.atoms.bonds.indices.tolist()
@@ -3337,7 +3549,7 @@ def edit_delete_atoms(payload: EditDeleteAtomsRequest) -> dict:
     try:
         # Resolve named shorthand → MDAnalysis expression
         sel_str = NAMED_SELECTIONS.get(payload.selection, payload.selection)
-        u_orig = load_structure(payload.path)
+        u_orig, _, _ = load_structure(payload.path)
         idx = u_orig.select_atoms(sel_str).indices.tolist()
         if not idx:
             raise HTTPException(400, "Selection matched no atoms")
@@ -3363,7 +3575,7 @@ def edit_delete_by_indices(payload: EditDeleteByIndicesRequest) -> dict:
     try:
         if not payload.indices:
             raise HTTPException(400, "No indices provided")
-        u_orig = load_structure(payload.path)
+        u_orig, _, _ = load_structure(payload.path)
         if len(payload.indices) >= u_orig.atoms.n_atoms:
             raise HTTPException(400, "Cannot delete all atoms")
         return _mv_edit(payload.path, lambda mv: mv.delete_atoms(payload.indices))
@@ -3472,7 +3684,7 @@ class EditSelectByStringRequest(BaseModel):
 def edit_select_by_string(payload: EditSelectByStringRequest) -> dict:
     """Return indices of atoms matching an MDAnalysis selection string."""
     try:
-        u = load_structure(payload.path)
+        u, _, _ = load_structure(payload.path)
         ag = u.select_atoms(payload.selection)
         return {"indices": ag.indices.tolist(), "count": int(ag.n_atoms)}
     except Exception as exc:
@@ -3794,7 +4006,7 @@ def mempro_apply(payload: MemProApplyRequest) -> dict:
 
     # Fallback: load oriented MemPro output only (protein + dummy atoms).
     try:
-        u = load_structure(oriented_pdb)
+        u, _, _ = load_structure(oriented_pdb)
         data: dict = {"path": oriented_pdb, "atoms": get_atoms(u.atoms)}
         try:
             data["bonds"] = u.atoms.bonds.indices.tolist()

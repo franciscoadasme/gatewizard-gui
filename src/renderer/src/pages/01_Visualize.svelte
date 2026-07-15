@@ -135,6 +135,16 @@
   /** @type {ViewerFraming | null} */
   let camera = $state(null)
   let loadingPDB = $state(false)
+  /** Phase label shown in the centered 3D viewport overlay while loading. */
+  let loadingPhase = $state('')
+  /** Elapsed seconds while loading (updated each second). */
+  let loadingElapsedSec = $state(0)
+  /** Optional topology paired with the open coordinate file. */
+  let topologyPath = $state(/** @type {string | null} */ (null))
+  /** Status line after load (e.g. Using system.prmtop for bonds). */
+  let loadBondStatus = $state('')
+  let loadingElapsedTimer = 0
+
   /** True while Auto-generate representations is fetching/building views. */
   let autoGeneratingViews = $state(false)
   /** @type {null | Awaited<ReturnType<typeof getStructure>>} */
@@ -570,8 +580,14 @@
       const data = await detectMolecules(filePath)
       /** @type {View[]} */
       const next = []
+      const globalBonds = structure?.bonds ?? []
       for (const [i, struc] of data.entries()) {
         const representation = struc.selection === 'protein' ? { type: 'cartoon' } : { type: 'vdw' }
+        const atomIdx = new Set((struc.atoms || []).map((a) => a.index))
+        const molBonds =
+          (struc.bonds && struc.bonds.length
+            ? struc.bonds
+            : globalBonds.filter(([ai, bi]) => atomIdx.has(ai) && atomIdx.has(bi)))
         let colorScheme
         if (struc.selection === 'protein' && struc.residues?.length) {
           colorScheme = { name: 'ss', resolver: ssScheme(struc.residues, {}) }
@@ -592,7 +608,7 @@
           representation,
           path: filePath,
           atoms: struc.atoms,
-          bonds: struc.bonds ?? [],
+          bonds: molBonds,
           residues: struc.residues ?? null,
           visible: struc.selection !== 'water',
           colorScheme,
@@ -635,10 +651,22 @@
 
   async function onOpenPdb() {
     const dlg = await window.api.openPdbDialog(workingDir || undefined)
-    if (dlg.canceled) {
+    if (dlg.canceled || !dlg.filePath) {
       return
     }
-    await loadStructure(dlg.filePath)
+    // Fresh open: let backend auto-detect a companion topology beside this PDB.
+    topologyPath = null
+    await loadStructure(dlg.filePath, { topology: null })
+  }
+
+  /** Explicit topology + coordinate pair when auto-detect is wrong or paths differ. */
+  async function onOpenWithTopology() {
+    const topDlg = await window.api.openTopologyDialog(workingDir || undefined)
+    if (topDlg.canceled || !topDlg.filePath) return
+    const pdbDlg = await window.api.openPdbDialog(workingDir || undefined)
+    if (pdbDlg.canceled || !pdbDlg.filePath) return
+    topologyPath = topDlg.filePath
+    await loadStructure(pdbDlg.filePath, { topology: topDlg.filePath })
   }
 
   /** @param {string} selection */
@@ -743,17 +771,49 @@
   }
 
   /** @param {string} path */
-  async function loadStructure(path, { resetCamera = true } = {}) {
+  async function loadStructure(path, { resetCamera = true, topology = null } = {}) {
+    const started = Date.now()
     try {
       loadingPDB = true
-      // Precompute bonds on load so ball-and-stick is ready without a second fetch.
+      loadingElapsedSec = 0
+      loadingPhase = 'Reading file…'
+      loadBondStatus = ''
+      if (loadingElapsedTimer) clearInterval(loadingElapsedTimer)
+      loadingElapsedTimer = setInterval(() => {
+        loadingElapsedSec = Math.floor((Date.now() - started) / 1000)
+      }, 250)
+
+      const top = topology !== undefined ? topology : topologyPath
+      loadingPhase = top
+        ? 'Using topology for bonds…'
+        : 'Looking for companion topology / bonds…'
+
+      // Prefer companion topology when present (backend auto-detects if topology is null).
+      // Bonds are ready before first paint so ball-and-stick stays instant afterward.
       structure = await getStructure({
         path,
+        topology: top,
         needs_bonds: true,
         needs_secondary_structure: false,
         save_dir: workingDir || null
       })
+      loadingPhase = 'Building atom list…'
       filePath = structure.path
+      if (structure.topology_used) {
+        topologyPath = structure.topology_used
+        const topName = String(structure.topology_used).split(/[/\\]/).pop()
+        const src = structure.bond_source || 'topology'
+        loadBondStatus =
+          src === 'topology'
+            ? `Using ${topName} for bonds`
+            : `Bonds: ${src}` + (topName ? ` (${topName})` : '')
+      } else {
+        topologyPath = null
+        loadBondStatus =
+          structure.bond_source && structure.bond_source !== 'none'
+            ? `Bonds: ${structure.bond_source}`
+            : ''
+      }
       logEvent(
         'info',
         'view',
@@ -777,7 +837,12 @@
       structure = null
       alert(ex instanceof Error ? ex.message : String(ex))
     } finally {
+      if (loadingElapsedTimer) {
+        clearInterval(loadingElapsedTimer)
+        loadingElapsedTimer = 0
+      }
       loadingPDB = false
+      loadingPhase = ''
     }
   }
 
@@ -2736,6 +2801,26 @@
           />
         {/if}
       {/if}
+      {#if loadingPDB}
+        <div
+          class="absolute inset-0 z-40 flex items-center justify-center bg-neutral-950/55"
+          style="backdrop-filter:blur(2px)"
+          aria-live="polite"
+          aria-busy="true"
+        >
+          <div
+            class="flex max-w-sm flex-col items-center gap-3 rounded-xl border border-neutral-600/50 bg-neutral-900/95 px-6 py-5 text-center text-neutral-100 shadow-xl"
+          >
+            <Spinner className="size-8 text-sky-400" />
+            <div class="space-y-1">
+              <p class="text-sm font-medium">{loadingPhase || 'Loading structure…'}</p>
+              <p class="text-xs text-neutral-400">
+                {loadingElapsedSec < 1 ? 'Starting…' : `${loadingElapsedSec}s elapsed`}
+              </p>
+            </div>
+          </div>
+        </div>
+      {/if}
     </div>
 
     <!-- Right-panel resize handle -->
@@ -2761,6 +2846,8 @@
           {#each views as view, i (view.id)}
             <ViewItem
               bind:view={views[i]}
+              sourceBonds={structure?.bonds ?? null}
+              topology={topologyPath}
               onremove={() => removeView(view.id)}
               onduplicate={() => duplicateView(view.id)}
               onsplitbychain={() => splitViewByChain(view.id)}
@@ -3278,24 +3365,35 @@
       class="flex items-center gap-1 rounded border border-neutral-300 bg-neutral-100 px-2 py-0.5 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 active:translate-y-0.5 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
       onclick={onOpenPdb}
       disabled={loadingPDB}
-      title="Open PDB file"
+      title="Open PDB/CIF (auto-uses companion .prmtop/.psf in the same folder when found)"
     >
-      {#if loadingPDB}
-        <Spinner />
-        Loading structure / bonds…
-      {:else}
-        <svg viewBox="0 0 16 16" class="size-3 fill-current" aria-hidden="true">
-          <path
-            d="M1.5 3A1.5 1.5 0 0 0 0 4.5v8A1.5 1.5 0 0 0 1.5 14h13a1.5 1.5 0 0 0 1.5-1.5v-6A1.5 1.5 0 0 0 14.5 5H7.707l-1.5-1.5H1.5z"
-          />
-        </svg>
-        Open
-      {/if}
+      <svg viewBox="0 0 16 16" class="size-3 fill-current" aria-hidden="true">
+        <path
+          d="M1.5 3A1.5 1.5 0 0 0 0 4.5v8A1.5 1.5 0 0 0 1.5 14h13a1.5 1.5 0 0 0 1.5-1.5v-6A1.5 1.5 0 0 0 14.5 5H7.707l-1.5-1.5H1.5z"
+        />
+      </svg>
+      Open
+    </button>
+    <button
+      type="button"
+      class="flex items-center gap-1 rounded border border-neutral-300 bg-neutral-100 px-2 py-0.5 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 active:translate-y-0.5 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
+      onclick={onOpenWithTopology}
+      disabled={loadingPDB}
+      title="Open topology (.prmtop/.psf) then a coordinate PDB"
+    >
+      Open with topology…
     </button>
     {#if filePath && !loadingPDB}
       <span class="max-w-36 truncate font-mono text-neutral-500 dark:text-neutral-400" title={filePath}>
         {filePath.split(/[/\\]/).at(-1)}
       </span>
+      {#if loadBondStatus}
+        <span
+          class="max-w-48 truncate text-[10px] text-sky-600 dark:text-sky-400"
+          title={loadBondStatus}
+          >{loadBondStatus}</span
+        >
+      {/if}
     {/if}
 
     <!-- PDB download -->

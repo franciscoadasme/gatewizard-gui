@@ -8,6 +8,8 @@ const api = {
   openFilesDialog: (title, filters, defaultPath = undefined) =>
     ipcRenderer.invoke('dialog:openFiles', title, filters, defaultPath),
   openPdbDialog: (defaultPath = undefined) => ipcRenderer.invoke('dialog:openPdb', defaultPath),
+  openTopologyDialog: (defaultPath = undefined) =>
+    ipcRenderer.invoke('dialog:openTopology', defaultPath),
   openDirectoryDialog: (title = 'Select Directory', defaultPath = undefined) =>
     ipcRenderer.invoke('dialog:openDirectory', title, defaultPath),
   openLigandFileDialog: (title, extensions, defaultPath = undefined) =>

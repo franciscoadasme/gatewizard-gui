@@ -240,15 +240,48 @@ export function detectLipidHeadgroups(payload) {
 }
 
 /**
+ * Expand columnar atom arrays from /get-structure into the object list the viewer expects.
+ * @param {any} data
+ * @returns {any}
+ */
+function normalizeStructurePayload(data) {
+  if (!data || !data.atoms) return data
+  if (Array.isArray(data.atoms)) return data
+  if (data.atoms_format === 'columnar' || (data.atoms.x && Array.isArray(data.atoms.x))) {
+    const cols = data.atoms
+    const n = cols.x?.length ?? 0
+    const atoms = new Array(n)
+    for (let i = 0; i < n; i++) {
+      atoms[i] = {
+        x: cols.x[i],
+        y: cols.y[i],
+        z: cols.z[i],
+        element: cols.element[i],
+        name: cols.name[i],
+        index: cols.index[i],
+        res_name: cols.res_name[i],
+        res_id: cols.res_id[i],
+        chain_id: cols.chain_id[i]
+      }
+    }
+    return { ...data, atoms, atoms_format: 'objects' }
+  }
+  return data
+}
+
+/**
  * @param {{ path: string, topology: string|null, selection: string|null, needs_bonds: boolean, needs_secondary_structure: boolean, save_dir?: string|null }} payload
  * @returns {Promise<{
  *   path: string,
  *   atoms: { x: number, y: number, z: number, element: string, name: string }[],
  *   bonds: [number, number][],
+ *   topology_used?: string|null,
+ *   bond_source?: string,
  *   residues: Array<{ chain: string, resname: string, number: number, atom_indices: number[], ca_index?: number, sec?: string }> }>}
  */
-export function getStructure(payload) {
-  return backendJson('/get-structure', payload)
+export async function getStructure(payload) {
+  const data = await backendJson('/get-structure', payload)
+  return normalizeStructurePayload(data)
 }
 
 /**

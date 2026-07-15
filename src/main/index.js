@@ -818,6 +818,23 @@ ipcMain.handle('dialog:openPdb', async (_event, defaultPath = undefined) => {
   return { canceled: false, filePath: result.filePaths[0] }
 })
 
+ipcMain.handle('dialog:openTopology', async (_event, defaultPath = undefined) => {
+  const win = BrowserWindow.getFocusedWindow()
+  const result = await dialog.showOpenDialog(win ?? undefined, {
+    title: 'Open topology',
+    defaultPath: resolveDialogDefaultPath(defaultPath),
+    filters: [
+      { name: 'Topology', extensions: ['prmtop', 'parm7', 'psf', 'top'] },
+      { name: 'All files', extensions: ['*'] }
+    ],
+    properties: ['openFile']
+  })
+  if (result.canceled || result.filePaths.length === 0) {
+    return { canceled: true }
+  }
+  return { canceled: false, filePath: result.filePaths[0] }
+})
+
 ipcMain.handle(
   'dialog:openDirectory',
   async (_event, title = 'Select Directory', defaultPath = undefined) => {
