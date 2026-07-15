@@ -746,9 +746,10 @@
   async function loadStructure(path, { resetCamera = true } = {}) {
     try {
       loadingPDB = true
+      // Precompute bonds on load so ball-and-stick is ready without a second fetch.
       structure = await getStructure({
         path,
-        needs_bonds: false,
+        needs_bonds: true,
         needs_secondary_structure: false,
         save_dir: workingDir || null
       })
@@ -2173,6 +2174,30 @@
     visualizeStatus.openPackmolDialog = false
   }
 
+  /** Parent directory of a file path (POSIX / Windows). */
+  function parentOfFile(pathStr) {
+    if (!pathStr) return ''
+    const normalized = String(pathStr).replace(/\\/g, '/')
+    const i = normalized.lastIndexOf('/')
+    if (i <= 0) return pathStr
+    return pathStr.slice(0, i)
+  }
+
+  /**
+   * Ask before running when the top-bar working directory is unset.
+   * @param {'mempro' | 'packmol'} kind
+   */
+  function confirmProceedWithoutWorkingDir(kind) {
+    if (workingDir) return true
+    const detail =
+      kind === 'mempro'
+        ? 'MemPro job state will not be saved to disk and results may be lost if the app restarts.'
+        : 'Packmol output will be written next to the input PDB instead of under a project working directory.'
+    return confirm(
+      `No working directory is set.\n\n${detail}\n\nDo you want to proceed anyway?`
+    )
+  }
+
   async function openPackmolDialog() {
     toolsMenuOpen = false
     packmolError = ''
@@ -2247,8 +2272,11 @@
   }
 
   async function onPackmolHydrate() {
-    if (!filePath || !workingDir || !packmolBoxValid) return
+    if (!filePath || !packmolBoxValid) return
     if (!packmolAvailable?.available) return
+    if (!confirmProceedWithoutWorkingDir('packmol')) return
+    const outBase = workingDir || parentOfFile(filePath)
+    if (!outBase) return
     if (!packmolBoxMatchesVolume) {
       const msg = packmolVolumeBox
         ? 'The hydration box changed since volume was last calculated. Recalculate volume for an updated water count.\n\nFill with water anyway?'
@@ -2264,7 +2292,7 @@
     try {
       const r = await packmolHydrateCavity({
         path: filePath,
-        workingDir,
+        workingDir: outBase,
         outputFolderName: packmolOutputFolder || defaultHydrationFolderName(filePath),
         boxMin: packmolBoxMinArr,
         boxMax: packmolBoxMaxArr,
@@ -2327,8 +2355,11 @@
   }
 
   async function onPackmolRunCustom() {
-    if (!workingDir || !packmolCustomInp.trim()) return
+    if (!packmolCustomInp.trim()) return
     if (!packmolAvailable?.available) return
+    if (!confirmProceedWithoutWorkingDir('packmol')) return
+    const outBase = workingDir || parentOfFile(filePath)
+    if (!outBase) return
     packmolBusy = true
     packmolError = ''
     visualizeStatus.packmolStatus = 'running'
@@ -2336,7 +2367,7 @@
     try {
       const r = await packmolRunCustom({
         inpText: packmolCustomInp,
-        workingDir,
+        workingDir: outBase,
         outputFolderName:
           packmolOutputFolder || defaultHydrationFolderName(filePath) || 'hydration_custom',
         path: filePath || null
@@ -2361,6 +2392,7 @@
 
   async function onMemproRun() {
     if (!filePath) return
+    if (!confirmProceedWithoutWorkingDir('mempro')) return
     memproBusy = true
     try {
       const r = await memproRun({
@@ -3250,7 +3282,7 @@
     >
       {#if loadingPDB}
         <Spinner />
-        Loading…
+        Loading structure / bonds…
       {:else}
         <svg viewBox="0 0 16 16" class="size-3 fill-current" aria-hidden="true">
           <path
@@ -4108,7 +4140,8 @@
     <div
       class="mx-4 mb-2 rounded border border-yellow-600/40 bg-yellow-50 px-3 py-2 text-xs text-yellow-900 dark:bg-yellow-950/30 dark:text-yellow-200"
     >
-      No working directory selected. MemPro job state may not persist across restarts.
+      No working directory selected. Set one in the top bar to save MemPro job state. You can still run
+      MemPro, but you will be asked to confirm and results may not persist after restart.
     </div>
   {/if}
 
@@ -4375,7 +4408,9 @@
       <div
         class="mb-3 rounded border border-yellow-600/40 bg-yellow-50 px-3 py-2 text-yellow-900 dark:bg-yellow-950/30 dark:text-yellow-200"
       >
-        Select a working directory before running Packmol. Hydration output cannot be saved.
+        No working directory selected. Set one in the top bar before running Packmol when possible.
+        You can still fill or run custom input; you will be asked to confirm, and output will go next
+        to the input PDB.
       </div>
     {/if}
 
@@ -4618,7 +4653,6 @@
         type="button"
         class="flex items-center gap-1 rounded bg-yellow-600 px-3 py-1 text-xs font-semibold text-black hover:bg-yellow-500 disabled:opacity-40"
         disabled={packmolBusy ||
-          !workingDir ||
           !packmolAvailable?.available ||
           !packmolBoxValid ||
           (packmolNWaters < 1 && !(packmolVolume?.suggested_waters > 0))}
@@ -4634,7 +4668,7 @@
       <button
         type="button"
         class="flex items-center gap-1 rounded bg-yellow-600 px-3 py-1 text-xs font-semibold text-black hover:bg-yellow-500 disabled:opacity-40"
-        disabled={packmolBusy || !workingDir || !packmolAvailable?.available || !packmolCustomInp.trim()}
+        disabled={packmolBusy || !packmolAvailable?.available || !packmolCustomInp.trim()}
         onclick={onPackmolRunCustom}
         >{#if packmolBusy}<Spinner />{/if} Run custom PACKMOL</button
       >
