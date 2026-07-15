@@ -150,14 +150,22 @@ export function detectTerminalCaps(filePath) {
  * @param {string} ligandName
  * @param {number} charge
  * @param {number} multiplicity
- * @returns {Promise<{ success: boolean, message: string, frcmod: string, lib: string }>}
+ * @param {string | null} [outputDir] Builder output folder (ligand_params written under here)
+ * @returns {Promise<{ success: boolean, message: string, frcmod: string, lib: string, mol2?: string }>}
  */
-export function parametrizeLigand(filePath, ligandName, charge = 0, multiplicity = 1) {
+export function parametrizeLigand(
+  filePath,
+  ligandName,
+  charge = 0,
+  multiplicity = 1,
+  outputDir = null
+) {
   return backendJson('/parametrize-ligand', {
     path: filePath,
     ligandName,
     charge,
-    multiplicity
+    multiplicity,
+    ...(outputDir ? { outputDir } : {})
   })
 }
 
@@ -175,12 +183,14 @@ export function getLigandImage(opts) {
  * Check which ligands already have frcmod/lib from a previous parametrization run.
  * @param {string} pdbPath
  * @param {string[]} ligandNames
+ * @param {string | null} [outputDir] Preferred Builder output folder to search first
  * @returns {Promise<{ parametrized: Record<string, { frcmod: string, lib: string, mol2: string|null }> }>}
  */
-export function checkLigandParametrization(pdbPath, ligandNames) {
+export function checkLigandParametrization(pdbPath, ligandNames, outputDir = null) {
   return backendJson('/check-ligand-parametrization', {
     pdbPath,
-    ligandNames
+    ligandNames,
+    ...(outputDir ? { outputDir } : {})
   })
 }
 

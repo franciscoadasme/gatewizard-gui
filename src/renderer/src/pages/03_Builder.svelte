@@ -76,7 +76,23 @@
   let boxDimY = $state(100)
   let boxDimZ = $state(100)
 
-  /** @type {{ name: string, charge: number, multiplicity: number, status: string, frcmod: string, lib: string, mol2: string, pdb_lines: string[], imageBase64: string }[]} */
+  /**
+   * @typedef {{
+   *   name: string,
+   *   charge: number,
+   *   multiplicity: number,
+   *   status: string,
+   *   frcmod: string,
+   *   lib: string,
+   *   mol2: string,
+   *   pdb_lines: string[],
+   *   imageView: 'initial' | 'final',
+   *   initialImageBase64: string,
+   *   finalImageBase64: string,
+   *   imageLoading: boolean
+   * }} LigandRow
+   */
+  /** @type {LigandRow[]} */
   let ligands = $state([])
   let detectingLigands = $state(false)
 
@@ -263,17 +279,65 @@
     if (show) await refreshJobLog(index)
   }
 
-  /** Load the 2D image for a ligand (initial from pdb_lines, or final from mol2). */
-  async function loadLigandImage(/** @type {number} */ index) {
+  /** Resolve Builder output folder for ligand_params/; sync the left-panel name if needed. */
+  function requireBuilderOutputDir() {
+    if (!workingDir) {
+      throw new Error('Set a Working Directory in the top bar before parametrizing ligands.')
+    }
+    const folder = syncOutputFolderName()
+    const dir = outputFolderPath(workingDir, folder)
+    if (!dir) {
+      throw new Error('Could not resolve the Builder output folder for ligand parametrization.')
+    }
+    return dir
+  }
+
+  /**
+   * Load/cached 2D image for the active view (initial = PDB lines, final = mol2).
+   * @param {number} index
+   * @param {'initial' | 'final'} [view]
+   */
+  async function loadLigandImage(index, view) {
     const lig = ligands[index]
+    if (!lig) return
+    const targetView = view ?? lig.imageView ?? (lig.mol2 ? 'final' : 'initial')
+    if (targetView === 'final' && !lig.mol2) return
+    if (targetView === 'initial' && !(lig.pdb_lines?.length > 0)) return
+
+    const cached =
+      targetView === 'final' ? lig.finalImageBase64 : lig.initialImageBase64
+    if (cached) {
+      if (lig.imageView !== targetView) {
+        ligands[index] = { ...ligands[index], imageView: targetView }
+      }
+      return
+    }
+
+    ligands[index] = { ...ligands[index], imageView: targetView, imageLoading: true }
     try {
       /** @type {{ pdbLines?: string[], mol2Path?: string }} */
-      const opts = lig.mol2 ? { mol2Path: lig.mol2 } : { pdbLines: lig.pdb_lines }
+      const opts =
+        targetView === 'final' ? { mol2Path: lig.mol2 } : { pdbLines: lig.pdb_lines }
       const { image } = await getLigandImage(opts)
-      ligands[index] = { ...ligands[index], imageBase64: image }
-    } catch {
-      // Silently ignore image failures — non-critical
+      const next = { ...ligands[index], imageView: targetView, imageLoading: false }
+      if (targetView === 'final') next.finalImageBase64 = image
+      else next.initialImageBase64 = image
+      ligands[index] = next
+    } catch (error) {
+      ligands[index] = { ...ligands[index], imageLoading: false }
+      console.error(`Ligand 2D image (${targetView}) failed for ${lig.name}:`, error)
     }
+  }
+
+  /**
+   * @param {number} index
+   * @param {'initial' | 'final'} view
+   */
+  async function setLigandImageView(index, view) {
+    const lig = ligands[index]
+    if (!lig || lig.imageView === view) return
+    if (view === 'final' && !lig.mol2) return
+    await loadLigandImage(index, view)
   }
 
   async function onDetectLigands() {
@@ -290,7 +354,10 @@
         lib: '',
         mol2: '',
         pdb_lines: l.pdb_lines || [],
-        imageBase64: ''
+        imageView: /** @type {'initial' | 'final'} */ ('initial'),
+        initialImageBase64: '',
+        finalImageBase64: '',
+        imageLoading: false
       }))
 
       // Check if any ligands were already parametrized in a previous run
@@ -302,7 +369,17 @@
         `${ligands.length} ligand(s): ${names.join(', ') || '—'}`
       )
       if (names.length > 0) {
-        const { parametrized } = await checkLigandParametrization(workingFile, names)
+        let outputDirForCache = ''
+        try {
+          if (workingDir) outputDirForCache = requireBuilderOutputDir()
+        } catch {
+          // Cache check can still fall back to the PDB directory on the backend
+        }
+        const { parametrized } = await checkLigandParametrization(
+          workingFile,
+          names,
+          outputDirForCache || null
+        )
         for (let i = 0; i < ligands.length; i++) {
           const cached = parametrized[ligands[i].name]
           if (cached) {
@@ -311,14 +388,15 @@
               status: 'completed',
               frcmod: cached.frcmod,
               lib: cached.lib,
-              mol2: cached.mol2 || ''
+              mol2: cached.mol2 || '',
+              imageView: cached.mol2 ? 'final' : 'initial'
             }
           }
         }
       }
 
       // Load images for all detected ligands (in parallel)
-      await Promise.all(ligands.map((_, i) => loadLigandImage(i)))
+      await Promise.all(ligands.map((lig, i) => loadLigandImage(i, lig.imageView)))
     } catch (error) {
       // Show error in the first job or as a standalone message
       console.error('Ligand detection error:', error)
@@ -330,38 +408,56 @@
   async function onParametrizeLigand(/** @type {number} */ index) {
     const lig = ligands[index]
     try {
+      const builderOut = requireBuilderOutputDir()
       ligands[index] = { ...lig, status: 'running' }
-      const result = await parametrizeLigand(workingFile, lig.name, lig.charge, lig.multiplicity)
+      const result = await parametrizeLigand(
+        workingFile,
+        lig.name,
+        lig.charge,
+        lig.multiplicity,
+        builderOut
+      )
       ligands[index] = {
         ...lig,
         status: 'completed',
         frcmod: result.frcmod || '',
         lib: result.lib || '',
-        mol2: result.mol2 || ''
+        mol2: result.mol2 || '',
+        imageView: 'final',
+        finalImageBase64: '', // force reload from new mol2
+        imageLoading: false
       }
       logEvent(
         'detail',
         'build',
         `Parametrized ligand: ${lig.name}`,
-        `FRCMOD: ${(result.frcmod || '').split('/').pop()}`
+        `Output: ${builderOut}/ligand_params/${lig.name}`
       )
-      // Reload image from mol2 (better bond orders)
-      await loadLigandImage(index)
+      await loadLigandImage(index, 'final')
     } catch (error) {
       ligands[index] = { ...lig, status: 'failed' }
       console.error(`Parametrization of ${lig.name} failed:`, error)
+      alert(error instanceof Error ? error.message : String(error))
     }
   }
 
   async function onBrowseFrcmod(/** @type {number} */ index) {
-    const result = await window.api.openLigandFileDialog('Select frcmod file', ['frcmod'])
+    const result = await window.api.openLigandFileDialog(
+      'Select frcmod file',
+      ['frcmod'],
+      workingDir || undefined
+    )
     if (!result.canceled) {
       ligands[index] = { ...ligands[index], frcmod: result.filePath }
     }
   }
 
   async function onBrowseLib(/** @type {number} */ index) {
-    const result = await window.api.openLigandFileDialog('Select lib file', ['lib'])
+    const result = await window.api.openLigandFileDialog(
+      'Select lib file',
+      ['lib'],
+      workingDir || undefined
+    )
     if (!result.canceled) {
       ligands[index] = { ...ligands[index], lib: result.filePath }
     }
@@ -383,7 +479,10 @@
         lib: '',
         mol2: '',
         pdb_lines: [],
-        imageBase64: ''
+        imageView: 'initial',
+        initialImageBase64: '',
+        finalImageBase64: '',
+        imageLoading: false
       }
     ]
   }
@@ -662,7 +761,7 @@
   const showProteinHWarning = $derived(proteinHCount > 0 && !removeProteinH)
 
   async function onBrowse() {
-    const result = await window.api.openPdbDialog()
+    const result = await window.api.openPdbDialog(workingDir || undefined)
     if (!result.canceled) {
       workingFile = result.filePath
       outputFolderName = defaultBuildFolderName(result.filePath)
@@ -840,7 +939,7 @@
               variant="outline"
               className="w-full text-xs"
               onclick={() => onParametrizeLigand(i)}
-              disabled={!workingFile || lig.status === 'running'}
+              disabled={!workingFile || !workingDir || lig.status === 'running'}
             >
               {lig.status === 'completed'
                 ? `Re-parametrize ${lig.name || 'ligand'}`
@@ -849,6 +948,11 @@
           {/if}
         </div>
       {/each}
+      {#if ligands.length > 0 && !workingDir}
+        <p class="sidebar-hint">
+          Set a working directory to write ligand_params under the Builder output folder.
+        </p>
+      {/if}
     </div>
     <Divider />
 
@@ -1263,29 +1367,55 @@
   <!-- ── Right: Ligand Preview & Job Tracker ── -->
   <div class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
     <!-- Ligand 2D images -->
-    {#if ligands.some((l) => l.imageBase64)}
+    {#if ligands.some((l) => l.initialImageBase64 || l.finalImageBase64 || l.imageLoading)}
       <div class="mx-4 mt-4 shrink-0">
         <h2 class="mb-2 text-xs font-semibold dark:text-neutral-400">Ligand Structures</h2>
         <div class="flex flex-wrap gap-3">
-          {#each ligands as lig (lig.name)}
-            {#if lig.imageBase64}
+          {#each ligands as lig, i (lig.name)}
+            {@const shown =
+              lig.imageView === 'final' ? lig.finalImageBase64 : lig.initialImageBase64}
+            {#if shown || lig.imageLoading || lig.pdb_lines?.length}
               <div class="sidebar-panel space-y-1 p-2">
                 <div class="flex items-center gap-1.5 text-xs">
                   <span class="sidebar-subheading">{lig.name}</span>
-                  <span
-                    class="rounded px-1 py-0.5 text-xs"
-                    class:bg-green-800={lig.status === 'completed'}
-                    class:bg-neutral-700={lig.status !== 'completed'}
-                  >
-                    {lig.mol2 ? 'Final' : 'Initial'}
-                  </span>
+                  <div class="inline-flex overflow-hidden rounded border border-neutral-600">
+                    <button
+                      type="button"
+                      class="px-1.5 py-0.5 text-xs"
+                      class:bg-neutral-700={lig.imageView === 'initial'}
+                      class:text-white={lig.imageView === 'initial'}
+                      class:dark:text-neutral-400={lig.imageView !== 'initial'}
+                      disabled={!(lig.pdb_lines?.length > 0) || lig.imageLoading}
+                      onclick={() => setLigandImageView(i, 'initial')}
+                    >
+                      Initial
+                    </button>
+                    <button
+                      type="button"
+                      class="border-l border-neutral-600 px-1.5 py-0.5 text-xs"
+                      class:bg-green-800={lig.imageView === 'final'}
+                      class:text-white={lig.imageView === 'final'}
+                      class:dark:text-neutral-400={lig.imageView !== 'final'}
+                      disabled={!lig.mol2 || lig.imageLoading}
+                      title={lig.mol2 ? 'Show parametrized mol2 2D' : 'Parametrize first'}
+                      onclick={() => setLigandImageView(i, 'final')}
+                    >
+                      Final
+                    </button>
+                  </div>
                 </div>
-                <img
-                  src="data:image/png;base64,{lig.imageBase64}"
-                  alt="2D structure of {lig.name}"
-                  class="rounded"
-                  style="max-width: 300px; max-height: 240px;"
-                />
+                {#if shown}
+                  <img
+                    src="data:image/png;base64,{shown}"
+                    alt="2D structure of {lig.name} ({lig.imageView})"
+                    class="rounded"
+                    style="max-width: 300px; max-height: 240px;"
+                  />
+                {:else if lig.imageLoading}
+                  <p class="sidebar-hint px-1 py-6 text-center">Loading 2D…</p>
+                {:else}
+                  <p class="sidebar-hint px-1 py-6 text-center">No 2D image available</p>
+                {/if}
               </div>
             {/if}
           {/each}

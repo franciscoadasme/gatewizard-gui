@@ -460,6 +460,13 @@ class ParametrizeLigandRequest(BaseModel):
     ligand_name: str = Field(..., description="3-letter residue name of the ligand")
     charge: int = Field(0, description="Net charge of the ligand")
     multiplicity: int = Field(1, description="Spin multiplicity")
+    output_dir: str | None = Field(
+        None,
+        description=(
+            "Base directory for ligand_params/ (Builder output folder). "
+            "Defaults to the PDB parent directory if omitted."
+        ),
+    )
 
 
 class ValidateBuilderRequest(BaseModel):
@@ -728,7 +735,10 @@ def parametrize_ligand_endpoint(payload: ParametrizeLigandRequest) -> dict:
     path = os.path.abspath(os.path.expanduser(payload.path))
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
-    working_dir = os.path.dirname(path)
+    if payload.output_dir:
+        working_dir = os.path.abspath(os.path.expanduser(payload.output_dir))
+    else:
+        working_dir = os.path.dirname(path)
     try:
         result = parametrize_ligand_from_system_pdb(
             pdb_file=path,
@@ -789,6 +799,13 @@ def ligand_image_endpoint(payload: LigandImageRequest) -> dict:
 class CheckParamRequest(BaseModel):
     pdb_path: str
     ligand_names: list[str]
+    output_dir: str | None = Field(
+        None,
+        description=(
+            "Preferred base directory for ligand_params/ (Builder output folder). "
+            "Falls back to the PDB parent if not provided or nothing is found there."
+        ),
+    )
 
 
 def _tleap_log_ok(log_path: Path) -> bool:
@@ -801,25 +818,42 @@ def _tleap_log_ok(log_path: Path) -> bool:
         return False
 
 
+def _find_ligand_param_cache(
+    base_dirs: list[Path], ligand_names: list[str]
+) -> dict[str, dict[str, str | None]]:
+    """Return cached frcmod/lib/mol2 for ligands under the first matching base dir."""
+    found: dict[str, dict[str, str | None]] = {}
+    for base in base_dirs:
+        for name in ligand_names:
+            if name in found:
+                continue
+            lig_dir = base / "ligand_params" / name
+            frcmod = lig_dir / f"{name}.frcmod"
+            lib = lig_dir / f"{name}.lib"
+            mol2 = lig_dir / f"{name}.mol2"
+            tleap_log = lig_dir / "logs" / "tleap.log"
+            if frcmod.is_file() and lib.is_file() and tleap_log.is_file():
+                if _tleap_log_ok(tleap_log):
+                    found[name] = {
+                        "frcmod": str(frcmod),
+                        "lib": str(lib),
+                        "mol2": str(mol2) if mol2.is_file() else None,
+                    }
+        if len(found) == len(ligand_names):
+            break
+    return found
+
+
 @app.post("/check-ligand-parametrization")
 def check_ligand_param(payload: CheckParamRequest) -> dict:
     """Check which ligands already have frcmod/lib from a previous run."""
     pdb_dir = Path(os.path.abspath(os.path.expanduser(payload.pdb_path))).parent
-    found = {}
-    for name in payload.ligand_names:
-        lig_dir = pdb_dir / "ligand_params" / name
-        frcmod = lig_dir / f"{name}.frcmod"
-        lib = lig_dir / f"{name}.lib"
-        mol2 = lig_dir / f"{name}.mol2"
-        tleap_log = lig_dir / "logs" / "tleap.log"
-        if frcmod.is_file() and lib.is_file() and tleap_log.is_file():
-            if _tleap_log_ok(tleap_log):
-                found[name] = {
-                    "frcmod": str(frcmod),
-                    "lib": str(lib),
-                    "mol2": str(mol2) if mol2.is_file() else None,
-                }
-    return {"parametrized": found}
+    bases: list[Path] = []
+    if payload.output_dir:
+        bases.append(Path(os.path.abspath(os.path.expanduser(payload.output_dir))))
+    if pdb_dir not in bases:
+        bases.append(pdb_dir)
+    return {"parametrized": _find_ligand_param_cache(bases, payload.ligand_names)}
 
 
 class JobStatusRequest(BaseModel):
