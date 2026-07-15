@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Preparation:** split protonation table + embedded 3D viewer (tube protein, CPK ball-and-stick on row / Ctrl+click multi-select); approximate ghost H preview when State changes (`/preview-protonation`)
 - **Visualize / Preparation:** fixed `/get-structure` crash when guessing bonds on a newly cached file (`bond_guessed` on None cache entry)
 - **Builder:** MD engine selector only shown for 4-site waters (OPC / TIP4P-D / TIP4P-Ew), with a short note that NAMD needs FlexibleWater; hidden for other water models (generic Amber path)
+- **Visualize:** large-system load — auto-use companion `.prmtop`/`.psf` when beside the PDB (skip full `guess_bonds`); solute+water bond fallback; columnar atom payload + gzip; centered 3D spinner with elapsed time; optional “Open with topology…”
+- **Visualize:** ball-and-stick reuses bonds already loaded with the structure (filter by selection) instead of re-calling `/get-structure` when switching protein/ligand views
 
 ## [1.0.10] - 2026-07-14
 

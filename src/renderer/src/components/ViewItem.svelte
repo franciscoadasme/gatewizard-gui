@@ -103,8 +103,26 @@ Distance:
    * }} View
    */
 
-  /** @type {{ view: View, onremove: () => void, onduplicate?: () => void, onsplitbychain?: () => void, oncenter?: () => void }} */
-  let { view = $bindable(), onremove, onduplicate, onsplitbychain, oncenter } = $props()
+  /**
+   * @type {{
+   *   view: View,
+   *   onremove: () => void,
+   *   onduplicate?: () => void,
+   *   onsplitbychain?: () => void,
+   *   oncenter?: () => void,
+   *   sourceBonds?: [number, number][] | null,
+   *   topology?: string | null
+   * }}
+   */
+  let {
+    view = $bindable(),
+    onremove,
+    onduplicate,
+    onsplitbychain,
+    oncenter,
+    sourceBonds = null,
+    topology = null
+  } = $props()
 
   let colorPickerOpen = $state(false)
   /** @type {{ x: number, y: number } | null} */
@@ -169,13 +187,46 @@ Distance:
     })
   })
 
+  /** @param {Atom[] | undefined | null} atoms */
+  function filterSourceBonds(atoms) {
+    if (!sourceBonds?.length || !atoms?.length) return null
+    const idx = new Set(atoms.map((a) => a.index))
+    return sourceBonds.filter(([i, j]) => idx.has(i) && idx.has(j))
+  }
+
+  /** @param {Atom[] | undefined | null} atoms @param {[number,number][] | undefined | null} bonds */
+  function bondsLookSparse(atoms, bonds) {
+    const n = atoms?.length || 0
+    if (!n) return true
+    return (bonds?.length || 0) < n / 2
+  }
+
+  /** Prefer bonds already loaded with the full structure (e.g. from prmtop). */
+  function tryApplySourceBonds() {
+    if (!bondsLookSparse(view.atoms, view.bonds)) return true
+    const filtered = filterSourceBonds(view.atoms)
+    if (filtered && !bondsLookSparse(view.atoms, filtered)) {
+      view.bonds = filtered
+      return true
+    }
+    return false
+  }
+
   $effect(() => {
     const repr = view.representation.type
-    const needsFetch = untrack(
-      () =>
-        (repr === 'ball-stick' && (view.bonds?.length || 0) < view.atoms.length / 2) ||
-        ((repr === 'cartoon' || repr === 'tube') && !(view.residues?.length))
-    )
+    // Track source bonds / current atoms so switching to ball-stick reuses prmtop bonds.
+    void sourceBonds
+    void view.atoms
+    void view.bonds
+    const needsFetch = untrack(() => {
+      if ((repr === 'cartoon' || repr === 'tube') && !(view.residues?.length)) return true
+      if (repr === 'ball-stick' && bondsLookSparse(view.atoms, view.bonds)) {
+        // Reuse global structure bonds first — avoid a second /get-structure.
+        if (tryApplySourceBonds()) return false
+        return true
+      }
+      return false
+    })
     if (!needsFetch) return
     scheduleStructureUpdate()
   })
@@ -215,18 +266,27 @@ Distance:
       view.representation.type === 'cartoon' ||
       view.representation.type === 'tube' ||
       colorSchemeName === 'ss'
+    const wantsBallStick = view.representation.type === 'ball-stick'
+    // If we already have (or can filter) enough bonds, skip needs_bonds on the server.
+    const canReuseBonds = wantsBallStick && tryApplySourceBonds()
     const fetchGen = ++structureFetchGen
     loadingStructure = true
     getStructure({
       path: view.path,
+      topology: topology || null,
       selection: namedSelection === 'other' ? view.selection : namedSelection,
-      needs_bonds: view.representation.type === 'ball-stick',
+      needs_bonds: wantsBallStick && !canReuseBonds,
       needs_secondary_structure: needsSS
     })
       .then((structure) => {
         if (fetchGen !== structureFetchGen) return
         if (structure.atoms?.length) view.atoms = structure.atoms
-        if (structure.bonds) view.bonds = structure.bonds
+        if (structure.bonds?.length) {
+          view.bonds = structure.bonds
+        } else if (wantsBallStick || bondsLookSparse(view.atoms, view.bonds)) {
+          const filtered = filterSourceBonds(view.atoms)
+          if (filtered?.length) view.bonds = filtered
+        }
         if (structure.residues?.length) view.residues = structure.residues
         invalidSelection = false
         loadingStructure = false
