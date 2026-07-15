@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **File dialogs (Linux):** open dialogs start in the set working directory; if none is set, use the directory where GateWizard was launched (avoids GTK “Recent” as the default view)
 - **Settings → Versions:** Regroup dependencies in External Python Packages, External tools, and MD Engines lists. All available engines are discovered as in Equilibration page.
 - **Settings:** fixed dialog height so switching tabs (Notifications → Versions, etc.) does not resize/recenter and shift the left nav under the cursor
+- **Visualize:** MemPro / Packmol panels keep a visible warning when no working directory is set; Fill with water / Run MemPro ask to confirm before proceeding without one
+- **Preparation:** terminal-caps warning only for the selected working file (not the post-PropKa `*_capped.pdb`); Run PropKa disabled when pH/Cap unchanged; always refreshes from the initial PDB; Old ID / New ID columns; pdb4amber “Gaps” note clarified
+- **Visualize:** covalent bonds are precalculated on structure load (`needs_bonds`), so ball-and-stick is ready without a second wait
+- **Preparation:** split protonation table + embedded 3D viewer (tube protein, CPK ball-and-stick on row / Ctrl+click multi-select); approximate ghost H preview when State changes (`/preview-protonation`)
+- **Visualize / Preparation:** fixed `/get-structure` crash when guessing bonds on a newly cached file (`bond_guessed` on None cache entry)
+- **Builder:** MD engine selector only shown for 4-site waters (OPC / TIP4P-D / TIP4P-Ew), with a short note that NAMD needs FlexibleWater; hidden for other water models (generic Amber path)
 
 ## [1.0.10] - 2026-07-14
 
