@@ -65,7 +65,10 @@
   let workingDir = $state('')
 
   async function onBrowseDirectory() {
-    const result = await window.api.openDirectoryDialog()
+    const result = await window.api.openDirectoryDialog(
+      'Select Working Directory',
+      workingDir || undefined
+    )
     if (!result.canceled) {
       workingDir = result.dirPath
     }

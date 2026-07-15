@@ -198,7 +198,7 @@
   }
 
   async function onSelectWorkingFile() {
-    const { canceled, filePath } = await window.api.openPdbDialog()
+    const { canceled, filePath } = await window.api.openPdbDialog(workingDir || undefined)
     if (canceled) {
       return
     }

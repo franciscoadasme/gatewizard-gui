@@ -1,8 +1,59 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, Notification, screen, shell } from 'electron'
 import { spawn } from 'child_process'
-import { readFileSync, watch } from 'fs'
+import { existsSync, readFileSync, statSync, watch } from 'fs'
 import { readFile, writeFile } from 'fs/promises'
 import path, { join } from 'path'
+
+/** Directory from which the process was started (terminal cwd). Captured early. */
+const LAUNCH_CWD = (() => {
+  try {
+    return process.cwd()
+  } catch {
+    return ''
+  }
+})()
+
+/**
+ * Prefer an existing directory for native file dialogs.
+ * On Linux, a missing/invalid defaultPath often opens the GTK "Recent" view.
+ * Order: preferred path → launch cwd → home.
+ * @param {string | undefined | null} preferred
+ * @returns {string | undefined}
+ */
+function resolveDialogDefaultPath(preferred) {
+  /** @type {string[]} */
+  const candidates = []
+  if (typeof preferred === 'string' && preferred.trim()) {
+    candidates.push(preferred.trim())
+  }
+  if (LAUNCH_CWD) candidates.push(LAUNCH_CWD)
+  try {
+    candidates.push(app.getPath('home'))
+  } catch {
+    /* app may not be ready in edge cases */
+  }
+
+  for (const raw of candidates) {
+    if (!raw) continue
+    try {
+      let resolved = path.resolve(raw)
+      if (!existsSync(resolved)) {
+        const parent = path.dirname(resolved)
+        if (parent && parent !== resolved && existsSync(parent)) {
+          resolved = parent
+        } else {
+          continue
+        }
+      }
+      const st = statSync(resolved)
+      if (st.isDirectory()) return resolved
+      if (st.isFile()) return path.dirname(resolved)
+    } catch {
+      /* try next */
+    }
+  }
+  return undefined
+}
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import appWindowIcon from '../../resources/brand/logos/app-window-dark.png?asset'
 import { resolveAppWindowIconPath } from '../../resources/brand/manifest.mjs'
@@ -751,17 +802,10 @@ app.on('window-all-closed', () => {
 // In this file you can include the rest of your app's specific main process
 // code. You can also put them in separate files and require them here.
 ipcMain.handle('dialog:openPdb', async (_event, defaultPath = undefined) => {
-  let resolvedDefault = typeof defaultPath === 'string' && defaultPath.trim() ? defaultPath.trim() : ''
-  if (!resolvedDefault) {
-    resolvedDefault = process.cwd()
-  } else if (!path.isAbsolute(resolvedDefault)) {
-    resolvedDefault = join(process.cwd(), resolvedDefault)
-  }
-
   const win = BrowserWindow.getFocusedWindow()
   const result = await dialog.showOpenDialog(win ?? undefined, {
     title: 'Open PDB',
-    defaultPath: resolvedDefault,
+    defaultPath: resolveDialogDefaultPath(defaultPath),
     filters: [
       { name: 'Structure', extensions: ['pdb', 'ent', 'cif', 'mmcif'] },
       { name: 'All files', extensions: ['*'] }
@@ -780,7 +824,7 @@ ipcMain.handle(
     const win = BrowserWindow.getFocusedWindow()
     const result = await dialog.showOpenDialog(win ?? undefined, {
       title,
-      defaultPath,
+      defaultPath: resolveDialogDefaultPath(defaultPath),
       properties: ['openDirectory']
     })
     if (result.canceled || result.filePaths.length === 0) {
@@ -790,21 +834,25 @@ ipcMain.handle(
   }
 )
 
-ipcMain.handle('dialog:openLigandFile', async (_event, title, extensions) => {
-  const win = BrowserWindow.getFocusedWindow()
-  const result = await dialog.showOpenDialog(win ?? undefined, {
-    title: title || 'Open File',
-    filters: [
-      { name: 'Ligand files', extensions: extensions || ['frcmod', 'lib', 'mol2'] },
-      { name: 'All files', extensions: ['*'] }
-    ],
-    properties: ['openFile']
-  })
-  if (result.canceled || result.filePaths.length === 0) {
-    return { canceled: true }
+ipcMain.handle(
+  'dialog:openLigandFile',
+  async (_event, title, extensions, defaultPath = undefined) => {
+    const win = BrowserWindow.getFocusedWindow()
+    const result = await dialog.showOpenDialog(win ?? undefined, {
+      title: title || 'Open File',
+      defaultPath: resolveDialogDefaultPath(defaultPath),
+      filters: [
+        { name: 'Ligand files', extensions: extensions || ['frcmod', 'lib', 'mol2'] },
+        { name: 'All files', extensions: ['*'] }
+      ],
+      properties: ['openFile']
+    })
+    if (result.canceled || result.filePaths.length === 0) {
+      return { canceled: true }
+    }
+    return { canceled: false, filePath: result.filePaths[0] }
   }
-  return { canceled: false, filePath: result.filePaths[0] }
-})
+)
 
 ipcMain.handle('dialog:openFile', async (_event, title, filters, defaultPath = undefined) => {
   filters = filters || []
@@ -816,7 +864,7 @@ ipcMain.handle('dialog:openFile', async (_event, title, filters, defaultPath = u
   const result = await dialog.showOpenDialog(win ?? undefined, {
     title: title || 'Open File',
     filters,
-    defaultPath,
+    defaultPath: resolveDialogDefaultPath(defaultPath),
     properties: ['openFile']
   })
   if (result.canceled || result.filePaths.length === 0) {
@@ -835,7 +883,7 @@ ipcMain.handle('dialog:openFiles', async (_event, title, filters, defaultPath = 
   const result = await dialog.showOpenDialog(win ?? undefined, {
     title: title || 'Open Files',
     filters,
-    defaultPath,
+    defaultPath: resolveDialogDefaultPath(defaultPath),
     properties: ['openFile', 'multiSelections']
   })
   if (result.canceled || result.filePaths.length === 0) {
@@ -855,18 +903,11 @@ ipcMain.handle('dialog:saveFile', async (_event, title, filters, defaultPath = u
     filters.push({ name: 'All files', extensions: ['*'] })
   }
 
-  let resolvedDefault = typeof defaultPath === 'string' && defaultPath.trim() ? defaultPath.trim() : ''
-  if (!resolvedDefault) {
-    resolvedDefault = process.cwd()
-  } else if (!path.isAbsolute(resolvedDefault)) {
-    resolvedDefault = join(process.cwd(), resolvedDefault)
-  }
-
   const win = BrowserWindow.getFocusedWindow()
   const result = await dialog.showSaveDialog(win ?? undefined, {
     title: title || 'Save File',
     filters: filters,
-    defaultPath: resolvedDefault,
+    defaultPath: resolveDialogDefaultPath(defaultPath),
     properties: ['showOverwriteConfirmation', 'createDirectory']
   })
   if (result.canceled || !result.filePath) {

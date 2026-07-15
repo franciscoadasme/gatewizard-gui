@@ -10,8 +10,8 @@ const api = {
   openPdbDialog: (defaultPath = undefined) => ipcRenderer.invoke('dialog:openPdb', defaultPath),
   openDirectoryDialog: (title = 'Select Directory', defaultPath = undefined) =>
     ipcRenderer.invoke('dialog:openDirectory', title, defaultPath),
-  openLigandFileDialog: (title, extensions) =>
-    ipcRenderer.invoke('dialog:openLigandFile', title, extensions),
+  openLigandFileDialog: (title, extensions, defaultPath = undefined) =>
+    ipcRenderer.invoke('dialog:openLigandFile', title, extensions, defaultPath),
   saveFileDialog: (title, filters, defaultPath = undefined) =>
     ipcRenderer.invoke('dialog:saveFile', title, filters, defaultPath),
 

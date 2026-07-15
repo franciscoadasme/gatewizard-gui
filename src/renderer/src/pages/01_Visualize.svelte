@@ -634,7 +634,7 @@
   }
 
   async function onOpenPdb() {
-    const dlg = await window.api.openPdbDialog()
+    const dlg = await window.api.openPdbDialog(workingDir || undefined)
     if (dlg.canceled) {
       return
     }
