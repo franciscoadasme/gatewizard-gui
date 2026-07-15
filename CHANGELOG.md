@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Builder:** ligand parametrization writes `ligand_params/` under the Builder output folder (working directory + left-panel folder name), not next to the input PDB.
+- **Builder:** Initial / Final ligand 2D controls are toggles to display initial PDB vs parametrized mol2.
+- **File dialogs (Linux):** open dialogs start in the set working directory; if none is set, use the directory where GateWizard was launched (avoids GTK “Recent” as the default view)
+- **Settings → Versions:** Regroup dependencies in External Python Packages, External tools, and MD Engines lists. All available engines are discovered as in Equilibration page.
+- **Settings:** fixed dialog height so switching tabs (Notifications → Versions, etc.) does not resize/recenter and shift the left nav under the cursor
+
 ## [1.0.10] - 2026-07-14
 
 ### Fixed

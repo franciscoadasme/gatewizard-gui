@@ -8,7 +8,7 @@
     persistViewerSettings
   } from '../lib/viewerSettings.svelte.js'
   import { setPreferredTheme, themeState } from '../lib/theme.svelte.js'
-  import { getDependencyVersions } from '../lib/backendApi'
+  import { getDependencyVersions, listEngineExecutables } from '../lib/backendApi'
   import pkg from '../../../../package.json'
 
   /**
@@ -36,6 +36,20 @@
   let versionsError = $state(null)
   /** @type {Awaited<ReturnType<typeof getDependencyVersions>> | null} */
   let versionsData = $state(null)
+  /**
+   * All discovered MD engine installs (same discovery as Equilibration picker).
+   * @type {Array<{
+   *   engine: string,
+   *   id: string,
+   *   label: string,
+   *   executable: string,
+   *   version?: string|null,
+   *   source?: string,
+   *   gmxrc?: string|null,
+   *   available?: boolean
+   * }>}
+   */
+  let mdEngineCandidates = $state([])
 
   let updatesChecking = $state(false)
   let updatesUpgrading = $state(false)
@@ -58,9 +72,51 @@
     versionsLoading = true
     versionsError = null
     try {
-      versionsData = await getDependencyVersions()
+      const [deps, namd, gromacs, openmm] = await Promise.all([
+        getDependencyVersions(),
+        listEngineExecutables('namd').catch(() => ({ candidates: [] })),
+        listEngineExecutables('gromacs').catch(() => ({ candidates: [] })),
+        listEngineExecutables('openmm').catch(() => ({ candidates: [] }))
+      ])
+      versionsData = deps
+      /** @type {typeof mdEngineCandidates} */
+      const rows = []
+      for (const [engine, result] of [
+        ['namd', namd],
+        ['gromacs', gromacs],
+        ['openmm', openmm]
+      ]) {
+        const list = Array.isArray(result?.candidates) ? result.candidates : []
+        if (list.length === 0) {
+          rows.push({
+            engine,
+            id: `${engine}-missing`,
+            label: `${toolDisplayName(engine)} (not found)`,
+            executable: '',
+            version: null,
+            source: '',
+            gmxrc: null,
+            available: false
+          })
+          continue
+        }
+        for (const c of list) {
+          rows.push({
+            engine,
+            id: c.id,
+            label: c.label,
+            executable: c.executable,
+            version: c.version ?? null,
+            source: c.source ?? '',
+            gmxrc: c.gmxrc ?? null,
+            available: c.available !== false
+          })
+        }
+      }
+      mdEngineCandidates = rows
     } catch (err) {
       versionsData = null
+      mdEngineCandidates = []
       versionsError = err instanceof Error ? err.message : 'Failed to load dependency versions'
     } finally {
       versionsLoading = false
@@ -110,6 +166,73 @@
       if (aGroup !== bGroup) return aGroup - bGroup
       return aName.localeCompare(bName)
     })
+  }
+
+  /** Packages shown here; OpenMM → MD Engines, MemPrO → External tools. */
+  const PYTHON_PKG_EXCLUDE = new Set(['openmm', 'mempro'])
+
+  /** @param {Record<string, import('../lib/backendApi').DependencyInfo>} dependencies */
+  function pythonPackageRows(dependencies) {
+    return sortedDependencies(dependencies).filter(([name]) => !PYTHON_PKG_EXCLUDE.has(name))
+  }
+
+  const EXTERNAL_TOOL_ORDER = ['mempro', 'packmol', 'packmol-memgen', 'ambertools']
+
+  /** @param {string} name */
+  function toolDisplayName(name) {
+    switch (name) {
+      case 'namd':
+        return 'NAMD'
+      case 'gromacs':
+        return 'GROMACS'
+      case 'openmm':
+        return 'OpenMM'
+      case 'mempro':
+        return 'MemPrO'
+      case 'packmol':
+        return 'Packmol'
+      case 'packmol-memgen':
+        return 'packmol-memgen'
+      case 'ambertools':
+        return 'AmberTools'
+      default:
+        return name
+    }
+  }
+
+  /**
+   * @param {Array<{ name: string, version?: string|null, path?: string|null, available?: boolean }>|undefined} executables
+   * @param {string[]} order
+   */
+  function orderedToolRows(executables, order) {
+    const byName = new Map((executables || []).map((exe) => [exe.name, exe]))
+    return order.map((name) => {
+      const exe = byName.get(name)
+      return {
+        name,
+        version: exe?.version ?? null,
+        path: exe?.path ?? null,
+        available: exe?.available ?? false
+      }
+    })
+  }
+
+  /** @param {string | undefined} source */
+  function engineSourceLabel(source) {
+    switch (source) {
+      case 'conda':
+        return 'conda'
+      case 'path':
+        return 'PATH'
+      case 'gmxrc':
+        return 'GMXRC'
+      case 'prefix':
+        return 'prefix'
+      case 'python':
+        return 'Python'
+      default:
+        return source || '—'
+    }
   }
 
   /** @param {string} group */
@@ -211,7 +334,7 @@
     }}
   >
     <div
-      class="mx-4 flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-neutral-300 bg-white text-xs dark:border-neutral-700 dark:bg-neutral-900"
+      class="mx-4 flex h-[min(720px,90vh)] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-neutral-300 bg-white text-xs dark:border-neutral-700 dark:bg-neutral-900"
     >
       <div class="border-b border-neutral-200 px-5 py-4 dark:border-neutral-800">
         <h2 id="settings-title" class="text-base font-semibold text-neutral-900 dark:text-neutral-100">
@@ -405,7 +528,7 @@
 
                   <div>
                     <h4 class="mb-2 font-semibold text-neutral-700 dark:text-neutral-300">
-                      Python packages
+                      External Python Packages
                     </h4>
                     <div
                       class="overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800"
@@ -422,7 +545,7 @@
                           </tr>
                         </thead>
                         <tbody class="divide-y divide-neutral-200 dark:divide-neutral-800">
-                          {#each sortedDependencies(versionsData.dependencies) as [name, info] (name)}
+                          {#each pythonPackageRows(versionsData.dependencies) as [name, info] (name)}
                             <tr>
                               <td class="px-3 py-2 font-medium text-neutral-800 dark:text-neutral-200"
                                 >{name}</td
@@ -447,48 +570,100 @@
                     </div>
                   </div>
 
-                  {#if versionsData.executables?.length}
-                    <div>
-                      <h4 class="mb-2 font-semibold text-neutral-700 dark:text-neutral-300">
-                        External tools
-                      </h4>
-                      <div
-                        class="overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800"
-                      >
-                        <table class="w-full">
-                          <thead
-                            class="bg-neutral-100 text-neutral-500 dark:bg-neutral-950 dark:text-neutral-500"
-                          >
+                  <div>
+                    <h4 class="mb-2 font-semibold text-neutral-700 dark:text-neutral-300">
+                      External tools
+                    </h4>
+                    <p class="mb-2 text-neutral-500 dark:text-neutral-400">
+                      Orientation and system-building CLIs (MemPrO, Packmol, AmberTools).
+                    </p>
+                    <div
+                      class="overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800"
+                    >
+                      <table class="w-full">
+                        <thead
+                          class="bg-neutral-100 text-neutral-500 dark:bg-neutral-950 dark:text-neutral-500"
+                        >
+                          <tr>
+                            <th class="px-3 py-2 text-left font-medium">Tool</th>
+                            <th class="px-3 py-2 text-left font-medium">Version</th>
+                            <th class="px-3 py-2 text-left font-medium">Path</th>
+                          </tr>
+                        </thead>
+                        <tbody class="divide-y divide-neutral-200 dark:divide-neutral-800">
+                          {#each orderedToolRows(versionsData.executables, EXTERNAL_TOOL_ORDER) as tool (tool.name)}
                             <tr>
-                              <th class="px-3 py-2 text-left font-medium">Engine</th>
-                              <th class="px-3 py-2 text-left font-medium">Version</th>
-                              <th class="px-3 py-2 text-left font-medium">Path</th>
+                              <td
+                                class="px-3 py-2 font-medium text-neutral-800 dark:text-neutral-200"
+                              >
+                                {toolDisplayName(tool.name)}
+                              </td>
+                              <td class="px-3 py-2 font-mono text-neutral-600 dark:text-neutral-300">
+                                {tool.version ?? '—'}
+                              </td>
+                              <td
+                                class="max-w-48 truncate px-3 py-2 text-neutral-500"
+                                title={tool.path ?? ''}
+                              >
+                                {tool.path ?? '—'}
+                              </td>
                             </tr>
-                          </thead>
-                          <tbody class="divide-y divide-neutral-200 dark:divide-neutral-800">
-                            {#each versionsData.executables as exe (exe.name)}
-                              <tr>
-                                <td
-                                  class="px-3 py-2 font-medium uppercase text-neutral-800 dark:text-neutral-200"
-                                >
-                                  {exe.name}
-                                </td>
-                                <td class="px-3 py-2 font-mono text-neutral-600 dark:text-neutral-300">
-                                  {exe.version ?? '—'}
-                                </td>
-                                <td
-                                  class="max-w-48 truncate px-3 py-2 text-neutral-500"
-                                  title={exe.path ?? ''}
-                                >
-                                  {exe.path ?? '—'}
-                                </td>
-                              </tr>
-                            {/each}
-                          </tbody>
-                        </table>
-                      </div>
+                          {/each}
+                        </tbody>
+                      </table>
                     </div>
-                  {/if}
+                  </div>
+
+                  <div>
+                    <h4 class="mb-2 font-semibold text-neutral-700 dark:text-neutral-300">
+                      MD Engines
+                    </h4>
+                    <p class="mb-2 text-neutral-500 dark:text-neutral-400">
+                      All NAMD / GROMACS / OpenMM installs found on this machine (same scan as
+                      Equilibration).
+                    </p>
+                    <div
+                      class="overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800"
+                    >
+                      <table class="w-full">
+                        <thead
+                          class="bg-neutral-100 text-neutral-500 dark:bg-neutral-950 dark:text-neutral-500"
+                        >
+                          <tr>
+                            <th class="px-3 py-2 text-left font-medium">Engine</th>
+                            <th class="px-3 py-2 text-left font-medium">Version</th>
+                            <th class="px-3 py-2 text-left font-medium">Source</th>
+                            <th class="px-3 py-2 text-left font-medium">Path</th>
+                          </tr>
+                        </thead>
+                        <tbody class="divide-y divide-neutral-200 dark:divide-neutral-800">
+                          {#each mdEngineCandidates as row (row.id)}
+                            <tr>
+                              <td
+                                class="px-3 py-2 font-medium text-neutral-800 dark:text-neutral-200"
+                              >
+                                {toolDisplayName(row.engine)}
+                              </td>
+                              <td class="px-3 py-2 font-mono text-neutral-600 dark:text-neutral-300">
+                                {row.version ?? '—'}
+                              </td>
+                              <td class="px-3 py-2 text-neutral-400">
+                                {engineSourceLabel(row.source)}
+                              </td>
+                              <td
+                                class="max-w-56 truncate px-3 py-2 text-neutral-500"
+                                title={row.gmxrc
+                                  ? `${row.executable || ''} (GMXRC: ${row.gmxrc})`
+                                  : row.executable || row.label}
+                              >
+                                {row.executable || '—'}
+                              </td>
+                            </tr>
+                          {/each}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
                 </div>
               {/if}
 
