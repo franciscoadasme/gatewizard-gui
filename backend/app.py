@@ -401,9 +401,11 @@ def load_structure(
                 u = mda.Universe(str(top_path), str(path))
             else:
                 u = mda.Universe(str(path))
-            FILE_CACHE[key] = FileCacheEntry(mtime, file_size, u)
-        else:
-            u = entry.universe
+            entry = FileCacheEntry(mtime, file_size, u, bond_guessed=False)
+            FILE_CACHE[key] = entry
+        u = entry.universe
+        # ``entry`` is always the live cache object after the block above
+        # (was a bug: cache miss left local ``entry`` as None while guessing bonds).
         if needs_bonds and not entry.bond_guessed:
             print(f"INFO:     /get-structure guessing bonds for {path}")
             u.atoms.guess_bonds()  # TODO: improve performance
@@ -621,11 +623,14 @@ def run_propka(payload: RunPropKaRequest) -> dict:
             payload.working_dir,
             payload.output_folder_name,
             path,
+            force_refresh=True,
         )
         path = str(path_obj)
         residue_renumbering_table = {}
         capping_warning = None
         if payload.cap_protein:
+            # Cap check is on the user's original copy (force-refreshed), not on
+            # a previously generated *_capped.pdb from an earlier PropKa run.
             caps_found = detect_terminal_caps(path_obj)
             looks_capped = bool(caps_found) or path_obj.stem.endswith("_capped")
             if looks_capped:
@@ -654,12 +659,30 @@ def run_propka(payload: RunPropKaRequest) -> dict:
         manager.run_analysis(path, output_dir=str(job_dir))
         summary_file = manager.extract_summary(manager.last_analysis_file)
         residues = manager.parse_summary(summary_file)
+        # PropKa runs on the (possibly) capped PDB, so res_id is the new number.
+        # Attach original_res_id via inverted renumbering map (NAME_CHAIN_OLD → new).
+        new_to_old: dict[tuple[str, str, int], int] = {}
+        for key, new_id in residue_renumbering_table.items():
+            parts = str(key).rsplit("_", 2)
+            if len(parts) != 3:
+                continue
+            resname, chain, old_s = parts
+            try:
+                new_to_old[(resname, chain, int(new_id))] = int(old_s)
+            except (TypeError, ValueError):
+                continue
         for data in residues:
             state = manager.get_default_protonation_state(data, payload.target_ph)
             data["current_state"] = data["initial_state"] = state
             data["all_states"] = list(
                 manager.get_available_states(data["residue"]).values()
             )
+            try:
+                rid = int(data["res_id"])
+            except (TypeError, ValueError):
+                rid = data["res_id"]
+            orig = new_to_old.get((data["residue"], data["chain"], rid))
+            data["original_res_id"] = orig if orig is not None else rid
         residues = [it for it in residues if len(it["all_states"]) > 1]
         return dict(
             residues=residues,
@@ -1265,6 +1288,37 @@ class PreparePDBRequest(BaseModel):
     output_folder_name: str | None = Field(
         None, description="Output folder name under working_dir"
     )
+
+
+class PreviewProtonationResidue(BaseModel):
+    chain: str = ""
+    res_id: int
+    residue: str | None = None
+    initial_state: str
+    current_state: str
+
+
+class PreviewProtonationRequest(BaseModel):
+    path: str = Field(description="Absolute path to the post-PropKa PDB")
+    residues: list[PreviewProtonationResidue] = Field(
+        default_factory=list,
+        description="Residues whose state changed (or all rows to diff)",
+    )
+
+
+@app.post("/preview-protonation")
+def preview_protonation(payload: PreviewProtonationRequest) -> dict:
+    """Best-effort ghost H geometry for Preparation 3D preview (not pdb4amber)."""
+    path = os.path.abspath(os.path.expanduser(payload.path))
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    try:
+        from protonation_preview import preview_protonation_geometry
+
+        residues = [r.model_dump() for r in payload.residues]
+        return preview_protonation_geometry(path, residues)
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
 
 
 class EnsureOutputFolderRequest(BaseModel):
@@ -2926,8 +2980,14 @@ def _resolve_preparation_workspace(
     source_path: str,
     *,
     default_prefix: str = "01_preparation",
+    force_refresh: bool = False,
 ) -> tuple[Path, Path]:
-    """Return (job_dir, local_pdb) under working_dir, copying the source PDB when needed."""
+    """Return (job_dir, local_pdb) under working_dir, copying the source PDB when needed.
+
+    When ``force_refresh`` is True, always re-copy ``source_path`` into the job
+    directory so PropKa/capping start from the user's original file (even if a
+    previous capped copy already exists).
+    """
     source = Path(os.path.abspath(os.path.expanduser(source_path)))
     if not source.is_file():
         raise HTTPException(status_code=404, detail=f"File not found: {source}")
@@ -2945,8 +3005,9 @@ def _resolve_preparation_workspace(
 
     job_dir.mkdir(parents=True, exist_ok=True)
     local_pdb = job_dir / source.name
-    if source.resolve() != local_pdb.resolve() and not local_pdb.exists():
-        shutil.copy2(source, local_pdb)
+    if source.resolve() != local_pdb.resolve():
+        if force_refresh or not local_pdb.exists():
+            shutil.copy2(source, local_pdb)
     elif local_pdb.exists():
         pass
     else:

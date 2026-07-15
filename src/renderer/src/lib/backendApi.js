@@ -292,6 +292,15 @@ export async function preparePDB(props) {
 }
 
 /**
+ * Best-effort ghost H geometry for Preparation viewer (approximate; not pdb4amber).
+ * @param {{ path: string, residues: Array<{ chain?: string, res_id: number, residue?: string, initial_state: string, current_state: string }> }} payload
+ * @returns {Promise<{ ghost_atoms: object[], removed_markers: object[] }>}
+ */
+export function previewProtonation(payload) {
+  return backendJson('/preview-protonation', payload)
+}
+
+/**
  * @param {string} workingDir
  * @param {string} outputFolderName
  * @returns {Promise<{ output_dir: string }>}

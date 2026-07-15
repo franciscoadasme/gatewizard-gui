@@ -14,21 +14,31 @@
   /**
    * @type {{
    *   children?: import('svelte').Snippet
-   *   onAtomClick?: (e: { x:number, y:number, w:number, h:number }) => void
+   *   onAtomClick?: (e: { x:number, y:number, w:number, h:number, ctrlKey?: boolean }) => void
    *   onAtomContextMenu?: (e: { x:number, y:number, w:number, h:number, clientX:number, clientY:number }) => void
    *   onAtomHover?: (e: { x:number, y:number, w:number, h:number, clientX:number, clientY:number }) => void
+   *   registerAsMain?: boolean
    * }}
    */
-  let { children, onAtomClick, onAtomContextMenu, onAtomHover } = $props()
+  let {
+    children,
+    onAtomClick,
+    onAtomContextMenu,
+    onAtomHover,
+    registerAsMain = true
+  } = $props()
 
   let wrapEl = $state(null)
   let controls = $state(null)
   let resizeFrame = 0
 
   $effect(() => {
+    if (!registerAsMain) return
     mainViewerControls.current = controls
     return () => {
-      mainViewerControls.current = null
+      if (mainViewerControls.current === controls) {
+        mainViewerControls.current = null
+      }
     }
   })
 
