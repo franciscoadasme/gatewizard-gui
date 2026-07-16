@@ -1,7 +1,29 @@
+import { accessSync, readFileSync } from 'fs'
 import { screen } from 'electron'
 
 const MIN_WINDOW_WIDTH = 640
 const MIN_WINDOW_HEIGHT = 480
+
+/**
+ * Detect WSL/WSLg. Desktop/.deb launches often lack WSL_* env vars that a
+ * terminal `npm run` `dev` session has, so also check kernel identity files.
+ * @returns {boolean}
+ */
+function isRunningUnderWsl() {
+  if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) return true
+  try {
+    if (readFileSync('/proc/version', 'utf8').toLowerCase().includes('microsoft')) return true
+  } catch {
+    /* ignore */
+  }
+  try {
+    // Present on WSL2 even when env vars are stripped by a .desktop launcher.
+    accessSync('/proc/sys/fs/binfmt_misc/WSLInterop')
+    return true
+  } catch {
+    return false
+  }
+}
 
 /**
  * @param {import('electron').BrowserWindow} win
@@ -17,7 +39,12 @@ function getDisplayForWindow(win) {
 
 /**
  * Compute bounds that fill the monitor work area without covering the taskbar.
- * Frameless windows on Windows must respect the taskbar work area when maximized.
+ *
+ * - Native Linux (Pop/Ubuntu): trust Electron workArea (already excludes panel/dock).
+ * - win32: if workArea looks full-bleed, reserve space for the taskbar.
+ * - WSL/WSLg: always keep the host Windows taskbar visible. `npm run` `dev` from a
+ *   WSL shell inherits WSL_* env vars; installed .deb launches often do not — so
+ *   we must not depend on env alone, and we force a bottom margin from the monitor.
  *
  * @param {import('electron').BrowserWindow} win
  * @returns {Electron.Rectangle}
@@ -26,28 +53,43 @@ export function getWorkAreaMaximizeBounds(win) {
   const display = getDisplayForWindow(win)
   const { bounds, workArea, scaleFactor } = display
   const sf = scaleFactor || 1
+  const nearZero = (gap) => gap < Math.round(4 * sf)
+  const taskbarReserve = Math.round(48 * sf)
 
   let x = workArea.x
   let y = workArea.y
   let width = workArea.width
   let height = workArea.height
 
-  // When the OS reports a work area that still reaches the monitor edge, reserve
-  // space for the taskbar (common on Windows 11 with frameless windows).
   const gapBottom = bounds.y + bounds.height - (workArea.y + workArea.height)
   const gapTop = workArea.y - bounds.y
-  const taskbarReserve = Math.round(48 * sf)
+  const gapLeft = workArea.x - bounds.x
+  const gapRight = bounds.x + bounds.width - (workArea.x + workArea.width)
+  const fullBleed =
+    nearZero(gapBottom) && nearZero(gapTop) && nearZero(gapLeft) && nearZero(gapRight)
 
-  if (gapBottom < Math.round(4 * sf)) {
-    if (gapTop > Math.round(4 * sf)) {
-      // Taskbar likely at the top.
-      y += taskbarReserve
-      height = Math.max(MIN_WINDOW_HEIGHT, height - taskbarReserve)
-    } else {
-      // Taskbar likely at the bottom (default on Windows).
-      height = Math.max(MIN_WINDOW_HEIGHT, height - taskbarReserve)
+  const underWsl = process.platform === 'linux' && isRunningUnderWsl()
+
+  if (underWsl) {
+    // Keep the Windows host taskbar clear even when workArea already claims an
+    // inset (WSLg maximize can still paint over the host bar).
+    const maxBottom = bounds.y + bounds.height - taskbarReserve
+    const workBottom = y + height
+    if (workBottom > maxBottom) {
+      height = Math.max(MIN_WINDOW_HEIGHT, height - (workBottom - maxBottom))
+    }
+  } else if (process.platform === 'win32' || fullBleed) {
+    // Windows frameless, or any full-bleed workArea report: reserve taskbar strip.
+    if (nearZero(gapBottom)) {
+      if (!nearZero(gapTop)) {
+        y += taskbarReserve
+        height = Math.max(MIN_WINDOW_HEIGHT, height - taskbarReserve)
+      } else {
+        height = Math.max(MIN_WINDOW_HEIGHT, height - taskbarReserve)
+      }
     }
   }
+  // else: native Linux with a proper workArea inset — leave as-is (Pop/Ubuntu).
 
   return {
     x: Math.round(x),
@@ -62,8 +104,9 @@ export function getWorkAreaMaximizeBounds(win) {
  */
 export function applyWorkAreaMaximize(win) {
   const bounds = getWorkAreaMaximizeBounds(win)
-  win.setMaximumSize(bounds.width, bounds.height)
+  // Bounds first — some Linux/WSLg builds ignore size if MaxSize is set earlier.
   win.setBounds(bounds)
+  win.setMaximumSize(bounds.width, bounds.height)
 }
 
 /**
