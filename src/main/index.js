@@ -493,6 +493,17 @@ if (process.platform === 'linux' && !isGpuSafeModeEnabled()) {
   app.commandLine.appendSwitch('enable-zero-copy')
 }
 
+// GateWizard never plays video. On Intel iGPU boxes without a working libva stack,
+// Chromium still probes VA-API at startup and prints a scary ERROR line. Skip it.
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('disable-accelerated-video-decode')
+  app.commandLine.appendSwitch('disable-accelerated-video-encode')
+  app.commandLine.appendSwitch(
+    'disable-features',
+    'VaapiVideoDecoder,VaapiVideoEncoder,VaapiVideoDecodeLinuxGL'
+  )
+}
+
 function getBackendScriptPath() {
   if (app.isPackaged) {
     return join(process.resourcesPath, 'backend', 'app.py')
