@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.11] - 2026-07-15
+
 ### Fixed
 
 - **Builder:** ligand parametrization writes `ligand_params/` under the Builder output folder (working directory + left-panel folder name), not next to the input PDB.
@@ -22,6 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Builder:** MD engine selector only shown for 4-site waters (OPC / TIP4P-D / TIP4P-Ew), with a short note that NAMD needs FlexibleWater; hidden for other water models (generic Amber path)
 - **Visualize:** large-system load — auto-use companion `.prmtop`/`.psf` when beside the PDB (skip full `guess_bonds`); solute+water bond fallback; columnar atom payload + gzip; centered 3D spinner with elapsed time; optional “Open with topology…”
 - **Visualize:** ball-and-stick reuses bonds already loaded with the structure (filter by selection) instead of re-calling `/get-structure` when switching protein/ligand views
+- **Linux (GNOME):** maximized frameless window no longer leaves an extra gap under the top panel (Windows taskbar reserve was incorrectly applied on Linux)
+- **Linux / WSL:** when maximized under WSLg, keep the Windows 11 taskbar visible (taskbar reserve still applies on WSL; native Pop/Ubuntu trust workArea only)
+- **Linux / WSL:** packaged `.deb` maximize no longer covers the Windows taskbar (differs from `npm run` `dev` — desktop launches often lack `WSL_*` env; force host-taskbar margin + broader WSL detection)
+- **Linux:** suppress Chromium `vaInitialize failed` startup noise (disable unused VA-API video decode/encode; does not affect 3D WebGL)
+- **Linux (GNOME/Wayland):** dock shows GateWizard icon instead of a generic gear — set `desktopName` + `syncDesktopName`, bump electron-builder to 26.15.3 so `.desktop` id matches Electron app_id
+
+### Changed
+
+- Requires gatewizard API **1.0.48**
 
 ## [1.0.10] - 2026-07-14
 
