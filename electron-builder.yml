@@ -42,13 +42,15 @@ linux:
     - AppImage
     - deb
   executableName: gatewizard-gui-linux
+  # Match Electron app_id (from package.json desktopName) so GNOME/Wayland
+  # can link the running window to the launcher icon (avoids generic gear).
+  syncDesktopName: true
   icon: build/icons
   maintainer: gatewizard
   category: Science
   desktop:
     entry:
       Name: GateWizard GUI (Linux)
-      StartupWMClass: gatewizard-gui-linux
 deb:
   packageName: gatewizard-gui-linux
   artifactName: ${name}-${version}-linux-${arch}.${ext}
