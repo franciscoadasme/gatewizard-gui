@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+### Fixed
+
+- **Settings → Versions:** “Download GUI” prefers the Linux `.deb` (not AppImage); under WSL opens the Windows host browser (`cmd.exe start` / `wslview`) when `xdg-open` fails; shows the download URL and an error if the browser cannot open
+
 ## [1.0.11] - 2026-07-15
 
 ### Fixed

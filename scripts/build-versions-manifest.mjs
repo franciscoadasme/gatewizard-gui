@@ -35,7 +35,8 @@ const manifest = {
     downloads: {
       linux_appimage: `${downloadBase}/gatewizard-gui-${version}-linux-x86_64.AppImage`,
       linux_deb: `${downloadBase}/gatewizard-gui-${version}-linux-amd64.deb`,
-      linux: `${downloadBase}/gatewizard-gui-${version}-linux-x86_64.AppImage`,
+      // Default "linux" key used by older clients — prefer the installable .deb.
+      linux: `${downloadBase}/gatewizard-gui-${version}-linux-amd64.deb`,
       mac: `${downloadBase}/gatewizard-gui-${version}-mac-arm64.dmg`,
       mac_arm64: `${downloadBase}/gatewizard-gui-${version}-mac-arm64.dmg`,
       mac_x64: `${downloadBase}/gatewizard-gui-${version}-mac-x64.dmg`

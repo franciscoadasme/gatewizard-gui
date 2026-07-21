@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, Notification, screen, shell } from 'electron'
 import { spawn } from 'child_process'
-import { existsSync, readFileSync, statSync, watch } from 'fs'
+import { existsSync, accessSync, readFileSync, statSync, watch } from 'fs'
 import { readFile, writeFile } from 'fs/promises'
 import path, { join } from 'path'
 
@@ -79,10 +79,58 @@ const SPLASH_LINUX_SIZE = 440
 function isRunningUnderWsl() {
   if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) return true
   try {
-    return readFileSync('/proc/version', 'utf8').toLowerCase().includes('microsoft')
+    if (readFileSync('/proc/version', 'utf8').toLowerCase().includes('microsoft')) return true
+  } catch {
+    /* ignore */
+  }
+  try {
+    accessSync('/proc/sys/fs/binfmt_misc/WSLInterop')
+    return true
   } catch {
     return false
   }
+}
+
+/**
+ * Open a URL in the user's browser. Under WSLg, Electron's shell.openExternal
+ * often fails (broken xdg-open); prefer the Windows host browser via cmd.exe.
+ * @param {string} url
+ */
+async function openExternalUrl(url) {
+  if (process.platform === 'linux' && isRunningUnderWsl()) {
+    const tryCmd = (command, args) =>
+      new Promise((resolve, reject) => {
+        const child = spawn(command, args, {
+          stdio: 'ignore',
+          detached: true,
+          windowsHide: true
+        })
+        child.unref()
+        child.on('error', reject)
+        // cmd.exe / start returns quickly; treat spawn success as enough.
+        child.on('spawn', () => resolve())
+        child.on('exit', (code) => {
+          if (code === 0 || code === null) resolve()
+          else reject(new Error(`${command} exited with code ${code}`))
+        })
+      })
+
+    try {
+      // Empty window title ("") is required so `start` treats the next arg as the URL.
+      await tryCmd('cmd.exe', ['/c', 'start', '', url])
+      return
+    } catch {
+      /* try wslview next */
+    }
+    try {
+      await tryCmd('wslview', [url])
+      return
+    } catch {
+      /* fall through to Electron */
+    }
+  }
+
+  await shell.openExternal(url)
 }
 
 /**
@@ -988,7 +1036,12 @@ ipcMain.handle('updates:open-url', async (_event, url) => {
   if (!url || typeof url !== 'string') {
     throw new Error('URL is required')
   }
-  await shell.openExternal(url)
+  try {
+    await openExternalUrl(url)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`Could not open browser (${message}). Copy this URL: ${url}`)
+  }
 })
 
 ipcMain.handle('runtime:upgrade-gatewizard', async (_event, installSpec) => {

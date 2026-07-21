@@ -724,12 +724,13 @@ function compareSemver(a, b) {
 }
 function pickGuiDownloadUrl(platform, downloads = {}) {
   if (!downloads) return null;
-  if (platform === "win32") return null;
+  const linuxDeb = downloads.linux_deb ?? downloads.linux ?? downloads.linux_appimage ?? null;
+  if (platform === "win32") return linuxDeb;
   if (platform === "darwin") {
     return process.arch === "arm64" ? downloads.mac_arm64 ?? downloads.mac ?? null : downloads.mac_x64 ?? downloads.mac ?? null;
   }
-  if (platform === "linux") return downloads.linux ?? null;
-  return downloads.linux ?? downloads.mac ?? null;
+  if (platform === "linux") return linuxDeb;
+  return linuxDeb ?? downloads.mac ?? null;
 }
 async function checkForUpdates(options) {
   const manifestUrl = options.manifestUrl || getManifestUrl();

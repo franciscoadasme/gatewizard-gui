@@ -42,15 +42,18 @@ export function compareSemver(a, b) {
  */
 export function pickGuiDownloadUrl(platform, downloads = {}) {
   if (!downloads) return null
-  // No native Windows releases — users on Windows install the Linux build in WSL.
-  if (platform === 'win32') return null
+  // Prefer the installable .deb on Linux / WSL (and for native Windows, which
+  // has no GUI installer — users install the Linux .deb inside WSL).
+  const linuxDeb =
+    downloads.linux_deb ?? downloads.linux ?? downloads.linux_appimage ?? null
+  if (platform === 'win32') return linuxDeb
   if (platform === 'darwin') {
     return process.arch === 'arm64'
       ? downloads.mac_arm64 ?? downloads.mac ?? null
       : downloads.mac_x64 ?? downloads.mac ?? null
   }
-  if (platform === 'linux') return downloads.linux ?? null
-  return downloads.linux ?? downloads.mac ?? null
+  if (platform === 'linux') return linuxDeb
+  return linuxDeb ?? downloads.mac ?? null
 }
 
 /**

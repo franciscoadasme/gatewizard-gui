@@ -289,8 +289,22 @@
 
   async function onDownloadGuiUpdate() {
     const url = updatesResult?.gui.downloadUrl || updatesResult?.gui.releasePage || null
-    if (!url || !window.api?.openExternalUrl) return
-    await window.api.openExternalUrl(url)
+    if (!url) {
+      updatesError = 'No download URL in the update manifest.'
+      return
+    }
+    if (!window.api?.openExternalUrl) {
+      updatesError = `Cannot open links in this build. Copy this URL:\n${url}`
+      return
+    }
+    updatesError = null
+    try {
+      await window.api.openExternalUrl(url)
+      updatesMessage = 'Opened the GUI download in your browser.'
+    } catch (err) {
+      updatesError =
+        err instanceof Error ? err.message : `Could not open browser. Copy this URL:\n${url}`
+    }
   }
 
   async function onUpgradeGatewizard() {
@@ -493,7 +507,7 @@
                   Loading dependency versions...
                 </div>
               {:else if versionsError}
-                <p class="rounded-md border border-red-700/50 bg-red-950/30 p-3 text-red-300">
+                <p class="gw-notice gw-notice-error p-3">
                   {versionsError}
                 </p>
               {:else if versionsData}
@@ -669,16 +683,12 @@
 
               <div class="space-y-3 border-t border-neutral-200 pt-3 dark:border-neutral-800">
                 {#if updatesMessage}
-                  <p
-                    class="rounded-md border border-green-300 bg-green-50 px-3 py-2 text-green-800 dark:border-green-800/60 dark:bg-green-950/20 dark:text-green-300"
-                  >
+                  <p class="gw-notice gw-notice-success">
                     {updatesMessage}
                   </p>
                 {/if}
                 {#if updatesError}
-                  <p
-                    class="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-red-800 dark:border-red-700/50 dark:bg-red-950/30 dark:text-red-300"
-                  >
+                  <p class="gw-notice gw-notice-error">
                     {updatesError}
                   </p>
                 {/if}
@@ -716,6 +726,11 @@
                     </Button>
                   {/if}
                 </div>
+                {#if updatesResult?.gui.updateAvailable && (updatesResult.gui.downloadUrl || updatesResult.gui.releasePage)}
+                  <p class="break-all font-mono text-[10px] text-neutral-600 dark:text-neutral-400">
+                    {updatesResult.gui.downloadUrl || updatesResult.gui.releasePage}
+                  </p>
+                {/if}
                 <p class="text-center text-[10px] text-neutral-600">
                   Compares installed versions with the public update manifest on GitHub.
                 </p>
