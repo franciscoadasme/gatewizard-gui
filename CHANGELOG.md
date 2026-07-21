@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **UI:** bundled Roboto (SIL OFL) for renderer and splash so type matches across Windows / macOS / Linux; charts, axes gizmo, and transform gizmo use the same face
+- **UI:** shared `gw-notice` / `gw-chip` styles (neutral surface + brand accent bar) and brand yellow/green palette tokens
+
+### Changed
+
+- **UI:** status banners, validation messages, job cards, footer chips, and job toasts use the shared notice/chip styles instead of ad-hoc colored boxes
+- **Preparation / Builder / Equilibration / Analysis:** main content panes use the theme background color for consistent light/dark chrome
 
 ### Fixed
 

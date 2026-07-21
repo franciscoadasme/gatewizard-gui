@@ -17,6 +17,8 @@
   import { getAppWindowIconUrl } from '../../shared/brand.js'
   import { installAppAlertOverride } from './lib/appDialog.svelte.js'
   import { themeState } from './lib/theme.svelte.js'
+  // TODO: re-enable Tipologo in the title bar (resources/brand/logos/Tipologo.png)
+  // import tipoLogo from '../../../resources/brand/logos/Tipologo.png'
   import {
     analysisStatus,
     builderStatus,
@@ -689,6 +691,15 @@
       />
     </div>
     <div class="flex min-w-0 flex-1 items-stretch border-b border-neutral-200 dark:border-neutral-800">
+      <!-- TODO: Tipologo wordmark beside the window icon
+      <div class="titlebar-no-drag flex shrink-0 items-center self-center pl-2 pr-1">
+        <img
+          src={tipoLogo}
+          alt="GateWizard"
+          class="pointer-events-none h-5 w-auto max-w-[11rem] object-contain object-left"
+        />
+      </div>
+      -->
       <div class="titlebar-drag-zone min-w-8 flex-1" aria-hidden="true"></div>
       <div class="titlebar-no-drag flex shrink-0 items-center gap-2 self-center">
       <span class="titlebar-label shrink-0 text-xs font-medium text-neutral-600 dark:text-neutral-400"
@@ -919,14 +930,14 @@
           {#if chip.clickable}
             <button
               type="button"
-              class="flex shrink-0 cursor-pointer items-center gap-1.5 rounded border-0 bg-transparent px-2 py-1 hover:opacity-80
+              class="gw-chip cursor-pointer hover:opacity-80
               {chip.status === 'error'
-                ? 'bg-red-950 text-red-400'
+                ? 'gw-chip-error'
                 : chip.status === 'running'
-                  ? 'bg-neutral-200 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300'
+                  ? 'gw-chip-running'
                   : chip.status === 'done'
-                    ? 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-500'
-                    : 'bg-neutral-200 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-500'}"
+                    ? 'gw-chip-done'
+                    : 'gw-chip-idle'}"
               onclick={() => {
                 if (chip.id === 'mempro') visualizeStatus.openMemproDialog = true
                 if (chip.id === 'packmol') visualizeStatus.openPackmolDialog = true
@@ -936,14 +947,14 @@
             </button>
           {:else}
             <div
-              class="flex shrink-0 items-center gap-1.5 rounded px-2 py-1
+              class="gw-chip
               {chip.status === 'error'
-                ? 'bg-red-950 text-red-400'
+                ? 'gw-chip-error'
                 : chip.status === 'running'
-                  ? 'bg-neutral-200 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300'
+                  ? 'gw-chip-running'
                   : chip.status === 'done'
-                    ? 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-500'
-                    : 'bg-neutral-200 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-500'}"
+                    ? 'gw-chip-done'
+                    : 'gw-chip-idle'}"
             >
               {@render chipInner()}
             </div>
@@ -981,7 +992,7 @@
   >
     {#each jobToastState.items as toast (toast.id)}
       <div
-        class="pointer-events-auto flex w-full items-start gap-2 rounded-lg border border-emerald-600/50 bg-emerald-950/95 p-3 text-left text-emerald-50 shadow-xl backdrop-blur-sm transition-colors hover:border-emerald-400/70 hover:bg-emerald-900 dark:border-emerald-500/40"
+        class="gw-notice gw-notice-success pointer-events-auto flex w-full items-start gap-2 p-3 text-left transition-opacity hover:opacity-90"
         role="status"
       >
         <button
@@ -993,15 +1004,15 @@
             dismissJobToast(toast.id)
           }}
         >
-          <p class="text-sm font-semibold">{toast.title}</p>
-          <p class="mt-0.5 text-xs text-emerald-100/90">{toast.body}</p>
+          <p class="text-sm font-semibold text-neutral-900 dark:text-neutral-100">{toast.title}</p>
+          <p class="mt-0.5 text-xs text-neutral-600 dark:text-neutral-400">{toast.body}</p>
           {#if toast.sourcePage}
-            <p class="mt-1 text-[10px] text-emerald-200/70">Click to open {toast.sourcePage}</p>
+            <p class="mt-1 text-[10px] text-neutral-500">Click to open {toast.sourcePage}</p>
           {/if}
         </button>
         <button
           type="button"
-          class="shrink-0 rounded px-1.5 text-base leading-none text-emerald-200/80 hover:bg-emerald-800 hover:text-white"
+          class="shrink-0 rounded px-1.5 text-base leading-none text-neutral-500 hover:bg-neutral-200 hover:text-neutral-800 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
           aria-label="Dismiss"
           onclick={() => dismissJobToast(toast.id)}
         >

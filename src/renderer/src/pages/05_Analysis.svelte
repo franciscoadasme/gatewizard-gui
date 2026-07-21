@@ -20,9 +20,15 @@
     outputFolderPath
   } from '../lib/outputFolders.js'
   import { logEvent } from '../lib/pageStatus.svelte.js'
+  import { themeState } from '../lib/theme.svelte.js'
+  import { themeBackgroundHex } from '../lib/viewerSettings.svelte.js'
 
   /** @type {{ workingDir?: string }} */
   let { workingDir = '' } = $props()
+
+  const paneBackgroundStyle = $derived(
+    `background-color: ${themeBackgroundHex(themeState.current)}`
+  )
 
   let mode = $state('structural')
   let running = $state(false)
@@ -122,7 +128,7 @@
     aspectRatio: '2.5',
     transparentBg: false,
     dpi: '150',
-    fontFamily: 'sans-serif',
+    fontFamily: 'Roboto, sans-serif',
     extraLeftMargin: '0',
     extraBottomMargin: '0',
     legendPosition: 'bottom',
@@ -149,7 +155,7 @@
     aspectRatio: '2.5',
     transparentBg: false,
     dpi: '150',
-    fontFamily: 'sans-serif',
+    fontFamily: 'Roboto, sans-serif',
     extraLeftMargin: '20',
     extraBottomMargin: '0',
     legendPosition: 'top-right',
@@ -1763,6 +1769,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             <div>
               <p class="sidebar-label mb-0.5">Font</p>
               <Select size="sm" bind:value={ps.fontFamily} className="w-full">
+                <option value="Roboto, sans-serif">Roboto</option>
                 <option value="sans-serif">Sans-serif</option>
                 <option value="serif">Serif</option>
                 <option value="monospace">Monospace</option>
@@ -1884,9 +1891,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
     </div>
 
     {#if workingDir === ''}
-      <p
-        class="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-400"
-      >
+      <p class="gw-notice gw-notice-warning">
         Set a <strong>Working Directory</strong> in the top bar to write analysis output.
       </p>
     {/if}
@@ -1902,11 +1907,14 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
   </aside>
 
   <!-- ===== CHART AREA ===== -->
-  <div class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-    <h1 class="m-4 text-xl font-semibold">{displayTitle || 'Analysis'}</h1>
+  <div
+    class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+    style={paneBackgroundStyle}
+  >
+    <h1 class="m-4 mb-2 text-xl font-semibold">{displayTitle || 'Analysis'}</h1>
 
     {#if lastError}
-      <div class="mx-4 mb-3 rounded-md border border-red-700/50 bg-red-950/30 p-2 text-xs text-red-300">
+      <div class="gw-notice gw-notice-error mx-4 mb-3">
         {lastError}
       </div>
     {/if}
@@ -1931,7 +1939,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           showGrid={ps.showGrid}
           aspectRatio={Number(ps.aspectRatio) || 2.5}
           transparentBg={ps.transparentBg}
-          fontFamily={ps.fontFamily || 'sans-serif'}
+          fontFamily={ps.fontFamily || 'Roboto, sans-serif'}
           chartTitle={displayTitle}
           chartSubtitle={displaySubtitle}
           xTickLabels={displayXTickLabels}

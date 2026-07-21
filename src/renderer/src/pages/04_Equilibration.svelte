@@ -27,8 +27,14 @@
     defaultEquilibrationFolderName,
     outputFolderPath
   } from '../lib/outputFolders.js'
+  import { themeState } from '../lib/theme.svelte.js'
+  import { themeBackgroundHex } from '../lib/viewerSettings.svelte.js'
 
   /** @typedef {{ id: string, name: string, force_constant: number, selection: string }} Constraint */
+
+  const paneBackgroundStyle = $derived(
+    `background-color: ${themeBackgroundHex(themeState.current)}`
+  )
 
   const engines = [
     { id: 'namd', label: 'NAMD' },
@@ -1081,32 +1087,29 @@
         </Button>
       </div>
       {#if equilibrationStatus === 'empty' && workingDir !== ''}
-        <p
-          class="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-400"
-        >
+        <p class="gw-notice gw-notice-warning">
           Input files have not been generated yet. Click <strong>Generate Input Files</strong> first.
         </p>
       {/if}
       {#if equilibrationStatus === 'not_started' && statusSynced && workingDir !== ''}
-        <div
-          class="rounded-md border border-green-700 bg-green-950 px-3 py-2 text-xs text-green-300"
-        >
+        <div class="gw-notice gw-notice-success">
           <p>✓ Input files are ready.</p>
           <p class="mt-1">Click <strong>Run Equilibration</strong> to proceed.</p>
         </div>
       {/if}
       {#if workingDir === '' && showWorkingDirHint}
-        <p
-          class="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-400"
-        >
+        <p class="gw-notice gw-notice-warning">
           Set a <strong>Working Directory</strong> in the top bar to enable these actions.
         </p>
       {/if}
       <Button className="w-full" variant="ghost" onclick={onClear}>Clear</Button>
     </div>
   </aside>
-  <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-    <h1 class="m-4 text-xl font-semibold">Equilibration protocol</h1>
+  <div
+    class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+    style={paneBackgroundStyle}
+  >
+    <h1 class="m-4 mb-2 text-xl font-semibold">Equilibration protocol</h1>
     <div class="flex min-h-0 flex-1 flex-col space-y-4 overflow-auto px-4 pb-4">
       <div>
         {#if isProtocolValid}

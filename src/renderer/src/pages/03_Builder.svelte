@@ -24,9 +24,15 @@
     defaultBuildFolderName,
     outputFolderPath
   } from '../lib/outputFolders.js'
+  import { themeState } from '../lib/theme.svelte.js'
+  import { themeBackgroundHex } from '../lib/viewerSettings.svelte.js'
 
   /** @type {{ workingDir?: string }} */
   let { workingDir = '' } = $props()
+
+  const paneBackgroundStyle = $derived(
+    `background-color: ${themeBackgroundHex(themeState.current)}`
+  )
 
   let workingFile = $state('')
   let outputFolderName = $state('')
@@ -793,16 +799,14 @@
           >
         </div>
         {#if showProteinHWarning}
-          <div
-            class="rounded-md border border-amber-500/60 bg-amber-500/10 px-2 py-1.5 text-[11px] leading-snug text-amber-800 dark:border-amber-500/40 dark:bg-amber-950/40 dark:text-amber-200"
-          >
+          <div class="gw-notice gw-notice-warning text-[11px] leading-snug">
             <p>
               Protein has {proteinHCount} hydrogen atom{proteinHCount === 1 ? '' : 's'}. Non-Amber H
               (e.g. from Schrödinger) can break tleap after packmol-memgen.
             </p>
             <button
               type="button"
-              class="mt-1 font-medium text-amber-900 underline underline-offset-2 hover:text-amber-700 dark:text-amber-100 dark:hover:text-white"
+              class="mt-1 font-medium text-neutral-900 underline underline-offset-2 hover:text-yellow-700 dark:text-neutral-100 dark:hover:text-yellow-400"
               onclick={openAdvancedRemoveProteinH}
             >
               Open Advanced settings → Remove protein hydrogens
@@ -1295,11 +1299,11 @@
       </Button>
       {#if validationResult !== null}
         <div
-          class="rounded-md border px-3 py-2 text-xs {validationResult.valid
+          class="gw-notice {validationResult.valid
             ? validationResult.warning
-              ? 'border-yellow-600 bg-yellow-950 text-yellow-300'
-              : 'border-green-700 bg-green-950 text-green-300'
-            : 'border-red-700 bg-red-950 text-red-300'}"
+              ? 'gw-notice-warning'
+              : 'gw-notice-success'
+            : 'gw-notice-error'}"
         >
           {#if validationResult.valid && !validationResult.warning}
             <p>✓ All inputs are valid.</p>
@@ -1311,7 +1315,7 @@
             {#if validationResult.warning && showProteinHWarning}
               <button
                 type="button"
-                class="mt-2 font-medium underline underline-offset-2"
+                class="mt-2 font-medium text-neutral-900 underline underline-offset-2 hover:text-yellow-700 dark:text-neutral-100 dark:hover:text-yellow-400"
                 onclick={openAdvancedRemoveProteinH}
               >
                 Open Advanced settings → Remove protein hydrogens
@@ -1346,23 +1350,17 @@
         </Button>
       </div>
       {#if validationResult === null && workingFile}
-        <p
-          class="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-400"
-        >
+        <p class="gw-notice gw-notice-warning">
           Inputs have not been validated. Click <strong>Validate Inputs</strong> before generating.
         </p>
       {/if}
       {#if validationResult?.valid && !hasGeneratedInputFiles}
-        <p
-          class="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-400"
-        >
+        <p class="gw-notice gw-notice-warning">
           Input files have not been generated yet. Click <strong>Generate Input Files</strong> first.
         </p>
       {/if}
       {#if workingDir === '' && workingFile}
-        <p
-          class="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-400"
-        >
+        <p class="gw-notice gw-notice-warning">
           Set a <strong>Working Directory</strong> in the top bar to generate output folders.
         </p>
       {/if}
@@ -1375,7 +1373,10 @@
   </aside>
 
   <!-- ── Right: Ligand Preview & Job Tracker ── -->
-  <div class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+  <div
+    class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+    style={paneBackgroundStyle}
+  >
     <!-- Ligand 2D images -->
     {#if ligands.some((l) => l.initialImageBase64 || l.finalImageBase64 || l.imageLoading)}
       <div class="mx-4 mt-4 shrink-0">
@@ -1433,7 +1434,7 @@
       </div>
     {/if}
 
-    <h1 class="m-4 text-xl font-semibold">Preparation Jobs</h1>
+    <h1 class="m-4 mb-2 text-xl font-semibold">Preparation Jobs</h1>
     {#if jobs.length === 0}
       <p
         class="mx-4 mb-4 flex flex-1 items-center justify-center rounded-lg border border-dashed border-neutral-300 text-neutral-500 dark:border-neutral-800 dark:text-neutral-700"
@@ -1444,10 +1445,15 @@
       <div class="mx-4 mb-4 min-h-0 flex-1 space-y-3 overflow-y-auto">
       {#each jobs as job, ji (job.jobDir)}
         <div
-          class="sidebar-panel rounded-lg p-3 text-xs"
-          class:dark:border-green-800={job.status === 'completed'}
-          class:dark:border-red-800={job.status === 'error'}
-          class:dark:border-yellow-800={job.status === 'running'}
+          class="gw-notice rounded-lg p-3 {job.status === 'completed'
+            ? 'gw-notice-success'
+            : job.status === 'error'
+              ? 'gw-notice-error'
+              : job.status === 'running'
+                ? 'gw-notice-warning'
+                : job.status === 'not_started'
+                  ? 'gw-notice-info'
+                  : ''}"
         >
           <!-- Header -->
           <div class="mb-2 flex items-center justify-between">
@@ -1464,7 +1470,7 @@
               {:else}
                 <span class="inline-block h-2 w-2 rounded-full bg-neutral-500"></span>
               {/if}
-              <span class="font-semibold dark:text-neutral-200" title={job.jobDir}>{job.name}</span>
+              <span class="font-semibold text-neutral-900 dark:text-neutral-200" title={job.jobDir}>{job.name}</span>
             </div>
             <div class="flex items-center gap-2">
               <span class="tabular-nums dark:text-neutral-500">{job.elapsed}</span>

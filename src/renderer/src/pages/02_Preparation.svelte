@@ -16,9 +16,15 @@
     outputFolderPath
   } from '../lib/outputFolders.js'
   import { logEvent, preparationStatus } from '../lib/pageStatus.svelte.js'
+  import { themeState } from '../lib/theme.svelte.js'
+  import { themeBackgroundHex } from '../lib/viewerSettings.svelte.js'
 
   /** @type {{ workingDir?: string }} */
   let { workingDir = '' } = $props()
+
+  const paneBackgroundStyle = $derived(
+    `background-color: ${themeBackgroundHex(themeState.current)}`
+  )
 
   // form fields
   let capProtein = $state(false)
@@ -512,9 +518,7 @@
         <label for="protein-cap" class="sidebar-label">Cap protein termini (ACE/NME)</label>
       </div>
       {#if capRecapWarning}
-        <p
-          class="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] leading-snug text-amber-800 dark:text-amber-300"
-        >
+        <p class="gw-notice gw-notice-warning text-[11px] leading-snug">
           {capRecapWarning}
         </p>
       {/if}
@@ -591,7 +595,10 @@
       <Button className="w-full" variant="ghost" onclick={onClear}>Clear</Button>
     </div>
   </aside>
-  <div class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+  <div
+    class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+    style={paneBackgroundStyle}
+  >
     <h1 class="m-4 mb-2 text-xl font-semibold">Protonation states</h1>
     <div class="mx-4 mb-4 flex min-h-0 flex-1 gap-3 overflow-hidden">
       {#if protonationStates.length > 0}

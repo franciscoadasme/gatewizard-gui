@@ -4235,9 +4235,7 @@
   </div>
 
   {#if !workingDir}
-    <div
-      class="mx-4 mb-2 rounded border border-yellow-600/40 bg-yellow-50 px-3 py-2 text-xs text-yellow-900 dark:bg-yellow-950/30 dark:text-yellow-200"
-    >
+    <div class="gw-notice gw-notice-warning mx-4 mb-2">
       No working directory selected. Set one in the top bar to save MemPro job state. You can still run
       MemPro, but you will be asked to confirm and results may not persist after restart.
     </div>
@@ -4299,8 +4297,8 @@
   {:else if memproJobStatus === 'error'}
     <!-- Error -->
     <div class="flex-1 overflow-y-auto p-4">
-      <p class="mb-1 text-xs text-red-600 dark:text-red-400">MemPro failed:</p>
-      <p class="rounded border border-red-200 bg-red-50 px-2 py-1.5 font-mono text-xs text-red-900 dark:border-transparent dark:bg-neutral-800 dark:text-neutral-300">
+      <p class="mb-1 text-xs text-neutral-600 dark:text-neutral-400">MemPro failed:</p>
+      <p class="gw-notice gw-notice-error font-mono">
         {memproError}
       </p>
     </div>
@@ -4454,11 +4452,9 @@
 
 {#snippet packmolResultBlock()}
   {#if packmolResultPath}
-    <div
-      class="rounded border border-green-600/40 bg-green-50 px-3 py-2 text-green-800 dark:border-green-800/60 dark:bg-green-950/30 dark:text-green-300"
-    >
+    <div class="gw-notice gw-notice-success">
       <p class="font-semibold">PACKMOL run complete</p>
-      <p class="mt-0.5 break-all font-mono text-[11px]">{packmolResultPath}</p>
+      <p class="mt-0.5 break-all font-mono text-[11px] text-neutral-600 dark:text-neutral-400">{packmolResultPath}</p>
     </div>
   {/if}
 {/snippet}
@@ -4503,9 +4499,7 @@
 
   <div class="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-4 text-xs">
     {#if !workingDir}
-      <div
-        class="mb-3 rounded border border-yellow-600/40 bg-yellow-50 px-3 py-2 text-yellow-900 dark:bg-yellow-950/30 dark:text-yellow-200"
-      >
+      <div class="gw-notice gw-notice-warning mb-3">
         No working directory selected. Set one in the top bar before running Packmol when possible.
         You can still fill or run custom input; you will be asked to confirm, and output will go next
         to the input PDB.
@@ -4513,17 +4507,13 @@
     {/if}
 
     {#if packmolAvailable && !packmolAvailable.available}
-      <div
-        class="mb-3 rounded border border-red-300 bg-red-50 px-3 py-2 text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300"
-      >
+      <div class="gw-notice gw-notice-error mb-3">
         PACKMOL not found. Install AmberTools (e.g. <code class="font-mono">conda install -c conda-forge ambertools</code>).
       </div>
     {/if}
 
     {#if packmolHydrogenStatus === 'none' || packmolHydrogenStatus === 'partial'}
-      <div
-        class="mb-3 rounded border border-sky-600/30 bg-sky-50 px-3 py-2 text-sky-900 dark:bg-sky-950/30 dark:text-sky-200"
-      >
+      <div class="gw-notice gw-notice-info mb-3">
         No (or minimal) hydrogens on protein. Using inflated exclusion radii to leave room for H added in Builder.
       </div>
     {/if}

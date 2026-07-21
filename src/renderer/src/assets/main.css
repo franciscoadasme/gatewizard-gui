@@ -1,5 +1,158 @@
 @import 'tailwindcss';
 
+/* Bundled Roboto (SIL OFL 1.1) — same face on Windows / macOS / Linux.
+ * Files: src/renderer/src/assets/fonts/roboto/ (see OFL.txt). */
+@font-face {
+  font-family: 'Roboto';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url('./fonts/roboto/roboto-latin-ext-400-normal.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308,
+    U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113,
+    U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Roboto';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url('./fonts/roboto/roboto-latin-400-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+    U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Roboto';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url('./fonts/roboto/roboto-latin-ext-500-normal.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308,
+    U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113,
+    U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Roboto';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url('./fonts/roboto/roboto-latin-500-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+    U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Roboto';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url('./fonts/roboto/roboto-latin-ext-600-normal.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308,
+    U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113,
+    U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Roboto';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url('./fonts/roboto/roboto-latin-600-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+    U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Roboto';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url('./fonts/roboto/roboto-latin-ext-700-normal.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308,
+    U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113,
+    U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Roboto';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url('./fonts/roboto/roboto-latin-700-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+    U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@theme {
+  --font-sans: 'Roboto', ui-sans-serif, system-ui, sans-serif;
+
+  /*
+   * GateWizard brand accent palette.
+   * Chrome / tab surfaces keep the existing neutral dark grays.
+   */
+
+  /* Yellow #ffab03 — primary accent / CTAs */
+  --color-yellow-50: #fff8e6;
+  --color-yellow-100: #ffefc2;
+  --color-yellow-200: #ffe08a;
+  --color-yellow-300: #ffd152;
+  --color-yellow-400: #ffc01a;
+  --color-yellow-500: #ffab03;
+  --color-yellow-600: #e69500;
+  --color-yellow-700: #b37400;
+  --color-yellow-800: #805300;
+  --color-yellow-900: #4d3200;
+  --color-yellow-950: #2a1b00;
+
+  /* Blue #024fa7 — info / secondary */
+  --color-blue-50: #e8f1fb;
+  --color-blue-100: #c5daf4;
+  --color-blue-200: #8bb5e8;
+  --color-blue-300: #518fdc;
+  --color-blue-400: #2a6fc4;
+  --color-blue-500: #024fa7;
+  --color-blue-600: #02408a;
+  --color-blue-700: #02356e;
+  --color-blue-800: #012952;
+  --color-blue-900: #011c37;
+  --color-blue-950: #001020;
+
+  /* Red #f70c03 — error / danger */
+  --color-red-50: #fee9e8;
+  --color-red-100: #fdc9c7;
+  --color-red-200: #fb9390;
+  --color-red-300: #f95d58;
+  --color-red-400: #f83a34;
+  --color-red-500: #f70c03;
+  --color-red-600: #d40a02;
+  --color-red-700: #a60802;
+  --color-red-800: #780601;
+  --color-red-900: #4a0401;
+  --color-red-950: #2a0200;
+
+  /* Green #39b54a — success / status */
+  --color-green-50: #ecf8ee;
+  --color-green-100: #d0eed4;
+  --color-green-200: #a2dda9;
+  --color-green-300: #6dcb79;
+  --color-green-400: #4fbe5e;
+  --color-green-500: #39b54a;
+  --color-green-600: #2e943c;
+  --color-green-700: #247530;
+  --color-green-800: #1a5623;
+  --color-green-900: #103716;
+  --color-green-950: #0a220e;
+
+  /* Amber → same as yellow (warnings / badges stay on-brand) */
+  --color-amber-50: #fff8e6;
+  --color-amber-100: #ffefc2;
+  --color-amber-200: #ffe08a;
+  --color-amber-300: #ffd152;
+  --color-amber-400: #ffc01a;
+  --color-amber-500: #ffab03;
+  --color-amber-600: #e69500;
+  --color-amber-700: #b37400;
+  --color-amber-800: #805300;
+  --color-amber-900: #4d3200;
+  --color-amber-950: #2a1b00;
+}
+
 @custom-variant dark (&:where(.dark, .dark *));
 
 @layer base {
@@ -14,6 +167,7 @@
     height: 100%;
     overflow: hidden;
     background-color: #fafafa;
+    font-family: var(--font-sans);
   }
 
   #app.dark {
@@ -105,5 +259,49 @@
 
   .sidebar-group-heading {
     @apply font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400;
+  }
+
+  /*
+   * Minimal notices — neutral surface + brand accent bar.
+   * Readable in light and dark; matches sidebar-panel chrome.
+   */
+  .gw-notice {
+    @apply rounded-md border border-neutral-300 bg-transparent px-3 py-2 text-xs text-neutral-800 dark:border-neutral-700 dark:text-neutral-200;
+  }
+
+  .gw-notice-warning {
+    @apply border-l-[5px] border-l-yellow-500;
+  }
+
+  .gw-notice-success {
+    @apply border-l-[5px] border-l-green-500;
+  }
+
+  .gw-notice-error {
+    @apply border-l-[5px] border-l-red-500;
+  }
+
+  .gw-notice-info {
+    @apply border-l-[5px] border-l-blue-500;
+  }
+
+  .gw-chip {
+    @apply flex shrink-0 items-center gap-1.5 rounded border border-neutral-300 bg-transparent px-2 py-1 text-neutral-700 dark:border-neutral-700 dark:text-neutral-300;
+  }
+
+  .gw-chip-running {
+    @apply border-l-[5px] border-l-yellow-500;
+  }
+
+  .gw-chip-done {
+    @apply border-l-[5px] border-l-green-500;
+  }
+
+  .gw-chip-error {
+    @apply border-l-[5px] border-l-red-500;
+  }
+
+  .gw-chip-idle {
+    @apply border-l-[5px] border-l-neutral-400 dark:border-l-neutral-600;
   }
 }
