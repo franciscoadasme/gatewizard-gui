@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **UI:** bundled Roboto (SIL OFL) for renderer and splash so type matches across Windows / macOS / Linux; charts, axes gizmo, and transform gizmo use the same face
 
 ### Fixed
 

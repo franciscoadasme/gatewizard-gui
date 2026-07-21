@@ -98,7 +98,7 @@
     }
 
     if (label) {
-      ctx.font = 'bold 56px sans-serif'
+      ctx.font = 'bold 56px Roboto, sans-serif'
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
       ctx.fillStyle = isPos ? '#000000' : '#ffffff'

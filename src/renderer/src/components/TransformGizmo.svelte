@@ -632,7 +632,7 @@
         fill={ax.color}
         font-size="11.5"
         font-weight="bold"
-        font-family="sans-serif"
+        font-family="Roboto, sans-serif"
         text-anchor="middle"
         dominant-baseline="middle"
         style="pointer-events:none;user-select:none">{ax.label}</text
@@ -723,7 +723,7 @@
           y={sc.y + APPLY_Y_OFF + 11}
           fill="#aaa"
           font-size="10.5"
-          font-family="sans-serif"
+          font-family="Roboto, sans-serif"
           text-anchor="middle"
           dominant-baseline="middle"
           style="user-select:none">↩ Undo (Ctrl+Z)</text

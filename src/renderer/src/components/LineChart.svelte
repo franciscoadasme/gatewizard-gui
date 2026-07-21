@@ -24,7 +24,7 @@
     // Transparent background (skip fill rect)
     transparentBg = false,
     // Font family for all text in the chart
-    fontFamily = 'sans-serif',
+    fontFamily = 'Roboto, sans-serif',
     // Optional chart title rendered inside the SVG
     chartTitle = '',
     // Optional subtitle under the title (e.g. atom selection)
