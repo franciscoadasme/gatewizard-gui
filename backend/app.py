@@ -79,7 +79,25 @@ from gatewizard.tools.ligand_parametrization import (
 from gatewizard.utils import namd_analysis
 from gatewizard.utils import gromacs_analysis
 from gatewizard.utils import openmm_analysis
-from gatewizard.utils.optional_deps import get_dependency_versions, list_md_engine_candidates
+from gatewizard.utils.equilibration_resume import (
+    equilibration_script_supports_resume,
+    get_equilibration_resume_point,
+    protocol_was_interrupted,
+    refresh_equilibration_run_script,
+)
+from gatewizard.utils.equilibration_resources import (
+    infer_equilibration_resources,
+    write_equilibration_resources,
+)
+from gatewizard.utils.equilibration_job_metadata import (
+    infer_equilibration_job_metadata,
+    write_equilibration_job_metadata,
+)
+from gatewizard.utils.optional_deps import (
+    get_dependency_versions,
+    list_md_engine_candidates,
+    parse_engine_variant,
+)
 
 ION_NAMES = [
     "NA",
@@ -1124,6 +1142,16 @@ class ScanJobsRequest(BaseModel):
     directory: str = Field(..., description="Absolute path to the working directory")
 
 
+class EquilibrationJobSummaryRequest(BaseModel):
+    job_dir: str = Field(
+        ..., description="Absolute path to the equilibration job directory"
+    )
+    working_dir: str | None = Field(
+        None,
+        description="Working directory for input-dir inference (defaults to job parent)",
+    )
+
+
 @app.post("/scan-jobs")
 def scan_jobs(payload: ScanJobsRequest) -> dict:
     """Scan a directory for preparation job sub-directories (those containing status.json)."""
@@ -1155,6 +1183,287 @@ def scan_jobs(payload: ScanJobsRequest) -> dict:
     # Most recent jobs first
     found.sort(key=lambda j: j.get("start_time") or "", reverse=True)
     return {"jobs": found}
+
+
+def _infer_equilibration_engine(eq_dir: Path) -> str:
+    """Infer MD engine from files present in an equilibration job folder."""
+    if (eq_dir / "openmm_run.py").is_file() or list(eq_dir.glob("step*_equilibration.inp")):
+        return "openmm"
+    if list(eq_dir.glob("*.mdp")) or (eq_dir / "index.ndx").is_file():
+        return "gromacs"
+    if list(eq_dir.glob("step*_equilibration.conf")) or (
+        eq_dir / "protocol_summary.json"
+    ).is_file():
+        return "namd"
+    run_script = eq_dir / "run_equilibration.sh"
+    if run_script.is_file():
+        try:
+            script = run_script.read_text(encoding="utf-8", errors="replace").lower()
+            if "openmm_run.py" in script or "openmm" in script:
+                return "openmm"
+            if "gmx" in script or "grompp" in script or "mdrun" in script:
+                return "gromacs"
+            if "namd" in script:
+                return "namd"
+        except Exception:
+            pass
+    return "namd"
+
+
+def _infer_equilibration_variant(eq_dir: Path, engine: str) -> str | None:
+    """Best-effort CPU/GPU variant from run script and optional NAMD protocol JSON."""
+    run_script = eq_dir / "run_equilibration.sh"
+    script = ""
+    if run_script.is_file():
+        try:
+            script = run_script.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            script = ""
+
+    engine = (engine or "").strip().lower()
+    if engine == "openmm":
+        m = re.search(r'PLATFORM\s*=\s*(?:\$\{PLATFORM:-)?["\']?([A-Za-z]+)', script)
+        if m:
+            return m.group(1).upper()
+        if re.search(r"\+devices\s+\d+", script, re.I):
+            return "CUDA"
+        return None
+
+    if engine == "namd":
+        if re.search(r"\+devices\s+\d+", script):
+            return "CUDA"
+        proto = eq_dir / "protocol_summary.json"
+        if proto.is_file():
+            try:
+                data = json.loads(proto.read_text(encoding="utf-8"))
+                stages = data.get("stages") or data.get("protocol", {}).get("stages") or []
+                if any(s.get("use_gpu") for s in stages if isinstance(s, dict)):
+                    return "CUDA"
+            except Exception:
+                pass
+        return "CPU" if script else None
+
+    if engine == "gromacs":
+        m = re.search(r'GMX\s*=\s*["\']([^"\']+)["\']', script)
+        if m:
+            gmx_path = m.group(1).strip()
+            variant = parse_engine_variant("", "gromacs", gmx_path)
+            if variant:
+                return variant
+        if re.search(r"-nb\s+gpu", script, re.I):
+            return "CUDA"
+        return "CPU" if script else None
+
+    return None
+
+
+def _expected_equilibration_stage_count(eq_dir: Path, engine: str) -> int:
+    """Count MD stages from generated inputs — not echo lines in run_equilibration.sh."""
+    engine = (engine or "").strip().lower()
+
+    summary_file = eq_dir / "protocol_summary.json"
+    if summary_file.is_file():
+        try:
+            data = json.loads(summary_file.read_text(encoding="utf-8"))
+            total = data.get("total_stages")
+            if isinstance(total, int) and total > 0:
+                return total
+        except Exception:
+            pass
+
+    if engine == "gromacs":
+        mdp_files = sorted(eq_dir.glob("step*.mdp"))
+        if mdp_files:
+            return len(mdp_files)
+    elif engine == "openmm":
+        inp_files = sorted(eq_dir.glob("step*.inp"))
+        if inp_files:
+            return len(inp_files)
+    elif engine == "namd":
+        conf_files = sorted(
+            f for f in eq_dir.glob("step*.conf") if "_restraints" not in f.name
+        )
+        if conf_files:
+            return len(conf_files)
+
+    run_script = eq_dir / "run_equilibration.sh"
+    if run_script.is_file():
+        try:
+            text = run_script.read_text(encoding="utf-8", errors="replace")
+            header_count = len(re.findall(r"^# Stage \d+:", text, re.MULTILINE))
+            if header_count > 0:
+                return header_count
+        except Exception:
+            pass
+
+    return 7
+
+
+def _job_resources_summary(eq_dir: Path, engine: str, variant: str | None) -> dict[str, Any]:
+    resources = infer_equilibration_resources(eq_dir, engine)
+    if engine == "gromacs" and resources.get("use_gpu") is None and variant:
+        resources["use_gpu"] = variant.upper() == "CUDA"
+        resources["platform"] = variant
+    return resources
+
+
+def _equilibration_job_summary(
+    eq_dir: Path, *, working_dir: Path | None = None
+) -> dict[str, Any]:
+    """Lightweight summary for one equilibration job directory."""
+    engine = _infer_equilibration_engine(eq_dir)
+    variant = _infer_equilibration_variant(eq_dir, engine)
+
+    start_time: str | None = None
+    start_file = eq_dir / "equilibration_start_time.txt"
+    if start_file.is_file():
+        try:
+            start_time = start_file.read_text(encoding="utf-8").strip() or None
+        except Exception:
+            pass
+
+    log_files = sorted(eq_dir.glob("step*.log"))
+    total = _expected_equilibration_stage_count(eq_dir, engine)
+    resume_point = get_equilibration_resume_point(eq_dir, engine)
+    n_done = resume_point.completed_stages
+    if resume_point.total_stages > 0:
+        total = resume_point.total_stages
+
+    bg_log = eq_dir / "equilibration_background.log"
+    error_msg: str | None = None
+    if bg_log.is_file():
+        try:
+            tail = "\n".join(
+                bg_log.read_text(encoding="utf-8", errors="replace").splitlines()[-40:]
+            )
+            error_msg = _equilibration_log_failure_line(tail)
+        except Exception:
+            pass
+
+    pid_file = eq_dir / "equilibration.pid"
+    has_logs = bool(log_files) or bg_log.is_file()
+    has_pid = pid_file.is_file()
+    has_script = (eq_dir / "run_equilibration.sh").is_file()
+    interrupted = protocol_was_interrupted(eq_dir, engine)
+
+    if is_equilibration_process_running(eq_dir, engine):
+        status = "running"
+    elif error_msg:
+        status = "error"
+    elif total > 0 and n_done >= total:
+        status = "completed"
+    elif interrupted and n_done < total:
+        status = "error"
+    elif n_done > 0 and n_done < total:
+        status = "error"
+    elif has_logs or has_pid or start_time:
+        status = "not_started"
+    elif has_script:
+        status = "not_started"
+    else:
+        status = "not_started"
+
+    can_run = (
+        has_script
+        and status != "running"
+        and not interrupted
+        and n_done == 0
+        and total > 0
+        and resume_point.reason != "run_equilibration.sh not found"
+    )
+
+    job_meta = infer_equilibration_job_metadata(eq_dir, working_dir=working_dir)
+
+    return {
+        "job_dir": str(eq_dir),
+        "name": eq_dir.name,
+        "engine": engine,
+        "variant": variant,
+        "status": status,
+        "start_time": start_time,
+        "stages_done": n_done,
+        "stages_total": total,
+        "error": error_msg,
+        "can_run": can_run,
+        "resources": _job_resources_summary(eq_dir, engine, variant),
+        "input_dir": job_meta.get("input_dir"),
+        "ensemble": job_meta.get("ensemble"),
+        "protocol": job_meta.get("protocol"),
+        **_equilibration_resume_fields(eq_dir, engine),
+    }
+
+
+def _equilibration_resume_fields(eq_dir: Path, engine: str) -> dict[str, Any]:
+    """Resume metadata for job cards (stage-level continue)."""
+    script = eq_dir / "run_equilibration.sh"
+    script_ok = equilibration_script_supports_resume(script) if script.is_file() else False
+    point = get_equilibration_resume_point(eq_dir, engine)
+    can_resume = point.can_resume
+    reason = point.reason
+    if point.can_resume and not script_ok:
+        reason = (
+            "Continue will upgrade the run script automatically, then skip completed stages"
+        )
+    return {
+        "can_resume": can_resume,
+        "resume_reason": reason,
+        "resume_stage_index": point.stage_index,
+        "resume_stage_name": point.stage_name,
+        "resume_completed_stages": point.completed_stages,
+        "resume_script_ok": script_ok,
+    }
+
+
+@app.post("/scan-equilibration-jobs")
+def scan_equilibration_jobs(payload: ScanJobsRequest) -> dict:
+    """Scan a directory for equilibration job folders (run_equilibration.sh)."""
+    base = Path(os.path.abspath(os.path.expanduser(payload.directory)))
+    if not base.is_dir():
+        raise HTTPException(status_code=404, detail=f"Not a directory: {base}")
+
+    found: list[dict[str, Any]] = []
+    for script_path in base.glob("*/run_equilibration.sh"):
+        eq_dir = script_path.parent
+        try:
+            found.append(_equilibration_job_summary(eq_dir, working_dir=base))
+        except Exception:
+            continue
+
+    def sort_key(job: dict[str, Any]) -> tuple:
+        st = job.get("start_time") or ""
+        if st:
+            return (1, st)
+        try:
+            mtime = Path(job["job_dir"]).stat().st_mtime
+            return (0, str(mtime))
+        except Exception:
+            return (0, "")
+
+    found.sort(key=sort_key, reverse=True)
+    return {"jobs": found}
+
+
+@app.post("/equilibration-job-summary")
+def equilibration_job_summary(payload: EquilibrationJobSummaryRequest) -> dict[str, Any]:
+    """Re-read one equilibration job folder from disk (metadata, resources, status)."""
+    eq_dir = Path(os.path.abspath(os.path.expanduser(payload.job_dir)))
+    if not eq_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Not a directory: {eq_dir}")
+    if not (eq_dir / "run_equilibration.sh").is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Not an equilibration job folder: {eq_dir}",
+        )
+    if payload.working_dir:
+        working_dir = Path(
+            os.path.abspath(os.path.expanduser(payload.working_dir))
+        )
+    else:
+        working_dir = eq_dir.parent
+    try:
+        return _equilibration_job_summary(eq_dir, working_dir=working_dir)
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=str(ex)) from ex
 
 
 @app.get("/project-status")
@@ -1233,16 +1542,7 @@ def project_status(directory: str) -> dict:
 
         # Collect stage logs to compute progress
         log_files = sorted(eq_dir.glob("step*.log"))
-        total = len(log_files)
-        if total == 0:
-            # Fall back to counting expected steps from run script
-            run_script = eq_dir / "run_equilibration.sh"
-            try:
-                script = run_script.read_text(encoding="utf-8")
-                total = script.count("Stage ")
-            except Exception:
-                total = 7  # default protocol length
-
+        total = _expected_equilibration_stage_count(eq_dir, engine)
         completed_logs = [f for f in log_files if f.stat().st_size > 0]
         n_done = len(completed_logs)
 
@@ -1864,6 +2164,21 @@ def _build_stage_params(stages: list[Stage]) -> list[dict[str, Any]]:
     return params
 
 
+def _persist_equilibration_job_metadata(
+    output_dir: Path,
+    payload: GenerateEquilibrationRequest,
+    engine: str,
+) -> None:
+    write_equilibration_job_metadata(
+        output_dir,
+        input_dir=payload.input_dir,
+        ensemble=_normalize_ensemble(payload.ensemble),
+        protocol=payload.protocol.model_dump(),
+        engine=engine,
+        openmm_platform=payload.openmm_platform,
+    )
+
+
 def _build_selections(stages: list[Stage]) -> dict[str, str]:
     """Build a {normalized_key: mda_selection_string} dict from stage constraints.
 
@@ -2087,6 +2402,8 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
             add_rotation_restraint=payload.add_rotation_restraint,
             rotation_restraint_k=payload.rotation_restraint_k,
         )
+        write_equilibration_resources(output_dir, engine, stage_params)
+        _persist_equilibration_job_metadata(output_dir, payload, engine)
         return
 
     if engine == "openmm":
@@ -2120,6 +2437,13 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
                     f'PLATFORM="${{PLATFORM:-{payload.openmm_platform}}}"',
                 )
             run_script.write_text(content)
+        write_equilibration_resources(
+            output_dir,
+            engine,
+            stage_params,
+            openmm_platform=payload.openmm_platform,
+        )
+        _persist_equilibration_job_metadata(output_dir, payload, engine)
         return
 
     if "prmtop" not in system_files or "inpcrd" not in system_files:
@@ -2148,6 +2472,8 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
         rotation_restraint_k=payload.rotation_restraint_k,
         water_model=water_model,
     )
+    write_equilibration_resources(output_dir, engine, stage_params)
+    _persist_equilibration_job_metadata(output_dir, payload, engine)
 
 
 @app.post("/generate-com-restraint")
@@ -2682,20 +3008,39 @@ def get_equilibration_status(payload: EquilibrationRequest) -> dict:
             simulated_time=None,
             status=info.status,
             total_simulation_time=None,
+            is_minimization=False,
+            steps_completed=None,
+            total_steps=None,
         )
 
         timing = info.timing
         if timing:
-            data["performance"] = timing.ns_per_day
-            data["simulated_time"] = timing.steps_completed * timing.timestep_fs * 1e-6
-            data["total_simulation_time"] = (
-                timing.total_steps * timing.timestep_fs * 1e-6
-            )
-            if timing.ns_per_day and timing.ns_per_day > 0:
-                # Convert simulated ns and throughput (ns/day) to elapsed wall time.
-                data["elapsed_time_seconds"] = (
-                    data["simulated_time"] / timing.ns_per_day
-                ) * 86400
+            if getattr(timing, "is_minimization", False):
+                data["is_minimization"] = True
+                data["steps_completed"] = timing.steps_completed
+                data["total_steps"] = timing.total_steps
+                data["minimization_converged_early"] = bool(
+                    getattr(timing, "converged_early", False)
+                )
+                wall_elapsed = getattr(timing, "wall_elapsed_seconds", 0.0) or 0.0
+                if wall_elapsed > 0:
+                    data["elapsed_time_seconds"] = wall_elapsed
+            else:
+                data["performance"] = timing.ns_per_day
+                data["simulated_time"] = (
+                    timing.steps_completed * timing.timestep_fs * 1e-6
+                )
+                data["total_simulation_time"] = (
+                    timing.total_steps * timing.timestep_fs * 1e-6
+                )
+                wall_elapsed = getattr(timing, "wall_elapsed_seconds", 0.0) or 0.0
+                if wall_elapsed > 0:
+                    data["elapsed_time_seconds"] = wall_elapsed
+                elif timing.ns_per_day and timing.ns_per_day > 0:
+                    # Convert simulated ns and throughput (ns/day) to elapsed wall time.
+                    data["elapsed_time_seconds"] = (
+                        data["simulated_time"] / timing.ns_per_day
+                    ) * 86400
 
         if info.log_file:
             with open(info.log_file, "r") as file:
@@ -2763,6 +3108,89 @@ def run_equilibration(payload: EquilibrationRequest) -> None:
 
     start_time_file = workdir / "equilibration_start_time.txt"
     start_time_file.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
+
+
+@app.post("/equilibration-resume-info")
+def equilibration_resume_info(payload: EquilibrationRequest) -> dict:
+    workdir = Path(os.path.abspath(os.path.expanduser(payload.working_dir)))
+    if not workdir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Directory not found: {workdir}")
+
+    engine = payload.engine.lower().strip()
+    fields = _equilibration_resume_fields(workdir, engine)
+    return {
+        "working_dir": str(workdir),
+        "engine": payload.engine,
+        **fields,
+    }
+
+
+@app.post("/continue-equilibration")
+def continue_equilibration(payload: EquilibrationRequest) -> dict:
+    workdir = Path(os.path.abspath(os.path.expanduser(payload.working_dir)))
+    if not workdir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Directory not found: {workdir}")
+
+    engine = payload.engine.lower().strip()
+    script_file = workdir / "run_equilibration.sh"
+    if not script_file.exists():
+        raise HTTPException(status_code=404, detail="Script file not found")
+
+    if sys.platform == "win32":
+        raise HTTPException(status_code=500, detail="Windows is not supported")
+
+    if is_equilibration_process_running(workdir, engine):
+        raise HTTPException(
+            status_code=409,
+            detail="Equilibration is already running",
+        )
+
+    point = get_equilibration_resume_point(workdir, engine)
+    if not point.can_resume:
+        raise HTTPException(
+            status_code=400,
+            detail=point.reason or "Nothing to continue",
+        )
+
+    if not equilibration_script_supports_resume(script_file):
+        if not refresh_equilibration_run_script(workdir, engine):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Could not upgrade run_equilibration.sh for Continue — "
+                    "re-generate equilibration inputs and try again"
+                ),
+            )
+
+    resume_fields = _equilibration_resume_fields(workdir, engine)
+
+    log_file = workdir / "equilibration_background.log"
+    env = os.environ.copy()
+    env["RESUME"] = "1"
+    process = subprocess.Popen(
+        ["nohup", "bash", str(script_file)],
+        cwd=workdir,
+        stdout=open(log_file, "a"),
+        stderr=subprocess.STDOUT,
+        env=env,
+        preexec_fn=os.setsid,
+    )
+    threading.Thread(
+        target=wait_on_child_process,
+        args=(process,),
+        daemon=True,
+    ).start()
+
+    pid_file = workdir / "equilibration.pid"
+    with open(pid_file, "w") as file:
+        file.write(str(process.pid))
+
+    return {
+        "started": True,
+        "pid": process.pid,
+        "resume_stage_index": resume_fields["resume_stage_index"],
+        "resume_stage_name": resume_fields["resume_stage_name"],
+    }
 
 
 @app.post("/stop-equilibration")

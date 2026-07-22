@@ -266,7 +266,8 @@
    * Readable in light and dark; matches sidebar-panel chrome.
    */
   .gw-notice {
-    @apply rounded-md border border-neutral-300 bg-transparent px-3 py-2 text-xs text-neutral-800 dark:border-neutral-700 dark:text-neutral-200;
+    @apply min-w-0 break-words rounded-md border border-neutral-300 bg-transparent px-3 py-2 text-xs text-neutral-800 dark:border-neutral-700 dark:text-neutral-200;
+    overflow-wrap: anywhere;
   }
 
   .gw-notice-warning {

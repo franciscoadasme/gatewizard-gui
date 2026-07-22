@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.12] - 2026-07-22
+
 ### Added
 
+- **Equilibration:** discover runs under the working directory (engine, variant, ensemble); watch multiple jobs with compact stage bars; **Run** and **Continue** on job cards (stage-level resume via `POST /continue-equilibration`); per-job simulated ns total and CPU/GPU resource summary; **Use in form** restores output folder, engine, input directory, ensemble, and protocol; per-card **Reload** (`POST /equilibration-job-summary`) after manual JSON edits; per-output-folder generate/run locking while MD runs elsewhere
 - **UI:** bundled Roboto (SIL OFL) for renderer and splash so type matches across Windows / macOS / Linux; charts, axes gizmo, and transform gizmo use the same face
 - **UI:** shared `gw-notice` / `gw-chip` styles (neutral surface + brand accent bar) and brand yellow/green palette tokens
 - **Splash:** step-weighted install progress (percent + bar + hex), square window, activity dots / shimmer, and elapsed timer
@@ -20,10 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Splash:** status shows `Step i/n · XX%`; real % on the lower bar; hex loops independently; install updates coalesced so the UI stays in sync under load
 - **Runtime install:** split bootstrap (base → AmberTools → OpenMM); skip unused `cudatoolkit`; default CPU GROMACS (CUDA via `GATEWIZARD_CONDA_GROMACS_CUDA=1`); single-flight lock; quieter console progress; elapsed time in `runtime-install.log`
 - **Equilibration / Settings:** MD engine **Variant** (`CPU` / `CUDA` / …); unified **Compute target** (Auto / CPU / CUDA, plus OpenCL / Metal for OpenMM) with local-vs-script chips (fixes OpenMM CPU selection snapping back to Auto)
-- Requires gatewizard API **1.0.49** (engine `variant` discovery)
+- Requires gatewizard API **1.0.51** (job metadata, GROMACS minimization progress, OpenMM resume labels)
 
 ### Fixed
 
+- **Equilibration:** OpenMM per-stage simulated ns no longer accumulates across stages (gatewizard `parse_openmm_log` fix)
+- **Equilibration:** Continue dialog and resume labels show the correct stage name after kill mid-run (e.g. **Equilibration 2**, not stage 1)
+- **Equilibration:** GROMACS minimization stages show steps and wall time (not ns/day); hover tooltip when minimization converged early before all requested steps
 - **Linux / WSL:** splash/main open on the console’s Windows monitor — WSLg is one wide X11 screen, so placement maps Windows monitor work areas into that virtual space
 - **Settings → Versions:** “Download GUI” prefers the Linux `.deb` (not AppImage); under WSL opens the Windows host browser (`cmd.exe start` / `wslview`) when `xdg-open` fails; shows the download URL and an error if the browser cannot open
 - **Build:** theme antiflash script uses `type="module"` so Vite bundles it into the packaged renderer

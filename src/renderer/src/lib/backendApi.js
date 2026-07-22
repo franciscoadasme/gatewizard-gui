@@ -111,6 +111,30 @@ export function scanJobs(directory) {
 }
 
 /**
+ * @typedef {{ cpu_cores_min?: number|null, cpu_cores_max?: number|null, gpu_id_min?: number|null, gpu_id_max?: number|null, num_gpus?: number|null, use_gpu?: boolean|null, platform?: string|null, engine?: string }} EquilibrationJobResources
+ * @typedef {{ job_dir: string, name: string, engine: string, variant: string|null, status: string, start_time: string|null, stages_done: number, stages_total: number, error: string|null, can_run?: boolean, can_resume?: boolean, resume_reason?: string, resume_stage_index?: number, resume_stage_name?: string, resume_completed_stages?: number, resources?: EquilibrationJobResources, input_dir?: string|null, ensemble?: string|null, protocol?: { name: string, description?: string, stages: object[] }|null }} EquilibrationJobSummary
+ * Scan a directory for equilibration job folders (run_equilibration.sh).
+ * @param {string} directory  Absolute path to the working directory
+ * @returns {Promise<{ jobs: EquilibrationJobSummary[] }>}
+ */
+export function scanEquilibrationJobs(directory) {
+  return backendJson('/scan-equilibration-jobs', { directory })
+}
+
+/**
+ * Re-read a single equilibration job folder from disk.
+ * @param {string} jobDir
+ * @param {string} [workingDir]
+ * @returns {Promise<EquilibrationJobSummary>}
+ */
+export function getEquilibrationJobSummary(jobDir, workingDir) {
+  return backendJson('/equilibration-job-summary', {
+    jobDir,
+    ...(workingDir ? { workingDir } : {})
+  })
+}
+
+/**
  * @typedef {{ id: string, name: string, type: 'preparation'|'equilibration', status: string, progress: number, current_step: number, total_steps: number, steps?: string[], steps_completed?: string[], engine?: string, error: string|null, start_time: string|null, end_time: string|null }} ProjectTask
  * @param {string} directory  Absolute path to the working directory
  * @returns {Promise<{ tasks: ProjectTask[], active: boolean }>}
@@ -385,7 +409,23 @@ export async function runEquilibration(props) {
 
 /**
  * @param {{ workingDir: string, engine: string }} props
- * @returns {Promise<{ status: 'empty' | 'running' | 'completed' | 'error' | 'not_started', stages: { name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, output: string }[], output: string }>}
+ * @returns {Promise<{ working_dir: string, engine: string, can_resume: boolean, resume_reason: string, resume_stage_index: number, resume_stage_name: string, resume_completed_stages: number }>}
+ */
+export async function getEquilibrationResumeInfo(props) {
+  return backendJson('/equilibration-resume-info', props)
+}
+
+/**
+ * @param {{ workingDir: string, engine: string }} props
+ * @returns {Promise<{ started: boolean, pid: number, resume_stage_index: number, resume_stage_name: string }>}
+ */
+export async function continueEquilibration(props) {
+  return backendJson('/continue-equilibration', props)
+}
+
+/**
+ * @param {{ workingDir: string, engine: string }} props
+ * @returns {Promise<{ status: 'empty' | 'running' | 'completed' | 'error' | 'not_started', stages: { name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, elapsed_time_seconds: number|null, is_minimization?: boolean, steps_completed?: number|null, total_steps?: number|null, minimization_converged_early?: boolean, output: string }[], output: string }>}
  */
 export async function getEquilibrationStatus(props) {
   return backendJson('/get-equilibration-status', props)

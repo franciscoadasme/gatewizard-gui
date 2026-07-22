@@ -15,11 +15,14 @@
   import {
     checkExecutable,
     generateEquilibration,
+    continueEquilibration,
     getEquilibrationStatus,
     getOpenmmPlatforms,
     getProcessInfo,
     listEngineExecutables,
     runEquilibration,
+    scanEquilibrationJobs,
+    getEquilibrationJobSummary,
     stopEquilibration,
     getStructure
   } from '../lib/backendApi'
@@ -122,23 +125,30 @@
   )
 
   // derived values
+  const isEngineSupported = $derived(['namd', 'gromacs', 'openmm'].includes(engine))
+  const isProtocolValid = $derived(Array.isArray(protocol.stages) && protocol.stages.length > 0)
+  const outputDir = $derived(outputFolderPath(workingDir, resolveOutputFolderName()))
+  const formJob = $derived(jobs.find((j) => j.jobDir === outputDir))
+  const formFolderStatus = $derived(formJob?.status ?? 'empty')
+  const formFolderRunning = $derived(formJob?.status === 'running')
+  const formFolderHasInputs = $derived(formFolderStatus !== 'empty')
   const canGenerateInput = $derived(
     workingDir !== '' &&
       inputDir !== '' &&
       isProtocolValid &&
       isEngineSupported &&
-      !generatingInputFiles
+      !generatingInputFiles &&
+      !formFolderRunning
   )
   const canStartEquilibration = $derived(
     workingDir !== '' &&
-      equilibrationStatus !== 'empty' &&
+      formFolderStatus !== 'empty' &&
+      formFolderStatus !== 'running' &&
       isEngineSupported &&
-      !equilibrationRunning
+      !startingEquilibration
   )
-  const isEngineSupported = $derived(['namd', 'gromacs', 'openmm'].includes(engine))
-  const isProtocolValid = $derived(Array.isArray(protocol.stages) && protocol.stages.length > 0)
-  const outputDir = $derived(outputFolderPath(workingDir, resolveOutputFolderName()))
-  const equilibrationRunning = $derived(equilibrationStatus === 'running')
+  const watchedJobs = $derived(jobs.filter((j) => j.watched))
+  const hasRunningWatched = $derived(watchedJobs.some((j) => j.status === 'running'))
   const selectedExecutable = $derived(executableByEngine[engine] ?? '')
   const resources = $derived({
     cpu_cores: totalCpus,
@@ -167,39 +177,437 @@
     const hit = engineCandidates.find((c) => c.id === engineCandidateId)
     availableCompute = availableFromVariant(hit?.variant ?? null)
   }
+  /** @typedef {{ name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, elapsed_time_seconds: number|null, is_minimization?: boolean, steps_completed?: number|null, total_steps?: number|null, minimization_converged_early?: boolean, output: string }} EqStageInfo */
+  /** @typedef {{ jobDir: string, name: string, engine: string, variant: string|null, status: string, startTime: string, elapsed: string, stagesDone: number, stagesTotal: number, error: string|null, canRun: boolean, canResume: boolean, resumeReason: string, resumeStageName: string, resources: import('../lib/backendApi.js').EquilibrationJobResources | null, inputDir: string|null, ensemble: string|null, protocol: { name: string, description?: string, stages: object[] }|null, stages: EqStageInfo[], watched: boolean, showInfo: boolean, processInfo: { pid: number|null, running: boolean, command: string|null, start_time: string|null, working_dir: string, engine: string } | null, loadingProcessInfo: boolean, stopping: boolean, continuing: boolean, running: boolean, reloading: boolean, equilibrationOutput: string }} EquilibrationJob */
+
   // state
   /** @type {null | { stageIndex: number, constraintIndex: number, source: Constraint | null }} */
   let constraintEditor = $state(null)
-  /** @type {'not_started' | 'empty' | 'running' | 'completed' | 'error'} */
-  let equilibrationStatus = $state('not_started')
-  /** True after status has been read from the backend (or input was just generated). */
+  /** True after form folder status has been read from the backend (or input was just generated). */
   let statusSynced = $state(false)
   let generatingInputFiles = $state(false)
-  /** @type {Array<{ name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, elapsed_time_seconds: number|null, output: string }>} */
-  let stageStatuses = $state([])
-  /** @type {number|undefined} */
-  let updateTimeoutId = undefined
-  let showProcessInfo = $state(false)
-  /** @type {{ pid: number|null, running: boolean, command: string|null, start_time: string|null, working_dir: string, engine: string } | null} */
-  let processInfo = $state(null)
-  let loadingProcessInfo = $state(false)
-  let stopping = $state(false)
+  let startingEquilibration = $state(false)
+  /** @type {EquilibrationJob[]} */
+  let jobs = $state([])
+  /** @type {ReturnType<typeof setInterval> | null} */
+  let pollIntervalId = null
 
   // ── Sync to shared status bar store ──
   $effect(() => {
-    equilibrationPageStatus.engine = engine
-    equilibrationPageStatus.outputName = outputName
-    equilibrationPageStatus.status = equilibrationStatus
-    equilibrationPageStatus.stagesDone = stageStatuses.filter(
-      (s) => s.status === 'completed'
-    ).length
-    equilibrationPageStatus.stagesTotal = stageStatuses.length
+    const running = jobs.filter((j) => j.status === 'running')
+    const primary = running[0] ?? jobs.find((j) => j.watched) ?? jobs[0]
+    equilibrationPageStatus.engine = primary?.engine ?? engine
+    equilibrationPageStatus.outputName = primary?.name ?? outputName
+    equilibrationPageStatus.status = primary?.status ?? formFolderStatus
+    equilibrationPageStatus.stagesDone = primary?.stagesDone ?? 0
+    equilibrationPageStatus.stagesTotal = primary?.stagesTotal ?? 0
     equilibrationPageStatus.generatingInput = generatingInputFiles
+    if (primary?.startTime) {
+      equilibrationPageStatus.runStartedAt = new Date(primary.startTime).getTime()
+    }
   })
 
   // output
-  let equilibrationOutput = $state('')
   let showWorkingDirHint = $state(false)
+
+  function formatJobElapsed(startIso, endIso = null) {
+    if (!startIso) return ''
+    const start = new Date(startIso).getTime()
+    const end = endIso ? new Date(endIso).getTime() : Date.now()
+    const s = Math.max(0, Math.round((end - start) / 1000))
+    const m = Math.floor(s / 60)
+    const h = Math.floor(m / 60)
+    if (h > 0) return `${h}h ${m % 60}m ${s % 60}s`
+    if (m > 0) return `${m}m ${s % 60}s`
+    return `${s}s`
+  }
+
+  function formatNs(value) {
+    if (!Number.isFinite(value)) return '—'
+    return value.toFixed(value > 1 ? 2 : 3)
+  }
+
+  /** @param {import('../lib/backendApi.js').EquilibrationJobResources | null | undefined} resources */
+  function formatJobResources(resources) {
+    if (!resources) return ''
+    const cpuMin = resources.cpu_cores_min
+    const cpuMax = resources.cpu_cores_max
+    const parts = []
+
+    if (Number.isFinite(cpuMin) && Number.isFinite(cpuMax)) {
+      parts.push(cpuMin === cpuMax ? `${cpuMin} CPU` : `${cpuMin}–${cpuMax} CPU`)
+    }
+
+    if (resources.engine === 'openmm' && resources.platform) {
+      const platform =
+        resources.platform.toLowerCase() === 'auto'
+          ? 'Platform auto'
+          : resources.platform
+      parts.push(platform)
+      return parts.join(' · ')
+    }
+
+    if (resources.use_gpu === false || resources.use_gpu === null) {
+      if (resources.platform) {
+        parts.push(resources.platform)
+      } else if (resources.engine === 'gromacs') {
+        parts.push('CPU')
+      }
+      return parts.join(' · ')
+    }
+
+    const gpuMin = resources.gpu_id_min
+    const gpuMax = resources.gpu_id_max
+    const numGpus = resources.num_gpus ?? 1
+    if (Number.isFinite(gpuMin) && Number.isFinite(gpuMax)) {
+      const gpuLabel =
+        gpuMin === gpuMax
+          ? `GPU ${gpuMin}${numGpus > 1 ? ` × ${numGpus}` : ''}`
+          : `GPU ${gpuMin}–${gpuMax}`
+      parts.push(gpuLabel)
+    } else if (resources.platform) {
+      parts.push(resources.platform)
+    } else {
+      parts.push('GPU')
+    }
+
+    return parts.join(' · ')
+  }
+
+  /** @param {EqStageInfo[]} stages */
+  function jobSimulatedTotals(stages) {
+    let sim = 0
+    let total = 0
+    let hasSim = false
+    let hasTotal = false
+    for (const s of stages) {
+      if (s.is_minimization) continue
+      if (Number.isFinite(s.simulated_time)) {
+        sim += /** @type {number} */ (s.simulated_time)
+        hasSim = true
+      }
+      if (Number.isFinite(s.total_simulation_time)) {
+        total += /** @type {number} */ (s.total_simulation_time)
+        hasTotal = true
+      }
+    }
+    return { sim: hasSim ? sim : null, total: hasTotal ? total : null }
+  }
+
+  /** @param {import('../lib/backendApi.js').EquilibrationJobSummary} summary */
+  function jobFromScan(summary, /** @type {EquilibrationJob | undefined} */ existing) {
+    return {
+      jobDir: summary.job_dir,
+      name: summary.name,
+      engine: summary.engine,
+      variant: summary.variant,
+      status: summary.status || 'unknown',
+      startTime: summary.start_time || '',
+      elapsed: formatJobElapsed(summary.start_time),
+      stagesDone: summary.stages_done ?? 0,
+      stagesTotal: summary.stages_total ?? 0,
+      error: summary.error || null,
+      canRun: summary.can_run ?? false,
+      canResume: summary.can_resume ?? false,
+      resumeReason: summary.resume_reason || '',
+      resumeStageName: summary.resume_stage_name || '',
+      resources: summary.resources ?? null,
+      inputDir: summary.input_dir || null,
+      ensemble: summary.ensemble || null,
+      protocol: summary.protocol || null,
+      stages: existing?.stages ?? [],
+      watched: existing?.watched ?? false,
+      showInfo: existing?.showInfo ?? false,
+      processInfo: existing?.processInfo ?? null,
+      loadingProcessInfo: false,
+      stopping: false,
+      continuing: false,
+      running: false,
+      reloading: false,
+      equilibrationOutput: existing?.equilibrationOutput ?? ''
+    }
+  }
+
+  function applyAutoWatch(/** @type {EquilibrationJob[]} */ list) {
+    const running = list.filter((j) => j.status === 'running')
+    if (running.length > 0) {
+      const runningDirs = new Set(running.map((r) => r.jobDir))
+      return list.map((j) => ({ ...j, watched: runningDirs.has(j.jobDir) }))
+    }
+    if (list.length > 0 && !list.some((j) => j.watched)) {
+      return list.map((j, i) => (i === 0 ? { ...j, watched: true } : j))
+    }
+    return list
+  }
+
+  async function rescanJobs() {
+    if (!workingDir) return
+    try {
+      const { jobs: found } = await scanEquilibrationJobs(workingDir)
+      const byDir = new Map(jobs.map((j) => [j.jobDir, j]))
+      let merged = found.map((summary) => jobFromScan(summary, byDir.get(summary.job_dir)))
+      merged = applyAutoWatch(merged)
+      jobs = merged
+      statusSynced = true
+      if (merged.some((j) => j.watched && j.status === 'running')) {
+        startPolling()
+      }
+      await pollWatchedJobs({ scheduleNext: false })
+    } catch {
+      /* backend unreachable */
+    }
+  }
+
+  function startPolling() {
+    if (pollIntervalId) return
+    pollIntervalId = setInterval(pollWatchedJobs, updateInterval * 1000)
+  }
+
+  function stopPollingIfDone() {
+    if (!jobs.some((j) => j.watched && j.status === 'running')) {
+      if (pollIntervalId) {
+        clearInterval(pollIntervalId)
+        pollIntervalId = null
+      }
+    }
+  }
+
+  async function pollWatchedJobs({ scheduleNext = true } = {}) {
+    for (let i = 0; i < jobs.length; i++) {
+      if (!jobs[i].watched) continue
+      await refreshJobDetail(i)
+    }
+    for (let i = 0; i < jobs.length; i++) {
+      if (jobs[i].status === 'running') {
+        jobs[i] = { ...jobs[i], elapsed: formatJobElapsed(jobs[i].startTime) }
+      }
+    }
+    stopPollingIfDone()
+    if (scheduleNext && autoMonitor && hasRunningWatched) {
+      startPolling()
+    }
+  }
+
+  async function refreshJobDetail(/** @type {number} */ index) {
+    const job = jobs[index]
+    if (!job) return
+    const prevStatus = job.status
+    try {
+      const { status, stages, output, run_start_time } = await getEquilibrationStatus({
+        workingDir: job.jobDir,
+        engine: job.engine
+      })
+      let equilibrationOutput = job.equilibrationOutput
+      if (status === 'error') {
+        equilibrationOutput = stages.find((s) => s.status === 'error')?.output ?? ''
+      }
+      jobs[index] = {
+        ...job,
+        status,
+        stages: stages.length > 0 ? stages : job.stages,
+        stagesDone: stages.filter((s) => s.status === 'completed').length || job.stagesDone,
+        stagesTotal: stages.length || job.stagesTotal,
+        startTime: run_start_time || job.startTime,
+        elapsed: formatJobElapsed(run_start_time || job.startTime),
+        equilibrationOutput
+      }
+      if (prevStatus === 'running' && status !== 'running') {
+        if (status === 'completed') {
+          logEvent('info', 'eq', `Job completed: ${job.name}`, `Elapsed: ${jobs[index].elapsed}`)
+        } else {
+          logEvent('info', 'eq', `Job ${status}: ${job.name}`, jobs[index].error || '')
+        }
+      }
+    } catch {
+      /* skip cycle */
+    }
+  }
+
+  function toggleJobWatch(/** @type {number} */ index) {
+    jobs[index] = { ...jobs[index], watched: !jobs[index].watched }
+    if (jobs[index].watched) {
+      void refreshJobDetail(index)
+      if (jobs[index].status === 'running') startPolling()
+    } else {
+      stopPollingIfDone()
+    }
+  }
+
+  async function reloadJobCard(/** @type {number} */ index) {
+    const job = jobs[index]
+    if (!job || job.reloading) return
+    jobs[index] = { ...job, reloading: true }
+    try {
+      const summary = await getEquilibrationJobSummary(job.jobDir, workingDir || undefined)
+      const existing = jobs[index]
+      jobs[index] = { ...jobFromScan(summary, existing), reloading: false }
+      if (jobs[index].watched) {
+        await refreshJobDetail(index)
+      }
+      if (jobs[index].showInfo) {
+        jobs[index] = { ...jobs[index], processInfo: null, loadingProcessInfo: true }
+        try {
+          const info = await getProcessInfo({
+            workingDir: jobs[index].jobDir,
+            engine: jobs[index].engine
+          })
+          jobs[index] = { ...jobs[index], processInfo: info, loadingProcessInfo: false }
+        } catch {
+          jobs[index] = { ...jobs[index], processInfo: null, loadingProcessInfo: false }
+        }
+      }
+    } catch (error) {
+      jobs[index] = { ...jobs[index], reloading: false }
+      alert(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  /** @param {EquilibrationJob} job */
+  function useJobInForm(job) {
+    outputName = job.name
+    engine = job.engine
+    if (job.inputDir) {
+      inputDir = job.inputDir
+    }
+    if (job.ensemble) {
+      ensemble = job.ensemble.toLowerCase()
+    }
+    if (job.protocol?.stages?.length) {
+      protocol = prepareProtocolForRendering(structuredClone(job.protocol))
+    }
+    statusSynced = true
+  }
+
+  function removeJob(/** @type {number} */ index) {
+    if (jobs[index]?.status === 'running') return
+    jobs = jobs.filter((_, i) => i !== index)
+  }
+
+  async function toggleJobProcessInfo(/** @type {number} */ index) {
+    if (jobs[index].showInfo) {
+      jobs[index] = { ...jobs[index], showInfo: false }
+      return
+    }
+    jobs[index] = { ...jobs[index], showInfo: true, loadingProcessInfo: true }
+    try {
+      const info = await getProcessInfo({
+        workingDir: jobs[index].jobDir,
+        engine: jobs[index].engine
+      })
+      jobs[index] = { ...jobs[index], processInfo: info, loadingProcessInfo: false }
+    } catch {
+      jobs[index] = { ...jobs[index], processInfo: null, loadingProcessInfo: false }
+    }
+  }
+
+  async function runJob(/** @type {number} */ index) {
+    const job = jobs[index]
+    if (!job || job.status === 'running') return
+    try {
+      const { status } = await getEquilibrationStatus({
+        workingDir: job.jobDir,
+        engine: job.engine
+      })
+      if (status === 'running') {
+        alert('Equilibration is already running. Wait for it to finish.')
+        return
+      }
+      if (
+        ['completed', 'error'].includes(status) &&
+        job.stagesDone > 0 &&
+        !confirm(
+          `Start equilibration in "${job.name}" from the beginning? Existing stage outputs will be overwritten.`
+        )
+      ) {
+        return
+      }
+
+      jobs[index] = { ...job, running: true }
+      equilibrationPageStatus.wasKilled = false
+      await runEquilibration({ workingDir: job.jobDir, engine: job.engine })
+      logEvent(
+        'info',
+        'eq',
+        `Started equilibration: "${job.name}"`,
+        `${job.engine.toUpperCase()} · ${job.jobDir}`
+      )
+      jobs[index] = { ...jobs[index], watched: true, running: false }
+      startPolling()
+      await rescanJobs()
+      const idx = jobs.findIndex((j) => j.jobDir === job.jobDir)
+      if (idx >= 0) await refreshJobDetail(idx)
+    } catch (error) {
+      alert(error instanceof Error ? error.message : String(error))
+      jobs[index] = { ...jobs[index], running: false }
+    }
+  }
+
+  function continueStageLabel(/** @type {EquilibrationJob} */ job) {
+    const fromWatch = job.stages?.find((s) => s.status !== 'completed')
+    if (fromWatch?.name && job.stages?.some((s) => s.status === 'completed')) {
+      return fromWatch.name
+    }
+    return job.resumeStageName || 'the next stage'
+  }
+
+  async function continueJob(/** @type {number} */ index) {
+    const job = jobs[index]
+    if (!job || job.status === 'running' || !job.canResume) return
+    const stageLabel = continueStageLabel(job)
+    if (
+      !confirm(
+        `Continue equilibration in "${job.name}"?\n\nCompleted stages will be skipped. Any incomplete stage—including "${stageLabel}"—will restart from the beginning.`
+      )
+    )
+      return
+    try {
+      jobs[index] = { ...job, continuing: true }
+      await continueEquilibration({ workingDir: job.jobDir, engine: job.engine })
+      equilibrationPageStatus.wasKilled = false
+      logEvent(
+        'info',
+        'eq',
+        `Continuing equilibration: "${job.name}"`,
+        `${job.engine.toUpperCase()} · from ${stageLabel}`
+      )
+      jobs[index] = { ...jobs[index], watched: true, continuing: false }
+      startPolling()
+      await rescanJobs()
+    } catch (error) {
+      alert(error instanceof Error ? error.message : String(error))
+      jobs[index] = { ...jobs[index], continuing: false }
+    }
+  }
+
+  async function killJob(/** @type {number} */ index) {
+    const job = jobs[index]
+    if (!job || job.status !== 'running') return
+    if (
+      !confirm(
+        `Stop the running ${job.engine.toUpperCase()} equilibration in "${job.name}"? This cannot be undone.`
+      )
+    )
+      return
+    try {
+      jobs[index] = { ...job, stopping: true }
+      await stopEquilibration({ workingDir: job.jobDir, engine: job.engine })
+      equilibrationPageStatus.wasKilled = true
+      logEvent('info', 'eq', `Killed equilibration: "${job.name}"`, `${job.engine.toUpperCase()} · ${job.jobDir}`)
+      await refreshJobDetail(index)
+      jobs[index] = { ...jobs[index], showInfo: false, stopping: false }
+    } catch (error) {
+      alert(error instanceof Error ? error.message : String(error))
+      jobs[index] = { ...jobs[index], stopping: false }
+    }
+  }
+
+  function jobNoticeClass(status) {
+    if (status === 'completed') return 'gw-notice-success'
+    if (status === 'error') return 'gw-notice-error'
+    if (status === 'running') return 'gw-notice-warning'
+    if (status === 'not_started') return 'gw-notice-info'
+    return ''
+  }
 
   $effect(() => {
     if (workingDir !== '') {
@@ -209,21 +617,31 @@
   })
 
   $effect(() => {
-    unscheduleUpdate()
-    if (outputDir === '') return
-    updateProgress()
+    if (!workingDir) {
+      jobs = []
+      return
+    }
+    void rescanJobs()
   })
 
   $effect(() => {
-    unscheduleUpdate()
     if (!autoMonitor) {
+      if (pollIntervalId) {
+        clearInterval(pollIntervalId)
+        pollIntervalId = null
+      }
       return
     }
-    const running = untrack(() => equilibrationRunning)
-    if (!running) {
-      return
+    if (hasRunningWatched) {
+      startPolling()
     }
-    updateProgress()
+  })
+
+  onDestroy(() => {
+    if (pollIntervalId) {
+      clearInterval(pollIntervalId)
+      pollIntervalId = null
+    }
   })
 
   $effect(() => {
@@ -245,8 +663,6 @@
       cancelled = true
     }
   })
-
-  onDestroy(unscheduleUpdate)
 
   /**
    * Count the number of atoms in the system.inpcrd file.
@@ -310,14 +726,18 @@
   async function generateInput() {
     try {
       syncOutputFolderName()
-      const { status } = await getEquilibrationStatus({ workingDir: outputDir, engine })
-      if (status === 'running') {
-        alert('Equilibration is running. Wait for it to finish.')
+      const folderLabel = resolveOutputFolderName()
+      if (formFolderRunning) {
+        alert(
+          `Equilibration is running in "${folderLabel}". Change the output folder name to generate inputs for another simulation.`
+        )
         return
       }
       if (
-        ['not_started', 'completed', 'error'].includes(status) &&
-        !confirm('Overwrite existing equilibration?')
+        formFolderHasInputs &&
+        !confirm(
+          `Overwrite existing input files in "${folderLabel}"?\n\nThis will replace the current equilibration inputs in that folder.`
+        )
       ) {
         return
       }
@@ -342,10 +762,9 @@
         rotationRestraintK,
         ...(engine === 'openmm' && openmmPlatform !== null ? { openmmPlatform } : {})
       })
-      if (equilibrationStatus === 'empty') {
-        equilibrationStatus = 'not_started'
-      }
       statusSynced = true
+      await rescanJobs()
+      jobs = jobs.map((j) => (j.jobDir === outputDir ? { ...j, watched: true } : j))
       logEvent(
         'info',
         'eq',
@@ -569,133 +988,45 @@
   async function startEquilibration() {
     try {
       syncOutputFolderName()
-      // TODO: write protocol and compare existing protocol with new one so to enable run button, otherwise disable it
-      // as it already run
-      const payload = { workingDir: outputDir, engine }
-      const { status, ...rest } = await getEquilibrationStatus(payload)
-      equilibrationStatus = status
-      if (status === 'running') {
-        alert('Equilibration is already running. Wait for it to finish.')
+      const folderLabel = resolveOutputFolderName()
+      if (formFolderRunning) {
+        alert(
+          `Equilibration is already running in "${folderLabel}". Change the output folder name to start another simulation.`
+        )
         return
-      } else if (status === 'empty') {
-        // Shouldn't happen (button is disabled), but guard anyway
+      }
+      if (formFolderStatus === 'empty') {
         return
-      } else if (
-        ['completed', 'error'].includes(status) &&
-        !confirm('An existing equilibration has finished. Overwrite it?')
+      }
+      if (
+        ['completed', 'error'].includes(formFolderStatus) &&
+        !confirm(
+          `An equilibration in "${folderLabel}" has already finished. Start again from stage 1 and overwrite outputs?`
+        )
       ) {
         return
       }
 
-      equilibrationOutput = ''
+      startingEquilibration = true
       equilibrationPageStatus.wasKilled = false
       await runEquilibration({ workingDir: outputDir, engine })
-      equilibrationStatus = 'running'
       logEvent(
         'info',
         'eq',
         `Started equilibration: "${outputName}"`,
         `${engine.toUpperCase()} · ${outputDir}`
       )
-      setTimeout(updateProgress, 1000)
-    } catch (error) {
-      alert(error instanceof Error ? error.message : String(error))
-      equilibrationStatus = 'not_started'
-    }
-  }
-
-  async function toggleProcessInfo() {
-    if (showProcessInfo) {
-      showProcessInfo = false
-      return
-    }
-    loadingProcessInfo = true
-    showProcessInfo = true
-    try {
-      processInfo = await getProcessInfo({ workingDir: outputDir, engine })
-    } catch (error) {
-      processInfo = null
-    } finally {
-      loadingProcessInfo = false
-    }
-  }
-
-  async function killEquilibration() {
-    if (
-      !confirm(
-        `Stop the running ${engine.toUpperCase()} equilibration in "${outputName}"? This cannot be undone.`
-      )
-    )
-      return
-    try {
-      stopping = true
-      unscheduleUpdate()
-      await stopEquilibration({ workingDir: outputDir, engine })
-      equilibrationPageStatus.wasKilled = true
-      logEvent(
-        'info',
-        'eq',
-        `Killed equilibration: "${outputName}"`,
-        `${engine.toUpperCase()} · ${outputDir}`
-      )
-      // Refresh status immediately after killing (no further polling)
-      await updateProgress({ scheduleNext: false })
-      showProcessInfo = false
+      await rescanJobs()
+      const idx = jobs.findIndex((j) => j.jobDir === outputDir)
+      if (idx >= 0) {
+        jobs = jobs.map((j, i) => (i === idx ? { ...j, watched: true } : j))
+        startPolling()
+        await refreshJobDetail(idx)
+      }
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
     } finally {
-      stopping = false
-    }
-  }
-
-  function unscheduleUpdate() {
-    clearTimeout(updateTimeoutId)
-    updateTimeoutId = undefined
-  }
-
-  async function updateProgress({ scheduleNext = true } = {}) {
-    let status = 'not_started'
-    let stages = []
-    let output = ''
-    let run_start_time = null
-    try {
-      const payload = { workingDir: outputDir, engine }
-      ;({ status, stages, output, run_start_time } = await getEquilibrationStatus(payload))
-    } catch (error) {
-      alert(error instanceof Error ? error.message : String(error))
-    }
-
-    equilibrationStatus = status
-    statusSynced = true
-    if (status === 'empty') {
-      equilibrationOutput = ''
-      stageStatuses = []
-      return
-    }
-
-    // Keep historical progress visible after restart/stop when backend returns
-    // status=not_started but still provides stage snapshots.
-    if (status === 'not_started' && stages.length === 0) {
-      equilibrationOutput = ''
-      stageStatuses = []
-      return
-    }
-
-    if (status === 'error') {
-      equilibrationOutput = stages.find((stage) => stage.status === 'error')?.output ?? ''
-    }
-    stageStatuses = stages
-
-    // Persist start time from the backend so elapsed survives app restart
-    if (run_start_time) {
-      equilibrationPageStatus.runStartedAt = new Date(run_start_time).getTime()
-    } else if (status === 'empty' || status === 'not_started') {
-      equilibrationPageStatus.runStartedAt = null
-    }
-
-    if (scheduleNext && autoMonitor && status !== 'empty') {
-      clearTimeout(updateTimeoutId)
-      updateTimeoutId = setTimeout(updateProgress, updateInterval * 1000)
+      startingEquilibration = false
     }
   }
 
@@ -744,7 +1075,10 @@
   }
 
   function onClear() {
-    unscheduleUpdate()
+    if (pollIntervalId) {
+      clearInterval(pollIntervalId)
+      pollIntervalId = null
+    }
     inputDir = ''
     outputName = ''
     systemSize = null
@@ -773,15 +1107,9 @@
     selectedGmxrc = null
     protocol = prepareProtocolForRendering(baseProtocol)
     constraintEditor = null
-    equilibrationStatus = 'not_started'
     statusSynced = false
     generatingInputFiles = false
-    stageStatuses = []
-    showProcessInfo = false
-    processInfo = null
-    loadingProcessInfo = false
-    stopping = false
-    equilibrationOutput = ''
+    jobs = []
     showWorkingDirHint = false
     equilibrationPageStatus.engine = ''
     equilibrationPageStatus.outputName = ''
@@ -1114,6 +1442,9 @@
           variant="outline"
           onclick={generateInput}
           disabled={!canGenerateInput}
+          title={formFolderRunning
+            ? 'Change the output folder — MD is running in the current one'
+            : undefined}
         >
           {#if generatingInputFiles}
             <Spinner className="mr-1" />
@@ -1129,23 +1460,43 @@
         onmouseenter={() => toggleWorkingDirHint(true)}
         onmouseleave={() => toggleWorkingDirHint(false)}
       >
-        <Button className="w-full" onclick={startEquilibration} disabled={!canStartEquilibration}>
-          {#if equilibrationRunning}
+        <Button
+          className="w-full"
+          onclick={startEquilibration}
+          disabled={!canStartEquilibration}
+          title={formFolderRunning
+            ? 'Change the output folder — MD is running in the current one'
+            : formFolderStatus === 'empty'
+              ? 'Generate input files first'
+              : undefined}
+        >
+          {#if startingEquilibration}
             <Spinner className="mr-1" />
-            Running...
+            Starting…
           {:else}
             Run Equilibration
           {/if}
         </Button>
       </div>
-      {#if equilibrationStatus === 'empty' && workingDir !== ''}
+      {#if formFolderRunning && workingDir !== ''}
+        <div class="gw-notice gw-notice-warning">
+          <p>MD is running in</p>
+          <p class="mt-0.5 break-all font-semibold">{resolveOutputFolderName()}</p>
+          <p class="mt-1">
+            Change the <strong>Output folder</strong> name above to generate inputs or run another
+            simulation.
+          </p>
+        </div>
+      {/if}
+      {#if formFolderStatus === 'empty' && workingDir !== ''}
         <p class="gw-notice gw-notice-warning">
           Input files have not been generated yet. Click <strong>Generate Input Files</strong> first.
         </p>
       {/if}
-      {#if equilibrationStatus === 'not_started' && statusSynced && workingDir !== ''}
+      {#if formFolderStatus === 'not_started' && workingDir !== '' && !formFolderRunning}
         <div class="gw-notice gw-notice-success">
-          <p>✓ Input files are ready.</p>
+          <p>✓ Input files are ready in</p>
+          <p class="mt-0.5 break-all font-semibold">{resolveOutputFolderName()}</p>
           <p class="mt-1">Click <strong>Run Equilibration</strong> to proceed.</p>
         </div>
       {/if}
@@ -1201,7 +1552,7 @@
       class="flex max-h-2/5 min-h-1/5 flex-col gap-2 overflow-y-auto border-t border-neutral-200 p-4 text-xs dark:border-neutral-800"
     >
       <h3 class="font-semibold uppercase">Progress</h3>
-      <div class="flex items-center gap-2">
+      <div class="flex flex-wrap items-center gap-2">
         <Checkbox name="auto-monitor" size="sm" bind:checked={autoMonitor} />
         <label for="auto-monitor">Update progress every</label>
         <Input
@@ -1210,73 +1561,230 @@
           min="1"
           max="100"
           step="1"
-          value={updateInterval}
+          bind:value={updateInterval}
           size="sm"
           className="w-16"
         />
         <label for="update-interval">seconds</label>
-        {#if equilibrationRunning && autoMonitor}
+        {#if hasRunningWatched && autoMonitor}
           <Spinner className="mr-1" />
         {/if}
-        <Button variant="outline" size="sm" onclick={() => updateProgress({ scheduleNext: false })}>
+        <Button variant="outline" size="sm" onclick={() => pollWatchedJobs({ scheduleNext: false })}>
           Refresh
         </Button>
-        <Button variant="outline" size="sm" onclick={toggleProcessInfo}>
-          {showProcessInfo ? 'Hide Info' : 'Process Information'}
-        </Button>
-        {#if equilibrationRunning}
-          <Button variant="outline" size="sm" onclick={killEquilibration} disabled={stopping}>
-            {stopping ? 'Stopping…' : 'Kill MD'}
-          </Button>
-        {/if}
       </div>
-      {#if showProcessInfo}
-        <div class="rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs dark:border-neutral-700 dark:bg-neutral-900">
-          {#if loadingProcessInfo}
-            <span class="text-neutral-400">Loading…</span>
-          {:else if processInfo}
-            <div class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
-              <span class="text-neutral-500">Engine</span>
-              <span class="uppercase">{processInfo.engine}</span>
-              <span class="text-neutral-500">Directory</span>
-              <span class="truncate font-mono" title={processInfo.working_dir}
-                >{processInfo.working_dir}</span
-              >
-              <span class="text-neutral-500">PID</span>
-              <span>{processInfo.pid ?? '—'}</span>
-              <span class="text-neutral-500">Status</span>
-              <span class={processInfo.running ? 'text-green-400' : 'text-neutral-400'}
-                >{processInfo.running ? 'Running' : 'Not running'}</span
-              >
-              {#if processInfo.start_time}
-                <span class="text-neutral-500">Started</span>
-                <span>{new Date(processInfo.start_time).toLocaleString()}</span>
+
+      <h4 class="mt-1 font-semibold text-neutral-800 dark:text-neutral-200">Equilibration Jobs</h4>
+      {#if jobs.length === 0}
+        <p
+          class="flex items-center justify-center rounded-lg border border-dashed border-neutral-300 p-4 text-neutral-500 dark:border-neutral-800 dark:text-neutral-700"
+        >
+          No equilibration runs found under the working directory. Generate input files or run an MD job to see it here.
+        </p>
+      {:else}
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {#each jobs as job, ji (job.jobDir)}
+            <div class="gw-notice flex min-w-0 flex-col rounded-lg p-3 {jobNoticeClass(job.status)}">
+              <div class="mb-2 flex items-center justify-between gap-2">
+                <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                  {#if job.status === 'running'}
+                    <span class="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-yellow-500"></span>
+                  {:else if job.status === 'completed'}
+                    <span class="inline-block h-2 w-2 shrink-0 rounded-full bg-green-500"></span>
+                  {:else if job.status === 'error'}
+                    <span class="inline-block h-2 w-2 shrink-0 rounded-full bg-red-500"></span>
+                  {:else if job.status === 'not_started'}
+                    <span class="inline-block h-2 w-2 shrink-0 rounded-full bg-blue-500"></span>
+                  {:else}
+                    <span class="inline-block h-2 w-2 shrink-0 rounded-full bg-neutral-500"></span>
+                  {/if}
+                  <span
+                    class="min-w-0 font-semibold text-neutral-900 wrap-break-word dark:text-neutral-200"
+                    title={job.jobDir}>{job.name}</span
+                  >
+                  <span class="gw-chip shrink-0 uppercase">{job.engine}</span>
+                  {#if job.ensemble}
+                    <span class="gw-chip shrink-0 uppercase">{job.ensemble}</span>
+                  {/if}
+                  {#if job.variant}
+                    <span class="gw-chip shrink-0">{job.variant}</span>
+                  {/if}
+                </div>
+                <div class="flex shrink-0 items-center gap-2">
+                  <span class="tabular-nums dark:text-neutral-500">{job.elapsed}</span>
+                  {#if job.status !== 'running'}
+                    <button
+                      class="dark:text-neutral-600 dark:hover:text-neutral-300"
+                      onclick={() => removeJob(ji)}
+                      title="Remove">&times;</button
+                    >
+                  {/if}
+                </div>
+              </div>
+
+              {#if formatJobResources(job.resources)}
+                <p class="mb-2 break-all text-xs text-neutral-500" title="Resources assigned in generated inputs">
+                  {formatJobResources(job.resources)}
+                </p>
               {/if}
-              {#if processInfo.command}
-                <span class="text-neutral-500">Command</span>
-                <span class="truncate font-mono text-neutral-300" title={processInfo.command}
-                  >{processInfo.command}</span
+
+              {#if job.stagesTotal > 0 && (job.stagesDone > 0 || job.status !== 'not_started')}
+                <div class="mb-2 flex gap-1">
+                  {#each Array(job.stagesTotal) as _, si (si)}
+                    {@const done = si < job.stagesDone || job.status === 'completed'}
+                    {@const active =
+                      job.status === 'running' && !done && si === job.stagesDone}
+                    <div class="h-1 flex-1 overflow-hidden rounded-full bg-neutral-800">
+                      <div
+                        class="h-full transition-all duration-300 {done
+                          ? 'bg-green-600'
+                          : active
+                            ? 'bg-blue-500'
+                            : 'bg-transparent'}"
+                        style="width: {done ? '100%' : active ? '50%' : '0%'}"
+                      ></div>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+              {#if job.stagesTotal > 0}
+                <p class="mb-2 text-neutral-500">
+                  {#if job.status === 'not_started' && job.stagesDone === 0 && !job.canResume}
+                    {job.stagesTotal} stages · inputs ready — not started yet
+                  {:else if job.canResume || job.status === 'error'}
+                    {job.stagesDone}/{job.stagesTotal} stages · interrupted
+                  {:else}
+                    {job.stagesDone}/{job.stagesTotal} stages
+                  {/if}
+                </p>
+              {/if}
+
+              <div class="flex flex-wrap gap-2">
+                <Button
+                  variant={job.watched ? 'default' : 'outline'}
+                  size="sm"
+                  onclick={() => toggleJobWatch(ji)}
                 >
+                  {job.watched ? 'Watching' : 'Watch'}
+                </Button>
+                <Button variant="outline" size="sm" onclick={() => useJobInForm(job)}>
+                  Use in form
+                </Button>
+                <Button variant="outline" size="sm" onclick={() => toggleJobProcessInfo(ji)}>
+                  {job.showInfo ? 'Hide Info' : 'Info'}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onclick={() => reloadJobCard(ji)}
+                  disabled={job.reloading}
+                  title="Re-read job metadata from disk (e.g. after editing equilibration_resources.json)"
+                >
+                  {job.reloading ? 'Reloading…' : 'Reload'}
+                </Button>
+                {#if job.status === 'running'}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onclick={() => killJob(ji)}
+                    disabled={job.stopping}
+                  >
+                    {job.stopping ? 'Stopping…' : 'Kill MD'}
+                  </Button>
+                {:else if job.canResume && job.status !== 'completed'}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onclick={() => continueJob(ji)}
+                    disabled={job.continuing}
+                    title={job.resumeReason || 'Skip completed stages; incomplete stages restart from the beginning'}
+                  >
+                    {job.continuing ? 'Starting…' : 'Continue'}
+                  </Button>
+                {:else if job.canRun}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onclick={() => runJob(ji)}
+                    disabled={job.running}
+                    title="Run the full equilibration protocol from stage 1"
+                  >
+                    {job.running ? 'Starting…' : 'Run'}
+                  </Button>
+                {/if}
+              </div>
+
+              {#if job.showInfo}
+                <div
+                  class="mt-2 rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+                >
+                  {#if job.loadingProcessInfo}
+                    <span class="text-neutral-400">Loading…</span>
+                  {:else if job.processInfo}
+                    <div class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
+                      <span class="text-neutral-500">Engine</span>
+                      <span class="uppercase">{job.processInfo.engine}</span>
+                      <span class="text-neutral-500">Directory</span>
+                      <span class="truncate font-mono" title={job.processInfo.working_dir}
+                        >{job.processInfo.working_dir}</span
+                      >
+                      <span class="text-neutral-500">PID</span>
+                      <span>{job.processInfo.pid ?? '—'}</span>
+                      <span class="text-neutral-500">Status</span>
+                      <span class={job.processInfo.running ? 'text-green-400' : 'text-neutral-400'}
+                        >{job.processInfo.running ? 'Running' : 'Not running'}</span
+                      >
+                      {#if job.processInfo.start_time}
+                        <span class="text-neutral-500">Started</span>
+                        <span>{new Date(job.processInfo.start_time).toLocaleString()}</span>
+                      {/if}
+                      {#if job.processInfo.command}
+                        <span class="text-neutral-500">Command</span>
+                        <span class="truncate font-mono text-neutral-300" title={job.processInfo.command}
+                          >{job.processInfo.command}</span
+                        >
+                      {/if}
+                    </div>
+                  {:else}
+                    <span class="text-neutral-400">No process information available.</span>
+                  {/if}
+                </div>
+              {/if}
+
+              {#if job.watched}
+                <div
+                  class="mt-3 border-t border-neutral-200 pt-3 dark:border-neutral-700"
+                >
+                  {#if job.stages.length > 0}
+                    {@const totals = jobSimulatedTotals(job.stages)}
+                    <p class="mb-2 text-neutral-500">
+                      Simulated: {formatNs(totals.sim)} / {formatNs(totals.total)} ns
+                    </p>
+                    <div class="flex flex-col gap-1">
+                      {#each job.stages as stage_info (stage_info.name)}
+                        <EquilibrationStageStatus
+                          {stage_info}
+                          compact
+                          tracking={job.status === 'running' && autoMonitor}
+                        />
+                      {/each}
+                    </div>
+                    {#if job.equilibrationOutput}
+                      <pre
+                        class="mt-2 max-h-32 overflow-auto rounded-md border border-neutral-200 p-2 text-xs dark:border-neutral-800"
+                        >{job.equilibrationOutput}</pre
+                      >
+                    {/if}
+                  {:else if job.status === 'not_started'}
+                    <p class="text-neutral-500">Inputs ready — not started yet.</p>
+                  {:else}
+                    <p class="text-neutral-500">No stage detail yet.</p>
+                  {/if}
+                </div>
               {/if}
             </div>
-          {:else}
-            <span class="text-neutral-400">No process information available.</span>
-          {/if}
-        </div>
-      {/if}
-      {#if ['running', 'completed', 'error'].includes(equilibrationStatus) || stageStatuses.length > 0}
-        <div class="grid grid-cols-[auto_1fr] gap-2">
-          {#each stageStatuses as stage_info (stage_info.name)}
-            <EquilibrationStageStatus {stage_info} tracking={equilibrationRunning && autoMonitor} />
           {/each}
         </div>
-        {#if equilibrationOutput}
-          <pre class="rounded-md border border-neutral-200 p-2 text-xs dark:border-neutral-800">{equilibrationOutput}</pre>
-        {/if}
-      {:else if equilibrationStatus === 'empty'}
-        <Empty message="No equilibration files found. Generate input files first." />
-      {:else}
-        <Empty message="Start an equilibration to see progress." />
       {/if}
     </div>
   </div>
