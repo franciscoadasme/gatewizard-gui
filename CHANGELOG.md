@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Linux / WSL:** splash/main open on the console’s Windows monitor — WSLg is one wide X11 screen, so placement maps Windows monitor work areas into that virtual space
 - **Settings → Versions:** “Download GUI” prefers the Linux `.deb` (not AppImage); under WSL opens the Windows host browser (`cmd.exe start` / `wslview`) when `xdg-open` fails; shows the download URL and an error if the browser cannot open
 - **Build:** theme antiflash script uses `type="module"` so Vite bundles it into the packaged renderer
 

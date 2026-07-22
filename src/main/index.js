@@ -62,7 +62,11 @@ import { ensureMambaRuntime, getGatewizardDataRoot, getLaunchPythonPath, inferCo
 import { checkForUpdates, getLocalGuiVersion, getManifestUrl } from './update-check.js'
 import {
   applyWorkAreaMaximize,
-  clearWorkAreaMaximizeLimits
+  applyWslDisplayPlatformSwitches,
+  captureLaunchAnchorEarly,
+  centerWindowOnDisplay,
+  clearWorkAreaMaximizeLimits,
+  getPreferredLaunchDisplay
 } from './window-work-area.js'
 import { buildAugmentedPath } from './shell-path.js'
 
@@ -171,6 +175,9 @@ let mainWindow = null
 let splashWindow = null
 let splashShownAt = 0
 let splashClosing = false
+/** Display chosen at launch (cursor) so splash + main stay on the same monitor. */
+/** @type {Electron.Display | null} */
+let launchDisplay = null
 
 /** @type {{ win: BrowserWindow, edge: string, startBounds: Electron.Rectangle, startPoint: { x: number, y: number } } | null} */
 let activeResize = null
@@ -527,13 +534,13 @@ function createSplashWindow() {
   }
 
   const { width, height } = getSplashWindowSize()
+  if (!launchDisplay) launchDisplay = getPreferredLaunchDisplay()
+  const bounds = centerWindowOnDisplay(width, height, launchDisplay)
 
   splashWindow = new BrowserWindow({
-    width,
-    height,
+    ...bounds,
     frame: false,
     transparent: true,
-    center: true,
     resizable: false,
     movable: false,
     minimizable: false,
@@ -555,6 +562,8 @@ function createSplashWindow() {
   splashWindow.loadFile(join(getResourcesDir(), 'splash.html'))
   splashWindow.once('ready-to-show', () => {
     if (splashWindow && !splashWindow.isDestroyed()) {
+      // Re-assert placement after show (WSLg/X11 can still nudge the first map).
+      splashWindow.setBounds(bounds)
       splashShownAt = Date.now()
       keepSplashOnTop()
       splashWindow.show()
@@ -643,6 +652,11 @@ function relaunchInGpuSafeMode(reason) {
 }
 
 applyGpuStartupMode()
+
+// WSL/WSLg: capture console monitor before Electron steals focus, and use X11 so
+// BrowserWindow x/y is honored (Wayland ignores programmatic placement).
+captureLaunchAnchorEarly()
+applyWslDisplayPlatformSwitches(app)
 
 // On Linux/WSL2, Chromium's GPU blocklist often disables hardware WebGL for Intel Xe.
 // These switches re-enable it when not in safe mode.
@@ -793,9 +807,10 @@ function createWindow() {
   }
 
   // Create the browser window.
+  if (!launchDisplay) launchDisplay = getPreferredLaunchDisplay()
+  const mainBounds = centerWindowOnDisplay(900, 670, launchDisplay)
   mainWindow = new BrowserWindow({
-    width: 900,
-    height: 670,
+    ...mainBounds,
     minWidth: MIN_WINDOW_WIDTH,
     minHeight: MIN_WINDOW_HEIGHT,
     show: false,
@@ -820,6 +835,9 @@ function createWindow() {
   attachWindowStateHandlers(mainWindow)
 
   mainWindow.on('ready-to-show', async () => {
+    if (mainWindow && !mainWindow.isDestroyed() && launchDisplay) {
+      mainWindow.setBounds(centerWindowOnDisplay(900, 670, launchDisplay))
+    }
     await closeSplashWindowWhenReady()
     revealMainWindow()
 
