@@ -11,15 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **UI:** bundled Roboto (SIL OFL) for renderer and splash so type matches across Windows / macOS / Linux; charts, axes gizmo, and transform gizmo use the same face
 - **UI:** shared `gw-notice` / `gw-chip` styles (neutral surface + brand accent bar) and brand yellow/green palette tokens
+- **Splash:** step-weighted install progress (percent + bar + hex), square window, activity dots / shimmer, and elapsed timer
 
 ### Changed
 
 - **UI:** status banners, validation messages, job cards, footer chips, and job toasts use the shared notice/chip styles instead of ad-hoc colored boxes
 - **Preparation / Builder / Equilibration / Analysis:** main content panes use the theme background color for consistent light/dark chrome
+- **Splash:** status shows `Step i/n · XX%`; real % on the lower bar; hex loops independently; install updates coalesced so the UI stays in sync under load
+- **Runtime install:** split bootstrap (base → AmberTools → OpenMM); skip unused `cudatoolkit`; default CPU GROMACS (CUDA via `GATEWIZARD_CONDA_GROMACS_CUDA=1`); single-flight lock; quieter console progress; elapsed time in `runtime-install.log`
+- **Equilibration / Settings:** MD engine **Variant** (`CPU` / `CUDA` / …); unified **Compute target** (Auto / CPU / CUDA, plus OpenCL / Metal for OpenMM) with local-vs-script chips (fixes OpenMM CPU selection snapping back to Auto)
+- Requires gatewizard API **1.0.49** (engine `variant` discovery)
 
 ### Fixed
 
 - **Settings → Versions:** “Download GUI” prefers the Linux `.deb` (not AppImage); under WSL opens the Windows host browser (`cmd.exe start` / `wslview`) when `xdg-open` fails; shows the download URL and an error if the browser cannot open
+- **Build:** theme antiflash script uses `type="module"` so Vite bundles it into the packaged renderer
 
 ## [1.0.11] - 2026-07-15
 
