@@ -58,7 +58,7 @@ import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import appWindowIcon from '../../resources/brand/logos/app-window-dark.png?asset'
 import { resolveAppWindowIconPath } from '../../resources/brand/manifest.mjs'
 // Brand asset map: resources/brand/manifest.mjs (use getAppWindowIconUrl when theme toggle exists)
-import { ensureMambaRuntime, getGatewizardDataRoot, getLaunchPythonPath, inferCondaPrefixFromPython, upgradeGatewizardPackage } from './runtime-bootstrap.js'
+import { ensureMambaRuntime, getGatewizardDataRoot, getLaunchPythonPath, inferCondaPrefixFromPython, upgradeGatewizardPackage, abortRuntimeInstalls } from './runtime-bootstrap.js'
 import { checkForUpdates, getLocalGuiVersion, getManifestUrl } from './update-check.js'
 import {
   applyWorkAreaMaximize,
@@ -71,9 +71,9 @@ const GPU_SAFE_MODE_FLAG = '--gatewizard-gpu-safe-mode=1'
 const GPU_RELAUNCHED_FLAG = '--gatewizard-gpu-relaunched=1'
 const SPLASH_MIN_MS = 3200
 const SPLASH_FADE_MS = 350
-const SPLASH_WIDTH = 360
-const SPLASH_HEIGHT = 420
-const SPLASH_LINUX_SIZE = 440
+/** Transparent splash frame is always square so WSL/Windows chrome looks even. */
+const SPLASH_SIZE = 440
+const SPLASH_LINUX_SIZE = 480
 
 /** WSL has no org.freedesktop.Notifications service — native toasts fail with libnotify. */
 function isRunningUnderWsl() {
@@ -160,10 +160,8 @@ function focusMainWindowAndOpenPage(sourcePage) {
 }
 
 function getSplashWindowSize() {
-  if (process.platform === 'linux') {
-    return { width: SPLASH_LINUX_SIZE, height: SPLASH_LINUX_SIZE }
-  }
-  return { width: SPLASH_WIDTH, height: SPLASH_HEIGHT }
+  const size = process.platform === 'linux' ? SPLASH_LINUX_SIZE : SPLASH_SIZE
+  return { width: size, height: size }
 }
 
 let backendProcess = null
@@ -403,6 +401,69 @@ function keepSplashOnTop() {
   }
 }
 
+/**
+ * Console logger for runtime bootstrap: one line per step, with animated dots
+ * on a TTY instead of spamming the same message from progress heartbeats.
+ */
+function createRuntimeConsoleLogger() {
+  let current = ''
+  let phase = 0
+  /** @type {ReturnType<typeof setInterval> | null} */
+  let timer = null
+  const isTty = Boolean(process.stdout.isTTY)
+
+  function stripTrailingDots(text) {
+    return String(text || '')
+      .replace(/\s+/g, ' ')
+      .replace(/[.…]+$/u, '')
+      .trim()
+  }
+
+  function stopAnim({ finishLine = false } = {}) {
+    if (timer) {
+      clearInterval(timer)
+      timer = null
+    }
+    if (finishLine && current && isTty) {
+      process.stdout.write(`\r\x1b[K[runtime] ${current}\n`)
+    }
+  }
+
+  return {
+    /** @param {string} msg */
+    status(msg) {
+      const text = stripTrailingDots(msg)
+      if (!text || text === current) return
+      stopAnim({ finishLine: Boolean(current) })
+      current = text
+      phase = 0
+      if (!isTty) {
+        process.stdout.write(`[runtime] ${text}\n`)
+        return
+      }
+      process.stdout.write(`[runtime] ${text}`)
+      timer = setInterval(() => {
+        phase = (phase + 1) % 4
+        const dots = '.'.repeat(phase)
+        const pad = '   '.slice(0, 3 - phase)
+        process.stdout.write(`\r\x1b[K[runtime] ${current}${dots}${pad}`)
+      }, 450)
+    },
+    /** @param {string} [msg] */
+    done(msg) {
+      stopAnim({ finishLine: false })
+      if (isTty && current) process.stdout.write('\r\x1b[K')
+      const finalText = stripTrailingDots(msg) || current
+      if (finalText) process.stdout.write(`[runtime] ${finalText}\n`)
+      current = ''
+    },
+    dispose() {
+      stopAnim({ finishLine: Boolean(current) })
+      current = ''
+    }
+  }
+}
+
 function setSplashStatus(message, busy = true) {
   if (!splashWindow || splashWindow.isDestroyed()) return
   const safeMessage = JSON.stringify(message)
@@ -410,6 +471,54 @@ function setSplashStatus(message, busy = true) {
   splashWindow.webContents
     .executeJavaScript(`window.setSplashStatus(${safeMessage}, ${busyFlag})`)
     .catch(() => {})
+}
+
+/** Latest install progress; coalesced so macOS does not drop mid-flight executeJavaScript calls. */
+let pendingSplashProgress = null
+let splashProgressFlush = null
+/** @type {Promise<void>} */
+let splashProgressChain = Promise.resolve()
+
+/**
+ * @param {{ message: string, percent: number, stepIndex?: number, stepCount?: number, busy?: boolean }} update
+ * @param {{ mapRuntimeTo?: number, immediate?: boolean }} [options] When mapRuntimeTo is set, scale 0–100 into 0–mapRuntimeTo (reserve tail for backend).
+ */
+function setSplashProgressUpdate(update, options = {}) {
+  if (!splashWindow || splashWindow.isDestroyed()) return
+  let percent = Number(update.percent) || 0
+  if (typeof options.mapRuntimeTo === 'number') {
+    percent = Math.min(options.mapRuntimeTo, Math.round((percent / 100) * options.mapRuntimeTo))
+  }
+  pendingSplashProgress = {
+    message: update.message,
+    percent,
+    stepIndex: update.stepIndex,
+    stepCount: update.stepCount,
+    busy: update.busy !== false
+  }
+
+  const flush = () => {
+    splashProgressFlush = null
+    const payload = pendingSplashProgress
+    pendingSplashProgress = null
+    if (!payload || !splashWindow || splashWindow.isDestroyed()) return
+    const js = `window.setSplashInstallProgress(${JSON.stringify(payload)})`
+    // Serialize IPC so status text and bar stay ordered under CPU load (esp. macOS).
+    splashProgressChain = splashProgressChain
+      .then(() => splashWindow.webContents.executeJavaScript(js))
+      .catch(() => {})
+  }
+
+  if (splashProgressFlush) {
+    clearTimeout(splashProgressFlush)
+    splashProgressFlush = null
+  }
+  // Backend / Ready must paint promptly; coalesce heartbeats otherwise.
+  if (options.immediate || percent >= 96 || update.busy === false) {
+    flush()
+  } else {
+    splashProgressFlush = setTimeout(flush, 80)
+  }
 }
 
 function createSplashWindow() {
@@ -437,7 +546,9 @@ function createSplashWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: true
+      sandbox: true,
+      // Keep CSS/JS activity animations running while micromamba saturates the CPU.
+      backgroundThrottling: false
     }
   })
 
@@ -799,26 +910,51 @@ app.whenReady().then(async () => {
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
 
-  setSplashStatus('Preparing Python environment…\nFirst launch may take several minutes.')
+  const runtimeLog = createRuntimeConsoleLogger()
+  setSplashProgressUpdate({
+    message: 'Preparing Python environment…\nFirst launch may take several minutes.',
+    percent: 1,
+    stepIndex: 1,
+    stepCount: 9,
+    busy: true
+  })
   try {
     await ensureMambaRuntime({
       requirementsPath: getRequirementsPath(),
       onStatus: (msg) => {
-        process.stdout.write(`[runtime] ${msg}\n`)
-        setSplashStatus(msg)
+        runtimeLog.status(msg)
+      },
+      onProgress: (update) => {
+        // Leave ~8% for backend startup so the bar never jumps backwards.
+        setSplashProgressUpdate(update, { mapRuntimeTo: 92 })
       }
     })
+    runtimeLog.done()
   } catch (error) {
+    runtimeLog.dispose()
     closeSplashWindowImmediate()
     await dialog.showErrorBox('Runtime bootstrap failed', error.message)
     app.quit()
     return
   }
 
-  setSplashStatus('Starting backend…')
+  setSplashProgressUpdate({
+    message: 'Starting backend…',
+    percent: 96,
+    stepIndex: 1,
+    stepCount: 1,
+    busy: true
+  })
   startBackend()
   try {
     await waitForBackendHealth()
+    setSplashProgressUpdate({
+      message: 'Ready',
+      percent: 100,
+      stepIndex: 1,
+      stepCount: 1,
+      busy: false
+    })
   } catch (error) {
     closeSplashWindowImmediate()
     await dialog.showErrorBox('Backend failed to start', error.message)
@@ -846,6 +982,7 @@ app.on('child-process-gone', (_event, details) => {
 })
 
 app.on('before-quit', () => {
+  abortRuntimeInstalls('app quit')
   stopBackend()
 })
 
@@ -1045,13 +1182,24 @@ ipcMain.handle('updates:open-url', async (_event, url) => {
 })
 
 ipcMain.handle('runtime:upgrade-gatewizard', async (_event, installSpec) => {
-  const result = await upgradeGatewizardPackage({
-    requirementsPath: getRequirementsPath(),
-    installSpec: typeof installSpec === 'string' ? installSpec : undefined,
-    onStatus: (msg) => process.stdout.write(`[runtime] ${msg}\n`)
-  })
-  await restartBackend()
-  return result
+  const runtimeLog = createRuntimeConsoleLogger()
+  try {
+    const result = await upgradeGatewizardPackage({
+      requirementsPath: getRequirementsPath(),
+      installSpec: typeof installSpec === 'string' ? installSpec : undefined,
+      onStatus: (msg) => runtimeLog.status(msg)
+    })
+    runtimeLog.done(
+      result?.gatewizardVersion
+        ? `gatewizard upgraded to ${result.gatewizardVersion}`
+        : 'gatewizard upgrade finished'
+    )
+    await restartBackend()
+    return result
+  } catch (error) {
+    runtimeLog.dispose()
+    throw error
+  }
 })
 
 ipcMain.handle('theme:set', (_event, theme) => {

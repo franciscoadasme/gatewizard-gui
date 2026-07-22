@@ -1,5 +1,5 @@
 /**
- * Runs before the app module loads to avoid a light-theme flash (must stay external — no inline script for CSP).
+ * Runs before the app mounts to avoid a light-theme flash (external file — no inline script for CSP).
  */
 ;(function () {
   try {
