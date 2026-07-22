@@ -82,17 +82,20 @@
   let comSelectionValidation = $state(/** @type {{ ok: boolean, message: string } | null} */ (null))
   let checkingExecutable = $state(false)
   let executableCheck = $state(/** @type {{ ok: boolean, message: string } | null} */ (null))
-  /** @type {Array<{ id: string, label: string, executable: string, version?: string|null, source?: string, gmxrc?: string|null, available?: boolean }>} */
+  /** @type {Array<{ id: string, label: string, executable: string, version?: string|null, variant?: string|null, source?: string, gmxrc?: string|null, available?: boolean }>} */
   let engineCandidates = $state([])
   let loadingEngineCandidates = $state(false)
   /** Selected candidate id, or ``custom`` for free-text path */
   let engineCandidateId = $state('custom')
   /** GMXRC paired with the selected GROMACS candidate (if any) */
   let selectedGmxrc = $state(/** @type {string|null} */ (null))
-  /** @type {{ name: string, speed: number }[] | null} */
-  let openmmPlatforms = $state(null)
-  /** @type {string | null} null = auto-detect */
-  let openmmPlatform = $state(null)
+  /**
+   * Compute target written into run scripts (may differ from this machine).
+   * @type {'auto' | 'CPU' | 'CUDA' | 'OpenCL' | 'Metal'}
+   */
+  let computeTarget = $state(/** @type {'auto' | 'CPU' | 'CUDA' | 'OpenCL' | 'Metal'} */ ('auto'))
+  /** Targets detected on this machine after Check Executable / candidate scan */
+  let availableCompute = $state(/** @type {string[]} */ ([]))
   let executableByEngine = $state({
     namd: 'namd3',
     gromacs: 'gmx',
@@ -104,23 +107,19 @@
   let totalCpus = $state(4)
   let totalGpus = $state(1)
   let updateInterval = $state(5)
-  let useGpu = $state(true)
 
-  const GPU_PLATFORMS = ['CUDA', 'OpenCL', 'Metal']
+  const GPU_TARGETS = ['CUDA', 'OpenCL', 'Metal']
+  const OPENMM_COMPUTE_TARGETS = /** @type {const} */ (['auto', 'CPU', 'CUDA', 'OpenCL', 'Metal'])
+  const BINARY_COMPUTE_TARGETS = /** @type {const} */ (['auto', 'CPU', 'CUDA'])
 
-  $effect(() => {
-    if (!useGpu) {
-      // Force CPU when GPU acceleration is disabled
-      if (openmmPlatform === null || GPU_PLATFORMS.includes(openmmPlatform)) {
-        openmmPlatform = 'CPU'
-      }
-    } else {
-      // Restore auto-detect if we had force-set to CPU
-      if (openmmPlatform === 'CPU') {
-        openmmPlatform = null
-      }
-    }
-  })
+  const computeTargetsForEngine = $derived(
+    engine === 'openmm' ? OPENMM_COMPUTE_TARGETS : BINARY_COMPUTE_TARGETS
+  )
+  /** Scripts request GPU unless the user explicitly targets CPU. */
+  const useGpu = $derived(computeTarget !== 'CPU')
+  const openmmPlatform = $derived(
+    engine === 'openmm' && computeTarget !== 'auto' ? computeTarget : null
+  )
 
   // derived values
   const canGenerateInput = $derived(
@@ -148,6 +147,26 @@
     use_gpu: useGpu
   })
 
+  /** @param {string} target */
+  function isComputeAvailable(target) {
+    if (target === 'auto') return true
+    return availableCompute.includes(target)
+  }
+
+  /** @param {string | null | undefined} variant */
+  function availableFromVariant(variant) {
+    const list = ['CPU']
+    if (variant && variant !== 'CPU' && !list.includes(variant)) {
+      list.push(variant)
+    }
+    return list
+  }
+
+  function syncAvailableFromSelectedCandidate() {
+    if (engine === 'openmm') return
+    const hit = engineCandidates.find((c) => c.id === engineCandidateId)
+    availableCompute = availableFromVariant(hit?.variant ?? null)
+  }
   // state
   /** @type {null | { stageIndex: number, constraintIndex: number, source: Constraint | null }} */
   let constraintEditor = $state(null)
@@ -470,16 +489,34 @@
           selectedGmxrc = first.gmxrc ?? null
         }
       }
+      if (engine === 'openmm') {
+        try {
+          const { platforms } = await getOpenmmPlatforms()
+          availableCompute = (platforms ?? [])
+            .map((p) => p.name)
+            .filter((name) => name && name !== 'Reference')
+        } catch {
+          availableCompute = availableCompute.length ? availableCompute : ['CPU']
+        }
+      } else {
+        syncAvailableFromSelectedCandidate()
+      }
     } catch {
       engineCandidates = []
+      availableCompute = []
     } finally {
       loadingEngineCandidates = false
     }
   }
 
   $effect(() => {
-    // Refresh when engine changes
+    // Refresh when engine changes; drop OpenMM-only targets on NAMD/GROMACS
     void engine
+    untrack(() => {
+      if (engine !== 'openmm' && (computeTarget === 'OpenCL' || computeTarget === 'Metal')) {
+        computeTarget = 'auto'
+      }
+    })
     void refreshEngineCandidates()
   })
 
@@ -489,7 +526,6 @@
       return
     }
     checkingExecutable = true
-    openmmPlatforms = null
     try {
       const result = await checkExecutable({ engine, executable: selectedExecutable })
       if (result.exists) {
@@ -502,17 +538,17 @@
         if (engine === 'openmm') {
           try {
             const { platforms } = await getOpenmmPlatforms()
-            openmmPlatforms = platforms ?? []
-            // Auto-select best available GPU platform, or CPU if GPU disabled
-            if (!useGpu) {
-              openmmPlatform = 'CPU'
-            } else if (openmmPlatform === null) {
-              const best = (platforms ?? []).find((p) => GPU_PLATFORMS.includes(p.name))
-              openmmPlatform = best ? best.name : null
-            }
+            availableCompute = (platforms ?? [])
+              .map((p) => p.name)
+              .filter((name) => name && name !== 'Reference')
           } catch {
-            openmmPlatforms = []
+            availableCompute = ['CPU']
           }
+        } else {
+          const hit = engineCandidates.find(
+            (c) => c.id === engineCandidateId || c.executable === selectedExecutable
+          )
+          availableCompute = availableFromVariant(hit?.variant ?? result.variant ?? null)
         }
       } else {
         executableCheck = {
@@ -720,7 +756,6 @@
     totalCpus = 4
     totalGpus = 1
     updateInterval = 5
-    useGpu = true
     addComRestraint = false
     comSelection = 'name CA'
     comRestraintK = 10
@@ -730,15 +765,12 @@
     comSelectionValidation = null
     checkingExecutable = false
     executableCheck = null
-    openmmPlatforms = null
-    openmmPlatform = null
+    computeTarget = 'auto'
+    availableCompute = []
     executableByEngine = { namd: 'namd3', gromacs: 'gmx', openmm: 'python' }
     engineCandidates = []
     engineCandidateId = 'custom'
     selectedGmxrc = null
-    openmmPlatforms = null
-    openmmPlatform = null
-    executableCheck = null
     protocol = prepareProtocolForRendering(baseProtocol)
     constraintEditor = null
     equilibrationStatus = 'not_started'
@@ -823,7 +855,7 @@
           bind:value={engine}
           onchange={() => {
             executableCheck = null
-            openmmPlatforms = null
+            availableCompute = []
             engineCandidateId = 'custom'
             selectedGmxrc = null
           }}
@@ -850,16 +882,18 @@
               const id = e.currentTarget.value
               engineCandidateId = id
               executableCheck = null
-              openmmPlatforms = null
-              openmmPlatform = null
               if (id === 'custom') {
                 selectedGmxrc = null
+                if (engine !== 'openmm') availableCompute = ['CPU']
                 return
               }
               const hit = engineCandidates.find((c) => c.id === id)
               if (hit) {
                 executableByEngine[engine] = hit.executable
                 selectedGmxrc = hit.gmxrc ?? null
+                if (engine !== 'openmm') {
+                  availableCompute = availableFromVariant(hit.variant ?? null)
+                }
               }
             }}
           >
@@ -879,8 +913,7 @@
               engineCandidateId = 'custom'
               selectedGmxrc = null
               executableCheck = null
-              openmmPlatforms = null
-              openmmPlatform = null
+              if (engine !== 'openmm') availableCompute = ['CPU']
             }}
             className="w-full"
             placeholder={engine === 'openmm' ? 'python' : engine === 'gromacs' ? 'gmx' : 'namd3'}
@@ -913,47 +946,71 @@
             {executableCheck.message}
           </p>
         {/if}
-        {#if engine === 'openmm' && openmmPlatforms !== null}
-          <div class="space-y-1 pt-0.5">
-            <p class="sidebar-label">Platform</p>
-            <div class="flex flex-wrap gap-1">
-              {#each openmmPlatforms.filter((p) => p.name !== 'Reference') as p}
-                {@const isGpu = GPU_PLATFORMS.includes(p.name)}
-                {@const isDisabled = isGpu && !useGpu}
-                {@const isSelected =
-                  openmmPlatform === p.name || (openmmPlatform === null && isGpu)}
-                <button
-                  type="button"
-                  disabled={isDisabled}
-                  onclick={() => {
-                    openmmPlatform = openmmPlatform === p.name ? null : p.name
-                  }}
-                  class="rounded px-1.5 py-0.5 text-xs font-medium transition-colors
-                    {isDisabled
-                    ? 'cursor-not-allowed bg-zinc-800 text-zinc-500 opacity-40'
-                    : isSelected
+        <div class="space-y-1 pt-0.5">
+          <p class="sidebar-label flex items-center gap-1">
+            Compute target
+            <span
+              class="inline-flex size-3.5 shrink-0 cursor-help items-center justify-center rounded-full border border-neutral-400 text-[9px] leading-none text-neutral-500 dark:border-neutral-500 dark:text-neutral-400"
+              title="Written into the generated run scripts (GPU flags / OpenMM PLATFORM). You can choose a target that is not available on this PC — e.g. prepare inputs here and run later on a CUDA machine. A green dot on a chip means that target was detected locally."
+              aria-label="About compute target: written into run scripts; may differ from this machine"
+              role="img"
+              >i</span
+            >
+          </p>
+          <div class="flex flex-wrap gap-1">
+            {#each computeTargetsForEngine as target (target)}
+              {@const available = isComputeAvailable(target)}
+              {@const selected = computeTarget === target}
+              {@const isGpu = GPU_TARGETS.includes(target)}
+              <button
+                type="button"
+                title={target === 'auto'
+                  ? 'Auto-detect at run time'
+                  : available
+                    ? `Available on this PC · select for scripts`
+                    : `Not detected here · still writable into scripts`}
+                onclick={() => {
+                  computeTarget = target
+                }}
+                class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium transition-colors
+                  {selected
+                    ? isGpu
+                      ? 'bg-green-700 text-green-100 ring-1 ring-green-400'
+                      : target === 'CPU'
+                        ? 'bg-blue-700 text-blue-100 ring-1 ring-blue-400'
+                        : 'bg-neutral-700 text-neutral-100 ring-1 ring-neutral-400'
+                    : available
                       ? isGpu
-                        ? 'bg-green-700 text-green-100 ring-1 ring-green-400'
-                        : 'bg-blue-700 text-blue-100 ring-1 ring-blue-400'
-                      : isGpu
-                        ? 'bg-green-900 text-green-300 hover:bg-green-800'
-                        : 'bg-zinc-700 text-zinc-300 hover:bg-zinc-600'}"
-                  >{p.name}{isSelected ? ' ✓' : ''}</button
-                >
-              {/each}
-              {#if openmmPlatforms.filter((p) => p.name !== 'Reference').length === 0}
-                <span class="sidebar-hint">No platforms detected</span>
-              {/if}
-            </div>
-            {#if openmmPlatform === null}
-              <p class="sidebar-hint">Auto-detect (fastest available)</p>
-            {:else}
-              <p class="sidebar-hint">
-                Selected: <span class="text-neutral-800 dark:text-neutral-200">{openmmPlatform}</span>
-              </p>
-            {/if}
+                        ? 'bg-green-900/80 text-green-300 hover:bg-green-800'
+                        : 'bg-zinc-700 text-zinc-300 hover:bg-zinc-600'
+                      : 'bg-zinc-800/60 text-zinc-500 hover:bg-zinc-700 hover:text-zinc-300'}"
+              >
+                {#if available && target !== 'auto'}
+                  <span
+                    class="size-1.5 shrink-0 rounded-full {selected
+                      ? 'bg-emerald-200'
+                      : 'bg-emerald-400'}"
+                    aria-hidden="true"
+                  ></span>
+                {/if}
+                {target === 'auto' ? 'Auto' : target}{selected ? ' ✓' : ''}
+              </button>
+            {/each}
           </div>
-        {/if}
+          {#if computeTarget !== 'auto' && !isComputeAvailable(computeTarget)}
+            <p class="text-xs text-amber-600 dark:text-amber-400">
+              Not detected on this PC — scripts will still target {computeTarget}.
+            </p>
+          {:else if computeTarget === 'auto'}
+            <p class="sidebar-hint">
+              {engine === 'openmm'
+                ? 'OpenMM picks the fastest platform at runtime.'
+                : 'Scripts prefer GPU when the engine supports it.'}
+            </p>
+          {:else if availableCompute.length > 0}
+            <p class="sidebar-hint">Available here: {availableCompute.join(', ')}</p>
+          {/if}
+        </div>
       </div>
       <div class="col-span-2 flex items-center gap-2">
         <Checkbox
@@ -1033,11 +1090,6 @@
       <h2 class="sidebar-heading col-span-2">Computational Resources</h2>
       <label for="cpu-cores" class="sidebar-label flex-1">CPU Cores</label>
       <Input id="cpu-cores" type="number" size="sm" bind:value={totalCpus} />
-
-      <div class="col-span-2 flex items-center gap-2">
-        <Checkbox id="use-gpu" bind:checked={useGpu} />
-        <label for="use-gpu" class="sidebar-label">Enable GPU acceleration</label>
-      </div>
 
       {#if useGpu}
         <label for="gpu_id" class="sidebar-label">GPU ID</label>

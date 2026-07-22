@@ -44,6 +44,7 @@
    *   label: string,
    *   executable: string,
    *   version?: string|null,
+   *   variant?: string|null,
    *   source?: string,
    *   gmxrc?: string|null,
    *   available?: boolean
@@ -107,6 +108,7 @@
             label: c.label,
             executable: c.executable,
             version: c.version ?? null,
+            variant: c.variant ?? null,
             source: c.source ?? '',
             gmxrc: c.gmxrc ?? null,
             available: c.available !== false
@@ -646,6 +648,7 @@
                           <tr>
                             <th class="px-3 py-2 text-left font-medium">Engine</th>
                             <th class="px-3 py-2 text-left font-medium">Version</th>
+                            <th class="px-3 py-2 text-left font-medium">Variant</th>
                             <th class="px-3 py-2 text-left font-medium">Source</th>
                             <th class="px-3 py-2 text-left font-medium">Path</th>
                           </tr>
@@ -660,6 +663,9 @@
                               </td>
                               <td class="px-3 py-2 font-mono text-neutral-600 dark:text-neutral-300">
                                 {row.version ?? '—'}
+                              </td>
+                              <td class="px-3 py-2 font-mono text-neutral-600 dark:text-neutral-300">
+                                {row.variant ?? '—'}
                               </td>
                               <td class="px-3 py-2 text-neutral-400">
                                 {engineSourceLabel(row.source)}

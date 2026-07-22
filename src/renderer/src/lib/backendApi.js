@@ -361,7 +361,7 @@ export async function checkExecutable(props) {
 /**
  * Discover installed NAMD / GROMACS / OpenMM candidates for the engine picker.
  * @param {string} engine
- * @returns {Promise<{ engine: string, candidates: Array<{ id: string, label: string, executable: string, version?: string|null, source?: string, gmxrc?: string|null, available?: boolean }> }>}
+ * @returns {Promise<{ engine: string, candidates: Array<{ id: string, label: string, executable: string, version?: string|null, variant?: string|null, source?: string, gmxrc?: string|null, available?: boolean }> }>}
  */
 export async function listEngineExecutables(engine) {
   return backendJson('/list-engine-executables', { engine })
