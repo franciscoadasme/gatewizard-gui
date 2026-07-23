@@ -4,6 +4,9 @@
 
   /** Invalidate main renderer — call after programmatic camera manipulation. */
   export const mainViewerInvalidate = { fn: /** @type {() => void} */ (() => {}) }
+
+  /** Called after animation applies a camera pose so CameraRig does not re-pan on the next frame. */
+  export const mainViewerFramingAnchor = { fn: /** @type {(cx: number, cy: number, cz: number, extent: number) => void} */ (() => {}) }
 </script>
 
 <script>
@@ -87,6 +90,13 @@
   let lastFramingGeneration = 0
   let lastPoseResetGeneration = 0
 
+  mainViewerFramingAnchor.fn = (cx, cy, cz, ext) => {
+    lastCx = cx
+    lastCy = cy
+    lastCz = cz
+    lastExtent = ext
+  }
+
   /**
    * @param {OrthographicCamera} cam
    * @param {number} ext
@@ -107,8 +117,8 @@
   const _target = new Vector3()
 
   /**
-   * Eye on +world Z, up +world Y, look at target → +Z points from structure toward the camera.
-   * Screen: +X is to the viewer’s right (Three default); −X is to the left on screen.
+   * Eye on -world Y, up +world Z, look at target → +Z points up on screen.
+   * Screen: +X is to the viewer’s right; world Z is vertical (screen up).
    * @param {import('three').Camera} cam
    * @param {{ target: import('three').Vector3 }} ctrl
    * @param {number} cx
@@ -120,8 +130,8 @@
     const dist = Math.max(18, ext * 2.8)
     _target.set(cx, cy, cz)
     ctrl.target.copy(_target)
-    _eye.set(cx, cy, cz + dist)
-    cam.up.set(0, 1, 0)
+    _eye.set(cx, cy - dist, cz)
+    cam.up.set(0, 0, 1)
     cam.position.copy(_eye)
     cam.lookAt(_target)
   }

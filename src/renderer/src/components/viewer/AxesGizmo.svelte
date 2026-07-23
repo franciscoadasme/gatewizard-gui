@@ -27,31 +27,27 @@
   const CANVAS_SIZE = 128
   const NEG_MAX_FILL = 0.7
 
+  /**
+   * Each click steps the camera by ~90°, rotating around a CAMERA-RELATIVE
+   * axis derived from where the clicked ball currently sits on screen — not
+   * a fixed per-world-axis behavior. Horizontal spheres (left/right) yaw
+   * around camera-up (vertical axis stays fixed on screen); vertical spheres
+   * (top/bottom) pitch around camera-right (horizontal axis stays fixed).
+   * Repeated clicks on the ball at that screen position keep stepping 90° in
+   * the same rotational direction — handy for turntable-style animation
+   * keyframes around one axis.
+   *
+   * The raw 90°-rotated pose is then snapped to the nearest perfectly
+   * axis-aligned/symmetric orientation, and the camera slerps
+   * to that exact clean target via the shortest path. When the camera is
+   * already aligned this is a no-op on the target (identical to a pure ±90°
+   * step); when the view was manually dragged to an oblique angle, the click
+   * corrects it back to a clean, symmetric alignment.
+   */
   const AXES = [
-    {
-      label: 'X',
-      color: '#e03030',
-      dir: new Vector3(1, 0, 0),
-      negDir: new Vector3(-1, 0, 0),
-      posUp: new Vector3(0, 1, 0),
-      negUp: new Vector3(0, 1, 0)
-    },
-    {
-      label: 'Y',
-      color: '#38c038',
-      dir: new Vector3(0, 1, 0),
-      negDir: new Vector3(0, -1, 0),
-      posUp: new Vector3(0, 0, -1),
-      negUp: new Vector3(0, 0, 1)
-    },
-    {
-      label: 'Z',
-      color: '#3048e0',
-      dir: new Vector3(0, 0, 1),
-      negDir: new Vector3(0, 0, -1),
-      posUp: new Vector3(0, 1, 0),
-      negUp: new Vector3(0, 1, 0)
-    }
+    { label: 'X', color: '#e03030', dir: new Vector3(1, 0, 0), negDir: new Vector3(-1, 0, 0) },
+    { label: 'Y', color: '#38c038', dir: new Vector3(0, 1, 0), negDir: new Vector3(0, -1, 0) },
+    { label: 'Z', color: '#3048e0', dir: new Vector3(0, 0, 1), negDir: new Vector3(0, 0, -1) }
   ]
 
   /**
@@ -108,7 +104,7 @@
 
   let gizmoRoot = $state(/** @type {Group | null} */ (null))
 
-  /** @type {{ mesh: import('three').Mesh, dir: import('three').Vector3, up: import('three').Vector3 }[]} */
+  /** @type {{ mesh: import('three').Mesh, dir: import('three').Vector3 }[]} */
   let hitObjects = []
 
   /**
@@ -131,79 +127,167 @@
 
   const _raycaster = new Raycaster()
   const _mouse = new Vector2()
-  const _camDir = new Vector3()
 
-  // ── Camera snap animation ────────────────────────────────────────────
+  // ── Camera step: ±90° turntable, snapped to exact symmetric alignment ──
+  // TrackballControls.update() always lookAt()s and may apply mouse damping
+  // (_lastAngle); we clear that each frame so it can't fight the snap.
   const SNAP_DURATION = 380 // ms
+  const STEP = Math.PI / 2
+  const _originVec = new Vector3(0, 0, 0)
+  const _tmpLookMat = new Matrix4()
   let _snapAnimating = false
   let _snapStartTime = 0
-  const _snapStartQuat = new Quaternion()
-  const _snapEndQuat = new Quaternion()
-  const _snapCurrQuat = new Quaternion()
+  let _snapRaf = 0
   const _snapTarget = new Vector3()
-  const _snapLookMat = new Matrix4()
-  const _snapTmpVec = new Vector3()
+  const _snapStartQuat = new Quaternion()
+  const _snapTargetQuat = new Quaternion()
+  const _snapQuat = new Quaternion()
+  const _snapAxis = new Vector3()
+  const _snapRight = new Vector3()
+  const _snapEye = new Vector3()
+  const _snapUp = new Vector3()
+  const _snapLook = new Vector3()
+  const _snapRawEye = new Vector3()
+  const _snapRawUp = new Vector3()
+  const _snapCleanEye = new Vector3()
+  const _snapCleanUp = new Vector3()
+  const _localZ = new Vector3(0, 0, 1)
+  const _localY = new Vector3(0, 1, 0)
+  const _camDir = new Vector3()
   let _snapDist = 0
 
+  /** Kill TrackballControls inertial rotate so it cannot fight the snap. */
+  function silenceTrackball(ctrl) {
+    if (!ctrl) return
+    if ('_lastAngle' in ctrl) ctrl._lastAngle = 0
+    if ('_lastAxis' in ctrl && ctrl._lastAxis?.set) ctrl._lastAxis.set(0, 0, 0)
+  }
+
   /**
-   * @param {import('three').Vector3} dir
-   * @param {import('three').Vector3} up
+   * Snap `v` to the nearest of the 6 cardinal unit vectors (±X/±Y/±Z).
+   * @param {import('three').Vector3} v
+   * @param {import('three').Vector3} out
    */
-  function snapCamera(dir, up) {
+  function snapToCardinal(v, out) {
+    const ax = Math.abs(v.x)
+    const ay = Math.abs(v.y)
+    const az = Math.abs(v.z)
+    if (ax >= ay && ax >= az) return out.set(v.x < 0 ? -1 : 1, 0, 0)
+    if (ay >= az) return out.set(0, v.y < 0 ? -1 : 1, 0)
+    return out.set(0, 0, v.z < 0 ? -1 : 1)
+  }
+
+  /**
+   * Step the camera ~90° to bring `dir` (a fixed world axis direction) toward front.
+   * Rotation axis/sign are derived from the CURRENT camera basis, so this always
+   * pitches when `dir` currently sits above/below on screen, and yaws when it
+   * currently sits left/right — regardless of which world axis `dir` is. The
+   * resulting pose is snapped to an exact axis-aligned orientation and reached
+   * via the shortest quaternion path (a no-op correction when already aligned).
+   * @param {import('three').Vector3} dir
+   */
+  function stepCamera(dir) {
     const cam = mainViewerCamera.current
     const ctrl = mainViewerControls.current
     if (!cam || !ctrl || !('target' in ctrl)) return
 
+    if (_snapRaf) {
+      cancelAnimationFrame(_snapRaf)
+      _snapRaf = 0
+    }
+
+    silenceTrackball(ctrl)
+
     _snapTarget.copy(ctrl.target)
     _snapDist = cam.position.distanceTo(_snapTarget)
+    if (_snapDist < 1e-8) return
 
-    // Start quaternion = current camera orientation
     _snapStartQuat.copy(cam.quaternion)
+    _snapEye.copy(cam.position).sub(_snapTarget).normalize()
+    _snapUp.copy(cam.up).normalize()
+    _snapLook.copy(_snapEye).negate() // forward
+    _snapRight.crossVectors(_snapLook, _snapUp) // right = look × up
+    if (_snapRight.lengthSq() < 1e-12) return
+    _snapRight.normalize()
 
-    // End quaternion = lookAt from (target + dir*dist) toward target with given up
-    _snapTmpVec.copy(_snapTarget).addScaledVector(dir, _snapDist)
-    _snapLookMat.lookAt(_snapTmpVec, _snapTarget, up)
-    _snapEndQuat.setFromRotationMatrix(_snapLookMat)
+    const upDot = dir.dot(_snapUp)
+    const rightDot = dir.dot(_snapRight)
+    const lookDot = dir.dot(_snapLook)
+    const aUp = Math.abs(upDot)
+    const aRight = Math.abs(rightDot)
+    const aLook = Math.abs(lookDot)
 
-    // If already animating, restart from current position
-    _snapStartTime = performance.now()
-    if (!_snapAnimating) {
-      _snapAnimating = true
-      _snapAnimFrame()
+    let angle
+    if (aUp >= aRight && aUp >= aLook) {
+      // Ball is above/below on screen → pitch around camera right, no roll.
+      _snapAxis.copy(_snapRight)
+      angle = upDot > 0 ? -STEP : STEP
+    } else if (aRight >= aLook) {
+      // Ball is left/right on screen → yaw around camera up, no roll.
+      _snapAxis.copy(_snapUp)
+      angle = rightDot > 0 ? STEP : -STEP
+    } else {
+      // Ball points toward/away from camera (front/back) → half-turn yaw.
+      _snapAxis.copy(_snapUp)
+      angle = Math.PI
     }
+
+    // Raw 90°-rotated pose, then snapped to an exact symmetric/aligned pose.
+    _snapQuat.setFromAxisAngle(_snapAxis, angle)
+    _snapRawEye.copy(_snapEye).applyQuaternion(_snapQuat)
+    _snapRawUp.copy(_snapUp).applyQuaternion(_snapQuat)
+    snapToCardinal(_snapRawEye, _snapCleanEye)
+    _snapCleanUp.copy(_snapRawUp).addScaledVector(_snapCleanEye, -_snapRawUp.dot(_snapCleanEye))
+    snapToCardinal(_snapCleanUp, _snapCleanUp)
+
+    _tmpLookMat.lookAt(_snapCleanEye, _originVec, _snapCleanUp)
+    _snapTargetQuat.setFromRotationMatrix(_tmpLookMat)
+
+    _snapStartTime = performance.now()
+    _snapAnimating = true
+    _snapAnimFrame()
+  }
+
+  /** @param {number} t 0–1 */
+  function applyStepPose(t) {
+    const cam = mainViewerCamera.current
+    const ctrl = mainViewerControls.current
+    if (!cam || !ctrl) return
+
+    _snapQuat.copy(_snapStartQuat).slerp(_snapTargetQuat, t)
+    _snapEye.copy(_localZ).applyQuaternion(_snapQuat).multiplyScalar(_snapDist)
+    _snapUp.copy(_localY).applyQuaternion(_snapQuat)
+
+    cam.position.copy(_snapTarget).add(_snapEye)
+    cam.quaternion.copy(_snapQuat)
+    cam.up.copy(_snapUp)
+
+    silenceTrackball(ctrl)
+    if (ctrl._eye?.copy) ctrl._eye.copy(_snapEye)
+    // Safe: damping is zeroed, so update only syncs position/lookAt bookkeeping.
+    if (typeof ctrl.update === 'function') ctrl.update()
+    mainViewerInvalidate.fn()
   }
 
   function _snapAnimFrame() {
-    const cam = mainViewerCamera.current
-    const ctrl = mainViewerControls.current
-    if (!cam || !ctrl) {
+    if (!mainViewerCamera.current) {
       _snapAnimating = false
+      _snapRaf = 0
       return
     }
 
     const elapsed = performance.now() - _snapStartTime
     const rawT = Math.min(elapsed / SNAP_DURATION, 1)
-    // Ease-out cubic: fast start, smooth stop
     const t = 1 - Math.pow(1 - rawT, 3)
 
-    _snapCurrQuat.copy(_snapStartQuat).slerp(_snapEndQuat, t)
-
-    // +Z in camera local space = direction from target toward camera
-    _snapTmpVec.set(0, 0, 1).applyQuaternion(_snapCurrQuat)
-    cam.position.copy(_snapTarget).addScaledVector(_snapTmpVec, _snapDist)
-
-    // +Y in camera local space = camera up
-    cam.up.set(0, 1, 0).applyQuaternion(_snapCurrQuat)
-
-    cam.lookAt(_snapTarget)
-    if (typeof ctrl.update === 'function') ctrl.update()
-    mainViewerInvalidate.fn()
-
-    if (rawT < 1) {
-      requestAnimationFrame(_snapAnimFrame)
-    } else {
+    applyStepPose(rawT >= 1 ? 1 : t)
+    if (rawT >= 1) {
       _snapAnimating = false
+      _snapRaf = 0
+      return
     }
+
+    _snapRaf = requestAnimationFrame(_snapAnimFrame)
   }
 
   /** @param {MouseEvent} e */
@@ -268,7 +352,7 @@
     const hits = _raycaster.intersectObjects(hitObjects.map((h) => h.mesh))
     if (hits.length > 0) {
       const hit = hitObjects.find((h) => h.mesh === hits[0].object)
-      if (hit) snapCamera(hit.dir, hit.up)
+      if (hit) stepCamera(hit.dir)
     }
   }
 
@@ -368,7 +452,10 @@
       posHit.frustumCulled = false
       posHit.position.copy(axis.dir).multiplyScalar(LINE_LENGTH)
       group.add(posHit)
-      localHits.push({ mesh: posHit, dir: axis.dir.clone(), up: axis.posUp.clone() })
+      localHits.push({
+        mesh: posHit,
+        dir: axis.dir.clone()
+      })
       localRefs.push({
         mesh: posHit,
         sprite: posSprite,
@@ -410,7 +497,10 @@
       negHit.frustumCulled = false
       negHit.position.copy(axis.negDir).multiplyScalar(LINE_LENGTH)
       group.add(negHit)
-      localHits.push({ mesh: negHit, dir: axis.negDir.clone(), up: axis.negUp.clone() })
+      localHits.push({
+        mesh: negHit,
+        dir: axis.negDir.clone()
+      })
       localRefs.push({
         mesh: negHit,
         sprite: negSprite,
