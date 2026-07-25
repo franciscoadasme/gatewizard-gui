@@ -103,7 +103,9 @@
    *   outlinesEnabled?: boolean,
    *   outlineColor?: string,
    *   outlineWidth?: number,
-   *   glowBulb?: boolean
+   *   outlineWidth?: number,
+   *   glowBulb?: boolean,
+   *   opacity?: number
    * }}
    */
   let {
@@ -121,7 +123,8 @@
     outlineColor = '#000000',
     outlineWidth = 0.12,
     highlightIndices = new Set(),
-    glowBulb = false
+    glowBulb = false,
+    opacity = 1.0
   } = $props()
 
   let sphereMeshRef = $state(/** @type {InstancedMesh | null} */ (null))
@@ -150,7 +153,10 @@
       const mat = new MeshStandardMaterial({
         metalness,
         roughness,
-        emissiveIntensity: glowBulb ? 0 : emissiveIntensity
+        emissiveIntensity: glowBulb ? 0 : emissiveIntensity,
+        transparent: opacity < 1,
+        opacity,
+        depthWrite: opacity >= 1
       })
       if (glowBulb && emissiveIntensity > 0.001) {
         applyGlowMaterial(mat, emissiveIntensity, { useSurfaceColor: true })
@@ -165,7 +171,12 @@
     /** @type {InstancedMesh | null} */
     let sphereOutlineMesh = null
     if (showOutlines) {
-      const outlineMat = new MeshBasicMaterial({ color: outlineColor, depthWrite: false })
+      const outlineMat = new MeshBasicMaterial({
+        color: outlineColor,
+        depthWrite: false,
+        transparent: opacity < 1,
+        opacity
+      })
       sphereOutlineMesh = new InstancedMesh(sphereGeom.clone(), outlineMat, n)
       sphereOutlineMesh.renderOrder = 0
     }
@@ -210,7 +221,10 @@
         color: new Color().setRGB(...STICK_GRAY),
         metalness,
         roughness,
-        emissiveIntensity: glowBulb ? 0 : emissiveIntensity
+        emissiveIntensity: glowBulb ? 0 : emissiveIntensity,
+        transparent: opacity < 1,
+        opacity,
+        depthWrite: opacity >= 1
       })
       if (glowBulb && emissiveIntensity > 0.001) {
         applyGlowMaterial(mat, emissiveIntensity, { useSurfaceColor: false })
@@ -333,6 +347,25 @@
       }
     }
     mesh.instanceColor.needsUpdate = true
+    invalidate()
+  })
+
+  $effect(() => {
+    const op = opacity
+    for (const mesh of [
+      untrack(() => sphereMeshRef),
+      untrack(() => bondMeshRef),
+      untrack(() => sphereOutlineMeshRef),
+      untrack(() => bondOutlineMeshRef)
+    ]) {
+      if (!mesh) continue
+      const mat = mesh.material
+      if (Array.isArray(mat)) continue
+      mat.opacity = op
+      mat.transparent = op < 1
+      if ('depthWrite' in mat) mat.depthWrite = op >= 1
+      mat.needsUpdate = true
+    }
     invalidate()
   })
 </script>

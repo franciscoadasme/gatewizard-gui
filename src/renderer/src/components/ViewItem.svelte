@@ -28,15 +28,18 @@
     GOODSELL_CHAIN_PALETTE_HEX
   } from '../lib/colorSchemes.js'
   import { countGlowPool, selectGlowLightAtoms, clampGlowMaxLights, GLOW_LIGHTS_HARD_MAX } from '../lib/viewer/glowLights.js'
+  import { fadeSummary } from '../lib/animation/fade.js'
+  import { SPLIT_VIEW_MODES } from '../lib/viewer/splitView.js'
   import { GLOW_LIGHTS_PERF_WARN } from '../lib/viewer/viewerDiagnostics.js'
   import { viewerBusy } from '../lib/viewer/viewerBusy.svelte.js'
   import { getStructure } from '../lib/backendApi'
-  import { onDestroy, untrack } from 'svelte'
+  import { onDestroy, tick, untrack } from 'svelte'
   import Button from './ui/Button.svelte'
   import ColorInput from './ui/ColorInput.svelte'
   import Focus from './icons/Focus.svelte'
   import Gear from './icons/Gear.svelte'
   import Input from './ui/Input.svelte'
+  import RangeInput from './ui/RangeInput.svelte'
   import Select from './ui/Select.svelte'
   import Spinner from './ui/Spinner.svelte'
 
@@ -108,8 +111,10 @@ Distance:
    *   view: View,
    *   onremove: () => void,
    *   onduplicate?: () => void,
-   *   onsplitbychain?: () => void,
+   *   onsplitby?: (mode: import('../lib/viewer/splitView.js').SplitViewMode) => void,
    *   oncenter?: () => void,
+   *   animateMode?: boolean,
+   *   onFadeEdit?: () => void,
    *   sourceBonds?: [number, number][] | null,
    *   topology?: string | null
    * }}
@@ -118,8 +123,10 @@ Distance:
     view = $bindable(),
     onremove,
     onduplicate,
-    onsplitbychain,
+    onsplitby,
     oncenter,
+    animateMode = false,
+    onFadeEdit,
     sourceBonds = null,
     topology = null
   } = $props()
@@ -127,6 +134,16 @@ Distance:
   let colorPickerOpen = $state(false)
   /** @type {{ x: number, y: number } | null} */
   let rowCtxMenu = $state(null)
+  let rowCtxSplitOpen = $state(false)
+  let rowCtxMenuPos = $state({ x: 0, y: 0 })
+  let rowCtxSplitOpenLeft = $state(true)
+  let rowCtxSplitOffsetY = $state(0)
+  /** @type {HTMLDivElement | null} */
+  let rowCtxMenuEl = $state(null)
+  /** @type {HTMLButtonElement | null} */
+  let rowCtxSplitTriggerEl = $state(null)
+  /** @type {HTMLDivElement | null} */
+  let rowCtxSplitSubmenuEl = $state(null)
   /** @type {HTMLDialogElement|null} */
   let gearDialog = $state(null)
   /** @type {HTMLDialogElement|null} */
@@ -146,6 +163,53 @@ Distance:
   let selectionInputEl = $state(null)
   /** Ignore stale /get-structure responses when a newer request was started. */
   let structureFetchGen = 0
+
+  function layoutSplitSubmenu() {
+    if (!rowCtxSplitTriggerEl || !rowCtxSplitSubmenuEl) return
+    const pad = 8
+    const trigger = rowCtxSplitTriggerEl.getBoundingClientRect()
+    const subW = rowCtxSplitSubmenuEl.offsetWidth || 160
+    const subH = rowCtxSplitSubmenuEl.offsetHeight || 160
+    const spaceRight = window.innerWidth - trigger.right - pad
+    const spaceLeft = trigger.left - pad
+    rowCtxSplitOpenLeft = spaceRight < subW ? spaceLeft >= subW || spaceLeft > spaceRight : false
+    let offsetY = 0
+    const bottom = trigger.top + subH
+    if (bottom > window.innerHeight - pad) {
+      offsetY = window.innerHeight - pad - bottom
+    }
+    rowCtxSplitOffsetY = offsetY
+  }
+
+  async function layoutRowContextMenu() {
+    if (!rowCtxMenu || !rowCtxMenuEl) return
+    await tick()
+    if (!rowCtxMenu || !rowCtxMenuEl) return
+    const pad = 8
+    const rect = rowCtxMenuEl.getBoundingClientRect()
+    let x = rowCtxMenu.x
+    let y = rowCtxMenu.y
+    if (x + rect.width > window.innerWidth - pad) {
+      x = Math.max(pad, window.innerWidth - rect.width - pad)
+    }
+    if (y + rect.height > window.innerHeight - pad) {
+      y = Math.max(pad, rowCtxMenu.y - rect.height)
+    }
+    rowCtxMenuPos = { x, y }
+    layoutSplitSubmenu()
+  }
+
+  async function openSplitSubmenu() {
+    rowCtxSplitOpen = true
+    await tick()
+    layoutSplitSubmenu()
+  }
+
+  $effect(() => {
+    if (!rowCtxMenu) return
+    void rowCtxSplitOpen
+    layoutRowContextMenu()
+  })
 
   // ── Reactivity ────────────────────────────────────────────────────────────
 
@@ -231,25 +295,39 @@ Distance:
     scheduleStructureUpdate()
   })
 
+  // Sync panel color controls only when animation playback applies a keyframe (not on user edits).
   $effect(() => {
-    let colorScheme = { name: colorSchemeName }
-    if (colorSchemeName === 'constant') {
-      colorScheme.color = constantColorHex
-      colorScheme.resolver = constantScheme(constantColorHex)
-    } else if (colorSchemeName === 'cpk') {
+    const rev = view._animSyncRev
+    if (!rev) return
+    const cs = untrack(() => view.colorScheme)
+    if (!cs?.name) return
+    const name = cs.name === 'default' ? 'cpk' : cs.name
+    colorSchemeName = name
+    if (cs.color) constantColorHex = cs.color
+  })
+
+  $effect(() => {
+    const name = colorSchemeName
+    const color = constantColorHex
+    let colorScheme = { name }
+    if (name === 'constant') {
+      colorScheme.color = color
+      colorScheme.resolver = constantScheme(color)
+    } else if (name === 'cpk') {
       colorScheme.resolver = cpkScheme()
-    } else if (colorSchemeName === 'cpk-carbon') {
-      colorScheme.color = constantColorHex
-      colorScheme.resolver = cpkScheme({ carbonColor: constantColorHex })
-    } else if (colorSchemeName === 'chain') {
+    } else if (name === 'cpk-carbon') {
+      colorScheme.color = color
+      colorScheme.resolver = cpkScheme({ carbonColor: color })
+    } else if (name === 'chain') {
       colorScheme.resolver = chainScheme()
-    } else if (colorSchemeName === 'goodsell') {
+    } else if (name === 'goodsell') {
       colorScheme.resolver = goodsellChainScheme()
-    } else if (colorSchemeName === 'residue_nature') {
+    } else if (name === 'residue_nature') {
       colorScheme.resolver = residueNatureScheme()
-    } else if (colorSchemeName === 'ss') {
+    } else if (name === 'ss') {
       const residues = view.residues
       const ssColors = view.ssColors
+      colorScheme.name = 'ss'
       colorScheme.resolver = residues?.length ? ssScheme(residues, ssColors ?? {}) : cpkScheme()
     } else {
       colorScheme.name = 'default'
@@ -505,6 +583,9 @@ Distance:
       e.preventDefault()
       e.stopPropagation()
       rowCtxMenu = { x: e.clientX, y: e.clientY }
+      rowCtxMenuPos = { x: e.clientX, y: e.clientY }
+      rowCtxSplitOpen = false
+      rowCtxSplitOpenLeft = true
     }}
   >
     <div class="flex items-center gap-2">
@@ -516,7 +597,12 @@ Distance:
           checked={view.visible}
           aria-label="Show/hide"
           onchange={() => {
-            view.visible = !view.visible
+            const nextVisible = !view.visible
+            view.visible = nextVisible
+            if (animateMode) {
+              if (nextVisible) delete view.opacity
+              else view.opacity = 0
+            }
           }}
         />
         <div
@@ -675,8 +761,9 @@ Distance:
       }}
     >
       <div
-        class="absolute z-50 min-w-40 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
-        style="left:{rowCtxMenu.x}px;top:{rowCtxMenu.y}px"
+        bind:this={rowCtxMenuEl}
+        class="absolute z-50 min-w-40 overflow-visible rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+        style="left:{rowCtxMenuPos.x}px;top:{rowCtxMenuPos.y}px"
         role="menu"
         tabindex="-1"
         onpointerdown={(e) => e.stopPropagation()}
@@ -692,17 +779,62 @@ Distance:
         >
           Duplicate representation
         </button>
-        <button
-          type="button"
-          role="menuitem"
-          class="block w-full px-3 py-1.5 text-left text-neutral-800 hover:bg-neutral-100 dark:text-neutral-100 dark:hover:bg-neutral-800"
-          onclick={() => {
-            rowCtxMenu = null
-            onsplitbychain?.()
+        <div
+          class="group/split relative"
+          role="none"
+          onmouseenter={() => {
+            openSplitSubmenu()
+          }}
+          onmouseleave={() => {
+            rowCtxSplitOpen = false
           }}
         >
-          Split by chain
-        </button>
+          <button
+            bind:this={rowCtxSplitTriggerEl}
+            type="button"
+            role="menuitem"
+            aria-haspopup="menu"
+            aria-expanded={rowCtxSplitOpen}
+            class="flex w-full items-center justify-between px-3 py-1.5 text-left text-neutral-800 hover:bg-neutral-100 group-hover/split:bg-neutral-100 dark:text-neutral-100 dark:hover:bg-neutral-800 dark:group-hover/split:bg-neutral-800"
+            onclick={() => {
+              rowCtxSplitOpen = !rowCtxSplitOpen
+              if (rowCtxSplitOpen) layoutSplitSubmenu()
+            }}
+          >
+            Split
+            <span class="text-neutral-400">{rowCtxSplitOpenLeft ? '◂' : '▸'}</span>
+          </button>
+          <div
+            bind:this={rowCtxSplitSubmenuEl}
+            class="absolute z-[60] flex {rowCtxSplitOpenLeft
+              ? 'right-full flex-row-reverse pr-0.5'
+              : 'left-full pl-0.5'} {rowCtxSplitOpen
+              ? 'pointer-events-auto visible'
+              : 'pointer-events-none invisible group-hover/split:pointer-events-auto group-hover/split:visible'}"
+            style="top:{rowCtxSplitOffsetY}px"
+            role="menu"
+          >
+            <div
+              class="min-w-40 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+            >
+              {#each SPLIT_VIEW_MODES as mode (mode.id)}
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="block w-full px-3 py-1.5 text-left text-neutral-800 hover:bg-neutral-100 dark:text-neutral-100 dark:hover:bg-neutral-800"
+                  title={mode.title}
+                  onclick={() => {
+                    rowCtxMenu = null
+                    rowCtxSplitOpen = false
+                    onsplitby?.(mode.id)
+                  }}
+                >
+                  {mode.label}
+                </button>
+              {/each}
+            </div>
+          </div>
+        </div>
         <button
           type="button"
           role="menuitem"
@@ -775,17 +907,24 @@ Distance:
               >
             </div>
           {/if}
-          <button
-            type="button"
-            class="w-full rounded border border-neutral-300 px-2 py-1 text-left text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-100 dark:border-neutral-600 dark:text-neutral-300 dark:hover:border-neutral-500 dark:hover:bg-neutral-800"
-            title="Replace this representation with one per chainID, keeping the same style"
-            onclick={() => {
-              closeGearDialog()
-              onsplitbychain?.()
-            }}
-          >
-            Split by chain
-          </button>
+          <div class="space-y-1">
+            <p class="text-neutral-600 dark:text-neutral-400">Split into multiple representations</p>
+            <div class="grid grid-cols-2 gap-1">
+              {#each SPLIT_VIEW_MODES as mode (mode.id)}
+                <button
+                  type="button"
+                  class="rounded border border-neutral-300 px-2 py-1 text-left text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-100 dark:border-neutral-600 dark:text-neutral-300 dark:hover:border-neutral-500 dark:hover:bg-neutral-800"
+                  title={mode.title}
+                  onclick={() => {
+                    closeGearDialog()
+                    onsplitby?.(mode.id)
+                  }}
+                >
+                  {mode.label}
+                </button>
+              {/each}
+            </div>
+          </div>
         </section>
 
         <!-- Representation -->
@@ -815,18 +954,18 @@ Distance:
             <p class="font-medium text-neutral-800 dark:text-neutral-300">Point size</p>
             <div class="flex items-center gap-2">
               <span class="w-10 shrink-0 text-neutral-600 dark:text-neutral-400">Size</span>
-              <input
-                type="range"
-                class="flex-1 accent-blue-500"
+              <RangeInput
+                bind:value={
+                  () => view.pointSize ?? 3,
+                  (v) => {
+                    view.pointSize = v
+                  }
+                }
                 min={1}
                 max={10}
                 step={0.5}
-                value={view.pointSize ?? 3}
-                oninput={(e) => {
-                  view.pointSize = +e.target.value
-                }}
+                decimals={1}
               />
-              <span class="w-8 text-right tabular-nums">{(view.pointSize ?? 3).toFixed(1)}</span>
             </div>
           </section>
         {/if}
@@ -837,18 +976,18 @@ Distance:
             <p class="font-medium text-neutral-800 dark:text-neutral-300">Atom size</p>
             <div class="flex items-center gap-2">
               <span class="w-10 shrink-0 text-neutral-600 dark:text-neutral-400">Scale</span>
-              <input
-                type="range"
-                class="flex-1 accent-blue-500"
+              <RangeInput
+                bind:value={
+                  () => view.atomScale ?? 1.0,
+                  (v) => {
+                    view.atomScale = v
+                  }
+                }
                 min={0.3}
                 max={2.0}
                 step={0.05}
-                value={view.atomScale ?? 1.0}
-                oninput={(e) => {
-                  view.atomScale = +e.target.value
-                }}
+                decimals={2}
               />
-              <span class="w-8 text-right tabular-nums">{(view.atomScale ?? 1.0).toFixed(2)}</span>
             </div>
           </section>
         {/if}
@@ -860,18 +999,18 @@ Distance:
             {#each [{ label: 'Atom', key: 'atomScale', min: 0.2, max: 2.0, step: 0.05, def: 1.0 }, { label: 'Bond', key: 'bondScale', min: 0.1, max: 4.0, step: 0.1, def: 1.0 }] as s (s.key)}
               <div class="flex items-center gap-2">
                 <span class="w-10 shrink-0 text-neutral-600 dark:text-neutral-400">{s.label}</span>
-                <input
-                  type="range"
-                  class="flex-1 accent-blue-500"
+                <RangeInput
+                  bind:value={
+                    () => view[s.key] ?? s.def,
+                    (v) => {
+                      view[s.key] = v
+                    }
+                  }
                   min={s.min}
                   max={s.max}
                   step={s.step}
-                  value={view[s.key] ?? s.def}
-                  oninput={(e) => {
-                    view[s.key] = +e.target.value
-                  }}
+                  decimals={2}
                 />
-                <span class="w-8 text-right tabular-nums">{(view[s.key] ?? s.def).toFixed(2)}</span>
               </div>
             {/each}
           </section>
@@ -884,18 +1023,18 @@ Distance:
             {#each [{ label: 'Helix', key: 'helixWidth', min: 0.1, max: 2.5, step: 0.05 }, { label: 'Sheet', key: 'sheetWidth', min: 0.1, max: 2.5, step: 0.05 }, { label: 'Coil', key: 'coilWidth', min: 0.03, max: 0.5, step: 0.01 }] as s (s.key)}
               <div class="flex items-center gap-2">
                 <span class="w-10 shrink-0 text-neutral-600 dark:text-neutral-400">{s.label}</span>
-                <input
-                  type="range"
-                  class="flex-1 accent-blue-500"
+                <RangeInput
+                  bind:value={
+                    () => view[s.key],
+                    (v) => {
+                      view[s.key] = v
+                    }
+                  }
                   min={s.min}
                   max={s.max}
                   step={s.step}
-                  value={view[s.key]}
-                  oninput={(e) => {
-                    view[s.key] = +e.target.value
-                  }}
+                  decimals={2}
                 />
-                <span class="w-8 text-right tabular-nums">{(view[s.key] ?? 0).toFixed(2)}</span>
               </div>
             {/each}
           </section>
@@ -950,18 +1089,18 @@ Distance:
             <p class="font-medium text-neutral-800 dark:text-neutral-300">Tube radius</p>
             <div class="flex items-center gap-2">
               <span class="w-10 shrink-0 text-neutral-600 dark:text-neutral-400">Radius</span>
-              <input
-                type="range"
-                class="flex-1 accent-blue-500"
+              <RangeInput
+                bind:value={
+                  () => view.tubeRadius ?? 0.9,
+                  (v) => {
+                    view.tubeRadius = v
+                  }
+                }
                 min={0.05}
                 max={2.0}
                 step={0.05}
-                value={view.tubeRadius ?? 0.9}
-                oninput={(e) => {
-                  view.tubeRadius = +e.target.value
-                }}
+                decimals={2}
               />
-              <span class="w-8 text-right tabular-nums">{(view.tubeRadius ?? 0.9).toFixed(2)}</span>
             </div>
           </section>
         {/if}
@@ -995,15 +1134,7 @@ Distance:
               </div>
               <div class="flex items-center gap-2">
                 <span class="w-12 shrink-0 text-neutral-600 dark:text-neutral-400">Width</span>
-                <input
-                  type="range"
-                  class="flex-1 accent-blue-500"
-                  min={0.04}
-                  max={0.35}
-                  step={0.01}
-                  bind:value={view.material.outlineWidth}
-                />
-                <span class="w-10 text-right tabular-nums">{view.material.outlineWidth.toFixed(2)}</span>
+                <RangeInput bind:value={view.material.outlineWidth} min={0.04} max={0.35} step={0.01} decimals={2} />
               </div>
               <label class="flex items-center gap-2 text-neutral-700 dark:text-neutral-300">
                 <input type="checkbox" bind:checked={view.material.useGoodsellLighting} />
@@ -1073,17 +1204,34 @@ Distance:
               {#each GLOWING_UI_SLIDERS as s (s.key)}
                 <div class="flex items-center gap-2">
                   <span class="w-16 shrink-0 text-neutral-600 dark:text-neutral-400">{s.label}</span>
-                  <input
-                    type="range"
-                    class="flex-1 accent-blue-500"
+                  <RangeInput
+                    value={view.material[s.key] ??
+                      (s.key === 'emissiveIntensity' ? 2.5 : GLOWING_MATERIAL_DEFAULTS[s.key])}
                     min={s.min}
                     max={s.max}
                     step={s.step}
-                    value={view.material[s.key] ??
-                      (s.key === 'emissiveIntensity' ? 2.5 : GLOWING_MATERIAL_DEFAULTS[s.key])}
-                    oninput={(e) => {
-                      let val = +e.target.value
-                      if (s.key === 'glowMaxLights') val = clampGlowMaxLights(val)
+                    decimals={s.decimals}
+                    oninput={(val) => {
+                      let v = s.key === 'glowMaxLights' ? clampGlowMaxLights(val) : val
+                      view.material = {
+                        ...view.material,
+                        preset: 'Glowing',
+                        [s.key]: v
+                      }
+                    }}
+                  />
+                </div>
+              {/each}
+              {#each [{ label: 'Metalness', key: 'metalness' }, { label: 'Roughness', key: 'roughness' }] as s (s.key)}
+                <div class="flex items-center gap-2">
+                  <span class="w-16 shrink-0 text-neutral-600 dark:text-neutral-400">{s.label}</span>
+                  <RangeInput
+                    value={view.material[s.key] ?? (s.key === 'roughness' ? 0.15 : 0)}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    decimals={2}
+                    oninput={(val) => {
                       view.material = {
                         ...view.material,
                         preset: 'Glowing',
@@ -1091,34 +1239,6 @@ Distance:
                       }
                     }}
                   />
-                  <span class="w-10 text-right tabular-nums"
-                    >{(
-                      view.material[s.key] ??
-                      (s.key === 'emissiveIntensity' ? 2.5 : GLOWING_MATERIAL_DEFAULTS[s.key]) ??
-                      0
-                    ).toFixed(s.decimals)}</span
-                  >
-                </div>
-              {/each}
-              {#each [{ label: 'Metalness', key: 'metalness' }, { label: 'Roughness', key: 'roughness' }] as s (s.key)}
-                <div class="flex items-center gap-2">
-                  <span class="w-16 shrink-0 text-neutral-600 dark:text-neutral-400">{s.label}</span>
-                  <input
-                    type="range"
-                    class="flex-1 accent-blue-500"
-                    min={0}
-                    max={1}
-                    step={0.01}
-                    value={view.material[s.key] ?? (s.key === 'roughness' ? 0.15 : 0)}
-                    oninput={(e) => {
-                      view.material = {
-                        ...view.material,
-                        preset: 'Glowing',
-                        [s.key]: +e.target.value
-                      }
-                    }}
-                  />
-                  <span class="w-8 text-right tabular-nums">{(view.material[s.key] ?? 0).toFixed(2)}</span>
                 </div>
               {/each}
               <p class="text-[10px] leading-snug text-neutral-500 dark:text-neutral-400">
@@ -1131,20 +1251,20 @@ Distance:
             {#each [{ label: 'Metalness', key: 'metalness', min: 0, max: 1, step: 0.01 }, { label: 'Roughness', key: 'roughness', min: 0, max: 1, step: 0.01 }, { label: 'Glow', key: 'emissiveIntensity', min: 0, max: 2, step: 0.05 }] as s (s.key)}
               <div class="flex items-center gap-2">
                 <span class="w-16 shrink-0 text-neutral-600 dark:text-neutral-400">{s.label}</span>
-                <input
-                  type="range"
-                  class="flex-1 accent-blue-500"
+                <RangeInput
+                  value={view.material[s.key] ?? 0}
                   min={s.min}
                   max={s.max}
                   step={s.step}
-                  value={view.material[s.key]}
-                  oninput={(e) => {
-                    view.material = { ...view.material, preset: view.material?.preset ?? 'Default', [s.key]: +e.target.value }
+                  decimals={2}
+                  oninput={(val) => {
+                    view.material = {
+                      ...view.material,
+                      preset: view.material?.preset ?? 'Default',
+                      [s.key]: val
+                    }
                   }}
                 />
-                <span class="w-8 text-right tabular-nums"
-                  >{(view.material[s.key] ?? 0).toFixed(2)}</span
-                >
               </div>
             {/each}
           {/if}
@@ -1168,6 +1288,20 @@ Distance:
             {/each}
           </div>
         </section>
+
+        {#if animateMode && onFadeEdit}
+          <button
+            type="button"
+            class="w-full rounded border border-neutral-300 px-2 py-1 text-left text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-100 dark:border-neutral-600 dark:text-neutral-300 dark:hover:border-neutral-500 dark:hover:bg-neutral-800"
+            onclick={() => {
+              closeGearDialog()
+              onFadeEdit()
+            }}
+          >
+            Fade in/out…
+            <span class="block text-neutral-500 dark:text-neutral-400">{fadeSummary(view)}</span>
+          </button>
+        {/if}
 
         <!-- Remove -->
         <Button

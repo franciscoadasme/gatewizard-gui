@@ -1,5 +1,5 @@
 <script>
-  import { onDestroy } from 'svelte'
+  import { onDestroy, untrack } from 'svelte'
   import { T, useThrelte } from '@threlte/core'
   import { Color, DoubleSide, Mesh, MeshStandardMaterial } from 'three'
   import { buildTubeGeometries } from '../../../lib/viewer/cartoon.js'
@@ -30,7 +30,9 @@
    *   goodsell?: boolean,
    *   outlinesEnabled?: boolean,
    *   outlineColor?: string,
-   *   outlineWidth?: number
+   *   outlineColor?: string,
+   *   outlineWidth?: number,
+   *   opacity?: number
    * }}
    */
   let {
@@ -47,7 +49,8 @@
     outlinesEnabled = true,
     outlineColor = '#000000',
     outlineWidth = 0.12,
-    highlightIndices = new Set()
+    highlightIndices = new Set(),
+    opacity = 1.0
   } = $props()
 
   const { invalidate } = useThrelte()
@@ -152,6 +155,25 @@
     meshes = []
     material.dispose()
     goodsellMaterial.dispose()
+  })
+
+  $effect(() => {
+    const op = opacity
+    for (const mat of [material, goodsellMaterial]) {
+      mat.opacity = op
+      mat.transparent = op < 1
+      mat.depthWrite = op >= 1
+      mat.needsUpdate = true
+    }
+    for (const mesh of untrack(() => meshes)) {
+      const mat = mesh.material
+      if (Array.isArray(mat)) continue
+      mat.opacity = op
+      mat.transparent = op < 1
+      if ('depthWrite' in mat) mat.depthWrite = op >= 1
+      mat.needsUpdate = true
+    }
+    invalidate()
   })
 </script>
 

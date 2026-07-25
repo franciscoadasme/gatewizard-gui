@@ -13,8 +13,10 @@
     VdwSpheres,
     HydrationBoxOverlay
   } from '../components/viewer'
-  import { mainViewerCamera } from '../components/viewer/CameraRig.svelte'
+  import { mainViewerCamera, mainViewerFramingAnchor } from '../components/viewer/CameraRig.svelte'
   import { mainViewerControls } from '../components/viewer/Canvas.svelte'
+  import SaveIcon from '../components/icons/Save.svelte'
+  import LoadIcon from '../components/icons/Load.svelte'
   import Axes from '../components/icons/Axes.svelte'
   import AxesLinesIcon from '../components/icons/AxesLines.svelte'
   import { COLOR_PALETTE, cpkScheme, defaultColorScheme, ssScheme, DEFAULT_VIEW_MATERIAL, isGoodsellMaterial, isGlowingMaterial, resolveGlowingMaterial, GOODSELL_MATERIAL_DEFAULTS, GLOWING_MATERIAL_DEFAULTS } from '../lib/colorSchemes.js'
@@ -23,8 +25,9 @@
   import { boundsFromAtomsWithVdw } from '../lib/viewer/hydrationBoxManipulator.js'
   import { PADDING_FIELD_STYLE, VIEWER_AXES, axisInputStyle } from '../lib/viewer/axisColors.js'
   import { measureDistance, measureAngle, measureDihedral } from '../lib/viewer/measure.js'
+  import { splitViewIntoParts, splitViewModeLabel } from '../lib/viewer/splitView.js'
   import { Color } from 'three'
-  import { untrack } from 'svelte'
+  import { tick, untrack } from 'svelte'
 
   /** Reused Color instance for edit mode selection outline. */
   const OUTLINE_COLOR = new Color(0xffdd00) // yellow → BackSide outline for selected group
@@ -54,16 +57,57 @@
     packmolPreviewInp,
     packmolHydrateCavity,
     packmolRunCustom,
-    packmolScanJobs
+    packmolScanJobs,
+    ensureOutputFolder
   } from '../lib/backendApi.js'
-  import { defaultHydrationFolderName } from '../lib/outputFolders.js'
+  import { defaultHydrationFolderName, defaultAnimationFolderName } from '../lib/outputFolders.js'
+  import { createEmptyProject, normalizeProject, sortKeyframes, serializeAnimationProject } from '../lib/animation/schema.js'
+  import {
+    applySceneSettings,
+    captureViewerSnapshot,
+    deserializeAtomLabels,
+    deserializeMeasurements,
+    deserializeView
+  } from '../lib/animation/serialize.js'
+  import { applyCameraPose, waitForMainViewerReady } from '../lib/animation/cameraPose.js'
+  import { applyAnimationAtTime, startPlayback } from '../lib/animation/playback.js'
+  import {
+    buildViewpoint,
+    normalizeViewpoint,
+    serializeViewpoint
+  } from '../lib/viewpoint.js'
+  import {
+    deriveViewTracks,
+    isTrackInAnimation,
+    propagateNewViewsToLaterKeyframes,
+    registerViewTrack,
+    removeViewTrackFromProject,
+    repairForwardViewInheritance,
+    syncProjectViewTracks
+  } from '../lib/animation/tracks.js'
+  import {
+    captureCanvasPng,
+    computeSafeAreaForCanvas,
+    exportFormatMeta,
+    frameFileName,
+    renderFrame
+  } from '../lib/animation/export.js'
+  import { animationOutputFileName } from '../lib/animation/exportFormats.js'
+  import { captureCanvasWithOverlayPng } from '../lib/animation/overlayCapture.js'
+  import AnimationPanel from '../components/animation/AnimationPanel.svelte'
+  import AnimationTimeline from '../components/animation/AnimationTimeline.svelte'
+  import AnimationFadeEditor from '../components/animation/AnimationFadeEditor.svelte'
+  import AnimationSafeAreaOverlay from '../components/animation/AnimationSafeAreaOverlay.svelte'
+  import { liveOverlayFadeDefaults } from '../lib/animation/serialize.js'
+  import { fadeSummary } from '../lib/animation/fade.js'
   import DetectIcon from '../components/icons/Detect.svelte'
   import Empty from '../components/ui/Empty.svelte'
   import Plus from '../components/icons/Plus.svelte'
   import ResetIcon from '../components/icons/Reset.svelte'
   import Sun from '../components/icons/Sun.svelte'
   import Spinner from '../components/ui/Spinner.svelte'
-  import { viewerBusy } from '../lib/viewer/viewerBusy.svelte.js'
+  import RangeInput from '../components/ui/RangeInput.svelte'
+  import { viewerBusy, waitForViewerIdle } from '../lib/viewer/viewerBusy.svelte.js'
   import ViewItem, { skipNextPathFetch } from '../components/ViewItem.svelte'
   import ViewerSettingsDialog from '../components/ViewerSettingsDialog.svelte'
   import RadialMenu from '../components/RadialMenu.svelte'
@@ -73,38 +117,7 @@
   import { syncGoodsellSceneLighting } from '../lib/goodsellSceneLighting.svelte.js'
   import { themeState } from '../lib/theme.svelte.js'
   import { themeBackgroundHex, viewerSettings } from '../lib/viewerSettings.svelte.js'
-
-  /**
-   * Svelte action for range inputs: sets the initial value on mount and blocks Svelte's
-   * reactive DOM updates while the user is dragging, preventing the "sticky slider" bug.
-   * @param {HTMLInputElement} node
-   * @param {number} value
-   */
-  function setRangeValue(node, value) {
-    node.value = String(value)
-    let dragging = false
-    const onDown = () => {
-      dragging = true
-    }
-    const onUp = () => {
-      dragging = false
-    }
-    node.addEventListener('pointerdown', onDown)
-    node.addEventListener('mousedown', onDown)
-    window.addEventListener('pointerup', onUp)
-    window.addEventListener('mouseup', onUp)
-    return {
-      update(v) {
-        if (!dragging) node.value = String(v)
-      },
-      destroy() {
-        node.removeEventListener('pointerdown', onDown)
-        node.removeEventListener('mousedown', onDown)
-        window.removeEventListener('pointerup', onUp)
-        window.removeEventListener('mouseup', onUp)
-      }
-    }
-  }
+  import { clearLabelScreenOffset } from '../lib/viewer/labelStyle.js'
 
   /** @typedef {{ x: number, y: number, z: number, element: string, name: string }} Atom */
   /** @typedef {{ chain: string, resname: string, number: number, atom_indices: number[], ca_index?: number, sec?: string }} Residue */
@@ -139,6 +152,12 @@
   let loadingPhase = $state('')
   /** Elapsed seconds while loading (updated each second). */
   let loadingElapsedSec = $state(0)
+  /**
+   * Opaque cover while restoring a saved view / animation so intermediate states
+   * (default points view, full-atom VDW flash, glow-bulb placement) are not shown.
+   */
+  let sceneRestoring = $state(false)
+  let sceneRestoringPhase = $state('')
   /** Optional topology paired with the open coordinate file. */
   let topologyPath = $state(/** @type {string | null} */ (null))
   /** Status line after load (e.g. Using system.prmtop for bonds). */
@@ -168,9 +187,31 @@
   // Label display settings — captured into each label at creation time
   let labelSize = $state(12)
   let labelColor = $state('#ffffff')
+  let labelBackground = $state('#000000')
+  let labelBackgroundOpacity = $state(0.75)
+  let labelPadding = $state(6)
+  let labelRadius = $state(4)
+  let labelOffsetY = $state(22)
+  /** @type {'up' | 'down' | 'left' | 'right'} */
+  let labelLiftDir = $state('up')
   // Panel section collapse state
   let measExpanded = $state(true)
   let labelsExpanded = $state(true)
+  /** @type {{ kind: 'label' | 'meas' | 'view', id: string } | null} */
+  let overlayFadeEditor = $state(null)
+
+  // Animation mode
+  let animateMode = $state(false)
+  let animExpanded = $state(true)
+  let animProject = $state(createEmptyProject())
+  let animPlayhead = $state(0)
+  let animPlaying = $state(false)
+  let animExporting = $state(false)
+  let animExportPhase = $state('')
+  let animExportFrame = $state(0)
+  let animExportTotal = $state(0)
+  /** @type {(() => void) | null} */
+  let animStopPlayback = null
 
   // Right panel resize
   let rightW = $state(290)
@@ -198,12 +239,36 @@
   }
 
   // Bottom toolbar / edit state
+  let openMenuOpen = $state(false)
   let editMenuOpen = $state(false)
   let editBusy = $state(false)
   /** Hover-open timers for dropdown menus */
+  let _openHoverTimer = null
   let _selectHoverTimer = null
   let _editMenuHoverTimer = null
   let _toolsMenuHoverTimer = null
+  /** @type {HTMLElement | null} */
+  let openMenuBtnEl = $state(null)
+  /** @type {HTMLElement | null} */
+  let selectMenuBtnEl = $state(null)
+  /** @type {HTMLElement | null} */
+  let editMenuBtnEl = $state(null)
+  /** @type {HTMLElement | null} */
+  let toolsMenuBtnEl = $state(null)
+
+  /** Fixed coords so upward menus aren’t clipped by the toolbar’s overflow-x scroll. */
+  function toolbarMenuFixedStyle(anchorEl) {
+    if (!anchorEl || typeof window === 'undefined') return ''
+    const r = anchorEl.getBoundingClientRect()
+    return `position:fixed;left:${Math.round(r.left)}px;bottom:${Math.round(window.innerHeight - r.top + 2)}px;z-index:60`
+  }
+
+  function closeAllToolbarMenus() {
+    openMenuOpen = false
+    selectMenuOpen = false
+    editMenuOpen = false
+    toolsMenuOpen = false
+  }
   /** @type {HTMLElement | null} */
   let viewerEl = $state(null)
 
@@ -672,6 +737,7 @@
   /** @param {string} selection */
   /** @param {Representation} representation */
   function addView(selection = 'all', representation = { type: 'points' }) {
+    const id = crypto.randomUUID()
     logEvent(
       'detail',
       'view',
@@ -681,7 +747,7 @@
     views = [
       ...views,
       {
-        id: crypto.randomUUID(),
+        id,
         selection,
         baseSelection: selection,
         representation,
@@ -706,6 +772,16 @@
         material: { ...DEFAULT_VIEW_MATERIAL }
       }
     ]
+    if (animateMode) {
+      registerViewTrack(animProject, id, views.map((v) => String(v.id)))
+      animProject = { ...animProject }
+      logEvent(
+        'info',
+        'view',
+        'Representation track added',
+        'Capture a keyframe at the playhead to include it in the animation. Earlier times stay hidden until then.'
+      )
+    }
   }
 
   /** @param {Atom[] | undefined | null} atoms */
@@ -1067,7 +1143,8 @@
           color: '#facc15',
           size: 15,
           lineWidth: 3.0,
-          visible: true
+          visible: true,
+          ...liveOverlayFadeDefaults()
         }
       ]
       measurePicks = []
@@ -1099,7 +1176,21 @@
     )
     atomLabels = [
       ...atomLabels,
-      { id: crypto.randomUUID(), atom, text, size: labelSize, color: labelColor, visible: true }
+      {
+        id: crypto.randomUUID(),
+        atom,
+        text,
+        size: labelSize,
+        color: labelColor,
+        background: labelBackground,
+        backgroundOpacity: labelBackgroundOpacity,
+        padding: labelPadding,
+        radius: labelRadius,
+        offsetY: labelOffsetY,
+        liftDir: labelLiftDir,
+        visible: true,
+        ...liveOverlayFadeDefaults()
+      }
     ]
     ctxMenu = null
   }
@@ -1110,6 +1201,41 @@
 
   function removeAtomLabel(id) {
     atomLabels = atomLabels.filter((l) => l.id !== id)
+  }
+
+  /**
+   * Update lift on live labels. Clears animation `screenDX/DY` so the edit is not
+   * overridden by the last applyAnimFrame interpolation result.
+   * @param {number} [index] if omitted, apply to every label
+   * @param {{ offsetY?: number, liftDir?: 'up' | 'down' | 'left' | 'right' }} patch
+   */
+  function patchLabelLift(index, patch) {
+    const targets =
+      typeof index === 'number' ? [atomLabels[index]].filter(Boolean) : atomLabels
+    for (const l of targets) {
+      if (typeof patch.offsetY === 'number') l.offsetY = patch.offsetY
+      if (patch.liftDir) l.liftDir = patch.liftDir
+      clearLabelScreenOffset(l)
+    }
+    atomLabels = [...atomLabels]
+  }
+
+  /** @param {import('../lib/animation/fade.js').AnimationFadeSettings} next */
+  function onOverlayFadeChange(next) {
+    if (!overlayFadeEditor) return
+    if (overlayFadeEditor.kind === 'label') {
+      atomLabels = atomLabels.map((l) => (l.id === overlayFadeEditor.id ? { ...l, ...next } : l))
+    } else if (overlayFadeEditor.kind === 'meas') {
+      measurements = measurements.map((m) => (m.id === overlayFadeEditor.id ? { ...m, ...next } : m))
+    } else {
+      views = views.map((v) => (v.id === overlayFadeEditor.id ? { ...v, ...next } : v))
+    }
+  }
+
+  function viewDisplayLabel(v) {
+    const sel = v.baseSelection || v.selection || 'all'
+    const repr = v.representation?.type ?? 'points'
+    return `${sel} · ${repr}`
   }
 
   function clearAllMeasurements() {
@@ -1133,6 +1259,17 @@
 
   /** @param {string} id */
   function removeView(id) {
+    if (animateMode && isTrackInAnimation(animProject, id)) {
+      const inKeyframes = animProject.keyframes.some((kf) =>
+        kf.views.some((v) => String(v.id) === id)
+      )
+      const msg = inKeyframes
+        ? 'This representation is used in animation keyframes.\n\nRemove it from all keyframes and delete the representation?'
+        : 'Remove this representation track from the animation?'
+      if (!confirm(msg)) return
+      removeViewTrackFromProject(animProject, id)
+      animProject = { ...animProject }
+    }
     logEvent('detail', 'view', 'Removed representation', id)
     views = views.filter((it) => it.id !== id)
   }
@@ -1158,6 +1295,16 @@
     const next = [...views]
     next.splice(idx + 1, 0, dup)
     views = next
+    if (animateMode) {
+      registerViewTrack(animProject, dup.id, views.map((v) => String(v.id)))
+      animProject = { ...animProject }
+      logEvent(
+        'info',
+        'view',
+        'Duplicated representation track',
+        'Capture a keyframe to include the copy in the animation.'
+      )
+    }
     logEvent(
       'detail',
       'view',
@@ -1166,94 +1313,50 @@
     )
   }
 
-  /** Effective MDAnalysis selection currently driving a representation. */
-  /** @param {any} view */
-  function effectiveViewSelection(view) {
-    const sel = String(view?.selection || '').trim()
-    if (sel) return sel
-    const base = String(view?.baseSelection || '').trim()
-    if (base) return base
-    return 'all'
-  }
-
   /**
-   * Replace one representation with one per chainID, keeping the same style.
+   * Replace one representation with several, grouped by chain, residue, etc.
    * @param {string} id
+   * @param {import('../lib/viewer/splitView.js').SplitViewMode} mode
    */
-  function splitViewByChain(id) {
+  function splitViewBy(id, mode) {
     const src = views.find((v) => v.id === id)
     if (!src || src._isSelHighlight) return
-    if (!src.atoms?.length) {
-      alert('This representation has no atoms to split.')
-      return
-    }
 
-    const chainKey = (/** @type {{ chain_id?: string }} */ a) =>
-      String(a.chain_id ?? '').trim()
-    /** @type {string[]} */
-    const chains = [...new Set(src.atoms.map(chainKey))]
-    chains.sort((a, b) => {
-      if (a === '' && b !== '') return 1
-      if (b === '' && a !== '') return -1
-      return a.localeCompare(b, undefined, { numeric: true })
-    })
-
-    if (chains.length <= 1) {
-      alert('Only one chainID in this representation — nothing to split.')
-      return
-    }
-
-    const effective = effectiveViewSelection(src)
-    const nonEmpty = chains.filter((c) => c !== '')
-
-    /** @param {string} chain */
-    function selectionForChain(chain) {
-      if (chain === '') {
-        if (nonEmpty.length === 0) return effective === 'all' ? 'all' : effective
-        const exclude = nonEmpty.map((c) => `chainID ${c}`).join(' or ')
-        if (!effective || effective === 'all') return `not (${exclude})`
-        return `(${effective}) and not (${exclude})`
-      }
-      const chainSel = `chainID ${chain}`
-      if (!effective || effective === 'all') return chainSel
-      if (/^chainID\s+\S+$/i.test(effective)) return chainSel
-      return `(${effective}) and ${chainSel}`
-    }
-
-    const parts = chains.map((chain) => {
-      const selection = selectionForChain(chain)
-      const atoms = src.atoms.filter((a) => chainKey(a) === chain)
-      const atomIdx = new Set(atoms.map((a) => a.index))
-      return {
+    let working = src
+    if (mode === 'molecule' && !src.bonds?.length && structure?.bonds?.length) {
+      const atomIdx = new Set(src.atoms.map((/** @type {{ index: number }} */ a) => a.index))
+      working = {
         ...src,
-        id: crypto.randomUUID(),
-        selection,
-        baseSelection: selection,
-        representation: { ...src.representation },
-        colorScheme: { ...src.colorScheme },
-        material: src.material ? { ...src.material } : { ...DEFAULT_VIEW_MATERIAL },
-        ssColors: src.ssColors ? { ...src.ssColors } : null,
-        atoms,
-        bonds: Array.isArray(src.bonds)
-          ? src.bonds.filter(([i, j]) => atomIdx.has(i) && atomIdx.has(j))
-          : src.bonds,
-        residues: Array.isArray(src.residues)
-          ? src.residues.filter((r) => String(r.chain ?? r.chain_id ?? '').trim() === chain)
-          : src.residues,
-        visible: true,
-        _prefetched: true
+        bonds: structure.bonds.filter(([i, j]) => atomIdx.has(i) && atomIdx.has(j))
       }
-    })
+    }
+
+    const result = splitViewIntoParts(working, mode)
+    if ('error' in result) {
+      alert(result.error)
+      return
+    }
 
     const idx = views.findIndex((v) => v.id === id)
     const next = [...views]
-    next.splice(idx, 1, ...parts)
+    next.splice(idx, 1, ...result.parts)
+    if (animateMode) {
+      if (isTrackInAnimation(animProject, id)) {
+        removeViewTrackFromProject(animProject, id)
+      }
+      for (const part of result.parts) {
+        registerViewTrack(animProject, String(part.id), next.map((v) => String(v.id)))
+      }
+    }
     views = next
+    if (animateMode) {
+      animProject = { ...animProject }
+    }
     logEvent(
       'detail',
       'view',
-      `Split representation by chain (${parts.length})`,
-      parts.map((p) => p.selection).join(' · ')
+      `Split representation by ${splitViewModeLabel(mode)} (${result.parts.length})`,
+      result.parts.map((p) => p.selection).join(' · ')
     )
   }
 
@@ -1282,26 +1385,190 @@
     measureMode = null
     ctxMenu = null
     previewPositions = null
+    stopAnimPlayback()
+    animateMode = false
+    animProject = createEmptyProject()
+    animPlayhead = 0
+    animExporting = false
+    animExportPhase = ''
+    animExportFrame = 0
+    animExportTotal = 0
   }
 
-  function onSaveViewpoint() {
-    if (!camera) return
+  async function onSaveViewpoint() {
+    if (!structure || !filePath || !camera) {
+      alert('Load a structure before saving a view.')
+      return
+    }
     try {
-      localStorage.setItem('gw_viewpoint', JSON.stringify(camera))
-    } catch {}
+      await tick()
+      const snapshot = captureViewerSnapshot({
+        views,
+        filePath,
+        structure,
+        getFraming: () => camera,
+        getViewport: () => ({ axesVisible, axesLinesVisible }),
+        getLabels: () => atomLabels,
+        getMeasurements: () => measurements
+      })
+      const baseName =
+        String(filePath).split(/[/\\]/).pop()?.replace(/\.[^.]+$/, '') || 'Viewpoint'
+      const viewpoint = buildViewpoint({
+        name: baseName,
+        structure: { path: filePath, topology: topologyPath },
+        snapshot
+      })
+      // Prefer the project working directory; fall back to the structure's folder.
+      const defaultDir = workingDir || parentOfFile(filePath || '') || undefined
+      const defaultPath = defaultDir
+        ? `${String(defaultDir).replace(/[/\\]+$/, '')}/${baseName}_view.json`
+        : `${baseName}_view.json`
+      const r = await window.api.saveFileDialog(
+        'Save view',
+        [{ name: 'GateWizard viewpoint', extensions: ['json'] }],
+        defaultPath
+      )
+      if (!r || r.canceled || !r.filePath) return
+      await window.api.writeJson(r.filePath, serializeViewpoint(viewpoint))
+      logEvent('info', 'view', 'Saved viewpoint', r.filePath)
+    } catch (ex) {
+      alert(ex instanceof Error ? ex.message : String(ex))
+    }
   }
 
-  function onLoadViewpoint() {
-    try {
-      const raw = localStorage.getItem('gw_viewpoint')
-      if (!raw) return
-      const vp = JSON.parse(raw)
-      camera = {
-        ...vp,
-        framingGeneration: (camera?.framingGeneration ?? 0) + 1,
-        poseResetGeneration: (camera?.poseResetGeneration ?? 0) + 1
+  /**
+   * Apply a normalized viewpoint onto the already-loaded structure.
+   * Caller should keep `sceneRestoring` true so intermediate meshes are hidden.
+   * @param {import('../lib/viewpoint.js').ViewerViewpoint} viewpoint
+   */
+  async function applyViewpoint(viewpoint) {
+    sceneRestoringPhase = 'Restoring representations…'
+    applySceneSettings(viewpoint.scene ?? {})
+    if (viewpoint.viewport) {
+      if (typeof viewpoint.viewport.axesVisible === 'boolean') {
+        axesVisible = viewpoint.viewport.axesVisible
       }
-    } catch {}
+      if (typeof viewpoint.viewport.axesLinesVisible === 'boolean') {
+        axesLinesVisible = viewpoint.viewport.axesLinesVisible
+      }
+    }
+
+    const structureCtx = animStructureCtx()
+    // Views mount under the opaque restore cover so glow lights / meshes can
+    // finish building before the user ever sees the canvas.
+    views = viewpoint.views.map((v) =>
+      /** @type {View} */ (deserializeView(v, structureCtx))
+    )
+    sceneRestoringPhase = 'Loading atom selections…'
+    await refreshAnimationViewAtoms()
+
+    const atoms = /** @type {Array<{ index: number, x: number, y: number, z: number, element?: string, name?: string }>} */ (
+      structure?.atoms ?? []
+    )
+    atomLabels = /** @type {typeof atomLabels} */ (
+      deserializeAtomLabels(viewpoint.labels ?? [], atoms)
+    )
+    measurements = /** @type {typeof measurements} */ (
+      deserializeMeasurements(viewpoint.measurements ?? [], atoms)
+    )
+    measurePicks = []
+    measureMode = null
+
+    const framing = viewpoint.camera?.framing
+    // Prefer the live pose zoom (what the user actually saw). Older viewpoint
+    // files may have framingZoom stuck at 1 even when camera.zoom was correct.
+    const liveZoom =
+      typeof viewpoint.camera?.zoom === 'number'
+        ? viewpoint.camera.zoom
+        : (framing?.framingZoom ?? 1)
+    if (framing) {
+      camera = {
+        center: { x: framing.center[0], y: framing.center[1], z: framing.center[2] },
+        extent: framing.extent,
+        framingZoom: liveZoom,
+        framingGeneration: (camera?.framingGeneration ?? 0) + 1,
+        // Do NOT bump poseResetGeneration — that forces a canonical orbit and
+        // would wipe the saved camera pose we restore next.
+        poseResetGeneration: camera?.poseResetGeneration ?? 0
+      }
+      mainViewerFramingAnchor.fn(
+        framing.center[0],
+        framing.center[1],
+        framing.center[2],
+        framing.extent
+      )
+    }
+
+    // Camera/controls refs are assigned on a Threlte frame, not on Svelte tick.
+    sceneRestoringPhase = 'Restoring camera…'
+    const ready = await waitForMainViewerReady()
+    if (!ready) {
+      console.warn('[viewpoint] camera/controls not ready; pose may not restore')
+    }
+    const pose = {
+      ...viewpoint.camera,
+      zoom: liveZoom,
+      framing: framing
+        ? { ...framing, framingZoom: liveZoom }
+        : viewpoint.camera?.framing
+    }
+    applyCameraPose(pose)
+    // One more frame: CameraRig may still run a framing pass after our first apply.
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
+    if (framing) {
+      mainViewerFramingAnchor.fn(
+        framing.center[0],
+        framing.center[1],
+        framing.center[2],
+        framing.extent
+      )
+    }
+    applyCameraPose(pose)
+
+    // Let glowing materials / mesh rebuilds finish before revealing the canvas.
+    sceneRestoringPhase = 'Finishing materials…'
+    await waitForViewerIdle({ idleFrames: 4, timeoutMs: 20000, settleMs: 80 })
+  }
+
+  async function onLoadViewpoint() {
+    const dlg = await window.api.openFileDialog(
+      'Open view',
+      [{ name: 'GateWizard viewpoint', extensions: ['json'] }],
+      workingDir || parentOfFile(filePath || '') || undefined
+    )
+    if (!dlg || dlg.canceled || !dlg.filePath) return
+    sceneRestoring = true
+    sceneRestoringPhase = 'Opening view…'
+    try {
+      const data = await window.api.readJson(dlg.filePath)
+      if (data && typeof data === 'object' && data.format === 'gatewizard-animation') {
+        throw new Error('That file is an animation project. Use Open ▾ → Animation… instead.')
+      }
+      const viewpoint = normalizeViewpoint(data)
+      const wantedPath = viewpoint.structure?.path || ''
+      if (!wantedPath) {
+        throw new Error('Viewpoint file has no structure path')
+      }
+      // Auto-load the PDB/topology so a saved view can be opened standalone —
+      // same pattern as Load Animation.
+      if (wantedPath !== filePath) {
+        sceneRestoringPhase = 'Loading structure…'
+        await loadStructure(wantedPath, {
+          topology: viewpoint.structure?.topology ?? null,
+          resetCamera: true
+        })
+        if (!structure) return
+        // Drop the temporary default "all" points view before restore paints.
+        views = []
+      }
+      await applyViewpoint(viewpoint)
+      logEvent('info', 'view', 'Loaded viewpoint', dlg.filePath)
+    } catch (ex) {
+      alert(ex instanceof Error ? ex.message : String(ex))
+    } finally {
+      sceneRestoring = false
+      sceneRestoringPhase = ''
+    }
   }
 
   async function onSavePdb() {
@@ -2248,16 +2515,546 @@
     return pathStr.slice(0, i)
   }
 
+  function animStructureCtx() {
+    return {
+      path: filePath,
+      atoms: structure?.atoms,
+      bonds: structure?.bonds,
+      residues: structure?.residues
+    }
+  }
+
+  const NAMED_VIEW_SELECTIONS = new Set([
+    'all',
+    'protein',
+    'backbone',
+    'sidechain',
+    'water',
+    'lipid',
+    'ion',
+    'ligand',
+    'other'
+  ])
+
+  /** Reload per-view atom subsets after animation load (split/custom selections). */
+  async function refreshAnimationViewAtoms() {
+    if (!filePath) return
+    let changed = false
+    for (const view of views) {
+      if (view._isSelHighlight) continue
+      const base = String(view.baseSelection || view.selection || 'all')
+      const selection = NAMED_VIEW_SELECTIONS.has(base) ? base : String(view.selection || base)
+      const repr = view.representation?.type
+      try {
+        const struc = await getStructure({
+          path: filePath,
+          topology: topologyPath,
+          selection,
+          needs_bonds: repr === 'ball-stick',
+          needs_secondary_structure: repr === 'cartoon' || repr === 'tube'
+        })
+        if (!struc.atoms?.length) continue
+        view.atoms = struc.atoms
+        view.bonds = struc.bonds ?? view.bonds
+        view.residues = struc.residues ?? view.residues
+        view._prefetched = true
+        changed = true
+      } catch {
+        /* keep existing atoms */
+      }
+    }
+    if (changed) views = [...views]
+  }
+
+  function applyAnimFrame(time_s) {
+    applyAnimationAtTime(animProject.keyframes, time_s, {
+      getViews: () => views,
+      setViews: (nextViews) => {
+        views = /** @type {View[]} */ (nextViews)
+      },
+      structureCtx: animStructureCtx(),
+      applyFraming: (framing) => {
+        if (!camera) return
+        camera = {
+          ...camera,
+          center: { x: framing.center[0], y: framing.center[1], z: framing.center[2] },
+          extent: framing.extent,
+          framingZoom: framing.framingZoom
+        }
+      },
+      applyViewport: (viewport) => {
+        if (typeof viewport.axesVisible === 'boolean') axesVisible = viewport.axesVisible
+        if (typeof viewport.axesLinesVisible === 'boolean') axesLinesVisible = viewport.axesLinesVisible
+      },
+      setLabels: (nextLabels) => {
+        atomLabels = /** @type {typeof atomLabels} */ (nextLabels)
+      },
+      setMeasurements: (nextMeasurements) => {
+        measurements = /** @type {typeof measurements} */ (nextMeasurements)
+      }
+    }, animProject.viewTracks ?? [])
+  }
+
+  async function applyAnimFrameLive(time_s) {
+    applyAnimFrame(time_s)
+    await tick()
+  }
+
+  function stopAnimPlayback() {
+    animPlaying = false
+    if (animStopPlayback) {
+      animStopPlayback()
+      animStopPlayback = null
+    }
+  }
+
+  function toggleAnimateMode() {
+    toolsMenuOpen = false
+    if (animateMode) {
+      stopAnimPlayback()
+      animateMode = false
+      views = views.map((v) => {
+        if (typeof v.opacity !== 'number') return v
+        const next = { ...v }
+        delete next.opacity
+        return next
+      })
+      return
+    }
+    if (!structure) return
+    animateMode = true
+    if (!animProject.outputFolder && filePath) {
+      animProject.outputFolder = defaultAnimationFolderName(filePath)
+    }
+    syncProjectViewTracks(animProject)
+    repairForwardViewInheritance(animProject.keyframes, animProject.viewTracks ?? [])
+    for (const v of views) {
+      registerViewTrack(animProject, String(v.id), views.map((x) => String(x.id)))
+    }
+    animProject = {
+      ...animProject,
+      structure: { path: filePath ?? '', topology: topologyPath }
+    }
+  }
+
+  async function onAnimCaptureKeyframe() {
+    await tick()
+    try {
+      const snap = captureViewerSnapshot({
+        views,
+        filePath,
+        structure,
+        getFraming: () => camera,
+        getViewport: () => ({ axesVisible, axesLinesVisible }),
+        getLabels: () => atomLabels,
+        getMeasurements: () => measurements
+      })
+      const time_s = Math.max(0, Math.min(animProject.duration_s, animPlayhead))
+      const existing = animProject.keyframes.find((k) => Math.abs(k.time_s - time_s) < 0.05)
+      const keyframe = existing
+        ? {
+            ...existing,
+            camera: snap.camera,
+            views: snap.views,
+            scene: snap.scene,
+            viewport: snap.viewport,
+            labels: snap.labels,
+            measurements: snap.measurements
+          }
+        : {
+            id: crypto.randomUUID(),
+            name: `Keyframe ${animProject.keyframes.length + 1}`,
+            time_s,
+            camera: snap.camera,
+            views: snap.views,
+            scene: snap.scene,
+            viewport: snap.viewport,
+            labels: snap.labels,
+            measurements: snap.measurements
+          }
+      for (const v of views) {
+        registerViewTrack(animProject, String(v.id), views.map((x) => String(x.id)))
+      }
+      animProject = {
+        ...animProject,
+        keyframes: existing
+          ? animProject.keyframes.map((k) => (k.id === existing.id ? keyframe : k))
+          : [...animProject.keyframes, keyframe]
+      }
+      sortKeyframes(animProject)
+      propagateNewViewsToLaterKeyframes(
+        animProject.keyframes,
+        keyframe.id,
+        animProject.viewTracks ?? []
+      )
+      syncProjectViewTracks(animProject)
+      animProject = { ...animProject }
+      await applyAnimFrameLive(animPlayhead)
+      logEvent('info', 'view', 'Captured animation keyframe', keyframe.name)
+    } catch (ex) {
+      alert(ex instanceof Error ? ex.message : String(ex))
+    }
+  }
+
+  function onAnimGoToKeyframe(id) {
+    const kf = animProject.keyframes.find((k) => k.id === id)
+    if (!kf) return
+    animPlayhead = kf.time_s
+    void applyAnimFrameLive(kf.time_s)
+  }
+
+  function onAnimDeleteKeyframe(id) {
+    animProject = {
+      ...animProject,
+      keyframes: animProject.keyframes.filter((k) => k.id !== id)
+    }
+  }
+
+  /** @param {string} id @param {string} name */
+  function onAnimRenameKeyframe(id, name) {
+    animProject = {
+      ...animProject,
+      keyframes: animProject.keyframes.map((k) => (k.id === id ? { ...k, name } : k))
+    }
+  }
+
+  /** @param {string} id */
+  function onAnimDuplicateKeyframe(id) {
+    const src = animProject.keyframes.find((k) => k.id === id)
+    if (!src) return
+    let time_s = Math.min(animProject.duration_s, src.time_s + 0.25)
+    const taken = new Set(animProject.keyframes.map((k) => k.time_s.toFixed(3)))
+    while (taken.has(time_s.toFixed(3)) && time_s < animProject.duration_s) {
+      time_s = Math.min(animProject.duration_s, time_s + 0.05)
+    }
+    const dup = JSON.parse(JSON.stringify(src))
+    dup.id = crypto.randomUUID()
+    dup.name = `${src.name || 'Keyframe'} copy`
+    dup.time_s = time_s
+    animProject = {
+      ...animProject,
+      keyframes: [...animProject.keyframes, dup]
+    }
+    sortKeyframes(animProject)
+    propagateNewViewsToLaterKeyframes(
+      animProject.keyframes,
+      dup.id,
+      animProject.viewTracks ?? []
+    )
+    animProject = { ...animProject }
+    animPlayhead = time_s
+    applyAnimFrame(time_s)
+    logEvent('info', 'view', 'Duplicated keyframe', dup.name)
+  }
+
+  function onAnimMoveKeyframe(id, time_s) {
+    onAnimKeyframeTimeChange(id, time_s)
+  }
+
+  /**
+   * @param {string} toKeyframeId
+   * @param {{ easing: import('../lib/animation/easing.js').AnimationEasingKind, easingBezier?: [number, number, number, number] }} next
+   */
+  function onAnimEasingChange(toKeyframeId, next) {
+    animProject = {
+      ...animProject,
+      keyframes: animProject.keyframes.map((k) =>
+        k.id === toKeyframeId
+          ? {
+              ...k,
+              easing: next.easing,
+              easingBezier: next.easing === 'bezier' ? next.easingBezier : undefined
+            }
+          : k
+      )
+    }
+    applyAnimFrame(animPlayhead)
+  }
+
+  function onAnimKeyframeTimeChange(id, time_s) {
+    const t = Math.max(0, Math.min(animProject.duration_s, time_s))
+    animProject = {
+      ...animProject,
+      keyframes: animProject.keyframes.map((k) => (k.id === id ? { ...k, time_s: t } : k))
+    }
+    sortKeyframes(animProject)
+    animProject = { ...animProject }
+    animPlayhead = t
+    applyAnimFrame(t)
+  }
+
+  function onAnimPlayheadChange(time_s) {
+    onAnimScrub(Math.max(0, Math.min(animProject.duration_s, time_s)))
+  }
+
+  function onAnimScrub(time_s) {
+    stopAnimPlayback()
+    animPlayhead = Math.max(0, Math.min(animProject.duration_s, time_s))
+    if (animProject.keyframes.length) void applyAnimFrameLive(animPlayhead)
+  }
+
+  function toggleAnimPlayPause() {
+    if (animPlaying) {
+      stopAnimPlayback()
+      return
+    }
+    if (!animProject.keyframes.length) return
+    animPlaying = true
+    animStopPlayback = startPlayback({
+      keyframes: animProject.keyframes,
+      duration_s: animProject.duration_s,
+      fps: animProject.fps,
+      getPlayhead: () => animPlayhead,
+      setPlayhead: (t) => {
+        animPlayhead = t
+      },
+      isPlaying: () => animPlaying,
+      setPlaying: (v) => {
+        animPlaying = v
+      },
+      onFrame: applyAnimFrameLive,
+      onDone: () => {
+        animStopPlayback = null
+      }
+    })
+  }
+
+  function onAnimStop() {
+    stopAnimPlayback()
+    animPlayhead = 0
+    if (animProject.keyframes.length) applyAnimFrame(0)
+  }
+
+  async function resolveAnimationOutputBase() {
+    const folder =
+      animProject.outputFolder?.trim() || defaultAnimationFolderName(filePath || '') || 'animation'
+    let base
+    if (workingDir) {
+      const { output_dir } = await ensureOutputFolder(workingDir, folder)
+      base = output_dir
+    } else {
+      const parent = parentOfFile(filePath || '')
+      if (!parent) throw new Error('No output location: set a working directory or load a structure file')
+      base = `${parent.replace(/[/\\]+$/, '')}/${folder}`
+    }
+    return base
+  }
+
+  async function confirmAnimationOutputOverwrite(base) {
+    const info = await window.api.animationInspectOutputDir(base)
+    if (!info?.exists) return true
+    if (!info.hasAnimationJson && !info.frameCount && !info.hasVideo) return true
+    const parts = []
+    if (info.hasAnimationJson) parts.push('animation.json')
+    if (info.frameCount > 0) parts.push(`${info.frameCount} rendered frame(s)`)
+    if (info.encodedFiles?.length) {
+      parts.push(...info.encodedFiles)
+    } else if (info.hasVideo) {
+      parts.push('encoded animation file(s)')
+    }
+    return confirm(
+      `This output folder already contains animation data:\n\n${base}\n\nFound: ${parts.join(', ')}\n\nContinue and overwrite existing files?`
+    )
+  }
+
+  async function prepareAnimationOutputDir() {
+    const base = await resolveAnimationOutputBase()
+    if (!(await confirmAnimationOutputOverwrite(base))) {
+      throw new Error('Export cancelled — output folder not overwritten')
+    }
+    await window.api.animationEnsureDir(base)
+    return base
+  }
+
+  async function onAnimSaveProject() {
+    if (!confirmProceedWithoutWorkingDir('animation')) return
+    try {
+      const base = await prepareAnimationOutputDir()
+      const path = `${base}/animation.json`
+      await window.api.writeJson(
+        path,
+        serializeAnimationProject(animProject, {
+          path: filePath ?? '',
+          topology: topologyPath
+        })
+      )
+      logEvent('info', 'view', 'Saved animation project', path)
+    } catch (ex) {
+      alert(ex instanceof Error ? ex.message : String(ex))
+    }
+  }
+
+  async function onAnimLoadProject() {
+    const dlg = await window.api.openFileDialog(
+      'Open animation project',
+      [{ name: 'GateWizard animation', extensions: ['json'] }],
+      workingDir || parentOfFile(filePath || '') || undefined
+    )
+    if (!dlg || dlg.canceled || !dlg.filePath) return
+    sceneRestoring = true
+    sceneRestoringPhase = 'Opening animation…'
+    try {
+      const data = await window.api.readJson(dlg.filePath)
+      const project = normalizeProject(data)
+      // Animation projects are tied to a specific structure. Load it automatically
+      // (including its topology) so a project can be opened standalone without
+      // requiring a PDB to already be loaded — matching the "all-in-one" load a user
+      // expects from a saved animation file.
+      const wantedPath = project.structure?.path || ''
+      if (wantedPath && wantedPath !== filePath) {
+        sceneRestoringPhase = 'Loading structure…'
+        await loadStructure(wantedPath, {
+          topology: project.structure?.topology ?? null,
+          resetCamera: true
+        })
+        if (!structure) return // loadStructure already alerted the user on failure
+        views = []
+      }
+      animProject = project
+      syncProjectViewTracks(animProject)
+      repairForwardViewInheritance(animProject.keyframes, animProject.viewTracks ?? [])
+      // Drop any pre-existing representations (e.g. the default "all" view created on
+      // PDB load) that aren't part of the loaded animation — otherwise they linger
+      // forever as permanently-hidden phantom rows in the panel.
+      const animatedTrackIds = new Set([
+        ...(animProject.viewTracks ?? []),
+        ...deriveViewTracks(animProject.keyframes)
+      ])
+      views = views.filter((v) => animatedTrackIds.has(String(v.id)))
+      animPlayhead = 0
+      if (animProject.keyframes.length) {
+        sceneRestoringPhase = 'Restoring representations…'
+        applyAnimFrame(0)
+        await refreshAnimationViewAtoms()
+        applyAnimFrame(animPlayhead)
+      }
+      animateMode = true
+      sceneRestoringPhase = 'Finishing materials…'
+      await waitForViewerIdle({ idleFrames: 4, timeoutMs: 20000, settleMs: 80 })
+      logEvent('info', 'view', 'Loaded animation project', dlg.filePath)
+    } catch (ex) {
+      if (ex instanceof Error && ex.message.includes('cancelled')) return
+      alert(ex instanceof Error ? ex.message : String(ex))
+    } finally {
+      sceneRestoring = false
+      sceneRestoringPhase = ''
+    }
+  }
+
+  async function onAnimExportVideo() {
+    if (!animProject.keyframes.length) return
+    if (!confirmProceedWithoutWorkingDir('animation')) return
+    animExporting = true
+    animExportPhase = 'Preparing export…'
+    animExportFrame = 0
+    const savedPlayhead = animPlayhead
+    stopAnimPlayback()
+    try {
+      const base = await prepareAnimationOutputDir()
+      const framesDir = `${base}/frames`
+      const fps = animProject.fps
+      const frameCount = Math.max(1, Math.ceil(animProject.duration_s * fps))
+      animExportTotal = frameCount
+      const exportFrame = animProject.exportFrame ?? {
+        aspectPreset: '16:9',
+        width: 1920,
+        height: 1080,
+        showGuide: true,
+        exportFormat: 'mp4'
+      }
+      const exportFormat = exportFrame.exportFormat ?? 'mp4'
+      const formatMeta = exportFormatMeta(exportFormat)
+      const encodedFileName = animationOutputFileName(exportFormat)
+      const encodedOutputPath = encodedFileName ? `${base}/${encodedFileName}` : ''
+      const canvas = viewerEl?.querySelector('canvas')
+      for (let i = 0; i < frameCount; i++) {
+        const t = Math.min(animProject.duration_s, i / fps)
+        animPlayhead = t
+        animExportFrame = i + 1
+        animExportPhase = `Rendering frame ${i + 1} of ${frameCount}…`
+        await tick()
+        await renderFrame(() => applyAnimFrame(t))
+        const sourceRect = computeSafeAreaForCanvas(
+          /** @type {HTMLCanvasElement} */ (canvas),
+          exportFrame.width,
+          exportFrame.height
+        )
+        const png = await captureCanvasWithOverlayPng(/** @type {HTMLCanvasElement} */ (canvas), {
+          sourceRect,
+          outputWidth: exportFrame.width,
+          outputHeight: exportFrame.height,
+          displayW: canvasWidth,
+          displayH: canvasHeight,
+          camera: mainViewerCamera.current,
+          measurements,
+          atomLabels
+        })
+        await window.api.writeBinary(`${framesDir}/${frameFileName(i)}`, png)
+      }
+      if (exportFormat === 'png') {
+        logEvent('info', 'view', 'Exported animation frames', framesDir)
+        animExportPhase = 'Done'
+        alert(`PNG frames saved to:\n${framesDir}`)
+      } else {
+        const ffmpeg = await window.api.animationCheckFfmpeg()
+        if (ffmpeg.available && encodedOutputPath) {
+          animExportPhase = `Encoding ${formatMeta?.label ?? exportFormat} with FFmpeg…`
+          animExportFrame = frameCount
+          await tick()
+          const enc = await window.api.animationEncodeVideo({
+            framesDir,
+            outputPath: encodedOutputPath,
+            fps,
+            format: exportFormat
+          })
+          if (!enc?.ok) {
+            throw new Error(enc?.error || 'FFmpeg failed to encode animation')
+          }
+          logEvent('info', 'view', 'Exported animation', encodedOutputPath)
+          animExportPhase = 'Done'
+          alert(`Animation saved to:\n${encodedOutputPath}`)
+        } else {
+          logEvent('info', 'view', 'Exported animation frames (no ffmpeg)', framesDir)
+          animExportPhase = 'Done (frames only)'
+          alert(
+            `FFmpeg was not found on PATH.\n\nPNG frames were saved to:\n${framesDir}\n\nInstall FFmpeg to encode ${formatMeta?.label ?? exportFormat.toUpperCase()} from the app.`
+          )
+        }
+      }
+      animExportPhase = 'Saving project…'
+      await tick()
+      await window.api.writeJson(
+        `${base}/animation.json`,
+        serializeAnimationProject(animProject, {
+          path: filePath ?? '',
+          topology: topologyPath
+        })
+      )
+    } catch (ex) {
+      if (ex instanceof Error && ex.message.includes('cancelled')) return
+      alert(ex instanceof Error ? ex.message : String(ex))
+    } finally {
+      animExporting = false
+      animExportPhase = ''
+      animExportFrame = 0
+      animExportTotal = 0
+      animPlayhead = savedPlayhead
+      if (animProject.keyframes.length) applyAnimFrame(savedPlayhead)
+    }
+  }
+
   /**
    * Ask before running when the top-bar working directory is unset.
-   * @param {'mempro' | 'packmol'} kind
+   * @param {'mempro' | 'packmol' | 'animation'} kind
    */
   function confirmProceedWithoutWorkingDir(kind) {
     if (workingDir) return true
     const detail =
       kind === 'mempro'
         ? 'MemPro job state will not be saved to disk and results may be lost if the app restarts.'
-        : 'Packmol output will be written next to the input PDB instead of under a project working directory.'
+        : kind === 'packmol'
+          ? 'Packmol output will be written next to the input PDB instead of under a project working directory.'
+          : 'Animation projects and exports will be written next to the loaded structure file instead of under a project working directory.'
     return confirm(
       `No working directory is set.\n\n${detail}\n\nDo you want to proceed anyway?`
     )
@@ -2526,7 +3323,7 @@
           onAtomHover={handleCanvasHover}
         >
           <CameraRig framing={camera} />
-          {#each views.filter((v) => v.visible) as view (view.id)}
+          {#each views.filter((v) => v.visible !== false && (v.opacity ?? 1) > 0.001) as view (view.id)}
             {#key view.representation.type}
             {#if view.representation.type === 'ball-stick'}
               <BallStick
@@ -2545,6 +3342,7 @@
                 outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
                 outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
                 highlightIndices={editHoverGroupIndices}
+                opacity={view.opacity ?? 1}
               />
             {:else if view.representation.type === 'cartoon'}
               <Cartoon
@@ -2564,6 +3362,7 @@
                 outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
                 outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
                 highlightIndices={editHoverGroupIndices}
+                opacity={view.opacity ?? 1}
               />
             {:else if view.representation.type === 'tube'}
               <Tube
@@ -2581,6 +3380,7 @@
                 outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
                 outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
                 highlightIndices={editHoverGroupIndices}
+                opacity={view.opacity ?? 1}
               />
             {:else if view.representation.type === 'vdw'}
               <VdwSpheres
@@ -2597,6 +3397,7 @@
                 outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
                 outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
                 highlightIndices={editHoverGroupIndices}
+                opacity={view.opacity ?? 1}
               />
             {:else if view.representation.type === 'points'}
               <AtomPoints
@@ -2605,14 +3406,15 @@
                 pointSize={view.pointSize ?? 3}
                 atomScale={view.atomScale ?? 1.0}
                 highlightIndices={editHoverGroupIndices}
+                opacity={view.opacity ?? 1}
               />
             {/if}
             {/key}
-            {#if isGlowingMaterial(view.material) && resolveGlowingMaterial(view.material).glowEmitLight !== false}
+            {#if isGlowingMaterial(view.material) && resolveGlowingMaterial(view.material).glowEmitLight !== false && (view.opacity ?? 1) > 0.001}
               <AtomGlowLights
                 atoms={viewAtoms(view)}
                 getColor={view.colorScheme.resolver}
-                intensity={resolveGlowingMaterial(view.material).glowLightIntensity ?? GLOWING_MATERIAL_DEFAULTS.glowLightIntensity}
+                intensity={(resolveGlowingMaterial(view.material).glowLightIntensity ?? GLOWING_MATERIAL_DEFAULTS.glowLightIntensity) * Math.min(1, view.opacity ?? 1)}
                 distance={resolveGlowingMaterial(view.material).glowLightDistance ?? GLOWING_MATERIAL_DEFAULTS.glowLightDistance}
                 decay={resolveGlowingMaterial(view.material).glowLightDecay ?? GLOWING_MATERIAL_DEFAULTS.glowLightDecay}
                 maxLights={resolveGlowingMaterial(view.material).glowMaxLights ?? GLOWING_MATERIAL_DEFAULTS.glowMaxLights}
@@ -2691,7 +3493,15 @@
             />
           {/if}
         </Canvas>
-        {#if viewerBusy.active}
+        {#if animateMode && animProject.exportFrame?.showGuide !== false}
+          <AnimationSafeAreaOverlay
+            {canvasWidth}
+            {canvasHeight}
+            frameWidth={animProject.exportFrame?.width ?? 1920}
+            frameHeight={animProject.exportFrame?.height ?? 1080}
+          />
+        {/if}
+        {#if viewerBusy.active && !sceneRestoring && !loadingPDB}
           <div
             class="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-neutral-950/35"
             style="backdrop-filter:blur(1px)"
@@ -2703,6 +3513,38 @@
             >
               <Spinner className="size-5 text-blue-400" />
               <span>{viewerBusy.label || 'Updating view…'}</span>
+            </div>
+          </div>
+        {/if}
+        {#if animExporting}
+          <div
+            class="pointer-events-none absolute inset-0 z-40 flex items-center justify-center bg-neutral-950/55"
+            style="backdrop-filter:blur(2px)"
+            aria-live="polite"
+            aria-busy="true"
+          >
+            <div
+              class="flex min-w-[16rem] flex-col items-center gap-3 rounded-lg border border-yellow-600/40 bg-neutral-900/95 px-6 py-5 text-center shadow-xl"
+            >
+              <Spinner className="size-6 text-yellow-400" />
+              <div>
+                <p class="text-sm font-semibold text-yellow-100">Rendering animation</p>
+                <p class="mt-1 text-xs text-neutral-400">{animExportPhase}</p>
+              </div>
+              {#if animExportTotal > 0}
+                <div class="w-full">
+                  <div class="mb-1 flex justify-between text-[10px] tabular-nums text-neutral-500">
+                    <span>Frame {animExportFrame} / {animExportTotal}</span>
+                    <span>{Math.round((animExportFrame / animExportTotal) * 100)}%</span>
+                  </div>
+                  <div class="h-1.5 overflow-hidden rounded-full bg-neutral-800">
+                    <div
+                      class="h-full rounded-full bg-yellow-500 transition-[width] duration-150"
+                      style="width: {Math.round((animExportFrame / animExportTotal) * 100)}%"
+                    ></div>
+                  </div>
+                </div>
+              {/if}
             </div>
           </div>
         {/if}
@@ -2739,9 +3581,9 @@
           {/if}
         {/if}
         <MeasureOverlay
-          measurements={measurements.filter((m) => m.visible !== false)}
+          {measurements}
           picks={measurePicks}
-          atomLabels={atomLabels.filter((l) => l.visible !== false)}
+          {atomLabels}
           width={canvasWidth}
           height={canvasHeight}
         />
@@ -2801,10 +3643,10 @@
           />
         {/if}
       {/if}
-      {#if loadingPDB}
+      {#if loadingPDB || sceneRestoring}
         <div
-          class="absolute inset-0 z-40 flex items-center justify-center bg-neutral-950/55"
-          style="backdrop-filter:blur(2px)"
+          class="absolute inset-0 z-40 flex items-center justify-center bg-neutral-950/90"
+          style="backdrop-filter:blur(3px)"
           aria-live="polite"
           aria-busy="true"
         >
@@ -2813,9 +3655,21 @@
           >
             <Spinner className="size-8 text-sky-400" />
             <div class="space-y-1">
-              <p class="text-sm font-medium">{loadingPhase || 'Loading structure…'}</p>
+              <p class="text-sm font-medium">
+                {#if loadingPDB}
+                  {loadingPhase || 'Loading structure…'}
+                {:else}
+                  {sceneRestoringPhase || 'Restoring view…'}
+                {/if}
+              </p>
               <p class="text-xs text-neutral-400">
-                {loadingElapsedSec < 1 ? 'Starting…' : `${loadingElapsedSec}s elapsed`}
+                {#if loadingPDB}
+                  {loadingElapsedSec < 1 ? 'Starting…' : `${loadingElapsedSec}s elapsed`}
+                {:else if viewerBusy.active}
+                  {viewerBusy.label || 'Preparing materials…'}
+                {:else}
+                  Almost ready…
+                {/if}
               </p>
             </div>
           </div>
@@ -2832,8 +3686,8 @@
       onpointerdown={_startRightResize}
     ></div>
 
-    <div class="flex shrink-0 flex-col border-l border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950" style="width:{rightW}px">
-      <h2 class="border-b border-neutral-200 p-2 text-xs font-semibold text-neutral-800 dark:border-neutral-800 dark:text-neutral-100">
+    <div class="flex min-h-0 min-w-0 shrink-0 flex-col border-l border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950" style="width:{rightW}px">
+      <h2 class="shrink-0 border-b border-neutral-200 p-2 text-xs font-semibold text-neutral-800 dark:border-neutral-800 dark:text-neutral-100">
         Representations
         {#if structure?.atoms?.length}
           <span class="ml-1 font-normal text-neutral-500 tabular-nums dark:text-neutral-500"
@@ -2842,20 +3696,8 @@
         {/if}
       </h2>
       {#if views.length > 0 || filePath}
-        <div class="min-h-0 flex-1 overflow-y-auto">
-          {#each views as view, i (view.id)}
-            <ViewItem
-              bind:view={views[i]}
-              sourceBonds={structure?.bonds ?? null}
-              topology={topologyPath}
-              onremove={() => removeView(view.id)}
-              onduplicate={() => duplicateView(view.id)}
-              onsplitbychain={() => splitViewByChain(view.id)}
-              oncenter={() => centerCameraOnAtoms(view.atoms)}
-            />
-          {/each}
-        </div>
-        <div class="flex gap-1 border-t border-neutral-200 p-2 dark:border-neutral-800">
+        <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div class="flex shrink-0 gap-1 border-b border-neutral-200 p-2 dark:border-neutral-800">
           {#snippet toolbarBtn(title, onclick, Icon, className, disabled = false)}
             <button
               type="button"
@@ -2908,21 +3750,20 @@
             Sun,
             'size-4 stroke-2 stroke-neutral-800 dark:stroke-white'
           )}
-          <button
-            type="button"
-            class="flex h-7 items-center justify-center rounded-lg border border-neutral-200 bg-neutral-100 px-1.5 text-xs text-neutral-600 transition-colors hover:border-neutral-300 hover:bg-neutral-200 active:translate-y-0.5 disabled:opacity-40 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:border-neutral-700 dark:hover:bg-neutral-800"
-            title="Save viewpoint"
-            aria-label="Save viewpoint"
-            onclick={onSaveViewpoint}
-            disabled={!camera}>VP↑</button
-          >
-          <button
-            type="button"
-            class="flex h-7 items-center justify-center rounded-lg border border-neutral-200 bg-neutral-100 px-1.5 text-xs text-neutral-600 transition-colors hover:border-neutral-300 hover:bg-neutral-200 active:translate-y-0.5 disabled:opacity-40 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:border-neutral-700 dark:hover:bg-neutral-800"
-            title="Load saved viewpoint"
-            aria-label="Load saved viewpoint"
-            onclick={onLoadViewpoint}>VP↓</button
-          >
+          {@render toolbarBtn(
+            'Save view…',
+            onSaveViewpoint,
+            SaveIcon,
+            'size-4 stroke-2 stroke-neutral-800 dark:stroke-white',
+            !structure || !camera
+          )}
+          {@render toolbarBtn(
+            'Open view…',
+            onLoadViewpoint,
+            LoadIcon,
+            'size-4 stroke-2 stroke-neutral-800 dark:stroke-white',
+            loadingPDB
+          )}
           <!-- Measurement mode buttons -->
           <div class="mx-0.5 h-4 w-px bg-neutral-300 dark:bg-neutral-700"></div>
           {#snippet measureBtn(title, mode)}
@@ -2999,6 +3840,22 @@
           {@render measureBtn('Angle — click 3 atoms', 'angle')}
           {@render measureBtn('Dihedral — click 4 atoms', 'dihedral')}
         </div>
+        <div class="min-h-0 flex-1 overflow-y-auto">
+          {#each views as view, i (view.id)}
+            <ViewItem
+              bind:view={views[i]}
+              {animateMode}
+              onFadeEdit={() => {
+                overlayFadeEditor = { kind: 'view', id: view.id }
+              }}
+              sourceBonds={structure?.bonds ?? null}
+              topology={topologyPath}
+              onremove={() => removeView(view.id)}
+              onduplicate={() => duplicateView(view.id)}
+              onsplitby={(mode) => splitViewBy(view.id, mode)}
+              oncenter={() => centerCameraOnAtoms(view.atoms)}
+            />
+          {/each}
         {#if measurements.length > 0}
           <!-- Measurements collapsible section -->
           <div class="border-t border-neutral-800">
@@ -3162,38 +4019,48 @@
                         </div>
                         <div class="flex items-center gap-1.5">
                           <span class="text-xs text-neutral-500">Size</span>
-                          <input
-                            type="range"
-                            min="8"
-                            max="40"
-                            step="1"
-                            use:setRangeValue={m.size}
-                            oninput={(e) => {
-                              measurements[i].size = +e.target.value
-                            }}
-                            class="h-3 flex-1 cursor-pointer accent-yellow-400"
+                          <RangeInput
+                            bind:value={
+                              () => m.size,
+                              (v) => {
+                                measurements[i].size = v
+                              }
+                            }
+                            min={8}
+                            max={40}
+                            step={1}
+                            decimals={0}
+                            rangeClassName="h-3 flex-1 cursor-pointer accent-yellow-400"
+                            inputClassName="w-12"
                           />
-                          <span class="w-5 text-right text-xs text-neutral-400 tabular-nums"
-                            >{m.size}</span
-                          >
                         </div>
                         <div class="flex items-center gap-1.5">
                           <span class="text-xs text-neutral-500">Line</span>
-                          <input
-                            type="range"
-                            min="0.5"
-                            max="6"
-                            step="0.5"
-                            use:setRangeValue={m.lineWidth}
-                            oninput={(e) => {
-                              measurements[i].lineWidth = +e.target.value
-                            }}
-                            class="h-3 flex-1 cursor-pointer accent-yellow-400"
+                          <RangeInput
+                            bind:value={
+                              () => m.lineWidth,
+                              (v) => {
+                                measurements[i].lineWidth = v
+                              }
+                            }
+                            min={0.5}
+                            max={6}
+                            step={0.5}
+                            decimals={1}
+                            rangeClassName="h-3 flex-1 cursor-pointer accent-yellow-400"
+                            inputClassName="w-12"
                           />
-                          <span class="w-5 text-right text-xs text-neutral-400 tabular-nums"
-                            >{m.lineWidth}</span
-                          >
                         </div>
+                        <button
+                          type="button"
+                          class="w-full rounded border border-neutral-700 px-2 py-1 text-left text-[10px] text-neutral-300 hover:bg-neutral-800"
+                          onclick={() => {
+                            overlayFadeEditor = { kind: 'meas', id: m.id }
+                          }}
+                        >
+                          Fade in/out…
+                          <span class="block text-neutral-500">{fadeSummary(m)}</span>
+                        </button>
                       </div>
                     {/if}
                   </div>
@@ -3221,58 +4088,165 @@
             {/if}
           </div>
           {#if labelsExpanded}
-            <!-- Size + Color controls -->
-            <div class="flex items-center gap-1.5 border-b border-neutral-200/80 px-2 py-1 dark:border-neutral-800/60">
-              <span class="text-xs text-neutral-500">Size</span>
-              <input
-                type="range"
-                min="8"
-                max="40"
-                step="1"
-                use:setRangeValue={labelSize}
-                oninput={(e) => {
-                  labelSize = +e.target.value
-                  for (const l of atomLabels) l.size = labelSize
-                }}
-                class="h-3 flex-1 cursor-pointer accent-yellow-400"
-              />
-              <span class="w-5 text-right text-xs text-neutral-400 tabular-nums">{labelSize}</span>
-              <span class="ml-1 text-xs text-neutral-500">Color</span>
-              <input
-                type="color"
-                value={labelColor}
-                oninput={(e) => {
-                  labelColor = e.target.value
-                  for (const l of atomLabels) l.color = labelColor
-                }}
-                class="size-5 cursor-pointer rounded border-0 bg-transparent p-0"
-              />
+            <!-- Global defaults: aligned label | slider+number | optional color -->
+            <div
+              class="space-y-0.5 border-b border-neutral-200/80 px-2 py-1 dark:border-neutral-800/60"
+            >
+              <div class="grid grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-x-1.5">
+                <span class="truncate text-[10px] text-neutral-500">Size</span>
+                <RangeInput
+                  bind:value={labelSize}
+                  min={8}
+                  max={40}
+                  step={1}
+                  decimals={0}
+                  rangeClassName="h-3 flex-1 cursor-pointer accent-yellow-400"
+                  inputClassName="w-10"
+                  oninput={(v) => {
+                    for (const l of atomLabels) l.size = v
+                  }}
+                />
+                <div class="flex w-11 shrink-0 items-center justify-end gap-1">
+                  <span class="text-[9px] text-neutral-500">Aa</span>
+                  <input
+                    type="color"
+                    value={labelColor}
+                    title="Text color"
+                    oninput={(e) => {
+                      labelColor = e.target.value
+                      for (const l of atomLabels) l.color = labelColor
+                    }}
+                    class="size-4 cursor-pointer rounded border border-neutral-600 bg-transparent p-0"
+                  />
+                </div>
+              </div>
+              <div class="grid grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-x-1.5">
+                <span class="truncate text-[10px] text-neutral-500">Opac</span>
+                <RangeInput
+                  bind:value={labelBackgroundOpacity}
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  decimals={2}
+                  rangeClassName="h-3 flex-1 cursor-pointer accent-yellow-400"
+                  inputClassName="w-10"
+                  oninput={(v) => {
+                    for (const l of atomLabels) l.backgroundOpacity = v
+                  }}
+                />
+                <div class="flex w-11 shrink-0 items-center justify-end gap-1">
+                  <span class="text-[9px] text-neutral-500">Bg</span>
+                  <input
+                    type="color"
+                    value={labelBackground}
+                    title="Background color"
+                    oninput={(e) => {
+                      labelBackground = e.target.value
+                      for (const l of atomLabels) l.background = labelBackground
+                    }}
+                    class="size-4 cursor-pointer rounded border border-neutral-600 bg-transparent p-0"
+                  />
+                </div>
+              </div>
+              <div class="grid grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-x-1.5">
+                <span class="truncate text-[10px] text-neutral-500" title="Background padding">Pad</span>
+                <RangeInput
+                  bind:value={labelPadding}
+                  min={0}
+                  max={24}
+                  step={1}
+                  decimals={0}
+                  rangeClassName="h-3 flex-1 cursor-pointer accent-yellow-400"
+                  inputClassName="w-10"
+                  oninput={(v) => {
+                    for (const l of atomLabels) l.padding = v
+                  }}
+                />
+                <div class="w-11 shrink-0"></div>
+              </div>
+              <div class="grid grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-x-1.5">
+                <span class="truncate text-[10px] text-neutral-500" title="Corner radius">Round</span>
+                <RangeInput
+                  bind:value={labelRadius}
+                  min={0}
+                  max={24}
+                  step={1}
+                  decimals={0}
+                  rangeClassName="h-3 flex-1 cursor-pointer accent-yellow-400"
+                  inputClassName="w-10"
+                  oninput={(v) => {
+                    for (const l of atomLabels) l.radius = v
+                  }}
+                />
+                <div class="w-11 shrink-0"></div>
+              </div>
+              <div class="grid grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-x-1.5">
+                <span class="truncate text-[10px] text-neutral-500" title="Lift distance from atom">Lift</span>
+                <RangeInput
+                  bind:value={labelOffsetY}
+                  min={0}
+                  max={80}
+                  step={1}
+                  decimals={0}
+                  rangeClassName="h-3 flex-1 cursor-pointer accent-yellow-400"
+                  inputClassName="w-10"
+                  oninput={(v) => {
+                    patchLabelLift(undefined, { offsetY: v })
+                  }}
+                />
+                <div class="grid w-9 shrink-0 grid-cols-2 gap-px" title="Lift direction">
+                  {#each /** @type {const} */ (['up', 'down', 'left', 'right']) as dir}
+                    <button
+                      type="button"
+                      class="flex size-4 items-center justify-center rounded text-[9px] leading-none
+                        {labelLiftDir === dir
+                        ? 'bg-yellow-500/25 text-yellow-300'
+                        : 'text-neutral-500 hover:bg-neutral-800 hover:text-neutral-300'}"
+                      title="Lift {dir}"
+                      onclick={() => {
+                        labelLiftDir = dir
+                        patchLabelLift(undefined, { liftDir: dir })
+                      }}
+                    >
+                      {dir === 'up' ? '↑' : dir === 'down' ? '↓' : dir === 'left' ? '←' : '→'}
+                    </button>
+                  {/each}
+                </div>
+              </div>
             </div>
             {#if atomLabels.length > 0}
-              <div class="max-h-32 space-y-0.5 overflow-y-auto px-1.5 pb-1.5">
+              <div class="space-y-0 px-1 py-0.5">
                 {#each atomLabels as l, j (l.id)}
-                  <div class="flex flex-col rounded hover:bg-neutral-100/80 dark:hover:bg-neutral-800/40">
-                    <div class="flex items-center gap-1.5 px-1 py-0.5">
+                  <div class="flex flex-col rounded hover:bg-neutral-100/70 dark:hover:bg-neutral-800/35">
+                    <div class="flex items-center gap-1 px-1 py-0.5">
                       <span
-                        class="inline-block size-2 shrink-0 rounded-full"
-                        style="background:{l.color};opacity:{l.visible !== false ? 1 : 0.35}"
-                      ></span>
+                        class="inline-flex size-3.5 shrink-0 items-center justify-center border border-neutral-600"
+                        style="background:{l.background ?? '#000000'};border-radius:{Math.min(
+                          l.radius ?? 4,
+                          6
+                        )}px;opacity:{l.visible !== false ? (l.backgroundOpacity ?? 0.75) : 0.25}"
+                        title="Background"
+                      >
+                        <span
+                          class="size-1.5 rounded-full"
+                          style="background:{l.color}"
+                        ></span>
+                      </span>
                       <span
-                        class="flex-1 truncate font-mono text-neutral-300"
-                        style="font-size:{l.size}px;opacity:{l.visible !== false ? 1 : 0.35}"
-                        >{l.text}</span
+                        class="min-w-0 flex-1 truncate font-mono text-[11px] leading-tight text-neutral-300"
+                        style="opacity:{l.visible !== false ? 1 : 0.35}">{l.text}</span
                       >
                       <button
                         onclick={() => {
                           atomLabels[j].visible = !(l.visible !== false)
                         }}
-                        class="shrink-0 text-neutral-600 hover:text-neutral-200"
+                        class="shrink-0 p-0.5 text-neutral-600 hover:text-neutral-200"
                         title={l.visible !== false ? 'Hide' : 'Show'}
                       >
                         {#if l.visible !== false}
                           <svg
                             viewBox="0 0 16 10"
-                            class="size-3.5"
+                            class="size-3"
                             fill="none"
                             stroke="currentColor"
                             stroke-width="1.5"
@@ -3285,7 +4259,7 @@
                         {:else}
                           <svg
                             viewBox="0 0 16 10"
-                            class="size-3.5 opacity-40"
+                            class="size-3 opacity-40"
                             fill="none"
                             stroke="currentColor"
                             stroke-width="1.5"
@@ -3300,44 +4274,156 @@
                       </button>
                       <button
                         onclick={() => toggleGear('label', l.id)}
-                        class="shrink-0 text-sm text-neutral-600 hover:text-neutral-300"
+                        class="shrink-0 p-0.5 text-[11px] leading-none text-neutral-600 hover:text-neutral-300"
                         title="Settings">&#x2699;</button
                       >
                       <button
                         onclick={() => removeAtomLabel(l.id)}
-                        class="shrink-0 text-sm text-neutral-600 hover:text-red-400"
+                        class="shrink-0 p-0.5 text-[11px] leading-none text-neutral-600 hover:text-red-400"
                         >&#x2715;</button
                       >
                     </div>
                     {#if gearOpen?.kind === 'label' && gearOpen.id === l.id}
-                      <div class="space-y-1 border-t border-neutral-800/60 px-2 py-1">
+                      <div class="space-y-0.5 border-t border-neutral-800/60 px-1.5 py-1">
                         <input
                           type="text"
                           bind:value={l.text}
-                          class="w-full rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-xs text-neutral-200 outline-none"
+                          class="mb-0.5 w-full rounded bg-neutral-800 px-1 py-0.5 font-mono text-[11px] text-neutral-200 outline-none"
                         />
-                        <div class="flex items-center gap-1.5">
-                          <span class="text-xs text-neutral-500">Size</span>
-                          <input
-                            type="range"
-                            min="8"
-                            max="40"
-                            step="1"
-                            use:setRangeValue={l.size}
-                            oninput={(e) => {
-                              atomLabels[j].size = +e.target.value
-                            }}
-                            class="h-3 flex-1 cursor-pointer accent-yellow-400"
+                        <div class="grid grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-x-1.5">
+                          <span class="truncate text-[10px] text-neutral-500">Size</span>
+                          <RangeInput
+                            bind:value={
+                              () => l.size,
+                              (v) => {
+                                atomLabels[j].size = v
+                              }
+                            }
+                            min={8}
+                            max={40}
+                            step={1}
+                            decimals={0}
+                            rangeClassName="h-3 flex-1 cursor-pointer accent-yellow-400"
+                            inputClassName="w-10"
                           />
-                          <span class="w-5 text-right text-xs text-neutral-400 tabular-nums"
-                            >{l.size}</span
-                          >
-                          <input
-                            type="color"
-                            bind:value={l.color}
-                            class="size-5 cursor-pointer rounded border-0 bg-transparent p-0"
-                          />
+                          <div class="flex w-11 shrink-0 items-center justify-end gap-1">
+                            <span class="text-[9px] text-neutral-500">Aa</span>
+                            <input
+                              type="color"
+                              bind:value={l.color}
+                              title="Text color"
+                              class="size-4 cursor-pointer rounded border border-neutral-600 bg-transparent p-0"
+                            />
+                          </div>
                         </div>
+                        <div class="grid grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-x-1.5">
+                          <span class="truncate text-[10px] text-neutral-500">Opac</span>
+                          <RangeInput
+                            bind:value={
+                              () => l.backgroundOpacity ?? 0.75,
+                              (v) => {
+                                atomLabels[j].backgroundOpacity = v
+                              }
+                            }
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            decimals={2}
+                            rangeClassName="h-3 flex-1 cursor-pointer accent-yellow-400"
+                            inputClassName="w-10"
+                          />
+                          <div class="flex w-11 shrink-0 items-center justify-end gap-1">
+                            <span class="text-[9px] text-neutral-500">Bg</span>
+                            <input
+                              type="color"
+                              value={l.background ?? '#000000'}
+                              title="Background color"
+                              oninput={(e) => {
+                                atomLabels[j].background = e.target.value
+                              }}
+                              class="size-4 cursor-pointer rounded border border-neutral-600 bg-transparent p-0"
+                            />
+                          </div>
+                        </div>
+                        <div class="grid grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-x-1.5">
+                          <span class="truncate text-[10px] text-neutral-500">Pad</span>
+                          <RangeInput
+                            bind:value={
+                              () => l.padding ?? 6,
+                              (v) => {
+                                atomLabels[j].padding = v
+                              }
+                            }
+                            min={0}
+                            max={24}
+                            step={1}
+                            decimals={0}
+                            rangeClassName="h-3 flex-1 cursor-pointer accent-yellow-400"
+                            inputClassName="w-10"
+                          />
+                          <div class="w-11 shrink-0"></div>
+                        </div>
+                        <div class="grid grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-x-1.5">
+                          <span class="truncate text-[10px] text-neutral-500">Round</span>
+                          <RangeInput
+                            bind:value={
+                              () => l.radius ?? 4,
+                              (v) => {
+                                atomLabels[j].radius = v
+                              }
+                            }
+                            min={0}
+                            max={24}
+                            step={1}
+                            decimals={0}
+                            rangeClassName="h-3 flex-1 cursor-pointer accent-yellow-400"
+                            inputClassName="w-10"
+                          />
+                          <div class="w-11 shrink-0"></div>
+                        </div>
+                        <div class="grid grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-x-1.5">
+                          <span class="truncate text-[10px] text-neutral-500">Lift</span>
+                          <RangeInput
+                            bind:value={
+                              () => l.offsetY ?? 22,
+                              (v) => {
+                                patchLabelLift(j, { offsetY: v })
+                              }
+                            }
+                            min={0}
+                            max={80}
+                            step={1}
+                            decimals={0}
+                            rangeClassName="h-3 flex-1 cursor-pointer accent-yellow-400"
+                            inputClassName="w-10"
+                          />
+                          <div class="grid w-9 shrink-0 grid-cols-2 gap-px" title="Lift direction">
+                            {#each /** @type {const} */ (['up', 'down', 'left', 'right']) as dir}
+                              <button
+                                type="button"
+                                class="flex size-4 items-center justify-center rounded text-[9px] leading-none
+                                  {(l.liftDir ?? 'up') === dir
+                                  ? 'bg-yellow-500/25 text-yellow-300'
+                                  : 'text-neutral-500 hover:bg-neutral-800 hover:text-neutral-300'}"
+                                title="Lift {dir}"
+                                onclick={() => {
+                                  patchLabelLift(j, { liftDir: dir })
+                                }}
+                              >
+                                {dir === 'up' ? '↑' : dir === 'down' ? '↓' : dir === 'left' ? '←' : '→'}
+                              </button>
+                            {/each}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          class="mt-0.5 w-full rounded border border-neutral-700 px-1.5 py-0.5 text-left text-[10px] leading-tight text-neutral-300 hover:bg-neutral-800"
+                          onclick={() => {
+                            overlayFadeEditor = { kind: 'label', id: l.id }
+                          }}
+                        >
+                          Fade… <span class="text-neutral-500">{fadeSummary(l)}</span>
+                        </button>
                       </div>
                     {/if}
                   </div>
@@ -3346,50 +4432,227 @@
             {/if}
           {/if}
         </div>
+
+        {#if animateMode}
+          <AnimationPanel
+            {workingDir}
+            outputFolder={animProject.outputFolder}
+            projectName={animProject.name}
+            fps={animProject.fps}
+            duration_s={animProject.duration_s}
+            exportFrame={animProject.exportFrame ?? {
+              aspectPreset: '16:9',
+              width: 1920,
+              height: 1080,
+              showGuide: true,
+              exportFormat: 'mp4'
+            }}
+            playing={animPlaying}
+            exporting={animExporting}
+            expanded={animExpanded}
+            onToggleExpanded={() => (animExpanded = !animExpanded)}
+            onOutputFolderChange={(v) => {
+              animProject = { ...animProject, outputFolder: v }
+            }}
+            onProjectNameChange={(v) => {
+              animProject = { ...animProject, name: v }
+            }}
+            onFpsChange={(v) => {
+              animProject = { ...animProject, fps: v }
+            }}
+            onDurationChange={(v) => {
+              animProject = { ...animProject, duration_s: v }
+              animPlayhead = Math.min(animPlayhead, v)
+            }}
+            onExportFrameChange={(frame) => {
+              animProject = { ...animProject, exportFrame: frame }
+            }}
+            onCaptureKeyframe={onAnimCaptureKeyframe}
+            onSaveProject={onAnimSaveProject}
+            onLoadProject={onAnimLoadProject}
+            onExportVideo={onAnimExportVideo}
+          />
+        {/if}
+        </div>
+        </div>
       {:else}
         <div class="flex-1 p-2">
-          <Empty message="Load a PDB file to get started" className="text-sm h-full" />
+          <Empty
+            message="Use Open ▾ to load a structure, animation, or saved view"
+            className="text-sm h-full"
+          />
         </div>
       {/if}
     </div>
   </div>
   <!-- end inner row -->
 
-  <!-- Bottom toolbar -->
+  {#if animateMode}
+    <AnimationTimeline
+      playhead={animPlayhead}
+      duration_s={animProject.duration_s}
+      fps={animProject.fps}
+      playing={animPlaying}
+      exporting={animExporting}
+      keyframes={animProject.keyframes}
+      viewTracks={animProject.viewTracks ?? []}
+      liveViews={views}
+      onPlayPause={toggleAnimPlayPause}
+      onStop={onAnimStop}
+      onScrub={onAnimScrub}
+      onGoToKeyframe={onAnimGoToKeyframe}
+      onMoveKeyframe={onAnimMoveKeyframe}
+      onRenameKeyframe={onAnimRenameKeyframe}
+      onDuplicateKeyframe={onAnimDuplicateKeyframe}
+      onDeleteKeyframe={onAnimDeleteKeyframe}
+      onEasingChange={onAnimEasingChange}
+      onCaptureKeyframe={onAnimCaptureKeyframe}
+      onClose={toggleAnimateMode}
+    />
+  {/if}
+
+  {#if overlayFadeEditor}
+    {@const fadeItem =
+      overlayFadeEditor.kind === 'label'
+        ? atomLabels.find((l) => l.id === overlayFadeEditor.id)
+        : overlayFadeEditor.kind === 'meas'
+          ? measurements.find((m) => m.id === overlayFadeEditor.id)
+          : views.find((v) => v.id === overlayFadeEditor.id)}
+    {#if fadeItem}
+      <AnimationFadeEditor
+        itemLabel={overlayFadeEditor.kind === 'label'
+          ? fadeItem.text
+          : overlayFadeEditor.kind === 'meas'
+            ? measurementLabel(/** @type {typeof measurements[0]} */ (fadeItem))
+            : viewDisplayLabel(/** @type {typeof views[0]} */ (fadeItem))}
+        fadeEnabled={fadeItem.fadeEnabled}
+        fadeIn_s={fadeItem.fadeIn_s}
+        fadeOut_s={fadeItem.fadeOut_s}
+        fadeInEasing={fadeItem.fadeInEasing}
+        fadeOutEasing={fadeItem.fadeOutEasing}
+        fadeInBezier={fadeItem.fadeInBezier ?? null}
+        fadeOutBezier={fadeItem.fadeOutBezier ?? null}
+        onChange={onOverlayFadeChange}
+        onClose={() => (overlayFadeEditor = null)}
+      />
+    {/if}
+  {/if}
+
+  <!-- Bottom toolbar: single row + horizontal scroll when cramped -->
   <div
-    class="relative flex h-8 shrink-0 items-center gap-1 border-t border-neutral-200 bg-white px-2 text-[11px] dark:border-neutral-800 dark:bg-neutral-950"
+    class="viz-bottom-toolbar relative flex h-8 shrink-0 items-center gap-1 overflow-x-auto overflow-y-hidden border-t border-neutral-200 bg-white px-2 text-[11px] dark:border-neutral-800 dark:bg-neutral-950"
+    onscroll={closeAllToolbarMenus}
   >
-    <!-- Open file -->
-    <button
-      type="button"
-      class="flex items-center gap-1 rounded border border-neutral-300 bg-neutral-100 px-2 py-0.5 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 active:translate-y-0.5 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
-      onclick={onOpenPdb}
-      disabled={loadingPDB}
-      title="Open PDB/CIF (auto-uses companion .prmtop/.psf in the same folder when found)"
-    >
-      <svg viewBox="0 0 16 16" class="size-3 fill-current" aria-hidden="true">
-        <path
-          d="M1.5 3A1.5 1.5 0 0 0 0 4.5v8A1.5 1.5 0 0 0 1.5 14h13a1.5 1.5 0 0 0 1.5-1.5v-6A1.5 1.5 0 0 0 14.5 5H7.707l-1.5-1.5H1.5z"
-        />
-      </svg>
-      Open
-    </button>
-    <button
-      type="button"
-      class="flex items-center gap-1 rounded border border-neutral-300 bg-neutral-100 px-2 py-0.5 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 active:translate-y-0.5 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
-      onclick={onOpenWithTopology}
-      disabled={loadingPDB}
-      title="Open topology (.prmtop/.psf) then a coordinate PDB"
-    >
-      Open with topology…
-    </button>
+    <!-- Open ▾ (structure / topology / animation / view) -->
+    <div class="relative shrink-0">
+      <button
+        type="button"
+        bind:this={openMenuBtnEl}
+        class="flex h-[22px] items-center gap-1 whitespace-nowrap rounded border border-neutral-300 bg-neutral-100 px-2 py-0 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
+        disabled={loadingPDB}
+        onpointerenter={() => {
+          clearTimeout(_openHoverTimer)
+          if (!loadingPDB) openMenuOpen = true
+        }}
+        onpointerleave={() => {
+          _openHoverTimer = setTimeout(() => (openMenuOpen = false), 280)
+        }}
+        onclick={() => {
+          selectMenuOpen = false
+          editMenuOpen = false
+          toolsMenuOpen = false
+          openMenuOpen = !openMenuOpen
+        }}
+        title="Open structure, animation, or saved view"
+      >
+        <!-- Lucide folder-open (stroke) -->
+        <svg
+          viewBox="0 0 24 24"
+          class="size-3.5 shrink-0"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path
+            d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"
+          />
+        </svg>
+        Open
+        <svg viewBox="0 0 10 6" class="size-2 fill-current opacity-60" aria-hidden="true"
+          ><path d="M0 0l5 6 5-6z" /></svg
+        >
+      </button>
+      {#if openMenuOpen}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="min-w-48 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-[11px] shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
+          style={toolbarMenuFixedStyle(openMenuBtnEl)}
+          onpointerenter={() => clearTimeout(_openHoverTimer)}
+          onpointerleave={() => {
+            _openHoverTimer = setTimeout(() => (openMenuOpen = false), 280)
+          }}
+        >
+          <button
+            type="button"
+            class="w-full px-3 py-1.5 text-left text-neutral-700 transition-colors hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800"
+            onclick={() => {
+              openMenuOpen = false
+              onOpenPdb()
+            }}
+            title="Open PDB/CIF (auto-uses companion .prmtop/.psf in the same folder when found)"
+          >
+            Structure (PDB / CIF)…
+          </button>
+          <button
+            type="button"
+            class="w-full px-3 py-1.5 text-left text-neutral-700 transition-colors hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800"
+            onclick={() => {
+              openMenuOpen = false
+              onOpenWithTopology()
+            }}
+            title="Open topology (.prmtop/.psf) then a coordinate PDB"
+          >
+            With topology…
+          </button>
+          <div class="my-0.5 border-t border-neutral-200 dark:border-neutral-800"></div>
+          <button
+            type="button"
+            class="w-full px-3 py-1.5 text-left text-neutral-700 transition-colors hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800"
+            onclick={() => {
+              openMenuOpen = false
+              onAnimLoadProject()
+            }}
+            title="Load a saved animation project (its structure/topology is loaded automatically)"
+          >
+            Animation…
+          </button>
+          <button
+            type="button"
+            class="w-full px-3 py-1.5 text-left text-neutral-700 transition-colors hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800"
+            onclick={() => {
+              openMenuOpen = false
+              onLoadViewpoint()
+            }}
+            title="Open a saved view (structure, representations, materials, lights, and camera are restored)"
+          >
+            View…
+          </button>
+        </div>
+      {/if}
+    </div>
     {#if filePath && !loadingPDB}
-      <span class="max-w-36 truncate font-mono text-neutral-500 dark:text-neutral-400" title={filePath}>
+      <span
+        class="max-w-36 shrink-0 truncate font-mono text-neutral-500 dark:text-neutral-400"
+        title={filePath}
+      >
         {filePath.split(/[/\\]/).at(-1)}
       </span>
       {#if loadBondStatus}
         <span
-          class="max-w-48 truncate text-[10px] text-sky-600 dark:text-sky-400"
+          class="max-w-48 shrink-0 truncate text-[10px] text-sky-600 dark:text-sky-400"
           title={loadBondStatus}
           >{loadBondStatus}</span
         >
@@ -3398,7 +4661,7 @@
 
     <!-- PDB download -->
     <form
-      class="flex items-center gap-0.5"
+      class="flex h-[22px] shrink-0 items-center gap-0.5"
       onsubmit={(e) => {
         e.preventDefault()
         onFetchPDB()
@@ -3408,7 +4671,7 @@
         type="text"
         placeholder="1CRN"
         maxlength="4"
-        class="w-14 rounded border border-neutral-300 bg-neutral-100 px-1.5 py-0.5 font-mono text-[11px] text-neutral-800 uppercase outline-none focus:border-neutral-500 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
+        class="h-[22px] w-14 rounded border border-neutral-300 bg-neutral-100 px-1.5 py-0 font-mono text-[11px] text-neutral-800 uppercase outline-none focus:border-neutral-500 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
         bind:value={pdbId}
         oninput={(e) => {
           if (/** @type {HTMLInputElement} */ (e.target).value.length > 4)
@@ -3419,19 +4682,20 @@
       />
       <button
         type="submit"
-        class="rounded border border-neutral-300 bg-neutral-100 px-1.5 py-0.5 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-500 dark:hover:bg-neutral-800"
+        class="flex h-[22px] items-center whitespace-nowrap rounded border border-neutral-300 bg-neutral-100 px-1.5 py-0 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-500 dark:hover:bg-neutral-800"
         disabled={!isPdbIdValid || loadingPDB}
         title="Download PDB from RCSB">↓ PDB</button
       >
     </form>
 
-    <div class="h-4 w-px bg-neutral-300 dark:bg-neutral-700"></div>
+    <div class="h-4 w-px shrink-0 bg-neutral-300 dark:bg-neutral-700"></div>
 
     <!-- Edit Mode: Select dropdown (hover to open, no backdrop) -->
-    <div class="relative">
+    <div class="relative shrink-0">
       <button
         type="button"
-        class="flex items-center gap-1 rounded border px-2 py-0.5 text-[11px] transition-colors disabled:opacity-40
+        bind:this={selectMenuBtnEl}
+        class="flex h-[22px] items-center gap-1 whitespace-nowrap rounded border px-2 py-0 text-[11px] transition-colors disabled:opacity-40
           {editMode
           ? 'border-orange-500/60 bg-orange-500/15 text-orange-300 hover:bg-orange-500/25'
           : 'border-neutral-300 bg-neutral-100 text-neutral-600 hover:border-neutral-400 hover:bg-neutral-200 hover:text-neutral-800 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:border-neutral-600 dark:hover:bg-neutral-800 dark:hover:text-neutral-200'}"
@@ -3442,7 +4706,12 @@
         onpointerleave={() => {
           _selectHoverTimer = setTimeout(() => (selectMenuOpen = false), 280)
         }}
-        onclick={() => (selectMenuOpen = !selectMenuOpen)}
+        onclick={() => {
+          openMenuOpen = false
+          editMenuOpen = false
+          toolsMenuOpen = false
+          selectMenuOpen = !selectMenuOpen
+        }}
         disabled={!filePath}
         title="Interactive selection mode"
       >
@@ -3454,7 +4723,8 @@
       {#if selectMenuOpen}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
-          class="absolute bottom-full left-0 z-50 mb-0.5 min-w-32 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
+          class="min-w-32 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
+          style={toolbarMenuFixedStyle(selectMenuBtnEl)}
           onpointerenter={() => clearTimeout(_selectHoverTimer)}
           onpointerleave={() => {
             _selectHoverTimer = setTimeout(() => (selectMenuOpen = false), 280)
@@ -3519,10 +4789,11 @@
     </div>
 
     <!-- Transform ▾ (includes Edit structure operations, hover to open) -->
-    <div class="relative">
+    <div class="relative shrink-0">
       <button
         type="button"
-        class="flex items-center gap-0.5 rounded border border-neutral-300 bg-neutral-100 px-2 py-0.5 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
+        bind:this={editMenuBtnEl}
+        class="flex h-[22px] items-center gap-0.5 whitespace-nowrap rounded border border-neutral-300 bg-neutral-100 px-2 py-0 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
         onpointerenter={() => {
           clearTimeout(_editMenuHoverTimer)
           if (filePath && !editBusy) editMenuOpen = true
@@ -3530,14 +4801,20 @@
         onpointerleave={() => {
           _editMenuHoverTimer = setTimeout(() => (editMenuOpen = false), 280)
         }}
-        onclick={() => (editMenuOpen = !editMenuOpen)}
+        onclick={() => {
+          openMenuOpen = false
+          selectMenuOpen = false
+          toolsMenuOpen = false
+          editMenuOpen = !editMenuOpen
+        }}
         disabled={!filePath || editBusy}
         title="Transform / Edit structure">Transform ▾</button
       >
       {#if editMenuOpen}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
-          class="absolute bottom-full left-0 z-40 mb-0.5 min-w-44 overflow-hidden rounded border border-neutral-200 bg-white py-1 text-[11px] shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
+          class="min-w-44 overflow-hidden rounded border border-neutral-200 bg-white py-1 text-[11px] shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
+          style={toolbarMenuFixedStyle(editMenuBtnEl)}
           onpointerenter={() => clearTimeout(_editMenuHoverTimer)}
           onpointerleave={() => {
             _editMenuHoverTimer = setTimeout(() => (editMenuOpen = false), 280)
@@ -3601,10 +4878,11 @@
     </div>
 
     <!-- Tools dropdown (MemPro + Packmol) -->
-    <div class="relative">
+    <div class="relative shrink-0">
       <button
         type="button"
-        class="rounded border border-neutral-300 bg-neutral-100 px-2 py-0.5 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
+        bind:this={toolsMenuBtnEl}
+        class="flex h-[22px] items-center whitespace-nowrap rounded border border-neutral-300 bg-neutral-100 px-2 py-0 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
         disabled={!filePath || editBusy}
         onpointerenter={() => {
           clearTimeout(_toolsMenuHoverTimer)
@@ -3614,6 +4892,7 @@
           _toolsMenuHoverTimer = setTimeout(() => (toolsMenuOpen = false), 280)
         }}
         onclick={() => {
+          openMenuOpen = false
           selectMenuOpen = false
           editMenuOpen = false
           toolsMenuOpen = !toolsMenuOpen
@@ -3623,7 +4902,8 @@
       {#if toolsMenuOpen}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
-          class="absolute bottom-full left-0 z-40 mb-0.5 min-w-[10rem] overflow-hidden rounded border border-neutral-200 bg-white py-1 text-[11px] shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
+          class="min-w-[10rem] overflow-hidden rounded border border-neutral-200 bg-white py-1 text-[11px] shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
+          style={toolbarMenuFixedStyle(toolsMenuBtnEl)}
           onpointerenter={() => clearTimeout(_toolsMenuHoverTimer)}
           onpointerleave={() => {
             _toolsMenuHoverTimer = setTimeout(() => (toolsMenuOpen = false), 280)
@@ -3639,16 +4919,27 @@
             class="w-full px-3 py-1 text-left hover:bg-neutral-100 dark:hover:bg-neutral-800"
             onclick={() => openPackmolDialog()}>Packmol hydration</button
           >
+          <button
+            type="button"
+            class="w-full px-3 py-1 text-left hover:bg-neutral-100 disabled:opacity-40 dark:hover:bg-neutral-800 {animateMode
+              ? 'bg-yellow-500/10 text-yellow-700 dark:text-yellow-300'
+              : ''}"
+            disabled={!structure || animExporting}
+            onclick={toggleAnimateMode}
+            title="Keyframe animation: capture views and export video"
+          >
+            {animateMode ? 'Animate (on)' : 'Animate'}
+          </button>
         </div>
       {/if}
     </div>
 
-    <div class="h-4 w-px bg-neutral-300 dark:bg-neutral-700"></div>
+    <div class="h-4 w-px shrink-0 bg-neutral-300 dark:bg-neutral-700"></div>
 
     <!-- Save PDB -->
     <button
       type="button"
-      class="rounded border border-neutral-300 bg-neutral-100 px-2 py-0.5 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
+      class="flex h-[22px] shrink-0 items-center whitespace-nowrap rounded border border-neutral-300 bg-neutral-100 px-2 py-0 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
       onclick={onSavePdb}
       disabled={!filePath}
       title="Save current PDB file">Save PDB</button
@@ -3657,18 +4948,18 @@
     <!-- Save Image -->
     <button
       type="button"
-      class="rounded border border-neutral-300 bg-neutral-100 px-2 py-0.5 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
+      class="flex h-[22px] shrink-0 items-center whitespace-nowrap rounded border border-neutral-300 bg-neutral-100 px-2 py-0 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
       onclick={onSaveImage}
       disabled={!structure}
       title="Save viewport as PNG image">Save Image</button
     >
 
-    <div class="flex-1"></div>
+    <div class="min-w-3 flex-1 shrink"></div>
 
     <!-- Clear workspace -->
     <button
       type="button"
-      class="rounded border border-red-300 bg-red-50 px-2 py-0.5 text-red-600 transition-colors hover:border-red-400 hover:bg-red-100 hover:text-red-700 disabled:opacity-40 dark:border-red-900/40 dark:bg-neutral-900 dark:text-red-400/70 dark:hover:border-red-700/60 dark:hover:bg-red-900/20 dark:hover:text-red-300"
+      class="flex h-[22px] shrink-0 items-center whitespace-nowrap rounded border border-red-300 bg-red-50 px-2 py-0 text-red-600 transition-colors hover:border-red-400 hover:bg-red-100 hover:text-red-700 disabled:opacity-40 dark:border-red-900/40 dark:bg-neutral-900 dark:text-red-400/70 dark:hover:border-red-700/60 dark:hover:bg-red-900/20 dark:hover:text-red-300"
       onclick={clearWorkspace}
       disabled={!structure}
       title="Clear workspace">Clear</button

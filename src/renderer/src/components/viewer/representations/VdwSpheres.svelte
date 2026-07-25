@@ -203,6 +203,22 @@
     mesh.instanceColor.needsUpdate = true
     invalidate()
   })
+
+  $effect(() => {
+    const mesh = untrack(() => meshRef)
+    const outlineMesh = untrack(() => outlineMeshRef)
+    const op = opacity
+    for (const m of [mesh, outlineMesh]) {
+      if (!m) continue
+      const mat = m.material
+      if (Array.isArray(mat)) continue
+      mat.opacity = op
+      mat.transparent = op < 1
+      if ('depthWrite' in mat) mat.depthWrite = op >= 1
+      mat.needsUpdate = true
+    }
+    invalidate()
+  })
 </script>
 
 {#if outlineMeshRef}
