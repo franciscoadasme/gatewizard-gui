@@ -2,15 +2,21 @@
   import { mainViewerCamera } from './CameraRig.svelte'
   import { worldToScreen } from '../../lib/viewer/picking.js'
   import { measureDistance, measureAngle, measureDihedral } from '../../lib/viewer/measure.js'
+  import {
+    labelBackgroundCss,
+    labelPadding,
+    labelRadius,
+    labelScreenPlacement
+  } from '../../lib/viewer/labelStyle.js'
 
   /**
    * @typedef {{ x:number, y:number, z:number }} Pos
-   * @typedef {{ id:string, type:'distance'|'angle'|'dihedral', atoms:Pos[] }} Measurement
-   * @typedef {{ id:string, atom:Pos, text:string }} AtomLabel
+   * @typedef {{ id:string, type:'distance'|'angle'|'dihedral', atoms:Pos[], visible?: boolean, color?: string, size?: number, lineWidth?: number }} Measurement
+   * @typedef {{ id:string, atom:Pos, text:string, visible?: boolean, size?: number, color?: string, background?: string, backgroundOpacity?: number, padding?: number, radius?: number, offsetY?: number, liftDir?: string }} AtomLabel
    */
 
-  /** @type {{ measurements: Measurement[], picks: Pos[], atomLabels: AtomLabel[], width: number, height: number }} */
-  let { measurements = [], picks = [], atomLabels = [], width = 0, height = 0 } = $props()
+  /** @type {{ measurements?: Measurement[], picks?: Pos[], atomLabels?: AtomLabel[], width?: number, height?: number }} */
+  let props = $props()
 
   /** Projected display state — updated every animation frame while content exists. */
   let proj = $state({ ms: [], pk: [], ls: [] })
@@ -22,15 +28,37 @@
     return `${measureDihedral(m.atoms[0], m.atoms[1], m.atoms[2], m.atoms[3]).toFixed(1)}°`
   }
 
+  /** Read props each call so playback/export state is never stale in the RAF loop. */
   function _update() {
     const cam = mainViewerCamera.current
-    const w = width
-    const h = height
+    const w = props.width ?? 0
+    const h = props.height ?? 0
     if (!cam || !w || !h) return
+
+    const picks = props.picks ?? []
+    const atomLabels = (props.atomLabels ?? []).filter((l) => {
+      if (l.visible === false) return false
+      const op = typeof l.opacity === 'number' ? l.opacity : 1
+      return op > 0.001
+    })
+    const measurements = (props.measurements ?? []).filter((m) => {
+      if (m.visible === false) return false
+      const op = typeof m.opacity === 'number' ? m.opacity : 1
+      return op > 0.001
+    })
+
+    if (!atomLabels.length && !measurements.length && !picks.length) {
+      proj = { ms: [], pk: [], ls: [] }
+      return
+    }
 
     proj = {
       pk: picks.map((a) => ({ ...worldToScreen(a, cam, w, h), atom: a })),
-      ls: atomLabels.map((l) => ({ ...worldToScreen(l.atom, cam, w, h), ...l })),
+      ls: atomLabels.map((l) => ({
+        ...worldToScreen(l.atom, cam, w, h),
+        ...l,
+        opacity: typeof l.opacity === 'number' ? l.opacity : 1
+      })),
       ms: measurements.map((m) => {
         const pts = m.atoms.map((a) => worldToScreen(a, cam, w, h))
         const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length
@@ -43,19 +71,14 @@
           valueStr: _valueStr(m),
           color: m.color ?? '#facc15',
           size: m.size ?? 11,
-          lineWidth: m.lineWidth ?? 1.5
+          lineWidth: m.lineWidth ?? 1.5,
+          opacity: typeof m.opacity === 'number' ? m.opacity : 1
         }
       })
     }
   }
 
   $effect(() => {
-    const hasContent = measurements.length > 0 || picks.length > 0 || atomLabels.length > 0
-    if (!hasContent) {
-      cancelAnimationFrame(rafId)
-      proj = { ms: [], pk: [], ls: [] }
-      return
-    }
     function loop() {
       _update()
       rafId = requestAnimationFrame(loop)
@@ -93,12 +116,12 @@
           stroke={m.color}
           stroke-width={m.lineWidth}
           stroke-dasharray="5 3"
-          opacity="0.9"
+          opacity={(m.opacity ?? 1) * 0.9}
         />
       {/each}
       <!-- Dots at each picked atom -->
       {#each m.pts as p}
-        <circle cx={p.x} cy={p.y} r="4" fill={m.color} opacity="0.8" />
+        <circle cx={p.x} cy={p.y} r="4" fill={m.color} opacity={(m.opacity ?? 1) * 0.8} />
       {/each}
       <!-- Value label with dark background -->
       {@const lw = Math.round(m.valueStr.length * m.size * 0.64 + 10)}
@@ -108,7 +131,7 @@
         width={lw}
         height={m.size + 6}
         rx="3"
-        fill="rgba(0,0,0,0.72)"
+        fill="rgba(0,0,0,{(m.opacity ?? 1) * 0.72})"
       />
       <text
         x={m.cx}
@@ -116,16 +139,20 @@
         text-anchor="middle"
         fill={m.color}
         font-size={m.size}
-        font-family="monospace">{m.valueStr}</text
+        font-family="monospace"
+        opacity={m.opacity ?? 1}>{m.valueStr}</text
       >
     {/each}
   </svg>
 
   <!-- Atom labels as HTML divs (CSS-positioned over the canvas) -->
   {#each proj.ls as l (l.id)}
+    {@const pad = labelPadding(l)}
+    {@const rad = labelRadius(l)}
+    {@const place = labelScreenPlacement(l)}
     <div
-      class="absolute -translate-x-1/2 rounded bg-black/75 px-1.5 py-0.5 font-mono"
-      style="left:{l.x}px;top:{l.y - 22}px;font-size:{l.size ?? 12}px;color:{l.color ?? '#ffffff'}"
+      class="absolute font-mono leading-none"
+      style="left:{l.x + place.left}px;top:{l.y + place.top}px;transform:{place.transform};font-size:{l.size ?? 12}px;color:{l.color ?? '#ffffff'};background:{labelBackgroundCss(l)};padding:{Math.max(1, Math.round(pad * 0.45))}px {pad}px;border-radius:{rad}px;opacity:{l.opacity ?? 1}"
     >
       {l.text}
     </div>

@@ -305,4 +305,24 @@
   .gw-chip-idle {
     @apply border-l-[5px] border-l-neutral-400 dark:border-l-neutral-600;
   }
+
+  /* Visualize bottom toolbar: keep one row; thin horizontal scrollbar when cramped */
+  .viz-bottom-toolbar {
+    flex-wrap: nowrap;
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-neutral-600) transparent;
+  }
+
+  .viz-bottom-toolbar::-webkit-scrollbar {
+    height: 4px;
+  }
+
+  .viz-bottom-toolbar::-webkit-scrollbar-thumb {
+    background: var(--color-neutral-600);
+    border-radius: 999px;
+  }
+
+  .viz-bottom-toolbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
 }
