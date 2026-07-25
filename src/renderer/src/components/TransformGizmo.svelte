@@ -468,7 +468,7 @@
     {/if}
 
     <!-- ══════════════════════════════════════════════════════════════════ -->
-    <!--  3D ROTATION RINGS  (Blender-style projected arcs)                -->
+    <!--  3D ROTATION RINGS                                                -->
     <!--                                                                   -->
     <!--  Each ring is sampled as N points on a 3D circle, projected to   -->
     <!--  screen.  Front-facing half = solid bright arc; back = faint      -->

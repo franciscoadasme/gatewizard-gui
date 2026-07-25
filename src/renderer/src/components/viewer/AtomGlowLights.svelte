@@ -46,6 +46,8 @@
   let groupRef = $state(/** @type {Group | null} */ (null))
   /** @type {PointLight[]} */
   let lights = []
+  /** @type {Atom[]} */
+  let pickedAtoms = []
   let debouncedMaxLights = $state(0)
   let debounceInitialized = false
 
@@ -72,22 +74,29 @@
       light.dispose()
     }
     lights = []
+    pickedAtoms = []
   }
 
-  /** Rebuild bulb positions when pool / cap / filter changes — not on every power slider tick. */
+  /** Rebuild bulb positions when pool / cap / filter changes — not on color or power tweaks. */
   $effect(() => {
     const group = groupRef
-    if (!group || !enabled || !getColor) {
-      disposeLights()
-      return
-    }
-
     const filter = atomFilter
     const hi = highlightIndices
     const atomList = atoms
     const requestedMax = maxLights
     const max = debouncedMaxLights || clampGlowMaxLights(requestedMax)
+    const on = enabled
+
+    if (!group || !on) {
+      disposeLights()
+      return
+    }
+
     const colorFn = untrack(() => getColor)
+    if (!colorFn) {
+      disposeLights()
+      return
+    }
 
     const picked = selectGlowLightAtoms(atomList, {
       filter,
@@ -109,6 +118,7 @@
 
     const gen = ++buildGeneration
     disposeLights()
+    pickedAtoms = picked
 
     if (picked.length === 0) {
       invalidate()
@@ -116,7 +126,7 @@
     }
 
     beginViewerBusy(
-      picked.length > 24 ? `Placing ${picked.length} glow bulbs…` : 'Updating glow lights…'
+      picked.length > 24 ? 'Preparing glow lighting…' : 'Updating glow lights…'
     )
     let buildBusy = true
 
@@ -166,6 +176,16 @@
       disposeLights()
       finishBusy()
     }
+  })
+
+  /** Live-tune bulb color when the scheme changes (no rebuild). */
+  $effect(() => {
+    const colorFn = getColor
+    if (!colorFn || !lights.length || pickedAtoms.length !== lights.length) return
+    for (let i = 0; i < lights.length; i++) {
+      lights[i].color.copy(colorFn(pickedAtoms[i]))
+    }
+    invalidate()
   })
 
   /** Live-tune existing bulbs without rebuilding (cheap). */
