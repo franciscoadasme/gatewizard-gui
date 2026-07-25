@@ -13,7 +13,11 @@
     VdwSpheres,
     HydrationBoxOverlay
   } from '../components/viewer'
-  import { mainViewerCamera, mainViewerFramingAnchor } from '../components/viewer/CameraRig.svelte'
+  import {
+    mainViewerCamera,
+    mainViewerFramingAnchor,
+    mainViewerInvalidate
+  } from '../components/viewer/CameraRig.svelte'
   import { mainViewerControls } from '../components/viewer/Canvas.svelte'
   import SaveIcon from '../components/icons/Save.svelte'
   import LoadIcon from '../components/icons/Load.svelte'
@@ -1282,6 +1286,15 @@
     gearOpen = null
   }
 
+  /** True when at least one label is visible (master toggle → Hide all). */
+  const labelsAnyVisible = $derived(atomLabels.some((l) => l.visible !== false))
+
+  function setAllLabelsVisible(visible) {
+    if (!atomLabels.length) return
+    atomLabels = atomLabels.map((l) => ({ ...l, visible }))
+    logEvent('detail', 'view', visible ? 'Show all labels' : 'Hide all labels', `${atomLabels.length}`)
+  }
+
   function measurementLabel(m) {
     if (m.type === 'distance') return `${measureDistance(m.atoms[0], m.atoms[1]).toFixed(2)} Å`
     if (m.type === 'angle') return `${measureAngle(m.atoms[0], m.atoms[1], m.atoms[2]).toFixed(1)}°`
@@ -2239,6 +2252,29 @@
     previewPositions = newPos
   }
 
+  /**
+   * Enable DOF and lock focus on an atom (tracks while orbiting).
+   * @param {{ x: number, y: number, z: number, name?: string }} atom
+   */
+  function focusDofOnAtom(atom) {
+    if (!atom) return
+    const cam = mainViewerCamera.current
+    const dist = cam
+      ? Math.max(
+          0.5,
+          Math.hypot(cam.position.x - atom.x, cam.position.y - atom.y, cam.position.z - atom.z)
+        )
+      : (viewerSettings.dof?.focusDistance ?? 80)
+    viewerSettings.dof = {
+      ...(viewerSettings.dof ?? { enabled: false, focusDistance: 80, focusRange: 20, bokehScale: 2.5, focusTarget: null }),
+      enabled: true,
+      focusDistance: dist,
+      focusTarget: { x: atom.x, y: atom.y, z: atom.z }
+    }
+    mainViewerInvalidate.fn()
+    logEvent('detail', 'view', 'DOF focus', atom.name ?? 'atom')
+  }
+
   // ── Radial context menu helpers ──────────────────────────────────────
   /** Build radial menu items for the given atom context. */
   function _buildRadialItems(atom, ctxGroupIndices) {
@@ -2344,22 +2380,34 @@
         }
       })
 
-      // Slot 5 – bottom-left: Transform (opens dialog with selection)
+      // Slot 5 – bottom-left: Transform / Focus here
       items.push({
         slot: 5,
-        label: 'Transform…',
+        label: 'Camera…',
         color: '#818cf8',
         icon: '<path d="M1.5 1a.5.5 0 0 0-.5.5v4a.5.5 0 0 1-1 0v-4A1.5 1.5 0 0 1 1.5 0h4a.5.5 0 0 1 0 1h-4zM10 .5a.5.5 0 0 1 .5-.5h4A1.5 1.5 0 0 1 16 1.5v4a.5.5 0 0 1-1 0v-4a.5.5 0 0 0-.5-.5h-4a.5.5 0 0 1-.5-.5zM.5 10a.5.5 0 0 1 .5.5v4a.5.5 0 0 0 .5.5h4a.5.5 0 0 1 0 1h-4A1.5 1.5 0 0 1 0 14.5v-4a.5.5 0 0 1 .5-.5zm15 0a.5.5 0 0 1 .5.5v4a1.5 1.5 0 0 1-1.5 1.5h-4a.5.5 0 0 1 0-1h4a.5.5 0 0 0 .5-.5v-4a.5.5 0 0 1 .5-.5z"/><path d="M3 6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zm1 0v2h2V6zm5-1a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1zm0 1h2v2H9z"/>',
-        action: () => {
-          ctxMenu = null
-          previewPositions = null
-          const selStr = _selStringFromEditSelection()
-          if (selStr) {
-            tfSel = selStr
-            tfAlignPrimSel = selStr
+        submenu: [
+          {
+            text: 'Transform…',
+            action: () => {
+              ctxMenu = null
+              previewPositions = null
+              const selStr = _selStringFromEditSelection()
+              if (selStr) {
+                tfSel = selStr
+                tfAlignPrimSel = selStr
+              }
+              dlgTransform?.showModal()
+            }
+          },
+          {
+            text: 'Focus here (DOF)',
+            action: () => {
+              focusDofOnAtom(atom)
+              ctxMenu = null
+            }
           }
-          dlgTransform?.showModal()
-        }
+        ]
       })
     }
 
@@ -2378,7 +2426,7 @@
       }))
     })
 
-    // Slot 7 – top-left: Toggle gizmo (only when in edit mode with selection)
+    // Slot 7 – top-left: Move gizmo (edit selection) or Focus here (DOF)
     if (hasEditSel) {
       items.push({
         slot: 7,
@@ -2389,6 +2437,18 @@
         action: () => {
           if (showGizmo) commitGizmoPreviewIfAny()
           showGizmo = !showGizmo
+          ctxMenu = null
+        }
+      })
+    } else {
+      items.push({
+        slot: 7,
+        label: 'Focus here',
+        color: viewerSettings.dof?.enabled ? '#facc15' : '#94a3b8',
+        bgColor: viewerSettings.dof?.enabled ? 'rgba(60,50,0,0.96)' : undefined,
+        icon: '<path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1m0 1.5a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11m0 2.5a3 3 0 1 0 0 6 3 3 0 0 0 0-6m0 1.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3"/><path d="M8 0v2M8 14v2M0 8h2M14 8h2"/>',
+        action: () => {
+          focusDofOnAtom(atom)
           ctxMenu = null
         }
       })
@@ -3144,7 +3204,7 @@
           logEvent('info', 'view', 'Exported animation frames (no ffmpeg)', framesDir)
           animExportPhase = 'Done (frames only)'
           alert(
-            `FFmpeg was not found on PATH.\n\nPNG frames were saved to:\n${framesDir}\n\nInstall FFmpeg to encode ${formatMeta?.label ?? exportFormat.toUpperCase()} from the app.`
+            `FFmpeg was not found in the GateWizard runtime (or on PATH).\n\nPNG frames were saved to:\n${framesDir}\n\nRestart the app to finish runtime setup, or install FFmpeg, then retry encoding ${formatMeta?.label ?? exportFormat.toUpperCase()}.`
           )
         }
       }
@@ -3877,6 +3937,43 @@
             Sun,
             'size-4 stroke-2 stroke-neutral-800 dark:stroke-white'
           )}
+          <button
+            type="button"
+            class="flex size-7 items-center justify-center rounded-lg border transition-colors
+              {viewerSettings.dof?.enabled
+                ? 'border-yellow-500 bg-yellow-500/10 text-yellow-400'
+                : 'border-neutral-200 bg-neutral-100 text-neutral-600 hover:border-neutral-300 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400'}"
+            title={selectedAtom || editHoveredAtom
+              ? 'Focus depth of field on selected / hovered atom'
+              : 'Enable depth of field (pick an atom via right-click → Focus here)'}
+            aria-label="Depth of field focus"
+            disabled={!structure}
+            onclick={() => {
+              const a = selectedAtom ?? editHoveredAtom
+              if (a) {
+                focusDofOnAtom(a)
+                return
+              }
+              viewerSettings.dof = {
+                ...(viewerSettings.dof ?? {
+                  enabled: false,
+                  focusDistance: 80,
+                  focusRange: 20,
+                  bokehScale: 2.5,
+                  focusTarget: null
+                }),
+                enabled: !viewerSettings.dof?.enabled
+              }
+              mainViewerInvalidate.fn()
+            }}
+          >
+            <svg viewBox="0 0 16 16" class="size-4" fill="currentColor" aria-hidden="true">
+              <path
+                d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13m0 1.5a5 5 0 1 1 0 10 5 5 0 0 1 0-10m0 2a3 3 0 1 0 0 6 3 3 0 0 0 0-6m0 1.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3"
+              />
+              <path d="M8 0v2M8 14v2M0 8h2M14 8h2" stroke="currentColor" stroke-width="1.2" fill="none" />
+            </svg>
+          </button>
           {@render toolbarBtn(
             'Save view…',
             onSaveViewpoint,
@@ -4207,6 +4304,41 @@
               <span class="text-xs text-neutral-500">{labelsExpanded ? '▾' : '▸'}</span>
             </button>
             {#if atomLabels.length > 0}
+              <button
+                type="button"
+                onclick={() => setAllLabelsVisible(!labelsAnyVisible)}
+                class="px-1.5 py-1.5 text-neutral-500 hover:text-neutral-200"
+                title={labelsAnyVisible ? 'Hide all labels' : 'Show all labels'}
+              >
+                {#if labelsAnyVisible}
+                  <svg
+                    viewBox="0 0 16 10"
+                    class="size-3"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M1,5 Q8,-1.5 15,5 Q8,11.5 1,5" />
+                    <circle cx="8" cy="5" r="2.5" fill="currentColor" stroke="none" />
+                  </svg>
+                {:else}
+                  <svg
+                    viewBox="0 0 16 10"
+                    class="size-3 opacity-40"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M1,5 Q8,-1.5 15,5 Q8,11.5 1,5" />
+                    <circle cx="8" cy="5" r="2.5" fill="currentColor" stroke="none" />
+                    <line x1="2" y1="9" x2="14" y2="1" />
+                  </svg>
+                {/if}
+              </button>
               <button
                 onclick={clearAllLabels}
                 class="px-2 py-1.5 text-xs text-neutral-500 hover:text-red-400"

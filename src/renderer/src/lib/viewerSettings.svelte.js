@@ -8,6 +8,15 @@ import { appSettings } from './appSettings.svelte.js'
 /** @typedef {'dark' | 'light'} BrandTheme */
 /** @typedef {'theme' | 'custom'} BackgroundMode */
 /** @typedef {{ enabled: boolean, position: [number, number, number], intensity: number }} DirectionalLightConfig */
+/**
+ * @typedef {{
+ *   enabled: boolean,
+ *   focusDistance: number,
+ *   focusRange: number,
+ *   bokehScale: number,
+ *   focusTarget: { x: number, y: number, z: number } | null
+ * }} DepthOfFieldConfig
+ */
 
 const STORAGE_KEY = 'gw_viewer_settings'
 const MAX_DIRECTIONAL_LIGHTS = 8
@@ -17,6 +26,15 @@ const DEFAULT_DIRECTIONAL_LIGHTS = [
   { enabled: true, position: [7, 11, 9], intensity: 0.42 },
   { enabled: true, position: [-9, 6, -7], intensity: 0.34 }
 ]
+
+/** @type {DepthOfFieldConfig} */
+export const DEFAULT_DOF = {
+  enabled: false,
+  focusDistance: 80,
+  focusRange: 20,
+  bokehScale: 2.5,
+  focusTarget: null
+}
 
 export const DEFAULT_VIEWER_SETTINGS = {
   backgroundMode: /** @type {BackgroundMode} */ ('theme'),
@@ -29,7 +47,41 @@ export const DEFAULT_VIEWER_SETTINGS = {
     enabled: l.enabled,
     position: [...l.position],
     intensity: l.intensity
-  }))
+  })),
+  dof: { ...DEFAULT_DOF }
+}
+
+/**
+ * @param {unknown} raw
+ * @returns {DepthOfFieldConfig}
+ */
+export function normalizeDof(raw) {
+  const d = raw && typeof raw === 'object' ? /** @type {Record<string, unknown>} */ (raw) : {}
+  const t = d.focusTarget && typeof d.focusTarget === 'object'
+    ? /** @type {Record<string, unknown>} */ (d.focusTarget)
+    : null
+  return {
+    enabled: d.enabled === true,
+    focusDistance:
+      typeof d.focusDistance === 'number' && Number.isFinite(d.focusDistance)
+        ? Math.max(0.1, d.focusDistance)
+        : DEFAULT_DOF.focusDistance,
+    focusRange:
+      typeof d.focusRange === 'number' && Number.isFinite(d.focusRange)
+        ? Math.max(0.1, d.focusRange)
+        : DEFAULT_DOF.focusRange,
+    bokehScale:
+      typeof d.bokehScale === 'number' && Number.isFinite(d.bokehScale)
+        ? Math.max(0, d.bokehScale)
+        : DEFAULT_DOF.bokehScale,
+    focusTarget:
+      t &&
+      typeof t.x === 'number' &&
+      typeof t.y === 'number' &&
+      typeof t.z === 'number'
+        ? { x: t.x, y: t.y, z: t.z }
+        : null
+  }
 }
 
 /**
@@ -42,7 +94,8 @@ function cloneDefaults() {
       enabled: l.enabled,
       position: [...l.position],
       intensity: l.intensity
-    }))
+    })),
+    dof: { ...DEFAULT_DOF, focusTarget: null }
   }
 }
 
@@ -125,7 +178,8 @@ function normalizeLoaded(raw) {
         : DEFAULT_VIEWER_SETTINGS.hemisphereIntensity,
     ambientIntensity:
       typeof o.ambientIntensity === 'number' ? o.ambientIntensity : DEFAULT_VIEWER_SETTINGS.ambientIntensity,
-    directionalLights
+    directionalLights,
+    dof: normalizeDof(o.dof)
   }
 }
 

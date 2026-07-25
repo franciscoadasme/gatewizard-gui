@@ -9,6 +9,7 @@
   import { MOUSE, WebGLRenderer } from 'three'
   import { goodsellLightingState } from '../../lib/goodsellSceneLighting.svelte.js'
   import { viewerSettings } from '../../lib/viewerSettings.svelte.js'
+  import DepthOfFieldPass from './DepthOfFieldPass.svelte'
   import SceneBackground from './SceneBackground.svelte'
 
   /**
@@ -153,5 +154,9 @@
     {/each}
 
     {@render children?.()}
+
+    {#if viewerSettings.dof?.enabled}
+      <DepthOfFieldPass />
+    {/if}
   </ThrelteCanvas>
 </div>

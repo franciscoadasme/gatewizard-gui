@@ -1,4 +1,5 @@
 export { default as Canvas } from './Canvas.svelte'
+export { default as DepthOfFieldPass } from './DepthOfFieldPass.svelte'
 export { default as CameraRig } from './CameraRig.svelte'
 export { default as AxesGizmo } from './AxesGizmo.svelte'
 export { default as AxesLines } from './AxesLines.svelte'

@@ -126,6 +126,81 @@
     </div>
   </section>
 
+  <!-- Depth of field -->
+  <section class="space-y-2">
+    <p class="font-medium text-neutral-800 dark:text-neutral-300">Depth of field</p>
+    <p class="text-[10px] leading-snug text-neutral-500 dark:text-neutral-400">
+      Blur distant structure like a camera. Use “Focus here” from the atom menu (or select mode) to
+      lock focus on an atom. Off by default — GPU cost only when enabled.
+    </p>
+    <label class="flex items-center gap-2 text-neutral-700 dark:text-neutral-300">
+      <input
+        type="checkbox"
+        checked={viewerSettings.dof.enabled}
+        onchange={(e) => {
+          viewerSettings.dof = { ...viewerSettings.dof, enabled: e.currentTarget.checked }
+          maybePersist()
+        }}
+      />
+      Enable depth of field
+    </label>
+    <div class="flex items-center gap-2">
+      <span class="w-14 shrink-0 text-neutral-600 dark:text-neutral-400" title="Distance to sharp plane">Focus</span>
+      <RangeInput
+        value={viewerSettings.dof.focusDistance}
+        min={1}
+        max={400}
+        step={0.5}
+        decimals={1}
+        oninput={(v) => {
+          viewerSettings.dof = {
+            ...viewerSettings.dof,
+            focusDistance: v,
+            focusTarget: null
+          }
+          maybePersist()
+        }}
+      />
+    </div>
+    <div class="flex items-center gap-2">
+      <span class="w-14 shrink-0 text-neutral-600 dark:text-neutral-400" title="Thickness of the sharp band">Range</span>
+      <RangeInput
+        value={viewerSettings.dof.focusRange}
+        min={0.5}
+        max={120}
+        step={0.5}
+        decimals={1}
+        oninput={(v) => {
+          viewerSettings.dof = { ...viewerSettings.dof, focusRange: v }
+          maybePersist()
+        }}
+      />
+    </div>
+    <div class="flex items-center gap-2">
+      <span class="w-14 shrink-0 text-neutral-600 dark:text-neutral-400" title="Out-of-focus blur strength">Blur</span>
+      <RangeInput
+        value={viewerSettings.dof.bokehScale}
+        min={0}
+        max={10}
+        step={0.1}
+        decimals={1}
+        oninput={(v) => {
+          viewerSettings.dof = { ...viewerSettings.dof, bokehScale: v }
+          maybePersist()
+        }}
+      />
+    </div>
+    {#if viewerSettings.dof.focusTarget}
+      <p class="text-[10px] text-neutral-500 dark:text-neutral-400">
+        Tracking focus point
+        ({viewerSettings.dof.focusTarget.x.toFixed(1)},
+        {viewerSettings.dof.focusTarget.y.toFixed(1)},
+        {viewerSettings.dof.focusTarget.z.toFixed(1)}).
+        Move Focus to unlock.
+      </p>
+    {/if}
+  </section>
+
   <!-- Directional lights -->
   <section class="space-y-3">
     <div class="flex items-center justify-between">

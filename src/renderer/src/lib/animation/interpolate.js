@@ -529,6 +529,61 @@ function interpolateScene(a, b, t) {
           )
         }
       })
+    } else if (
+      key === 'dof' &&
+      ((va && typeof va === 'object') || (vb && typeof vb === 'object'))
+    ) {
+      // Fade DOF in/out by lerping blur strength (disabled side ⇒ bokeh 0),
+      // so enable/disable is not a hard cut at mid-segment.
+      const da = /** @type {Record<string, unknown>} */ (va && typeof va === 'object' ? va : {})
+      const db = /** @type {Record<string, unknown>} */ (vb && typeof vb === 'object' ? vb : {})
+      const ta = da.focusTarget && typeof da.focusTarget === 'object'
+        ? /** @type {Record<string, number>} */ (da.focusTarget)
+        : null
+      const tb = db.focusTarget && typeof db.focusTarget === 'object'
+        ? /** @type {Record<string, number>} */ (db.focusTarget)
+        : null
+      const bokehA =
+        da.enabled === true
+          ? typeof da.bokehScale === 'number'
+            ? da.bokehScale
+            : 2.5
+          : 0
+      const bokehB =
+        db.enabled === true
+          ? typeof db.bokehScale === 'number'
+            ? db.bokehScale
+            : 2.5
+          : 0
+      const bokehScale = lerpNum(bokehA, bokehB, t)
+      out[key] = {
+        enabled: bokehScale > 0.001,
+        focusDistance: lerpNum(
+          typeof da.focusDistance === 'number' ? da.focusDistance : 80,
+          typeof db.focusDistance === 'number' ? db.focusDistance : 80,
+          t
+        ),
+        focusRange: lerpNum(
+          typeof da.focusRange === 'number' ? da.focusRange : 20,
+          typeof db.focusRange === 'number' ? db.focusRange : 20,
+          t
+        ),
+        bokehScale,
+        focusTarget:
+          ta && tb
+            ? {
+                x: lerpNum(ta.x ?? 0, tb.x ?? 0, t),
+                y: lerpNum(ta.y ?? 0, tb.y ?? 0, t),
+                z: lerpNum(ta.z ?? 0, tb.z ?? 0, t)
+              }
+            : t < 0.5
+              ? ta
+                ? { x: ta.x, y: ta.y, z: ta.z }
+                : null
+              : tb
+                ? { x: tb.x, y: tb.y, z: tb.z }
+                : null
+      }
     } else if (t >= 0.5) {
       out[key] = vb
     }

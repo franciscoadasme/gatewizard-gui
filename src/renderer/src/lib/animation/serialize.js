@@ -375,6 +375,13 @@ export function captureViewerSnapshot(ctx) {
 }
 
 export function serializeSceneSettings() {
+  const dof = viewerSettings.dof ?? {
+    enabled: false,
+    focusDistance: 80,
+    focusRange: 20,
+    bokehScale: 2.5,
+    focusTarget: null
+  }
   return JSON.parse(
     JSON.stringify({
       backgroundMode: viewerSettings.backgroundMode,
@@ -387,7 +394,16 @@ export function serializeSceneSettings() {
         enabled: l.enabled,
         position: [...l.position],
         intensity: l.intensity
-      }))
+      })),
+      dof: {
+        enabled: dof.enabled === true,
+        focusDistance: dof.focusDistance,
+        focusRange: dof.focusRange,
+        bokehScale: dof.bokehScale,
+        focusTarget: dof.focusTarget
+          ? { x: dof.focusTarget.x, y: dof.focusTarget.y, z: dof.focusTarget.z }
+          : null
+      }
     })
   )
 }
@@ -429,5 +445,27 @@ export function applySceneSettings(scene) {
           typeof item.intensity === 'number' ? item.intensity : fallback.intensity
       }
     })
+  }
+  if (scene.dof && typeof scene.dof === 'object') {
+    const d = /** @type {Record<string, unknown>} */ (scene.dof)
+    const t = d.focusTarget && typeof d.focusTarget === 'object'
+      ? /** @type {Record<string, unknown>} */ (d.focusTarget)
+      : null
+    viewerSettings.dof = {
+      enabled: d.enabled === true,
+      focusDistance:
+        typeof d.focusDistance === 'number' ? d.focusDistance : viewerSettings.dof?.focusDistance ?? 80,
+      focusRange:
+        typeof d.focusRange === 'number' ? d.focusRange : viewerSettings.dof?.focusRange ?? 20,
+      bokehScale:
+        typeof d.bokehScale === 'number' ? d.bokehScale : viewerSettings.dof?.bokehScale ?? 2.5,
+      focusTarget:
+        t &&
+        typeof t.x === 'number' &&
+        typeof t.y === 'number' &&
+        typeof t.z === 'number'
+          ? { x: t.x, y: t.y, z: t.z }
+          : null
+    }
   }
 }
