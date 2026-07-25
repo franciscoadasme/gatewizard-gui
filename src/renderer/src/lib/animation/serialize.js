@@ -365,7 +365,8 @@ export function captureViewerSnapshot(ctx) {
 
   return {
     camera,
-    views: ctx.views.map((v) => serializeView(v)),
+    // Never persist ephemeral select-mode highlight layers (cartoon/tube assistants).
+    views: ctx.views.filter((v) => !v._isSelHighlight).map((v) => serializeView(v)),
     scene: serializeSceneSettings(),
     viewport: ctx.getViewport?.() ?? { axesVisible: true, axesLinesVisible: false },
     labels: (ctx.getLabels?.() ?? []).map(serializeAtomLabel).filter(Boolean),

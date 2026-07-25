@@ -4,6 +4,12 @@
    * updateStructure() call suppressed (used by applyGizmoResult).
    */
   export const skipNextPathFetch = new Set()
+  /**
+   * Suppress the next atoms/bonds-driven structure refetch (in-memory coordinate commits).
+   * Without this, replacing view.atoms after a transform re-triggers /get-structure and
+   * overwrites working coordinates with the on-disk PDB.
+   */
+  export const skipNextAtomsFetch = new Set()
 </script>
 
 <script>
@@ -278,16 +284,29 @@ Distance:
 
   $effect(() => {
     const repr = view.representation.type
-    // Track source bonds / current atoms so switching to ball-stick reuses prmtop bonds.
+    // Track repr / bonds / counts — not the atoms array identity. In-memory coordinate
+    // commits replace view.atoms with the same indices; refetching would wipe those edits.
     void sourceBonds
-    void view.atoms
     void view.bonds
+    const atomCount = view.atoms?.length ?? 0
+    const residueCount = view.residues?.length ?? 0
+    if (skipNextAtomsFetch.has(view.id)) {
+      skipNextAtomsFetch.delete(view.id)
+      // Drop any in-flight /get-structure so a late disk response cannot
+      // overwrite in-memory working coordinates after a transform commit.
+      structureFetchGen += 1
+      return
+    }
     const needsFetch = untrack(() => {
-      if ((repr === 'cartoon' || repr === 'tube') && !(view.residues?.length)) return true
-      if (repr === 'ball-stick' && bondsLookSparse(view.atoms, view.bonds)) {
-        // Reuse global structure bonds first — avoid a second /get-structure.
+      if ((repr === 'cartoon' || repr === 'tube') && residueCount === 0) return true
+      if (repr === 'ball-stick') {
+        // Already have atoms from a coord commit or prior fetch — keep them.
+        if (atomCount > 0 && !bondsLookSparse(view.atoms, view.bonds)) return false
+        if (atomCount > 0 && tryApplySourceBonds()) return false
+        // Coord-only updates leave atomCount unchanged; do not reload from disk.
+        if (atomCount > 0 && view.bonds?.length) return false
         if (tryApplySourceBonds()) return false
-        return true
+        return atomCount === 0 || bondsLookSparse(view.atoms, view.bonds)
       }
       return false
     })

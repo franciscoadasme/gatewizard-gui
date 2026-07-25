@@ -112,6 +112,8 @@ import { DEFAULT_ANIMATION_EXPORT_FORMAT, normalizeExportFormat } from './export
  * @property {AnimationViewport} [viewport]
  * @property {SerializedAtomLabel[]} [labels]
  * @property {SerializedMeasurement[]} [measurements]
+ * @property {{ indices: number[], xyz: number[] } | null} [coordPatch]
+ *   Sparse absolute coordinates for atoms that differ from the project base pose.
  */
 
 /**
@@ -147,7 +149,8 @@ import { DEFAULT_ANIMATION_EXPORT_FORMAT, normalizeExportFormat } from './export
  */
 
 export const ANIMATION_FORMAT = 'gatewizard-animation'
-export const ANIMATION_VERSION = 3
+/** v4: optional per-keyframe sparse `coordPatch` for atom motion. */
+export const ANIMATION_VERSION = 4
 export const DEFAULT_FPS = 30
 export const DEFAULT_EASING = DEFAULT_EASING_KIND
 
@@ -345,11 +348,26 @@ function normalizeCamera(raw) {
  * @param {number} index
  * @returns {AnimationKeyframe}
  */
+/**
+ * @param {unknown} raw
+ * @returns {{ indices: number[], xyz: number[] } | null}
+ */
+export function normalizeCoordPatch(raw) {
+  if (!raw || typeof raw !== 'object') return null
+  const r = /** @type {Record<string, unknown>} */ (raw)
+  if (!Array.isArray(r.indices) || !Array.isArray(r.xyz)) return null
+  const indices = r.indices.filter((i) => typeof i === 'number' && Number.isFinite(i)).map((i) => Math.trunc(i))
+  const xyz = r.xyz.filter((n) => typeof n === 'number' && Number.isFinite(n))
+  if (!indices.length || xyz.length !== indices.length * 3) return null
+  return { indices, xyz: xyz.map(Number) }
+}
+
 function normalizeKeyframe(raw, index) {
   const k = /** @type {Record<string, unknown>} */ (raw ?? {})
   const camera = normalizeCamera(k.camera)
   const viewportRaw = /** @type {Record<string, unknown>} */ (k.viewport ?? {})
   const easing = normalizeEasingKind(k.easing)
+  const coordPatch = normalizeCoordPatch(k.coordPatch)
   return {
     id: typeof k.id === 'string' ? k.id : crypto.randomUUID(),
     name: typeof k.name === 'string' ? k.name : `Keyframe ${index + 1}`,
@@ -372,7 +390,8 @@ function normalizeKeyframe(raw, index) {
       : [],
     measurements: Array.isArray(k.measurements)
       ? k.measurements.map(normalizeMeasurement).filter(Boolean)
-      : []
+      : [],
+    ...(coordPatch ? { coordPatch } : {})
   }
 }
 
@@ -454,7 +473,15 @@ export function serializeAnimationProject(project, structure) {
       measurements: (k.measurements ?? []).map((m) => ({
         ...m,
         atomIndices: [...m.atomIndices]
-      }))
+      })),
+      ...(k.coordPatch?.indices?.length
+        ? {
+            coordPatch: {
+              indices: [...k.coordPatch.indices],
+              xyz: [...k.coordPatch.xyz]
+            }
+          }
+        : {})
     })),
     outputFolder: project.outputFolder ?? '',
     sceneDefaults: project.sceneDefaults ? { ...project.sceneDefaults } : {}

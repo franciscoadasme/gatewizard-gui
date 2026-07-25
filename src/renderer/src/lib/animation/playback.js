@@ -8,6 +8,7 @@ import {
   deserializeView,
   mergeSerializedViewInto
 } from './serialize.js'
+import { applyPatchToAtoms } from '../viewer/workingCoords.js'
 import {
   deriveViewTracks,
   firstViewSnapshot,
@@ -149,11 +150,13 @@ function applyViewsFromAnimation(keyframes, time_s, ctx, state, viewTracks) {
  *   applyViewport?: (viewport: import('./schema.js').AnimationViewport) => void
  *   setLabels?: (labels: Record<string, unknown>[]) => void
  *   setMeasurements?: (measurements: Record<string, unknown>[]) => void
+ *   setCoordOverlay?: (patch: { indices: number[], xyz: number[] } | null) => void
+ *   baseCoords?: Map<number, [number, number, number]> | null
  * }} ctx
  * @param {string[]} [viewTracks]
  */
 export function applyAnimationAtTime(keyframes, time_s, ctx, viewTracks = []) {
-  const state = interpolateAtTime(keyframes, time_s, viewTracks)
+  const state = interpolateAtTime(keyframes, time_s, viewTracks, ctx.baseCoords ?? null)
   if (!state) return
 
   if (state.camera.framing) {
@@ -168,14 +171,17 @@ export function applyAnimationAtTime(keyframes, time_s, ctx, viewTracks = []) {
 
   applyViewsFromAnimation(keyframes, time_s, ctx, state, viewTracks)
 
+  ctx.setCoordOverlay?.(state.coordPatch ?? null)
+
   const atoms = /** @type {Array<{ index: number, x: number, y: number, z: number, element?: string, name?: string }>} */ (
     ctx.structureCtx.atoms ?? []
   )
+  const atomsForOverlays = state.coordPatch ? applyPatchToAtoms(atoms, state.coordPatch) : atoms
   if (ctx.setLabels) {
-    ctx.setLabels(deserializeAtomLabels(state.labels ?? [], atoms))
+    ctx.setLabels(deserializeAtomLabels(state.labels ?? [], atomsForOverlays))
   }
   if (ctx.setMeasurements) {
-    ctx.setMeasurements(deserializeMeasurements(state.measurements ?? [], atoms))
+    ctx.setMeasurements(deserializeMeasurements(state.measurements ?? [], atomsForOverlays))
   }
 }
 

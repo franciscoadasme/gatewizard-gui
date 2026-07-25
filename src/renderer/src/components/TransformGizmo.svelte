@@ -240,9 +240,11 @@
     if (!drag) return
     const d = drag
     drag = null
-    if (d.type === 'translate' && Math.abs(d.delta) > 0.005) {
+    // Always notify parent on release so a live JS preview can be committed
+    // (even for tiny moves). Parent no-ops when there is nothing to commit.
+    if (d.type === 'translate') {
       await onTranslate({ axis: d.axis, delta: d.delta })
-    } else if (d.type === 'rotate' && Math.abs(d.angle) > 0.1) {
+    } else if (d.type === 'rotate') {
       await onRotate({ axis: d.axis, angle: d.angle })
     }
   }

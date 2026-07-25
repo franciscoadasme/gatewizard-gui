@@ -67,7 +67,7 @@
   let draggingId = $state(/** @type {string | null} */ (null))
   let draggingPlayhead = $state(false)
   let suppressTrackClick = false
-  let tracksExpanded = $state(true)
+  let tracksExpanded = $state(false)
   /** @type {{ x: number, y: number, keyframeId: string } | null} */
   let contextMenu = $state(null)
   /** @type {{ x: number, y: number, time_s: number } | null} */

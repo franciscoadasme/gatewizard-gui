@@ -45,9 +45,9 @@
     editDeleteAtoms,
     editDeleteByIndices,
     editSavePdb,
+    structureWriteCoords,
     transformCountSelection,
-    transformPreview,
-    transformApply,
+    transformCompute,
     memproRun,
     memproStatus,
     memproScan,
@@ -108,7 +108,7 @@
   import Spinner from '../components/ui/Spinner.svelte'
   import RangeInput from '../components/ui/RangeInput.svelte'
   import { viewerBusy, waitForViewerIdle } from '../lib/viewer/viewerBusy.svelte.js'
-  import ViewItem, { skipNextPathFetch } from '../components/ViewItem.svelte'
+  import ViewItem, { skipNextPathFetch, skipNextAtomsFetch } from '../components/ViewItem.svelte'
   import ViewerSettingsDialog from '../components/ViewerSettingsDialog.svelte'
   import RadialMenu from '../components/RadialMenu.svelte'
   import TransformGizmo from '../components/TransformGizmo.svelte'
@@ -118,6 +118,18 @@
   import { themeState } from '../lib/theme.svelte.js'
   import { themeBackgroundHex, viewerSettings } from '../lib/viewerSettings.svelte.js'
   import { clearLabelScreenOffset } from '../lib/viewer/labelStyle.js'
+  import {
+    applyPatchToAtoms,
+    atomsFromBaseAndPatch,
+    coordPatchToPreviewArray,
+    createCoordUndoStack,
+    densePositionsToPreview,
+    diffFromBase,
+    inversePatchFromBefore,
+    normalizeCoordPatch,
+    positionsToCoordPatch,
+    snapshotAtomCoords
+  } from '../lib/viewer/workingCoords.js'
 
   /** @typedef {{ x: number, y: number, z: number, element: string, name: string }} Atom */
   /** @typedef {{ chain: string, resname: string, number: number, atom_indices: number[], ca_index?: number, sec?: string }} Residue */
@@ -393,8 +405,17 @@
   let packmolDialogOpen = $state(false)
   let toolsMenuOpen = $state(false)
   let transformTab = $state('rotate') // 'rotate' | 'translate' | 'align'
-  /** @type {number[][] | null} positions[atom.index] = [x,y,z] */
+  /** @type {number[][] | null} positions[atom.index] = [x,y,z] — gizmo/dialog drag preview */
   let previewPositions = $state(null)
+  /** @type {number[][] | null} animation playback overlay (does not mutate working atoms) */
+  let animCoordOverlay = $state(null)
+  /** Base pose XYZ at structure load (for animation diffs + undo). */
+  /** @type {Map<number, [number, number, number]>} */
+  let baseAtomCoords = $state(new Map())
+  let coordsDirty = $state(false)
+  /** Bump to force representation geometry rebuild after in-memory XYZ commits. */
+  let coordsGeneration = $state(0)
+  const coordUndoStack = createCoordUndoStack(32)
   let tfPreviewBusy = $state(false)
   // Shared selection (rotate / translate tabs)
   let tfSel = $state('')
@@ -896,6 +917,12 @@
         `Opened ${String(structure.path).split(/[/\\]/).pop()}`,
         structure.path
       )
+      baseAtomCoords = snapshotAtomCoords(structure.atoms)
+      coordsDirty = false
+      coordsGeneration = 0
+      coordUndoStack.clear()
+      previewPositions = null
+      animCoordOverlay = null
       views = []
       measurements = []
       measurePicks = []
@@ -1010,7 +1037,7 @@
     if (!editMode || measureMode) return
     const cam = mainViewerCamera.current
     if (!cam) return
-    const atom = pickAtomFromViews(views, cam, w, h, x, y, 22)
+    const atom = pickAtomFromViews(viewsForPicking(), cam, w, h, x, y, 22)
     editHoveredAtom = atom
     editTooltip = atom ? { clientX, clientY } : null
     editHoverGroupIndices = atom ? new Set(_editGroupIndices(atom, editSelectionLevel)) : new Set()
@@ -1093,11 +1120,15 @@
 
   function handleCanvasClick({ x, y, w, h, ctrlKey = false }) {
     ctxMenu = null
+    if (Date.now() < _ignoreCanvasClickUntil) return
     // In edit mode (not measuring): left-click locks the hovered group as selected
     if (editMode && !measureMode) {
       const cam = mainViewerCamera.current
       if (!cam) return
-      const atom = pickAtomFromViews(views, cam, w, h, x, y)
+      // Keep in-memory moves if the gizmo is dismissed / selection changes
+      // before pointer-up commit (or after a sub-threshold drag).
+      if (showGizmo) commitGizmoPreviewIfAny()
+      const atom = pickAtomFromViews(viewsForPicking(), cam, w, h, x, y)
       if (atom) {
         const groupIndices = new Set(_editGroupIndices(atom, editSelectionLevel))
         if (ctrlKey) {
@@ -1129,7 +1160,7 @@
     if (!measureMode) return
     const cam = mainViewerCamera.current
     if (!cam) return
-    const atom = pickAtomFromViews(views, cam, w, h, x, y)
+    const atom = pickAtomFromViews(viewsForPicking(), cam, w, h, x, y)
     if (!atom) return
     const next = [...measurePicks, atom]
     const need = MEASURE_NEEDS[measureMode]
@@ -1162,7 +1193,7 @@
     }
     const cam = mainViewerCamera.current
     if (!cam) return
-    const atom = pickAtomFromViews(views, cam, w, h, x, y)
+    const atom = pickAtomFromViews(viewsForPicking(), cam, w, h, x, y)
     if (!atom) return
     ctxMenu = { x: clientX, y: clientY, atom, labelsOpen: false }
   }
@@ -1385,6 +1416,11 @@
     measureMode = null
     ctxMenu = null
     previewPositions = null
+    animCoordOverlay = null
+    baseAtomCoords = new Map()
+    coordsDirty = false
+    coordsGeneration = 0
+    coordUndoStack.clear()
     stopAnimPlayback()
     animateMode = false
     animProject = createEmptyProject()
@@ -1572,13 +1608,29 @@
   }
 
   async function onSavePdb() {
-    if (!filePath) return
+    if (!filePath || !structure?.atoms?.length) return
     const r = await window.api.saveFileDialog('Save PDB', [
       { name: 'PDB files', extensions: ['pdb'] }
     ])
     if (!r || r.canceled || !r.filePath) return
     try {
-      await editSavePdb({ source: filePath, dest: r.filePath })
+      if (coordsDirty) {
+        const indices = structure.atoms.map((a) => a.index)
+        const xyz = []
+        for (const a of structure.atoms) xyz.push(a.x, a.y, a.z)
+        await structureWriteCoords({
+          source: filePath,
+          dest: r.filePath,
+          indices,
+          xyz,
+          topology: topologyPath
+        })
+        coordsDirty = false
+        baseAtomCoords = snapshotAtomCoords(structure.atoms)
+        coordUndoStack.clear()
+      } else {
+        await editSavePdb({ source: filePath, dest: r.filePath })
+      }
       logEvent('info', 'view', `Saved PDB: ${String(r.filePath).split(/[/\\]/).pop()}`, r.filePath)
       filePath = r.filePath
       if (structure) structure.path = r.filePath
@@ -1619,6 +1671,12 @@
       ])
       filePath = newStructure.path
       structure = newStructure
+      baseAtomCoords = snapshotAtomCoords(newStructure.atoms)
+      coordsDirty = false
+      coordsGeneration += 1
+      coordUndoStack.clear()
+      previewPositions = null
+      animCoordOverlay = null
       measurements = []
       measurePicks = []
       atomLabels = []
@@ -1685,46 +1743,70 @@
   }
 
   /**
-   * Lightweight post-gizmo-transform update:
-   *  - updates atom positions in place from result.atoms
-   *  - preserves view.bonds (topology unchanged for translate/rotate)
-   *  - preserves selectedGroupIndices and showGizmo
-   *  - does NOT call detectMolecules or trigger ViewItem updateStructure
+   * Shared seam for transforms (and future Minimize): commit sparse absolute positions
+   * into the working structure in memory. Does not write a temp PDB.
+   * @param {{ positions?: Array<number[]|undefined>|Record<number, number[]>|null, patch?: { indices: number[], xyz: number[] }|null, rebuildBonds?: boolean, pushUndo?: boolean }} opts
    */
-  async function applyGizmoResult(result) {
-    // Build index→position map from the returned atoms
-    const posMap = new Map(result.atoms.map((a) => [a.index, a]))
+  function applyCoordOpResult(opts) {
+    if (!structure?.atoms?.length) return
+    // Snapshot to a plain patch before clearing reactive preview state.
+    const patch =
+      normalizeCoordPatch(opts.patch) ||
+      positionsToCoordPatch(
+        opts.positions
+          ? Array.isArray(opts.positions) || typeof opts.positions === 'object'
+            ? { ...opts.positions }
+            : opts.positions
+          : null
+      )
+    if (!patch?.indices?.length) return
 
-    filePath = result.path
-
-    // Update the top-level structure object (used for exports etc.)
-    if (structure) {
-      structure = {
-        ...structure,
-        path: result.path,
-        atoms: structure.atoms.map((a) => {
-          const p = posMap.get(a.index)
-          return p ? { ...a, x: p.x, y: p.y, z: p.z } : a
-        })
-      }
+    if (opts.pushUndo !== false) {
+      const before = snapshotAtomCoords(structure.atoms)
+      coordUndoStack.push(inversePatchFromBefore(before, patch))
     }
 
-    // Update each view's atoms in-place without triggering a full re-fetch
+    animCoordOverlay = null
+    previewPositions = null
+    structure = {
+      ...structure,
+      atoms: applyPatchToAtoms(structure.atoms, patch)
+    }
+    // Sync every representation from the working structure (source of truth).
+    const byIndex = new Map(structure.atoms.map((a) => [a.index, a]))
     for (const v of views) {
       if (v._isSelHighlight) continue
-      // Mark so the path $effect in ViewItem skips updateStructure for this update
       skipNextPathFetch.add(v.id)
-      v.path = result.path
-      v.atoms = v.atoms.map((a) => {
-        const p = posMap.get(a.index)
-        return p ? { ...a, x: p.x, y: p.y, z: p.z } : a
+      skipNextAtomsFetch.add(v.id)
+      v.atoms = (v.atoms ?? []).map((a) => {
+        const src = byIndex.get(a.index)
+        return src ? { ...a, x: src.x, y: src.y, z: src.z } : a
       })
-      // v.bonds intentionally not touched — connectivity unchanged
     }
+    // Selection highlight view uses structure atoms — rebuild if present
+    if (selHighlightViewId) _syncSelHighlightView()
 
-    previewPositions = null
+    views = [...views]
     _gizmoLastOp = null
-    // selectedGroupIndices and showGizmo are preserved deliberately
+    coordsDirty = true
+    coordsGeneration += 1
+    void opts.rebuildBonds // reserved for future Minimize / no-topology refresh
+  }
+
+  /** @deprecated use applyCoordOpResult — kept name for gizmo undo path clarity */
+  async function applyGizmoResult(result) {
+    if (result?.atoms) {
+      /** @type {Array<number[]|undefined>} */
+      const positions = []
+      for (const a of result.atoms) {
+        positions[a.index] = [a.x, a.y, a.z]
+      }
+      applyCoordOpResult({ positions })
+      if (result.path) {
+        filePath = result.path
+        if (structure) structure = { ...structure, path: result.path }
+      }
+    }
   }
 
   async function onEditRenameChain() {
@@ -1881,16 +1963,62 @@
 
   // ── Preview helper ─────────────────────────────────────────────────
   /**
-   * Return atoms with preview positions applied if a preview is active.
+   * Atoms for 3D drawing: XYZ from the in-memory working structure (source of
+   * truth), then live preview / animation overlay. ViewItem may still hold
+   * on-disk coords after a late /get-structure; never let that undraw a transform.
    * @param {import('../lib/backendApi.js').View} view
    */
   function viewAtoms(view) {
-    if (!previewPositions || !view.atoms) return view.atoms
+    if (!view?.atoms?.length) return view?.atoms
+    const overlay = previewPositions ?? animCoordOverlay
+    const working = structure?.atoms
+    if (!working?.length && !overlay) return view.atoms
+
+    /** @type {Map<number, { x: number, y: number, z: number }> | null} */
+    let byIndex = null
+    if (working?.length) {
+      byIndex = new Map()
+      for (const a of working) {
+        if (typeof a.index === 'number') byIndex.set(a.index, a)
+      }
+    }
+
     return view.atoms.map((a) => {
-      const pos = previewPositions[a.index]
-      if (!pos) return a
-      return { ...a, x: pos[0], y: pos[1], z: pos[2] }
+      const src = typeof a.index === 'number' ? byIndex?.get(a.index) : undefined
+      const pos = typeof a.index === 'number' ? overlay?.[a.index] : undefined
+      if (!src && !pos) return a
+      return {
+        ...a,
+        x: pos ? pos[0] : src.x,
+        y: pos ? pos[1] : src.y,
+        z: pos ? pos[2] : src.z
+      }
     })
+  }
+
+  /** Commit any live gizmo preview into the working structure (no-op if none). */
+  function commitGizmoPreviewIfAny() {
+    if (!previewPositions) return false
+    const snapshot = { ...previewPositions }
+    applyCoordOpResult({ positions: snapshot })
+    _dragStartPositions = null
+    return true
+  }
+
+  /** Views with overlay XYZ applied — used for picking while previewing / scrubbing. */
+  function viewsForPicking() {
+    return views.map((v) => ({ ...v, atoms: viewAtoms(v) }))
+  }
+
+  /**
+   * Normalize compute/preview API payload into sparse previewPositions.
+   * @param {{ indices?: number[], xyz?: number[], positions?: number[][] }} r
+   */
+  function previewFromComputeResult(r) {
+    const sparse = normalizeCoordPatch({ indices: r.indices, xyz: r.xyz })
+    if (sparse) return coordPatchToPreviewArray(sparse)
+    if (r.positions && structure?.atoms) return densePositionsToPreview(r.positions, structure.atoms)
+    return null
   }
 
   /**
@@ -1945,22 +2073,18 @@
   })
 
   async function onGizmoTranslate({ axis, delta }) {
-    if (!filePath) return
+    if (!filePath || axis === 'view') return
     editBusy = true
     try {
       const sel = _selStringFromEditSelection() || null
-      const op =
-        axis === 'view'
-          ? { type: 'translate', dx: 0, dy: 0, dz: 0 } // view-plane: skip for now
-          : {
-              type: 'translate',
-              dx: axis === 'x' ? delta : 0,
-              dy: axis === 'y' ? delta : 0,
-              dz: axis === 'z' ? delta : 0
-            }
-      if (axis === 'view') return
-      const r = await transformPreview({ path: filePath, selection: sel, op })
-      previewPositions = r.positions
+      const op = {
+        type: 'translate',
+        dx: axis === 'x' ? delta : 0,
+        dy: axis === 'y' ? delta : 0,
+        dz: axis === 'z' ? delta : 0
+      }
+      const r = await transformCompute({ path: filePath, selection: sel, op })
+      previewPositions = previewFromComputeResult(r)
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : String(ex))
     } finally {
@@ -1973,12 +2097,12 @@
     editBusy = true
     try {
       const sel = _selStringFromEditSelection() || null
-      const r = await transformPreview({
+      const r = await transformCompute({
         path: filePath,
         selection: sel,
         op: { type: 'rotate', angle, axis, center: 'selection' }
       })
-      previewPositions = r.positions
+      previewPositions = previewFromComputeResult(r)
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : String(ex))
     } finally {
@@ -1987,112 +2111,60 @@
   }
 
   async function onGizmoApply() {
-    if (!filePath || !previewPositions) return
-    editBusy = true
-    try {
-      // Re-apply the last gizmo operation permanently using the transform preview state
-      // We use transformApply mirroring the last preview call parameters
-      // Since we track these in gizmoLastOp, we can replay them
-      const sel = _selStringFromEditSelection() || null
-      if (_gizmoLastOp) {
-        const res = await transformApply({ path: filePath, selection: sel, op: _gizmoLastOp })
-        previewPositions = null
-        _gizmoLastOp = null
-        await applyEditResult(res)
-      }
-    } catch (ex) {
-      alert(ex instanceof Error ? ex.message : String(ex))
-    } finally {
-      editBusy = false
-    }
+    if (!previewPositions) return
+    applyCoordOpResult({ positions: previewPositions })
   }
 
   /** @type {{ type: string, [k: string]: any } | null} */
   let _gizmoLastOp = null
-  /** File path to revert to on Undo (one-level undo for gizmo transforms). */
-  let _undoFilePath = $state(null)
   /** Atom positions at the start of a drag gesture (for JS real-time preview). */
   let _dragStartPositions = null
+  /** Ignore the canvas click that often follows a gizmo pointer-up. */
+  let _ignoreCanvasClickUntil = 0
   /** Whether the transform gizmo overlay is shown (toggled via radial menu). */
   let showGizmo = $state(false)
   /** ID of the temporary ball-stick view added for cartoon/tube selections, or null. */
   let selHighlightViewId = $state(null)
 
-  // Gizmo handlers – auto-apply on drag release, one-level undo
+  // Gizmo handlers – commit preview in memory on drag release (no temp PDB)
   async function _onGizmoTranslate({ axis, delta }) {
     if (axis === 'view') return
-    if (!filePath) return
-    const op = {
+    // Before commit: block the canvas click that often follows pointer-up.
+    _ignoreCanvasClickUntil = Date.now() + 400
+    _gizmoLastOp = {
       type: 'translate',
       dx: axis === 'x' ? delta : 0,
       dy: axis === 'y' ? delta : 0,
       dz: axis === 'z' ? delta : 0
     }
-    _gizmoLastOp = op
-    _dragStartPositions = null
-    _undoFilePath = filePath
-    editBusy = true
-    try {
-      const sel = _selStringFromEditSelection() || null
-      const res = await transformApply({ path: filePath, selection: sel, op })
-      await applyGizmoResult(res)
-      logEvent(
-        'verbose',
-        'view',
-        `Gizmo translate (${axis})`,
-        `Δ = ${delta.toFixed(2)} Å, sel: ${sel ?? 'all'}`
-      )
-    } catch (ex) {
-      _undoFilePath = null
-      alert(ex instanceof Error ? ex.message : String(ex))
-    } finally {
-      editBusy = false
-    }
+    if (!commitGizmoPreviewIfAny()) return
+    logEvent(
+      'verbose',
+      'view',
+      `Gizmo translate (${axis})`,
+      `Δ = ${delta.toFixed(2)} Å (in-memory)`
+    )
   }
 
   async function _onGizmoRotate({ axis, angle }) {
-    if (!filePath) return
-    const op = { type: 'rotate', angle, axis, center: 'selection' }
-    _gizmoLastOp = op
-    _dragStartPositions = null
-    _undoFilePath = filePath
-    editBusy = true
-    try {
-      const sel = _selStringFromEditSelection() || null
-      const res = await transformApply({ path: filePath, selection: sel, op })
-      await applyGizmoResult(res)
-      logEvent(
-        'verbose',
-        'view',
-        `Gizmo rotate (${axis})`,
-        `angle = ${angle.toFixed(1)}°, sel: ${sel ?? 'all'}`
-      )
-    } catch (ex) {
-      _undoFilePath = null
-      alert(ex instanceof Error ? ex.message : String(ex))
-    } finally {
-      editBusy = false
-    }
+    _ignoreCanvasClickUntil = Date.now() + 400
+    _gizmoLastOp = { type: 'rotate', angle, axis, center: 'selection' }
+    if (!commitGizmoPreviewIfAny()) return
+    logEvent(
+      'verbose',
+      'view',
+      `Gizmo rotate (${axis})`,
+      `angle = ${angle.toFixed(1)}° (in-memory)`
+    )
   }
 
   async function onGizmoUndo() {
-    if (!_undoFilePath) return
-    editBusy = true
-    try {
-      // Fetch atoms from the pre-transform path (already cached, no bond re-guess)
-      const undo = await getStructure({
-        path: _undoFilePath,
-        needs_bonds: false,
-        needs_secondary_structure: false,
-        save_dir: workingDir || null
-      })
-      previewPositions = null
-      await applyGizmoResult({ path: _undoFilePath, atoms: undo.atoms })
-      _undoFilePath = null
-    } catch (ex) {
-      alert(ex instanceof Error ? ex.message : String(ex))
-    } finally {
-      editBusy = false
+    const inverse = coordUndoStack.pop()
+    if (!inverse) return
+    applyCoordOpResult({ patch: inverse, pushUndo: false })
+    if (coordUndoStack.size === 0) {
+      // May still differ from base if multiple ops — recompute dirty vs base
+      coordsDirty = !!diffFromBase(baseAtomCoords, structure?.atoms ?? [])
     }
   }
 
@@ -2315,6 +2387,7 @@
         bgColor: showGizmo ? 'rgba(60,50,0,0.96)' : undefined,
         icon: '<path d="M8 1L10.5 4.5L9 4.5L9 7L11.5 7L11.5 5.5L15 8L11.5 10.5L11.5 9L9 9L9 11.5L10.5 11.5L8 15L5.5 11.5L7 11.5L7 9L4.5 9L4.5 10.5L1 8L4.5 5.5L4.5 7L7 7L7 4.5L5.5 4.5Z"/>',
         action: () => {
+          if (showGizmo) commitGizmoPreviewIfAny()
           showGizmo = !showGizmo
           ctxMenu = null
         }
@@ -2400,12 +2473,12 @@
     if (!filePath) return
     tfPreviewBusy = true
     try {
-      const r = await transformPreview({
+      const r = await transformCompute({
         path: filePath,
         selection: _buildTransformSel(),
         op: _buildTransformOp()
       })
-      previewPositions = r.positions
+      previewPositions = previewFromComputeResult(r)
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : String(ex))
     } finally {
@@ -2417,14 +2490,18 @@
     if (!filePath) return
     editBusy = true
     try {
-      const res = await transformApply({
-        path: filePath,
-        selection: _buildTransformSel(),
-        op: _buildTransformOp()
-      })
-      previewPositions = null
+      let positions = previewPositions
+      if (!positions) {
+        const r = await transformCompute({
+          path: filePath,
+          selection: _buildTransformSel(),
+          op: _buildTransformOp()
+        })
+        positions = previewFromComputeResult(r)
+      }
+      applyCoordOpResult({ positions })
       dlgTransform?.close()
-      await applyEditResult(res)
+      logEvent('info', 'view', 'Transform applied (in-memory)', _buildTransformOp().type)
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : String(ex))
     } finally {
@@ -2437,10 +2514,14 @@
     editBusy = true
     try {
       const sel = tfSel.trim() || null
-      const res = await transformApply({ path: filePath, selection: sel, op: { type: 'center' } })
-      previewPositions = null
+      const r = await transformCompute({
+        path: filePath,
+        selection: sel,
+        op: { type: 'center' }
+      })
+      applyCoordOpResult({ positions: previewFromComputeResult(r) })
       dlgTransform?.close()
-      await applyEditResult(res)
+      logEvent('info', 'view', 'Centered at origin (in-memory)', sel ?? 'all')
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : String(ex))
     } finally {
@@ -2573,6 +2654,7 @@
         views = /** @type {View[]} */ (nextViews)
       },
       structureCtx: animStructureCtx(),
+      baseCoords: baseAtomCoords,
       applyFraming: (framing) => {
         if (!camera) return
         camera = {
@@ -2591,6 +2673,21 @@
       },
       setMeasurements: (nextMeasurements) => {
         measurements = /** @type {typeof measurements} */ (nextMeasurements)
+      },
+      setCoordOverlay: (patch) => {
+        // Mirror color/repr: once keyframes exist, timeline assert keyframe coords
+        // and discard unsaved atom moves (capture stores them again on the next keyframe).
+        previewPositions = null
+        _dragStartPositions = null
+        if (animProject.keyframes.length > 0 && structure?.atoms?.length && baseAtomCoords.size) {
+          const atoms = atomsFromBaseAndPatch(structure.atoms, baseAtomCoords, patch ?? null)
+          structure = { ...structure, atoms }
+          animCoordOverlay = null
+          coordUndoStack.clear()
+          coordsDirty = !!diffFromBase(baseAtomCoords, atoms)
+        } else {
+          animCoordOverlay = coordPatchToPreviewArray(patch)
+        }
       }
     }, animProject.viewTracks ?? [])
   }
@@ -2613,16 +2710,21 @@
     if (animateMode) {
       stopAnimPlayback()
       animateMode = false
+      animCoordOverlay = null
       views = views.map((v) => {
         if (typeof v.opacity !== 'number') return v
         const next = { ...v }
         delete next.opacity
         return next
       })
+      coordsGeneration += 1
       return
     }
     if (!structure) return
     animateMode = true
+    // Freeze base pose for sparse coord diffs when entering animate (if not dirty mid-edit,
+    // keep load-time base; if dirty, base stays as original load so patches stay compact).
+    if (!baseAtomCoords.size) baseAtomCoords = snapshotAtomCoords(structure.atoms)
     if (!animProject.outputFolder && filePath) {
       animProject.outputFolder = defaultAnimationFolderName(filePath)
     }
@@ -2637,11 +2739,31 @@
     }
   }
 
+  /** Drop select-mode hover/selection UI so it cannot be baked into a keyframe. */
+  function clearEphemeralEditSelection() {
+    selectedAtom = null
+    selectedGroupIndices = new Set()
+    editHoveredAtom = null
+    editHoverGroupIndices = new Set()
+    editTooltip = null
+    showGizmo = false
+    if (selHighlightViewId) {
+      views = views.filter((v) => v.id !== selHighlightViewId)
+      selHighlightViewId = null
+    }
+  }
+
   async function onAnimCaptureKeyframe() {
     await tick()
     try {
+      // Commit live gizmo preview so the keyframe stores the pose on screen.
+      commitGizmoPreviewIfAny()
+      // Select-tool hover/outline/temp ball-stick must never enter the keyframe.
+      clearEphemeralEditSelection()
+      await tick()
+      const persistViews = views.filter((v) => !v._isSelHighlight)
       const snap = captureViewerSnapshot({
-        views,
+        views: persistViews,
         filePath,
         structure,
         getFraming: () => camera,
@@ -2651,6 +2773,7 @@
       })
       const time_s = Math.max(0, Math.min(animProject.duration_s, animPlayhead))
       const existing = animProject.keyframes.find((k) => Math.abs(k.time_s - time_s) < 0.05)
+      const coordPatch = diffFromBase(baseAtomCoords, structure?.atoms ?? [])
       const keyframe = existing
         ? {
             ...existing,
@@ -2659,7 +2782,8 @@
             scene: snap.scene,
             viewport: snap.viewport,
             labels: snap.labels,
-            measurements: snap.measurements
+            measurements: snap.measurements,
+            ...(coordPatch ? { coordPatch } : { coordPatch: undefined })
           }
         : {
             id: crypto.randomUUID(),
@@ -2670,10 +2794,13 @@
             scene: snap.scene,
             viewport: snap.viewport,
             labels: snap.labels,
-            measurements: snap.measurements
+            measurements: snap.measurements,
+            ...(coordPatch ? { coordPatch } : {})
           }
-      for (const v of views) {
-        registerViewTrack(animProject, String(v.id), views.map((x) => String(x.id)))
+      if (!coordPatch) delete keyframe.coordPatch
+      const persistIds = persistViews.map((x) => String(x.id))
+      for (const v of persistViews) {
+        registerViewTrack(animProject, String(v.id), persistIds)
       }
       animProject = {
         ...animProject,
@@ -3324,7 +3451,7 @@
         >
           <CameraRig framing={camera} />
           {#each views.filter((v) => v.visible !== false && (v.opacity ?? 1) > 0.001) as view (view.id)}
-            {#key view.representation.type}
+            {#key `${view.representation.type}-${coordsGeneration}`}
             {#if view.representation.type === 'ball-stick'}
               <BallStick
                 atoms={viewAtoms(view)}
@@ -3634,7 +3761,7 @@
             height={canvasHeight}
             busy={editBusy}
             previewActive={!!previewPositions}
-            undoAvailable={!!_undoFilePath}
+            undoAvailable={coordUndoStack.size > 0}
             onTranslate={_onGizmoTranslate}
             onRotate={_onGizmoRotate}
             onDragMove={_onGizmoDragMove}
@@ -4935,7 +5062,9 @@
       class="flex h-[22px] shrink-0 items-center whitespace-nowrap rounded border border-neutral-300 bg-neutral-100 px-2 py-0 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
       onclick={onSavePdb}
       disabled={!filePath}
-      title="Save current PDB file">Save PDB</button
+      title={coordsDirty
+        ? 'Save working coordinates to PDB (unsaved transforms in memory)'
+        : 'Save current PDB file'}>Save PDB{coordsDirty ? ' •' : ''}</button
     >
 
     <!-- Save Image -->

@@ -4133,6 +4133,48 @@ def edit_save_pdb(payload: EditSavePdbRequest) -> dict:
         raise HTTPException(400, str(exc))
 
 
+class WriteCoordsRequest(BaseModel):
+    """Write a PDB using *source* as template atom records, with updated XYZ."""
+
+    source: str
+    dest: str
+    indices: List[int]
+    xyz: List[float]  # length 3 * len(indices)
+    topology: str | None = None
+
+
+@app.post("/structure/write-coords")
+def structure_write_coords(payload: WriteCoordsRequest) -> dict:
+    """Persist in-memory coordinate edits to a PDB without a prior temp-file apply."""
+    try:
+        if not payload.indices:
+            raise ValueError("indices must not be empty")
+        if len(payload.xyz) != len(payload.indices) * 3:
+            raise ValueError("xyz length must be 3 × len(indices)")
+        u, _, _ = load_structure(
+            payload.source,
+            topology=payload.topology,
+            needs_bonds=False,
+        )
+        idx = np.asarray(payload.indices, dtype=np.int64)
+        coords = np.asarray(payload.xyz, dtype=np.float64).reshape(-1, 3)
+        index_to_pos = {int(i): coords[n] for n, i in enumerate(idx)}
+        pos = u.atoms.positions.copy()
+        for i_local, atom_ix in enumerate(u.atoms.ix):
+            p = index_to_pos.get(int(atom_ix))
+            if p is not None:
+                pos[i_local] = p
+        u.atoms.positions = pos
+        dest_dir = os.path.dirname(payload.dest) or "."
+        os.makedirs(dest_dir, exist_ok=True)
+        u.atoms.write(payload.dest)
+        return {"path": payload.dest, "success": True, "count": int(len(idx))}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
+
 # ── Transform (enhanced) ──────────────────────────────────────────────
 
 
@@ -4218,20 +4260,97 @@ def _apply_mv_op(
     return indices
 
 
+def _axis_vector(axis: str | None) -> list[float]:
+    a = (axis or "z").lower()
+    if a == "x":
+        return [1.0, 0.0, 0.0]
+    if a == "y":
+        return [0.0, 1.0, 0.0]
+    return [0.0, 0.0, 1.0]
+
+
+def _transform_compute_positions(payload: TransformRequest) -> dict:
+    """Compute new positions without writing a temp PDB or re-guessing bonds.
+
+    Rigid translate/rotate/center use MDAnalysis in-memory ops.
+    Align still uses StructureManager (more complex) but never saves a file.
+    """
+    op = payload.op
+    sel_str = (
+        NAMED_SELECTIONS.get(payload.selection, payload.selection)
+        if payload.selection
+        else None
+    )
+
+    if op.type in ("translate", "rotate", "center"):
+        u, _, _ = load_structure(payload.path, needs_bonds=False)
+        ag = u.select_atoms(sel_str) if sel_str else u.atoms
+        if op.type == "translate":
+            ag.translate([float(op.dx), float(op.dy), float(op.dz)])
+        elif op.type == "rotate":
+            angle = float(op.angle or 0.0)
+            axis = _axis_vector(op.axis)
+            point = None
+            if (op.center or "selection") == "origin":
+                point = [0.0, 0.0, 0.0]
+            ag.rotateby(angle, axis, point=point)
+        elif op.type == "center":
+            com = ag.center_of_geometry()
+            ag.translate(-np.asarray(com, dtype=np.float64))
+        indices = [int(i) for i in ag.ix]
+        xyz: list[float] = []
+        for atom in ag:
+            xyz.extend(
+                (float(atom.position[0]), float(atom.position[1]), float(atom.position[2]))
+            )
+        # Dense array keyed by global atom index for legacy preview consumers
+        dense = [[float(a.position[0]), float(a.position[1]), float(a.position[2])] for a in u.atoms]
+        return {
+            "indices": indices,
+            "xyz": xyz,
+            "positions": dense,
+            "affected_count": len(indices),
+        }
+
+    # Align (and anything else): StructureManager path, positions only
+    mv = StructureManager()
+    mv.load_structure(payload.path)
+    indices = _apply_mv_op(mv, payload.selection, op)
+    atoms = mv.structure.atoms
+    if indices is None:
+        indices = list(range(len(atoms)))
+    xyz = []
+    for i in indices:
+        c = atoms[i].coord
+        xyz.extend((float(c[0]), float(c[1]), float(c[2])))
+    dense = [
+        [float(a.coord[0]), float(a.coord[1]), float(a.coord[2])] for a in atoms
+    ]
+    return {
+        "indices": [int(i) for i in indices],
+        "xyz": xyz,
+        "positions": dense,
+        "affected_count": len(indices),
+    }
+
+
 @app.post("/transform/preview")
 def transform_preview(payload: TransformRequest) -> dict:
     """Return new atom positions after a transform without saving."""
     try:
-        mv = StructureManager()
-        mv.load_structure(payload.path)
-        indices = _apply_mv_op(mv, payload.selection, payload.op)
-        atoms = mv.structure.atoms
-        positions = [
-            [float(a.coord[0]), float(a.coord[1]), float(a.coord[2])] for a in atoms
-        ]
-        affected = len(indices) if indices is not None else len(atoms)
-        return {"positions": positions, "affected_count": affected}
-    except (StructureError, ValueError) as exc:
+        return _transform_compute_positions(payload)
+    except (StructureError, ValueError, FileNotFoundError) as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/transform/compute")
+def transform_compute(payload: TransformRequest) -> dict:
+    """Compute transform positions in memory (no temp PDB, no bond rebuild for rigid ops)."""
+    try:
+        return _transform_compute_positions(payload)
+    except (StructureError, ValueError, FileNotFoundError) as exc:
         raise HTTPException(400, str(exc))
     except Exception as exc:
         raise HTTPException(400, str(exc))
@@ -4239,7 +4358,7 @@ def transform_preview(payload: TransformRequest) -> dict:
 
 @app.post("/transform/apply")
 def transform_apply(payload: TransformRequest) -> dict:
-    """Apply a transform, save to temp PDB, return updated structure."""
+    """Deprecated for interactive use: apply + temp PDB (kept for older callers)."""
     try:
         return _mv_edit(
             payload.path, lambda mv: _apply_mv_op(mv, payload.selection, payload.op)

@@ -553,6 +553,21 @@ export function editSavePdb(payload) {
 }
 
 /**
+ * Write a PDB with updated coordinates (in-memory edits) using source as template.
+ * @param {{ source: string, dest: string, indices: number[], xyz: number[], topology?: string|null }} payload
+ * @returns {Promise<{ path: string, success: boolean, count: number }>}
+ */
+export function structureWriteCoords(payload) {
+  return backendJson('/structure/write-coords', {
+    source: payload.source,
+    dest: payload.dest,
+    indices: payload.indices,
+    xyz: payload.xyz,
+    topology: payload.topology ?? null
+  })
+}
+
+/**
  * Rename chain for specific atoms by index list.
  * @param {{ path: string, indices: number[], newChain: string }} payload
  */
@@ -607,16 +622,26 @@ export function transformCountSelection(payload) {
 }
 
 /**
- * Preview a transform — returns new atom positions without saving.
+ * Preview / compute a transform — positions only (no temp PDB).
  * @param {{ path: string, selection?: string|null, op: object }} payload
- * @returns {Promise<{ positions: number[][], affected_count: number }>}
+ * @returns {Promise<{ positions: number[][], indices?: number[], xyz?: number[], affected_count: number }>}
  */
 export function transformPreview(payload) {
   return backendJson('/transform/preview', payload)
 }
 
 /**
+ * Compute transform positions in memory (preferred over /transform/apply).
+ * @param {{ path: string, selection?: string|null, op: object }} payload
+ * @returns {Promise<{ positions: number[][], indices?: number[], xyz?: number[], affected_count: number }>}
+ */
+export function transformCompute(payload) {
+  return backendJson('/transform/compute', payload)
+}
+
+/**
  * Apply a transform, save to temp PDB, return updated structure.
+ * @deprecated Prefer transformCompute + in-memory commit; kept for legacy callers.
  * @param {{ path: string, selection?: string|null, op: object }} payload
  * @returns {Promise<{ path: string, atoms: object[], bonds: number[][] }>}
  */

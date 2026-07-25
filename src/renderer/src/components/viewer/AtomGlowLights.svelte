@@ -1,6 +1,7 @@
 <script>
   import { T, useThrelte } from '@threlte/core'
   import { Color, Group, PointLight } from 'three'
+  import { onDestroy } from 'svelte'
   import { clampGlowMaxLights, selectGlowLightAtoms } from '../../lib/viewer/glowLights.js'
   import { viewerWarn, warnIfManyGlowLights } from '../../lib/viewer/viewerDiagnostics.js'
   import { beginViewerBusy, endViewerBusy } from '../../lib/viewer/viewerBusy.svelte.js'
@@ -11,6 +12,8 @@
 
   /** Debounce Max bulbs before tearing down and rebuilding all lights. */
   const MAX_LIGHTS_DEBOUNCE_MS = 400
+
+  const EMPTY_HIGHLIGHT = new Set()
 
   /**
    * @typedef {{ x: number, y: number, z: number, element?: string, index?: number }} Atom
@@ -50,6 +53,9 @@
   let pickedAtoms = []
   let debouncedMaxLights = $state(0)
   let debounceInitialized = false
+  /** @type {string} */
+  let lastPickKey = ''
+  let buildGeneration = 0
 
   $effect(() => {
     const requested = maxLights
@@ -65,7 +71,6 @@
   })
 
   const _tmpColor = new Color()
-  let buildGeneration = 0
 
   function disposeLights() {
     if (!groupRef) return
@@ -77,23 +82,43 @@
     pickedAtoms = []
   }
 
-  /** Rebuild bulb positions when pool / cap / filter changes — not on color or power tweaks. */
+  /**
+   * Stable signature of which bulbs exist and where — ignores array identity so
+   * select-mode hover re-renders (new atoms[] each time) do not tear down lights.
+   * @param {Atom[]} picked
+   * @param {string} filter
+   * @param {number} max
+   */
+  function pickKeyFor(picked, filter, max) {
+    let key = `${filter}|${max}|${picked.length}`
+    for (const a of picked) {
+      key += `|${a.index ?? -1}:${a.x.toFixed(2)}:${a.y.toFixed(2)}:${a.z.toFixed(2)}`
+    }
+    return key
+  }
+
+  /** Rebuild bulb positions when pool / cap / filter / pose changes — not on hover noise. */
   $effect(() => {
     const group = groupRef
     const filter = atomFilter
-    const hi = highlightIndices
-    const atomList = atoms
     const requestedMax = maxLights
     const max = debouncedMaxLights || clampGlowMaxLights(requestedMax)
     const on = enabled
+    const atomList = atoms
+    // Hover/selection only matter for the “highlighted” filter; ignore otherwise so
+    // pointer motion in select mode does not rebuild all / non-hydrogen bulbs.
+    const hi = filter === 'highlighted' ? highlightIndices : EMPTY_HIGHLIGHT
+    if (filter === 'highlighted') void [...hi].join(',')
 
     if (!group || !on) {
+      lastPickKey = ''
       disposeLights()
       return
     }
 
     const colorFn = untrack(() => getColor)
     if (!colorFn) {
+      lastPickKey = ''
       disposeLights()
       return
     }
@@ -103,6 +128,13 @@
       maxLights: max,
       highlightIndices: hi
     })
+    const pickKey = pickKeyFor(picked, filter, max)
+
+    // Same bulbs + positions: keep existing PointLights (avoids flicker).
+    if (pickKey === lastPickKey && lights.length === picked.length) {
+      return
+    }
+    lastPickKey = pickKey
 
     if (import.meta.env?.DEV && atomList.length > 0 && picked.length === 0) {
       viewerWarn(
@@ -144,6 +176,7 @@
 
     function addBatch() {
       if (gen !== buildGeneration || !groupRef) {
+        finishBusy()
         return
       }
 
@@ -171,11 +204,18 @@
 
     requestAnimationFrame(addBatch)
 
+    // Do not dispose in effect cleanup — that re-ran on every hover and caused flicker.
+    // Cancel only an in-flight batched build when inputs truly change (gen bump above).
     return () => {
       buildGeneration += 1
-      disposeLights()
       finishBusy()
     }
+  })
+
+  onDestroy(() => {
+    buildGeneration += 1
+    disposeLights()
+    lastPickKey = ''
   })
 
   /** Live-tune bulb color when the scheme changes (no rebuild). */

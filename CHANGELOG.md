@@ -16,7 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Visualize:** moving atoms with the circular-menu gizmo no longer snaps back on dismiss; selection markers and the main representation stay on the same in-memory coordinates (late `/get-structure` responses cannot undo a transform)
+- **Visualize — Animation:** select-tool hover / temporary highlight layers are cleared and excluded when capturing a keyframe (no residual yellow/ball-stick selection baked into the animation)
+- **Visualize:** glowing material point lights no longer flicker while moving the pointer in select mode
 - **Visualize:** select / right-click only hit drawn atoms — hidden views (e.g. water) are ignored; cartoon/tube pick backbone only so VDW and ball-and-stick layers are easier to target
+
+### Changed
+
+- **Visualize:** transforms (gizmo / dialog) update coordinates in memory — no temp PDB on every drag; **Save PDB** writes when you choose (marker when unsaved)
+- **Visualize — Animation:** keyframes can store sparse coordinate patches for moved atoms so playback/export can interpolate atom motion without duplicating full structures
+- **Visualize — Animation:** unsaved atom moves (like unsaved color/representation edits) revert to the last keyframe when scrubbing the timeline; capture a keyframe to keep the new positions
 
 ## [1.0.12] - 2026-07-22
 

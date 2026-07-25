@@ -4,6 +4,7 @@ import { computeOverlayOpacity } from './fade.js'
 import { interpolateCameraPose } from './cameraPose.js'
 import { mergeTrackOrder, sortViewsByTracks, viewsById, cloneSerializedView, viewSnapshotAtOrBeforeTime, deriveViewTracks } from './tracks.js'
 import { interpolateLabelLift } from '../viewer/labelStyle.js'
+import { lerpPatches } from '../viewer/workingCoords.js'
 
 /**
  * @param {import('./schema.js').AnimationCameraPose} cam
@@ -540,7 +541,24 @@ function interpolateScene(a, b, t) {
  * @param {number} time_s
  * @param {string[]} [viewTracks]
  */
-export function interpolateAtTime(keyframes, time_s, viewTracks = []) {
+/**
+ * @param {import('./schema.js').AnimationKeyframe} from
+ * @param {import('./schema.js').AnimationKeyframe} to
+ * @param {number} localT
+ * @param {Map<number, [number, number, number]> | null} [baseCoords]
+ * @returns {{ indices: number[], xyz: number[] } | null}
+ */
+export function interpolateCoordPatch(from, to, localT, baseCoords = null) {
+  return lerpPatches(from?.coordPatch ?? null, to?.coordPatch ?? null, localT, baseCoords)
+}
+
+/**
+ * @param {import('./schema.js').AnimationKeyframe[]} keyframes
+ * @param {number} time_s
+ * @param {string[]} [viewTracks]
+ * @param {Map<number, [number, number, number]> | null} [baseCoords]
+ */
+export function interpolateAtTime(keyframes, time_s, viewTracks = [], baseCoords = null) {
   const seg = findKeyframeSegment(keyframes, time_s)
   if (!seg) return null
   const { from, to, localT, rawT, segmentDuration } = seg
@@ -575,6 +593,7 @@ export function interpolateAtTime(keyframes, time_s, viewTracks = []) {
       localT,
       rawT,
       segmentDuration
-    )
+    ),
+    coordPatch: interpolateCoordPatch(from, to, localT, baseCoords)
   }
 }
