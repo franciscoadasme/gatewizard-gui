@@ -1,8 +1,9 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, Notification, screen, shell } from 'electron'
-import { spawn } from 'child_process'
-import { existsSync, accessSync, readFileSync, statSync, watch } from 'fs'
-import { readFile, writeFile } from 'fs/promises'
+import { spawn, spawnSync } from 'child_process'
+import { existsSync, accessSync, readFileSync, statSync, watch, readdirSync } from 'fs'
+import { mkdir, readFile, writeFile } from 'fs/promises'
 import path, { join } from 'path'
+import { buildFfmpegEncodeArgs } from './animationEncode.js'
 
 /** Directory from which the process was started (terminal cwd). Captured early. */
 const LAUNCH_CWD = (() => {
@@ -1163,7 +1164,75 @@ ipcMain.handle('fs:writeText', async (_event, filePath, text) => {
 })
 
 ipcMain.handle('fs:writeBinary', async (_event, filePath, base64) => {
+  await mkdir(path.dirname(filePath), { recursive: true })
   await writeFile(filePath, Buffer.from(base64, 'base64'))
+})
+
+ipcMain.handle('animation:ensureDir', async (_event, dirPath) => {
+  if (!dirPath || typeof dirPath !== 'string') {
+    throw new Error('animation:ensureDir requires a directory path')
+  }
+  await mkdir(dirPath, { recursive: true })
+  await mkdir(join(dirPath, 'frames'), { recursive: true })
+  return dirPath
+})
+
+ipcMain.handle('animation:inspectOutputDir', async (_event, dirPath) => {
+  const base = String(dirPath ?? '').trim()
+  if (!base) {
+    return { exists: false, hasAnimationJson: false, frameCount: 0, hasVideo: false }
+  }
+  const exists = existsSync(base)
+  const hasAnimationJson = existsSync(join(base, 'animation.json'))
+  let frameCount = 0
+  try {
+    const framesDir = join(base, 'frames')
+    if (existsSync(framesDir)) {
+      frameCount = readdirSync(framesDir).filter((f) => /^frame_\d+\.png$/i.test(f)).length
+    }
+  } catch {
+    frameCount = 0
+  }
+  const encodedFiles = ['animation.mp4', 'animation.webm', 'animation.mov', 'animation.gif'].filter(
+    (name) => existsSync(join(base, name))
+  )
+  return {
+    exists,
+    hasAnimationJson,
+    frameCount,
+    hasVideo: encodedFiles.length > 0,
+    encodedFiles
+  }
+})
+
+ipcMain.handle('animation:checkFfmpeg', async () => {
+  try {
+    const result = spawnSync('ffmpeg', ['-version'], { encoding: 'utf8' })
+    const available = result.status === 0
+    const version = available ? (result.stdout || '').split('\n')[0]?.trim() ?? '' : ''
+    return { available, version }
+  } catch {
+    return { available: false, version: '' }
+  }
+})
+
+ipcMain.handle('animation:encodeVideo', async (_event, payload) => {
+  const framesDir = String(payload?.framesDir ?? '')
+  const outputPath = String(payload?.outputPath ?? '')
+  const format = String(payload?.format ?? 'mp4')
+  const fps = typeof payload?.fps === 'number' && payload.fps > 0 ? payload.fps : 30
+  if (!framesDir || !outputPath) {
+    return { ok: false, error: 'animation:encodeVideo requires framesDir and outputPath' }
+  }
+  const args = buildFfmpegEncodeArgs({ framesDir, outputPath, fps, format })
+  const result = spawnSync('ffmpeg', args, { encoding: 'utf8' })
+  if (result.status !== 0) {
+    const msg = String(result.stderr || result.stdout || 'ffmpeg failed to encode video')
+      .trim()
+      .slice(0, 2000)
+    return { ok: false, error: msg || 'ffmpeg failed to encode video' }
+  }
+  return { ok: true, outputPath }
 })
 
 async function fetchGatewizardVersion() {

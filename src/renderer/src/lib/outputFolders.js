@@ -55,3 +55,9 @@ export function defaultHydrationFolderName(workingFile) {
   if (!workingFile) return ''
   return `hydration_${pdbStem(workingFile).toLowerCase()}`
 }
+
+/** @param {string} [structurePath] */
+export function defaultAnimationFolderName(structurePath = '') {
+  if (!structurePath) return 'animation'
+  return `animation_${pdbStem(structurePath).toLowerCase()}`
+}

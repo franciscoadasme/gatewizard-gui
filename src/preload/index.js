@@ -22,6 +22,11 @@ const api = {
   writeText: (filePath, text) => ipcRenderer.invoke('fs:writeText', filePath, text),
   writeBinary: (filePath, base64) => ipcRenderer.invoke('fs:writeBinary', filePath, base64),
 
+  animationEnsureDir: (dirPath) => ipcRenderer.invoke('animation:ensureDir', dirPath),
+  animationInspectOutputDir: (dirPath) => ipcRenderer.invoke('animation:inspectOutputDir', dirPath),
+  animationCheckFfmpeg: () => ipcRenderer.invoke('animation:checkFfmpeg'),
+  animationEncodeVideo: (payload) => ipcRenderer.invoke('animation:encodeVideo', payload),
+
   checkForUpdates: () => ipcRenderer.invoke('updates:check'),
   getUpdateManifestUrl: () => ipcRenderer.invoke('updates:get-manifest-url'),
   openExternalUrl: (url) => ipcRenderer.invoke('updates:open-url', url),
