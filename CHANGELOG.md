@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Visualize:** moving atoms with the circular-menu gizmo no longer snaps back on dismiss; selection markers and the main representation stay on the same in-memory coordinates (late `/get-structure` responses cannot undo a transform)
 - **Visualize — Animation:** select-tool hover / temporary highlight layers are cleared and excluded when capturing a keyframe (no residual yellow/ball-stick selection baked into the animation)
 - **Visualize:** glowing material point lights no longer flicker while moving the pointer in select mode
+- **Visualize — Animation:** GIF export works with FFmpeg (palette filter uses `-filter_complex`; frame sequence starts at `frame_000001.png`)
 - **Visualize:** select / right-click only hit drawn atoms — hidden views (e.g. water) are ignored; cartoon/tube pick backbone only so VDW and ball-and-stick layers are easier to target
 
 ### Changed

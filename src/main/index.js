@@ -3,7 +3,7 @@ import { spawn, spawnSync } from 'child_process'
 import { existsSync, accessSync, readFileSync, statSync, watch, readdirSync } from 'fs'
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import path, { join } from 'path'
-import { buildFfmpegEncodeArgs } from './animationEncode.js'
+import { buildFfmpegEncodeArgs, formatFfmpegError } from './animationEncode.js'
 
 /** Directory from which the process was started (terminal cwd). Captured early. */
 const LAUNCH_CWD = (() => {
@@ -1225,12 +1225,12 @@ ipcMain.handle('animation:encodeVideo', async (_event, payload) => {
     return { ok: false, error: 'animation:encodeVideo requires framesDir and outputPath' }
   }
   const args = buildFfmpegEncodeArgs({ framesDir, outputPath, fps, format })
-  const result = spawnSync('ffmpeg', args, { encoding: 'utf8' })
+  const result = spawnSync('ffmpeg', args, { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
   if (result.status !== 0) {
-    const msg = String(result.stderr || result.stdout || 'ffmpeg failed to encode video')
-      .trim()
-      .slice(0, 2000)
-    return { ok: false, error: msg || 'ffmpeg failed to encode video' }
+    const msg = formatFfmpegError(
+      result.stderr || result.stdout || result.error?.message || 'ffmpeg failed to encode video'
+    )
+    return { ok: false, error: msg }
   }
   return { ok: true, outputPath }
 })

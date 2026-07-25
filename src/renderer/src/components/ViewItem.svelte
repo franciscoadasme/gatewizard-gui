@@ -1261,9 +1261,10 @@ Distance:
                 </div>
               {/each}
               <p class="text-[10px] leading-snug text-neutral-500 dark:text-neutral-400">
-                Surface glow = self-lit atoms; scene bulbs = point lights (max {GLOW_LIGHTS_HARD_MAX}
-                — WebGL shader limit). Max bulbs only matters when eligible atoms exceed the cap.
-                Lower Surface glow to see metalness / roughness.
+                Surface glow = atoms tint themselves (always all of them). Max bulbs = how many
+                atoms also cast point light into the scene (capped at {GLOW_LIGHTS_HARD_MAX} for
+                WebGL). If Surface glow is high, changing Max bulbs is hard to notice — lower
+                Surface glow and raise Light power, or use a small selection / “Selected only”.
               </p>
             </div>
           {:else}
