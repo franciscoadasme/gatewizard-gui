@@ -2,6 +2,7 @@
   import Button from './ui/Button.svelte'
   import ColorInput from './ui/ColorInput.svelte'
   import Input from './ui/Input.svelte'
+  import RangeInput from './ui/RangeInput.svelte'
   import {
     addDirectionalLight,
     removeDirectionalLight,
@@ -98,16 +99,14 @@
     </div>
     <div class="flex items-center gap-2">
       <span class="w-12 shrink-0 text-neutral-600 dark:text-neutral-400">Power</span>
-      <input
-        type="range"
-        class="flex-1 accent-blue-500"
+      <RangeInput
+        bind:value={viewerSettings.hemisphereIntensity}
         min={0}
         max={3}
         step={0.05}
-        bind:value={viewerSettings.hemisphereIntensity}
+        decimals={2}
         oninput={maybePersist}
       />
-      <span class="w-10 text-right tabular-nums">{viewerSettings.hemisphereIntensity.toFixed(2)}</span>
     </div>
   </section>
 
@@ -116,16 +115,14 @@
     <p class="font-medium text-neutral-800 dark:text-neutral-300">Ambient light</p>
     <div class="flex items-center gap-2">
       <span class="w-12 shrink-0 text-neutral-600 dark:text-neutral-400">Power</span>
-      <input
-        type="range"
-        class="flex-1 accent-blue-500"
+      <RangeInput
+        bind:value={viewerSettings.ambientIntensity}
         min={0}
         max={3}
         step={0.05}
-        bind:value={viewerSettings.ambientIntensity}
+        decimals={2}
         oninput={maybePersist}
       />
-      <span class="w-10 text-right tabular-nums">{viewerSettings.ambientIntensity.toFixed(2)}</span>
     </div>
   </section>
 
@@ -169,16 +166,14 @@
         </div>
         <div class="flex items-center gap-2">
           <span class="w-12 shrink-0 text-neutral-600 dark:text-neutral-400">Power</span>
-          <input
-            type="range"
-            class="flex-1 accent-blue-500"
+          <RangeInput
+            bind:value={light.intensity}
             min={0}
             max={2}
             step={0.02}
-            bind:value={light.intensity}
+            decimals={2}
             oninput={maybePersist}
           />
-          <span class="w-8 text-right tabular-nums">{light.intensity.toFixed(2)}</span>
         </div>
         <div class="grid grid-cols-3 gap-1">
           {#each ['X', 'Y', 'Z'] as axis, j (axis)}
