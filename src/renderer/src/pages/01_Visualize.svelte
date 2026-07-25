@@ -4588,7 +4588,7 @@
       {#if openMenuOpen}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
-          class="min-w-48 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-[11px] shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
+          class="viz-toolbar-menu"
           style={toolbarMenuFixedStyle(openMenuBtnEl)}
           onpointerenter={() => clearTimeout(_openHoverTimer)}
           onpointerleave={() => {
@@ -4597,7 +4597,7 @@
         >
           <button
             type="button"
-            class="w-full px-3 py-1.5 text-left text-neutral-700 transition-colors hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800"
+            class="viz-toolbar-menu-item"
             onclick={() => {
               openMenuOpen = false
               onOpenPdb()
@@ -4608,7 +4608,7 @@
           </button>
           <button
             type="button"
-            class="w-full px-3 py-1.5 text-left text-neutral-700 transition-colors hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800"
+            class="viz-toolbar-menu-item"
             onclick={() => {
               openMenuOpen = false
               onOpenWithTopology()
@@ -4617,10 +4617,10 @@
           >
             With topology…
           </button>
-          <div class="my-0.5 border-t border-neutral-200 dark:border-neutral-800"></div>
+          <div class="viz-toolbar-menu-sep"></div>
           <button
             type="button"
-            class="w-full px-3 py-1.5 text-left text-neutral-700 transition-colors hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800"
+            class="viz-toolbar-menu-item"
             onclick={() => {
               openMenuOpen = false
               onAnimLoadProject()
@@ -4631,7 +4631,7 @@
           </button>
           <button
             type="button"
-            class="w-full px-3 py-1.5 text-left text-neutral-700 transition-colors hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800"
+            class="viz-toolbar-menu-item"
             onclick={() => {
               openMenuOpen = false
               onLoadViewpoint()
@@ -4723,7 +4723,7 @@
       {#if selectMenuOpen}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
-          class="min-w-32 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
+          class="viz-toolbar-menu"
           style={toolbarMenuFixedStyle(selectMenuBtnEl)}
           onpointerenter={() => clearTimeout(_selectHoverTimer)}
           onpointerleave={() => {
@@ -4733,10 +4733,9 @@
           {#each [['atom', 'Atom'], ['residue', 'Residue'], ['chain', 'Chain'], ['molecule', 'Molecule']] as [key, label]}
             <button
               type="button"
-              class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors
-                {editMode && editSelectionLevel === key
-                ? 'bg-orange-500/15 text-orange-300'
-                : 'text-neutral-200 hover:bg-neutral-800'}"
+              class="viz-toolbar-menu-item {editMode && editSelectionLevel === key
+                ? 'viz-toolbar-menu-item-active'
+                : ''}"
               onclick={() => {
                 if (editMode && editSelectionLevel === key) {
                   editMode = false
@@ -4759,10 +4758,10 @@
               {label}
             </button>
           {/each}
-          <div class="my-0.5 border-t border-neutral-800"></div>
+          <div class="viz-toolbar-menu-sep"></div>
           <button
             type="button"
-            class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-neutral-700 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800 dark:hover:text-white"
+            class="viz-toolbar-menu-item"
             onclick={() => {
               selectMenuOpen = false
               customSelInput = ''
@@ -4774,10 +4773,10 @@
             Custom (MDAnalysis…)
           </button>
           {#if editMode}
-            <div class="my-0.5 border-t border-neutral-800"></div>
+            <div class="viz-toolbar-menu-sep"></div>
             <button
               type="button"
-              class="w-full px-3 py-1.5 text-left text-xs text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-white"
+              class="viz-toolbar-menu-item"
               onclick={() => {
                 editMode = false
                 selectMenuOpen = false
@@ -4813,7 +4812,7 @@
       {#if editMenuOpen}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
-          class="min-w-44 overflow-hidden rounded border border-neutral-200 bg-white py-1 text-[11px] shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
+          class="viz-toolbar-menu"
           style={toolbarMenuFixedStyle(editMenuBtnEl)}
           onpointerenter={() => clearTimeout(_editMenuHoverTimer)}
           onpointerleave={() => {
@@ -4823,7 +4822,7 @@
           <!-- Transform dialog -->
           <button
             type="button"
-            class="w-full px-3 py-1 text-left hover:bg-neutral-800"
+            class="viz-toolbar-menu-item"
             onclick={() => {
               editMenuOpen = false
               previewPositions = null
@@ -4835,14 +4834,12 @@
               dlgTransform?.showModal()
             }}>Transform (rotate / translate / align)…</button
           >
-          <div class="my-0.5 border-t border-neutral-800"></div>
+          <div class="viz-toolbar-menu-sep"></div>
           <!-- Edit structure operations -->
-          <div class="px-3 py-0.5 text-[10px] tracking-wide text-neutral-500 uppercase">
-            Edit structure
-          </div>
+          <div class="viz-toolbar-menu-label">Edit structure</div>
           <button
             type="button"
-            class="w-full px-3 py-1 text-left hover:bg-neutral-800"
+            class="viz-toolbar-menu-item"
             onclick={() => {
               editMenuOpen = false
               dlgRenameChain?.showModal()
@@ -4850,7 +4847,7 @@
           >
           <button
             type="button"
-            class="w-full px-3 py-1 text-left hover:bg-neutral-800"
+            class="viz-toolbar-menu-item"
             onclick={() => {
               editMenuOpen = false
               dlgRenameRes?.showModal()
@@ -4858,16 +4855,16 @@
           >
           <button
             type="button"
-            class="w-full px-3 py-1 text-left hover:bg-neutral-800"
+            class="viz-toolbar-menu-item"
             onclick={() => {
               editMenuOpen = false
               dlgRenumberRes?.showModal()
             }}>Renumber Residues…</button
           >
-          <div class="my-0.5 border-t border-neutral-800"></div>
+          <div class="viz-toolbar-menu-sep"></div>
           <button
             type="button"
-            class="w-full px-3 py-1 text-left text-red-400 hover:bg-red-900/20"
+            class="viz-toolbar-menu-item viz-toolbar-menu-item-danger"
             onclick={() => {
               editMenuOpen = false
               dlgDeleteAtoms?.showModal()
@@ -4902,28 +4899,24 @@
       {#if toolsMenuOpen}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
-          class="min-w-[10rem] overflow-hidden rounded border border-neutral-200 bg-white py-1 text-[11px] shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
+          class="viz-toolbar-menu"
           style={toolbarMenuFixedStyle(toolsMenuBtnEl)}
           onpointerenter={() => clearTimeout(_toolsMenuHoverTimer)}
           onpointerleave={() => {
             _toolsMenuHoverTimer = setTimeout(() => (toolsMenuOpen = false), 280)
           }}
         >
-          <button
-            type="button"
-            class="w-full px-3 py-1 text-left hover:bg-neutral-100 dark:hover:bg-neutral-800"
-            onclick={openMemproDialog}>MemPro orientation</button
+          <button type="button" class="viz-toolbar-menu-item" onclick={openMemproDialog}
+            >MemPro orientation</button
           >
           <button
             type="button"
-            class="w-full px-3 py-1 text-left hover:bg-neutral-100 dark:hover:bg-neutral-800"
+            class="viz-toolbar-menu-item"
             onclick={() => openPackmolDialog()}>Packmol hydration</button
           >
           <button
             type="button"
-            class="w-full px-3 py-1 text-left hover:bg-neutral-100 disabled:opacity-40 dark:hover:bg-neutral-800 {animateMode
-              ? 'bg-yellow-500/10 text-yellow-700 dark:text-yellow-300'
-              : ''}"
+            class="viz-toolbar-menu-item {animateMode ? 'viz-toolbar-menu-item-on' : ''}"
             disabled={!structure || animExporting}
             onclick={toggleAnimateMode}
             title="Keyframe animation: capture views and export video"
