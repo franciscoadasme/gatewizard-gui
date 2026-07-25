@@ -11,6 +11,7 @@
 import { spawn, spawnSync } from 'child_process'
 import crypto from 'crypto'
 import { app } from 'electron'
+import { existsSync } from 'fs'
 import fs from 'fs/promises'
 import os from 'os'
 import path from 'path'
@@ -18,6 +19,8 @@ import { createInstallProgress } from './runtime-progress.js'
 
 const PYTHON_SPEC = '3.12'
 const MICROMAMBA_TAG = '2.0.8-0'
+/** Bump to reinstall / ensure ffmpeg in existing runtimes. */
+const FFMPEG_CONDA_REV = '1'
 
 /** @type {Set<import('child_process').ChildProcess>} */
 const activeInstallChildren = new Set()
@@ -427,11 +430,102 @@ function getCondaGromacsInstallAttempts() {
 
 /** Lightweight base env — OpenMM/CUDA install in a later step so create stays smaller. */
 function getCondaBasePackages() {
-  const pkgs = [`python=${PYTHON_SPEC}`, 'pip', 'openssl']
+  // ffmpeg: animation export (MP4/WebM/MOV/GIF). Available on conda-forge for
+  // linux / macOS / win-64; Windows GUI users typically run via WSL (linux env).
+  const pkgs = [`python=${PYTHON_SPEC}`, 'pip', 'openssl', 'ffmpeg']
   if (process.platform !== 'win32') {
     pkgs.push('git')
   }
   return pkgs
+}
+
+/**
+ * Candidate paths for ffmpeg inside a conda/micromamba prefix.
+ * @param {string} prefix
+ * @returns {string[]}
+ */
+function ffmpegCandidatesInPrefix(prefix) {
+  const root = path.resolve(prefix)
+  if (process.platform === 'win32') {
+    return [
+      path.join(root, 'Library', 'bin', 'ffmpeg.exe'),
+      path.join(root, 'Scripts', 'ffmpeg.exe'),
+      path.join(root, 'bin', 'ffmpeg.exe')
+    ]
+  }
+  return [path.join(root, 'bin', 'ffmpeg')]
+}
+
+/**
+ * Resolve ffmpeg: embedded runtime first, then system PATH.
+ * @returns {string} Absolute path or bare `ffmpeg` for PATH lookup
+ */
+export function resolveFfmpegBinary() {
+  /** @type {string[]} */
+  const prefixes = []
+  if (process.env.CONDA_PREFIX) prefixes.push(process.env.CONDA_PREFIX)
+  if (process.env.GATEWIZARD_RUNTIME_PREFIX) {
+    prefixes.push(path.resolve(process.env.GATEWIZARD_RUNTIME_PREFIX))
+  }
+  prefixes.push(getDefaultRuntimePrefix())
+  const py = cachedLaunchPython || process.env.GATEWIZARD_PYTHON
+  if (py) {
+    const inferred = inferCondaPrefixFromPython(py)
+    if (inferred) prefixes.push(inferred)
+  }
+  const seen = new Set()
+  for (const prefix of prefixes) {
+    if (!prefix || seen.has(prefix)) continue
+    seen.add(prefix)
+    for (const candidate of ffmpegCandidatesInPrefix(prefix)) {
+      if (existsSync(candidate)) return candidate
+    }
+  }
+  return 'ffmpeg'
+}
+
+async function installCondaFfmpeg(micromambaDest, runtimePrefix, mmEnv, onStatus) {
+  onStatus('Installing FFmpeg (animation export) from conda-forge…')
+  await appendRuntimeLog(
+    `[ffmpeg] starting conda install (prefix=${path.resolve(runtimePrefix)})\n`
+  )
+  await runProcess(
+    micromambaDest,
+    ['install', '-p', runtimePrefix, '-c', 'conda-forge', 'ffmpeg', '-y'],
+    { env: mmEnv, lowPriority: true, label: 'ffmpeg' }
+  )
+  const bin = ffmpegCandidatesInPrefix(runtimePrefix).find((p) => existsSync(p))
+  if (!bin) {
+    throw new Error(`ffmpeg installed but binary not found under ${runtimePrefix}`)
+  }
+  onStatus(`FFmpeg ready (${bin})`)
+  await appendRuntimeLog(`[ffmpeg] installed → ${bin}\n`)
+  return bin
+}
+
+async function syncCondaFfmpegIfNeeded({
+  micromambaDest,
+  runtimePrefix,
+  mmEnv,
+  onStatus,
+  state,
+  statePath,
+  extraState = {}
+}) {
+  const already =
+    state.ffmpegCondaRev === FFMPEG_CONDA_REV &&
+    ffmpegCandidatesInPrefix(runtimePrefix).some((p) => existsSync(p))
+  if (!already) {
+    await installCondaFfmpeg(micromambaDest, runtimePrefix, mmEnv, onStatus)
+  }
+  const nextState = {
+    ...state,
+    ...extraState,
+    ffmpegCondaRev: FFMPEG_CONDA_REV
+  }
+  if (JSON.stringify(nextState) === JSON.stringify(state)) return state
+  await fs.writeFile(statePath, JSON.stringify(nextState, null, 2), 'utf-8')
+  return nextState
 }
 
 function getCondaAmbertoolsPackages() {
@@ -1105,34 +1199,48 @@ export async function ensureMambaRuntime(options) {
     const envReady = condaOk && state.requirementsHash === requirementsHash
 
     if (envReady) {
-      if (process.platform !== 'win32') {
-        const needsOpenmm = state.openmmCondaRev !== OPENMM_CONDA_REV
-        const needsGromacs = state.gromacsCondaRev !== GROMACS_CONDA_REV
-        if (needsOpenmm || needsGromacs) {
-          progress.begin('cached', 'Syncing conda packages…')
-          const micromambaDest = await ensureMicromambaBinary((msg) => progress.note(msg))
-          if (needsOpenmm) {
-            progress.enter('sync', 'Refreshing OpenMM…')
-            state = await syncCondaOpenmmGpuIfNeeded({
-              micromambaDest,
-              runtimePrefix,
-              mmEnv,
-              onStatus: (msg) => progress.note(msg),
-              state,
-              statePath
-            })
-          }
-          if (needsGromacs) {
-            progress.enter('sync', 'Refreshing GROMACS…')
-            state = await syncCondaGromacsIfNeeded({
-              micromambaDest,
-              runtimePrefix,
-              mmEnv,
-              onStatus: (msg) => progress.note(msg),
-              state,
-              statePath
-            })
-          }
+      const needsFfmpeg =
+        state.ffmpegCondaRev !== FFMPEG_CONDA_REV ||
+        !ffmpegCandidatesInPrefix(runtimePrefix).some((p) => existsSync(p))
+      const needsOpenmm =
+        process.platform !== 'win32' && state.openmmCondaRev !== OPENMM_CONDA_REV
+      const needsGromacs =
+        process.platform !== 'win32' && state.gromacsCondaRev !== GROMACS_CONDA_REV
+      if (needsFfmpeg || needsOpenmm || needsGromacs) {
+        progress.begin('cached', 'Syncing conda packages…')
+        const micromambaDest = await ensureMicromambaBinary((msg) => progress.note(msg))
+        if (needsFfmpeg) {
+          progress.enter('sync', 'Installing FFmpeg…')
+          state = await syncCondaFfmpegIfNeeded({
+            micromambaDest,
+            runtimePrefix,
+            mmEnv,
+            onStatus: (msg) => progress.note(msg),
+            state,
+            statePath
+          })
+        }
+        if (needsOpenmm) {
+          progress.enter('sync', 'Refreshing OpenMM…')
+          state = await syncCondaOpenmmGpuIfNeeded({
+            micromambaDest,
+            runtimePrefix,
+            mmEnv,
+            onStatus: (msg) => progress.note(msg),
+            state,
+            statePath
+          })
+        }
+        if (needsGromacs) {
+          progress.enter('sync', 'Refreshing GROMACS…')
+          state = await syncCondaGromacsIfNeeded({
+            micromambaDest,
+            runtimePrefix,
+            mmEnv,
+            onStatus: (msg) => progress.note(msg),
+            state,
+            statePath
+          })
         }
       }
       cachedLaunchPython = pyPath
@@ -1189,6 +1297,15 @@ export async function ensureMambaRuntime(options) {
       })
       progress.enter('gromacs')
       state = await syncCondaGromacsIfNeeded({
+        micromambaDest,
+        runtimePrefix,
+        mmEnv,
+        onStatus: (msg) => progress.note(msg),
+        state,
+        statePath
+      })
+      progress.enter('ffmpeg')
+      state = await syncCondaFfmpegIfNeeded({
         micromambaDest,
         runtimePrefix,
         mmEnv,
@@ -1309,6 +1426,15 @@ export async function ensureMambaRuntime(options) {
       },
       statePath
     })
+    progress.enter('ffmpeg')
+    state = await syncCondaFfmpegIfNeeded({
+      micromambaDest,
+      runtimePrefix,
+      mmEnv,
+      onStatus: (msg) => progress.note(msg),
+      state,
+      statePath
+    })
 
     await fs.writeFile(
       statePath,
@@ -1320,7 +1446,8 @@ export async function ensureMambaRuntime(options) {
           runtimePrefix,
           openmmCondaRev: OPENMM_CONDA_REV,
           gromacsCondaRev: state.gromacsCondaRev ?? GROMACS_CONDA_REV,
-          gromacsCondaVariant: state.gromacsCondaVariant ?? null
+          gromacsCondaVariant: state.gromacsCondaVariant ?? null,
+          ffmpegCondaRev: state.ffmpegCondaRev ?? FFMPEG_CONDA_REV
         },
         null,
         2

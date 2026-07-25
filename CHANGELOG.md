@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Visualize — Animation:** keyframe timeline with playback, per-track fades/easing, safe-area guide, and export to video (ffmpeg) or frame sequence
 - **Visualize — Viewpoints:** save/open a full view snapshot (structure, camera, representations, lights, labels, measurements)
 - **Visualize — Labels:** background color/opacity, padding, corner radius, and lift distance/direction (works in live view and animation)
+- **Runtime:** conda-forge **FFmpeg** is installed with the embedded micromamba environment (Linux / macOS / WSL) so animation video/GIF export works without a separate system FFmpeg
 - **Visualize:** split a representation by chain, residue, residue name, molecule, or element (not only chain)
 
 ### Fixed

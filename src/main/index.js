@@ -59,7 +59,15 @@ import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import appWindowIcon from '../../resources/brand/logos/app-window-dark.png?asset'
 import { resolveAppWindowIconPath } from '../../resources/brand/manifest.mjs'
 // Brand asset map: resources/brand/manifest.mjs (use getAppWindowIconUrl when theme toggle exists)
-import { ensureMambaRuntime, getGatewizardDataRoot, getLaunchPythonPath, inferCondaPrefixFromPython, upgradeGatewizardPackage, abortRuntimeInstalls } from './runtime-bootstrap.js'
+import {
+  abortRuntimeInstalls,
+  ensureMambaRuntime,
+  getGatewizardDataRoot,
+  getLaunchPythonPath,
+  inferCondaPrefixFromPython,
+  resolveFfmpegBinary,
+  upgradeGatewizardPackage
+} from './runtime-bootstrap.js'
 import { checkForUpdates, getLocalGuiVersion, getManifestUrl } from './update-check.js'
 import {
   applyWorkAreaMaximize,
@@ -1207,12 +1215,13 @@ ipcMain.handle('animation:inspectOutputDir', async (_event, dirPath) => {
 
 ipcMain.handle('animation:checkFfmpeg', async () => {
   try {
-    const result = spawnSync('ffmpeg', ['-version'], { encoding: 'utf8' })
+    const bin = resolveFfmpegBinary()
+    const result = spawnSync(bin, ['-version'], { encoding: 'utf8' })
     const available = result.status === 0
     const version = available ? (result.stdout || '').split('\n')[0]?.trim() ?? '' : ''
-    return { available, version }
+    return { available, version, path: available ? bin : '' }
   } catch {
-    return { available: false, version: '' }
+    return { available: false, version: '', path: '' }
   }
 })
 
@@ -1224,15 +1233,16 @@ ipcMain.handle('animation:encodeVideo', async (_event, payload) => {
   if (!framesDir || !outputPath) {
     return { ok: false, error: 'animation:encodeVideo requires framesDir and outputPath' }
   }
+  const bin = resolveFfmpegBinary()
   const args = buildFfmpegEncodeArgs({ framesDir, outputPath, fps, format })
-  const result = spawnSync('ffmpeg', args, { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
+  const result = spawnSync(bin, args, { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
   if (result.status !== 0) {
     const msg = formatFfmpegError(
       result.stderr || result.stdout || result.error?.message || 'ffmpeg failed to encode video'
     )
     return { ok: false, error: msg }
   }
-  return { ok: true, outputPath }
+  return { ok: true, outputPath, ffmpeg: bin }
 })
 
 async function fetchGatewizardVersion() {
