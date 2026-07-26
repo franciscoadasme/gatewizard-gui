@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Equilibration:** job cards no longer show “interrupted” while MD is actively running (show “running” instead; “interrupted” only when the process has stopped and a continue is available)
+- **Equilibration:** after Kill MD, do not mark the current GROMACS stage as finished/100% when the log still contains `Finished mdrun` but steps are below `nsteps` (keep partial ns; needs matching gatewizard log-parser fix)
 - **Equilibration:** compute-target warning refers to the selected executable (and suggests a matching CUDA/OpenCL build from the list) instead of implying the PC has no GPU
 - **Equilibration:** GROMACS `run_equilibration.sh` now includes UI CPU/GPU settings on `mdrun` (`-ntomp`, `-nb gpu`, `-pme gpu`, `-gpu_id`); OpenMM scripts pass `--device` / `--threads` (NAMD already had `+p` / `+devices`)
 - **Visualize:** moving atoms with the circular-menu gizmo no longer snaps back on dismiss; selection markers and the main representation stay on the same in-memory coordinates (late `/get-structure` responses cannot undo a transform)

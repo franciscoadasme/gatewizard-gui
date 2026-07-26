@@ -3048,25 +3048,30 @@ def get_equilibration_status(payload: EquilibrationRequest) -> dict:
 
         response["stages"].append(data)
 
-    if is_equilibration_process_running(workdir, engine):
+    process_running = is_equilibration_process_running(workdir, engine)
+    if process_running:
         response["status"] = "running"
-    elif response["stages"] and any(
-        info["status"] == "error" for info in response["stages"]
-    ):
-        response["status"] = "error"
-    elif response["stages"] and all(
-        info["status"] == "completed" for info in response["stages"]
-    ):
-        response["status"] = "completed"
-    elif engine in {"gromacs", "openmm"}:
-        # Do not treat bare "error" as failure — GROMACS unused-macro
-        # warnings include the phrase "spelling error".
-        if _equilibration_log_failure_line(response["output"]):
+    else:
+        # Kill MD / crash: demote stage "running" so the UI does not keep a spinner.
+        for stage in response["stages"]:
+            if stage.get("status") == "running":
+                stage["status"] = "error"
+
+        if response["stages"] and any(
+            info["status"] == "error" for info in response["stages"]
+        ):
             response["status"] = "error"
-        else:
-            output_lower = response["output"].lower()
-            if "complete" in output_lower or "finished" in output_lower:
-                response["status"] = "completed"
+        elif response["stages"] and all(
+            info["status"] == "completed" for info in response["stages"]
+        ):
+            response["status"] = "completed"
+        elif engine in {"gromacs", "openmm"}:
+            # Do not treat bare "error" as failure — GROMACS unused-macro
+            # warnings include the phrase "spelling error".
+            # Also do NOT promote the job to "completed" just because the background
+            # log contains "Finished mdrun" / "complete" — Kill MD still prints those.
+            if _equilibration_log_failure_line(response["output"]):
+                response["status"] = "error"
 
     return response
 
