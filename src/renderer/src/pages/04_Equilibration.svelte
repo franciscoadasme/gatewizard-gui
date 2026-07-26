@@ -177,6 +177,24 @@
     const hit = engineCandidates.find((c) => c.id === engineCandidateId)
     availableCompute = availableFromVariant(hit?.variant ?? null)
   }
+
+  /** Other discovered installs that support a compute target the current executable does not. */
+  function candidatesSupportingTarget(target) {
+    if (target === 'auto' || engine === 'openmm') return []
+    return engineCandidates.filter((c) => {
+      if (c.id === engineCandidateId) return false
+      return availableFromVariant(c.variant ?? null).includes(target)
+    })
+  }
+
+  const selectedCandidateVariant = $derived(
+    engineCandidates.find((c) => c.id === engineCandidateId)?.variant ?? null
+  )
+  const computeTargetAltCandidates = $derived(
+    computeTarget !== 'auto' && !isComputeAvailable(computeTarget)
+      ? candidatesSupportingTarget(computeTarget)
+      : []
+  )
   /** @typedef {{ name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, elapsed_time_seconds: number|null, is_minimization?: boolean, steps_completed?: number|null, total_steps?: number|null, minimization_converged_early?: boolean, output: string }} EqStageInfo */
   /** @typedef {{ jobDir: string, name: string, engine: string, variant: string|null, status: string, startTime: string, elapsed: string, stagesDone: number, stagesTotal: number, error: string|null, canRun: boolean, canResume: boolean, resumeReason: string, resumeStageName: string, resources: import('../lib/backendApi.js').EquilibrationJobResources | null, inputDir: string|null, ensemble: string|null, protocol: { name: string, description?: string, stages: object[] }|null, stages: EqStageInfo[], watched: boolean, showInfo: boolean, processInfo: { pid: number|null, running: boolean, command: string|null, start_time: string|null, working_dir: string, engine: string } | null, loadingProcessInfo: boolean, stopping: boolean, continuing: boolean, running: boolean, reloading: boolean, equilibrationOutput: string }} EquilibrationJob */
 
@@ -1279,8 +1297,8 @@
             Compute target
             <span
               class="inline-flex size-3.5 shrink-0 cursor-help items-center justify-center rounded-full border border-neutral-400 text-[9px] leading-none text-neutral-500 dark:border-neutral-500 dark:text-neutral-400"
-              title="Written into the generated run scripts (GPU flags / OpenMM PLATFORM). You can choose a target that is not available on this PC — e.g. prepare inputs here and run later on a CUDA machine. A green dot on a chip means that target was detected locally."
-              aria-label="About compute target: written into run scripts; may differ from this machine"
+              title="Written into the generated run scripts (GPU flags / OpenMM PLATFORM). A green dot means the currently selected executable supports that target. You can still choose CUDA/OpenCL for scripts even if this binary does not — pick a matching build from Executable, or run later on another machine."
+              aria-label="About compute target: based on selected executable; scripts may still target unsupported options"
               role="img"
               >i</span
             >
@@ -1295,8 +1313,8 @@
                 title={target === 'auto'
                   ? 'Auto-detect at run time'
                   : available
-                    ? `Available on this PC · select for scripts`
-                    : `Not detected here · still writable into scripts`}
+                    ? `Supported by the selected executable · select for scripts`
+                    : `Not supported by the selected executable · still writable into scripts`}
                 onclick={() => {
                   computeTarget = target
                 }}
@@ -1327,7 +1345,16 @@
           </div>
           {#if computeTarget !== 'auto' && !isComputeAvailable(computeTarget)}
             <p class="text-xs text-amber-600 dark:text-amber-400">
-              Not detected on this PC — scripts will still target {computeTarget}.
+              {#if computeTargetAltCandidates.length > 0}
+                Not supported by this executable{#if selectedCandidateVariant}
+                  ({selectedCandidateVariant}){/if} — select a {computeTarget} build from
+                  Executable (e.g. {computeTargetAltCandidates[0].label}). Scripts will still
+                  target {computeTarget}.
+              {:else}
+                Not supported by the selected executable{#if selectedCandidateVariant}
+                  ({selectedCandidateVariant}){/if} — scripts will still target {computeTarget}
+                  (e.g. for running later on another machine).
+              {/if}
             </p>
           {:else if computeTarget === 'auto'}
             <p class="sidebar-hint">
@@ -1336,7 +1363,9 @@
                 : 'Scripts prefer GPU when the engine supports it.'}
             </p>
           {:else if availableCompute.length > 0}
-            <p class="sidebar-hint">Available here: {availableCompute.join(', ')}</p>
+            <p class="sidebar-hint">
+              Selected executable supports: {availableCompute.join(', ')}
+            </p>
           {/if}
         </div>
       </div>
@@ -1649,7 +1678,9 @@
               {/if}
               {#if job.stagesTotal > 0}
                 <p class="mb-2 text-neutral-500">
-                  {#if job.status === 'not_started' && job.stagesDone === 0 && !job.canResume}
+                  {#if job.status === 'running'}
+                    {job.stagesDone}/{job.stagesTotal} stages · running
+                  {:else if job.status === 'not_started' && job.stagesDone === 0 && !job.canResume}
                     {job.stagesTotal} stages · inputs ready — not started yet
                   {:else if job.canResume || job.status === 'error'}
                     {job.stagesDone}/{job.stagesTotal} stages · interrupted
