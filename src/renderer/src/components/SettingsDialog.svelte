@@ -73,11 +73,12 @@
     versionsLoading = true
     versionsError = null
     try {
-      const [deps, namd, gromacs, openmm] = await Promise.all([
+      const [deps, namd, gromacs, openmm, amber] = await Promise.all([
         getDependencyVersions(),
         listEngineExecutables('namd').catch(() => ({ candidates: [] })),
         listEngineExecutables('gromacs').catch(() => ({ candidates: [] })),
-        listEngineExecutables('openmm').catch(() => ({ candidates: [] }))
+        listEngineExecutables('openmm').catch(() => ({ candidates: [] })),
+        listEngineExecutables('amber').catch(() => ({ candidates: [] }))
       ])
       versionsData = deps
       /** @type {typeof mdEngineCandidates} */
@@ -85,7 +86,8 @@
       for (const [engine, result] of [
         ['namd', namd],
         ['gromacs', gromacs],
-        ['openmm', openmm]
+        ['openmm', openmm],
+        ['amber', amber]
       ]) {
         const list = Array.isArray(result?.candidates) ? result.candidates : []
         if (list.length === 0) {
@@ -189,6 +191,8 @@
         return 'GROMACS'
       case 'openmm':
         return 'OpenMM'
+      case 'amber':
+        return 'Amber'
       case 'mempro':
         return 'MemPrO'
       case 'packmol':
