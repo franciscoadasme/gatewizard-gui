@@ -44,10 +44,15 @@ export function defaultEquilibrationFolderName(inputDir = '') {
   return base ? `03_equilibration_${base}` : '03_equilibration'
 }
 
-/** @param {string} [topologyPath] */
-export function defaultAnalysisFolderName(topologyPath = '') {
-  if (!topologyPath) return '04_analysis'
-  return `04_analysis_${topologyStem(topologyPath)}`
+/**
+ * Default analysis output folder under the working directory.
+ * Kept as a simple numbered name (not topology-stemmed) so energetic runs
+ * without a topology and structural runs share the same clear default.
+ *
+ * @param {string} [_topologyPath] unused; kept for call-site compatibility
+ */
+export function defaultAnalysisFolderName(_topologyPath = '') {
+  return '04_analysis'
 }
 
 /** @param {string} workingFile */

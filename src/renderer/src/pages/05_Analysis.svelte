@@ -50,7 +50,7 @@
   const outputDir = $derived(outputFolderPath(workingDir, resolveOutputFolderName()))
 
   $effect(() => {
-    if (workingDir && topologyPath && !outputFolderName.trim()) {
+    if (workingDir && !outputFolderName.trim()) {
       outputFolderName = defaultAnalysisFolderName(topologyPath)
     }
   })
@@ -81,7 +81,7 @@
   // --- Energetic state ---
   /** @type {Array<{ path: string, timeNs: string }>} */
   let logFiles = $state([])
-  let energeticEngine = $state('namd') // 'namd' | 'openmm' | 'gromacs'
+  let energeticEngine = $state('namd') // 'namd' | 'openmm' | 'gromacs' | 'amber'
   /** @type {string[]} */
   let availableProperties = $state([])
   /** @type {string[]} */
@@ -579,12 +579,46 @@
     }
   }
 
+  /** File picker filters for energetic logs — Amber uses mdout, others use .log. */
+  function energeticLogFilters() {
+    if (energeticEngine === 'amber') {
+      return [
+        { name: 'Amber mdout', extensions: ['mdout', 'out'] },
+        { name: 'Log / text', extensions: ['log', 'txt', 'csv'] },
+        { name: 'All Files', extensions: ['*'] }
+      ]
+    }
+    if (energeticEngine === 'gromacs') {
+      return [
+        { name: 'GROMACS log', extensions: ['log'] },
+        { name: 'Log / text', extensions: ['log', 'txt', 'csv'] },
+        { name: 'All Files', extensions: ['*'] }
+      ]
+    }
+    if (energeticEngine === 'openmm') {
+      return [
+        { name: 'OpenMM log', extensions: ['log'] },
+        { name: 'Log / text', extensions: ['log', 'txt', 'csv'] },
+        { name: 'All Files', extensions: ['*'] }
+      ]
+    }
+    return [
+      { name: 'NAMD log', extensions: ['log'] },
+      { name: 'Log / text', extensions: ['log', 'txt', 'csv'] },
+      { name: 'All Files', extensions: ['*'] }
+    ]
+  }
+
   async function addLogFile() {
-    const engineLabels = { namd: 'NAMD', openmm: 'OpenMM', gromacs: 'GROMACS' }
+    const engineLabels = { namd: 'NAMD', openmm: 'OpenMM', gromacs: 'GROMACS', amber: 'Amber' }
     const engineLabel = engineLabels[energeticEngine] || 'Engine'
+    const dialogTitle =
+      energeticEngine === 'amber'
+        ? `Add ${engineLabel} mdout Files`
+        : `Add ${engineLabel} Log Files`
     const result = await window.api.openFilesDialog(
-      `Add ${engineLabel} Log Files`,
-      [{ name: 'Log Files', extensions: ['log', 'txt', 'csv'] }],
+      dialogTitle,
+      energeticLogFilters(),
       workingDir || undefined
     )
     if (result.canceled) return
@@ -873,7 +907,7 @@
           x: rawX,
           y: s.y
         }))
-        chartTitle = `${{ namd: 'NAMD', openmm: 'OpenMM', gromacs: 'GROMACS' }[energeticEngine] || energeticEngine.toUpperCase()} Energetic Analysis`
+        chartTitle = `${{ namd: 'NAMD', openmm: 'OpenMM', gromacs: 'GROMACS', amber: 'Amber' }[energeticEngine] || energeticEngine.toUpperCase()} Energetic Analysis`
         chartXLabel = result.x_label || 'Time'
         chartYLabel = 'Value'
         const first = result.series?.[0]?.key
@@ -1460,17 +1494,24 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             <option value="namd">NAMD</option>
             <option value="openmm">OpenMM</option>
             <option value="gromacs">GROMACS</option>
+            <option value="amber">Amber</option>
           </Select>
         </div>
         <div class="flex items-center justify-between">
           <p class="sidebar-label">
-            {{ namd: 'NAMD', openmm: 'OpenMM', gromacs: 'GROMACS' }[energeticEngine]} log files
+            {energeticEngine === 'amber'
+              ? 'Amber mdout files'
+              : `${{ namd: 'NAMD', openmm: 'OpenMM', gromacs: 'GROMACS' }[energeticEngine]} log files`}
           </p>
           <Button size="sm" variant="outline" onclick={addLogFile}>+ Add</Button>
         </div>
 
         {#if logFiles.length === 0}
-          <p class="sidebar-hint">No log files selected.</p>
+          <p class="sidebar-hint">
+            {energeticEngine === 'amber'
+              ? 'No mdout files selected (e.g. step1_equilibration.mdout).'
+              : 'No log files selected.'}
+          </p>
         {:else}
           <div class="space-y-0.5">
             {#each logFiles as file, i (file.path)}
@@ -1866,15 +1907,14 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
     <Divider />
 
     <div class="space-y-2">
-      <h2 class="sidebar-heading">Output</h2>
+      <h2 class="sidebar-heading">Output folder</h2>
       <div class="space-y-1">
-        <p class="sidebar-label">Output folder</p>
         <Input
           type="text"
           size="sm"
           bind:value={outputFolderName}
           className="w-full"
-          placeholder="04_analysis_topology"
+          placeholder="04_analysis"
         />
         <p
           class="rounded-md border border-neutral-200 p-2 wrap-break-word sidebar-label dark:border-neutral-800"
