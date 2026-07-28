@@ -56,7 +56,9 @@
   let gpuDevice = $state(0)
   let inputDir = $state('')
   let outputName = $state('')
-  let protocol = $state(prepareProtocolForRendering(baseProtocol))
+  let protocol = $state(prepareProtocolForRendering(structuredClone(baseProtocol)))
+  /** Bumped when loading a job into the form so stage cards remount with new values. */
+  let protocolFormKey = $state(0)
 
   function resolveOutputFolderName() {
     if (outputName.trim()) return outputName.trim()
@@ -497,19 +499,115 @@
     }
   }
 
+  /**
+   * Merge job protocol with default selection aliases so constraint editors work.
+   * @param {object | null | undefined} raw
+   */
+  function protocolFromJobMetadata(raw) {
+    if (!raw || !Array.isArray(raw.stages) || raw.stages.length === 0) return null
+    const cloned = structuredClone(raw)
+    cloned.selections = {
+      ...(baseProtocol.selections ?? {}),
+      ...(cloned.selections ?? {})
+    }
+    // Ensure constraints are GUI list-shaped (API may still send dicts for older jobs)
+    for (const stage of cloned.stages) {
+      const c = stage?.constraints
+      if (c && !Array.isArray(c) && typeof c === 'object') {
+        stage.constraints = Object.entries(c).map(([key, force]) => ({
+          name: key.replace(/_/g, ' ').replace(/\b\w/g, (ch) => ch.toUpperCase()),
+          force_constant: Number(force),
+          selection: key
+        }))
+      }
+    }
+    return prepareProtocolForRendering(cloned)
+  }
+
+  /**
+   * Apply CPU/GPU / compute-target fields from job resources or first protocol stage.
+   * @param {EquilibrationJob} job
+   * @param {object | null} appliedProtocol
+   */
+  function applyJobResourcesToForm(job, appliedProtocol) {
+    const stage0 = appliedProtocol?.stages?.[0] ?? null
+    const res = job.resources ?? null
+
+    const cpu =
+      (typeof stage0?.cpu_cores === 'number' && stage0.cpu_cores > 0
+        ? stage0.cpu_cores
+        : null) ??
+      (typeof res?.cpu_cores_max === 'number' ? res.cpu_cores_max : null) ??
+      (typeof res?.cpu_cores_min === 'number' ? res.cpu_cores_min : null)
+    if (typeof cpu === 'number' && cpu > 0) totalCpus = cpu
+
+    const gpuId =
+      (typeof stage0?.gpu_id === 'number' ? stage0.gpu_id : null) ??
+      (typeof res?.gpu_id_min === 'number' ? res.gpu_id_min : null)
+    if (typeof gpuId === 'number' && gpuId >= 0) gpuDevice = gpuId
+
+    const numGpus =
+      (typeof stage0?.num_gpus === 'number' && stage0.num_gpus > 0
+        ? stage0.num_gpus
+        : null) ?? (typeof res?.num_gpus === 'number' ? res.num_gpus : null)
+    if (typeof numGpus === 'number' && numGpus > 0) totalGpus = numGpus
+
+    const useGpuFlag =
+      typeof stage0?.use_gpu === 'boolean'
+        ? stage0.use_gpu
+        : typeof res?.use_gpu === 'boolean'
+          ? res.use_gpu
+          : null
+    if (useGpuFlag === false) {
+      computeTarget = 'CPU'
+    } else if (job.variant && GPU_TARGETS.includes(job.variant)) {
+      computeTarget = /** @type {'CUDA' | 'OpenCL' | 'Metal'} */ (job.variant)
+    } else if (useGpuFlag === true && GPU_TARGETS.includes('CUDA')) {
+      computeTarget = 'CUDA'
+    }
+  }
+
   /** @param {EquilibrationJob} job */
-  function useJobInForm(job) {
+  async function useJobInForm(job) {
+    // Re-read folder metadata so protocol comes from equilibration_job.json /
+    // protocol_summary.json even if the card summary was incomplete.
+    let summaryProtocol = job.protocol
+    let summaryInput = job.inputDir
+    let summaryEnsemble = job.ensemble
+    let summaryResources = job.resources
+    let summaryVariant = job.variant
+    try {
+      const summary = await getEquilibrationJobSummary(job.jobDir, workingDir || undefined)
+      if (summary.protocol?.stages?.length) summaryProtocol = summary.protocol
+      if (summary.input_dir) summaryInput = summary.input_dir
+      if (summary.ensemble) summaryEnsemble = summary.ensemble
+      if (summary.resources) summaryResources = summary.resources
+      if (summary.variant) summaryVariant = summary.variant
+      if (summary.engine) engine = summary.engine
+    } catch {
+      /* use card fields */
+    }
+
     outputName = job.name
-    engine = job.engine
-    if (job.inputDir) {
-      inputDir = job.inputDir
+    engine = job.engine || engine
+    if (summaryInput) inputDir = summaryInput
+    if (summaryEnsemble) ensemble = summaryEnsemble.toLowerCase()
+
+    const applied = protocolFromJobMetadata(summaryProtocol)
+    if (applied) {
+      protocol = applied
+      protocolFormKey += 1
+    } else {
+      alert(
+        `No protocol metadata found in "${job.name}". ` +
+          'Generate inputs from this GUI (writes equilibration_job.json) or ensure protocol_summary.json exists.'
+      )
     }
-    if (job.ensemble) {
-      ensemble = job.ensemble.toLowerCase()
-    }
-    if (job.protocol?.stages?.length) {
-      protocol = prepareProtocolForRendering(structuredClone(job.protocol))
-    }
+
+    applyJobResourcesToForm(
+      { ...job, resources: summaryResources, variant: summaryVariant },
+      applied
+    )
     statusSynced = true
   }
 
@@ -833,6 +931,7 @@
     }
     try {
       protocol = prepareProtocolForRendering(await window.api.readJson(filePath))
+      protocolFormKey += 1
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
     }
@@ -1149,7 +1248,8 @@
     engineCandidates = []
     engineCandidateId = 'custom'
     selectedGmxrc = null
-    protocol = prepareProtocolForRendering(baseProtocol)
+    protocol = prepareProtocolForRendering(structuredClone(baseProtocol))
+    protocolFormKey += 1
     constraintEditor = null
     statusSynced = false
     generatingInputFiles = false
@@ -1590,14 +1690,16 @@
       </div>
       {#if isProtocolValid}
         <div class="flex min-h-0 w-full flex-1 items-start gap-4 overflow-auto pb-2">
-          {#each protocol.stages as _, i (protocol.stages[i].name)}
-            <EquilibrationStage
-              bind:stage={protocol.stages[i]}
-              {ensemble}
-              onAddConstraint={() => openConstraintEditorForAdd(i)}
-              onEditConstraint={(ci) => openConstraintEditorForEdit(i, ci)}
-            />
-          {/each}
+          {#key protocolFormKey}
+            {#each protocol.stages as _, i (protocol.stages[i].name + '-' + i)}
+              <EquilibrationStage
+                bind:stage={protocol.stages[i]}
+                {ensemble}
+                onAddConstraint={() => openConstraintEditorForAdd(i)}
+                onEditConstraint={(ci) => openConstraintEditorForEdit(i, ci)}
+              />
+            {/each}
+          {/key}
         </div>
       {:else}
         <Empty message="No protocol loaded" />
