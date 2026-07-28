@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Equilibration (Amber):** engine option alongside NAMD/GROMACS/OpenMM — generate/run/status, executable discovery in Settings, compute targets CPU/CUDA
+- **Builder:** Amber in the 4-site water MD-engine select (FlexibleWater remains NAMD-only)
+- **Analysis:** Amber energetic engine option (mdout parsing)
 - **Visualize — Animation:** keyframe timeline with playback, per-track fades/easing, safe-area guide, and export to video (ffmpeg) or frame sequence
 - **Visualize — Viewpoints:** save/open a full view snapshot (structure, camera, representations, lights, labels, measurements)
 - **Visualize — Labels:** background color/opacity, padding, corner radius, and lift distance/direction (works in live view and animation)
