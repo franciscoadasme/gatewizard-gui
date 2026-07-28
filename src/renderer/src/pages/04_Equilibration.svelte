@@ -42,7 +42,8 @@
   const engines = [
     { id: 'namd', label: 'NAMD' },
     { id: 'gromacs', label: 'GROMACS' },
-    { id: 'openmm', label: 'OpenMM' }
+    { id: 'openmm', label: 'OpenMM' },
+    { id: 'amber', label: 'Amber' }
   ]
 
   /** @type {{ workingDir?: string }} */
@@ -102,7 +103,8 @@
   let executableByEngine = $state({
     namd: 'namd3',
     gromacs: 'gmx',
-    openmm: 'python'
+    openmm: 'python',
+    amber: 'pmemd'
   })
   /** @type {number | null} */
   let systemSize = $state(null)
@@ -125,7 +127,7 @@
   )
 
   // derived values
-  const isEngineSupported = $derived(['namd', 'gromacs', 'openmm'].includes(engine))
+  const isEngineSupported = $derived(['namd', 'gromacs', 'openmm', 'amber'].includes(engine))
   const isProtocolValid = $derived(Array.isArray(protocol.stages) && protocol.stages.length > 0)
   const outputDir = $derived(outputFolderPath(workingDir, resolveOutputFolderName()))
   const formJob = $derived(jobs.find((j) => j.jobDir === outputDir))
@@ -342,7 +344,10 @@
       continuing: false,
       running: false,
       reloading: false,
-      equilibrationOutput: existing?.equilibrationOutput ?? ''
+      // Only keep stage error output while the job is still in error; Continue/resume
+      // must not resurrect a stale failure log under a running card.
+      equilibrationOutput:
+        summary.status === 'error' ? (existing?.equilibrationOutput ?? '') : ''
     }
   }
 
@@ -410,30 +415,37 @@
     const job = jobs[index]
     if (!job) return
     const prevStatus = job.status
+    const jobDir = job.jobDir
+    const jobName = job.name
     try {
-      const { status, stages, output, run_start_time } = await getEquilibrationStatus({
+      const { status, stages, run_start_time } = await getEquilibrationStatus({
         workingDir: job.jobDir,
         engine: job.engine
       })
-      let equilibrationOutput = job.equilibrationOutput
-      if (status === 'error') {
-        equilibrationOutput = stages.find((s) => s.status === 'error')?.output ?? ''
-      }
+      // Merge into the latest card state — concurrent Reload/Continue/poll must not
+      // re-apply a stale snapshot (e.g. reloading: true) after the await.
+      const current = jobs[index]
+      if (!current || current.jobDir !== jobDir) return
+      const equilibrationOutput =
+        status === 'error'
+          ? (stages.find((s) => s.status === 'error')?.output ?? '')
+          : ''
       jobs[index] = {
-        ...job,
+        ...current,
         status,
-        stages: stages.length > 0 ? stages : job.stages,
-        stagesDone: stages.filter((s) => s.status === 'completed').length || job.stagesDone,
-        stagesTotal: stages.length || job.stagesTotal,
-        startTime: run_start_time || job.startTime,
-        elapsed: formatJobElapsed(run_start_time || job.startTime),
-        equilibrationOutput
+        stages: stages.length > 0 ? stages : current.stages,
+        stagesDone: stages.filter((s) => s.status === 'completed').length || current.stagesDone,
+        stagesTotal: stages.length || current.stagesTotal,
+        startTime: run_start_time || current.startTime,
+        elapsed: formatJobElapsed(run_start_time || current.startTime),
+        equilibrationOutput,
+        error: status === 'error' ? current.error : null
       }
       if (prevStatus === 'running' && status !== 'running') {
         if (status === 'completed') {
-          logEvent('info', 'eq', `Job completed: ${job.name}`, `Elapsed: ${jobs[index].elapsed}`)
+          logEvent('info', 'eq', `Job completed: ${jobName}`, `Elapsed: ${jobs[index].elapsed}`)
         } else {
-          logEvent('info', 'eq', `Job ${status}: ${job.name}`, jobs[index].error || '')
+          logEvent('info', 'eq', `Job ${status}: ${jobName}`, jobs[index].error || '')
         }
       }
     } catch {
@@ -454,11 +466,13 @@
   async function reloadJobCard(/** @type {number} */ index) {
     const job = jobs[index]
     if (!job || job.reloading) return
+    const jobDir = job.jobDir
     jobs[index] = { ...job, reloading: true }
     try {
       const summary = await getEquilibrationJobSummary(job.jobDir, workingDir || undefined)
       const existing = jobs[index]
-      jobs[index] = { ...jobFromScan(summary, existing), reloading: false }
+      if (!existing || existing.jobDir !== jobDir) return
+      jobs[index] = { ...jobFromScan(summary, existing), reloading: true }
       if (jobs[index].watched) {
         await refreshJobDetail(index)
       }
@@ -475,8 +489,11 @@
         }
       }
     } catch (error) {
-      jobs[index] = { ...jobs[index], reloading: false }
       alert(error instanceof Error ? error.message : String(error))
+    } finally {
+      if (jobs[index]?.jobDir === jobDir) {
+        jobs[index] = { ...jobs[index], reloading: false }
+      }
     }
   }
 
@@ -588,9 +605,18 @@
         `Continuing equilibration: "${job.name}"`,
         `${job.engine.toUpperCase()} · from ${stageLabel}`
       )
-      jobs[index] = { ...jobs[index], watched: true, continuing: false }
+      jobs[index] = {
+        ...jobs[index],
+        watched: true,
+        continuing: false,
+        status: 'running',
+        error: null,
+        equilibrationOutput: ''
+      }
       startPolling()
       await rescanJobs()
+      const idx = jobs.findIndex((j) => j.jobDir === job.jobDir)
+      if (idx >= 0) await refreshJobDetail(idx)
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
       jobs[index] = { ...jobs[index], continuing: false }
@@ -918,7 +944,7 @@
         selectedGmxrc = match.gmxrc ?? null
       } else if (engineCandidates.length > 0 && engineCandidateId === 'custom') {
         // Prefer first discovered install when still on defaults
-        const defaults = { namd: 'namd3', gromacs: 'gmx', openmm: 'python' }
+        const defaults = { namd: 'namd3', gromacs: 'gmx', openmm: 'python', amber: 'pmemd' }
         if (selectedExecutable === defaults[engine]) {
           const first = engineCandidates[0]
           engineCandidateId = first.id
@@ -1119,7 +1145,7 @@
     executableCheck = null
     computeTarget = 'auto'
     availableCompute = []
-    executableByEngine = { namd: 'namd3', gromacs: 'gmx', openmm: 'python' }
+    executableByEngine = { namd: 'namd3', gromacs: 'gmx', openmm: 'python', amber: 'pmemd' }
     engineCandidates = []
     engineCandidateId = 'custom'
     selectedGmxrc = null
@@ -1262,7 +1288,7 @@
               if (engine !== 'openmm') availableCompute = ['CPU']
             }}
             className="w-full"
-            placeholder={engine === 'openmm' ? 'python' : engine === 'gromacs' ? 'gmx' : 'namd3'}
+            placeholder={engine === 'openmm' ? 'python' : engine === 'gromacs' ? 'gmx' : engine === 'amber' ? 'pmemd' : 'namd3'}
           />
         {/if}
         {#if selectedGmxrc}
@@ -1800,7 +1826,7 @@
                         />
                       {/each}
                     </div>
-                    {#if job.equilibrationOutput}
+                    {#if job.status === 'error' && job.equilibrationOutput}
                       <pre
                         class="mt-2 max-h-32 overflow-auto rounded-md border border-neutral-200 p-2 text-xs dark:border-neutral-800"
                         >{job.equilibrationOutput}</pre
