@@ -60,6 +60,7 @@ logger = get_logger(__name__)
 
 try:
     from gatewizard.tools.equilibration import (
+        AmberEquilibrationManager,
         NAMDEquilibrationManager,
         GROMACSEquilibrationManager,
         OpenMMEquilibrationManager,
@@ -67,6 +68,7 @@ try:
 except ImportError:
     from gatewizard.tools.equilibration import NAMDEquilibrationManager
 
+    AmberEquilibrationManager = None
     GROMACSEquilibrationManager = None
     OpenMMEquilibrationManager = None
 from gatewizard.tools.force_fields import ForceFieldManager
@@ -76,6 +78,7 @@ from gatewizard.tools.ligand_parametrization import (
     get_ligand_2d_image,
     get_ligand_2d_image_from_pdb_lines,
 )
+from gatewizard.utils import amber_analysis
 from gatewizard.utils import namd_analysis
 from gatewizard.utils import gromacs_analysis
 from gatewizard.utils import openmm_analysis
@@ -702,7 +705,7 @@ class ValidateBuilderRequest(BaseModel):
     lipid_ff: str = "lipid21"
     md_engine: str | None = Field(
         None,
-        description="Target MD engine (namd, gromacs, openmm). Enables NAMD-specific OPC tleap when namd+opc.",
+        description="Target MD engine (namd, gromacs, openmm, amber). Enables NAMD-specific OPC tleap when namd+opc.",
     )
     salt_concentration: float = 0.15
     cation: str = "K+"
@@ -729,7 +732,7 @@ class StartPreparationRequest(BaseModel):
     lipid_ff: str = "lipid21"
     md_engine: str | None = Field(
         None,
-        description="Target MD engine (namd, gromacs, openmm). Enables NAMD-specific OPC tleap when namd+opc.",
+        description="Target MD engine (namd, gromacs, openmm, amber). Enables NAMD-specific OPC tleap when namd+opc.",
     )
     preoriented: bool = True
     parametrize: bool = True
@@ -1191,6 +1194,8 @@ def _infer_equilibration_engine(eq_dir: Path) -> str:
         return "openmm"
     if list(eq_dir.glob("*.mdp")) or (eq_dir / "index.ndx").is_file():
         return "gromacs"
+    if list(eq_dir.glob("step*.mdin")) or list(eq_dir.glob("*.mdout")):
+        return "amber"
     if list(eq_dir.glob("step*_equilibration.conf")) or (
         eq_dir / "protocol_summary.json"
     ).is_file():
@@ -1203,6 +1208,8 @@ def _infer_equilibration_engine(eq_dir: Path) -> str:
                 return "openmm"
             if "gmx" in script or "grompp" in script or "mdrun" in script:
                 return "gromacs"
+            if "pmemd" in script or "sander" in script or "amber" in script:
+                return "amber"
             if "namd" in script:
                 return "namd"
         except Exception:
@@ -1254,6 +1261,17 @@ def _infer_equilibration_variant(eq_dir: Path, engine: str) -> str | None:
             return "CUDA"
         return "CPU" if script else None
 
+    if engine == "amber":
+        m = re.search(r'AMBER\s*=\s*["\']([^"\']+)["\']', script)
+        if m:
+            amber_path = m.group(1).strip()
+            variant = parse_engine_variant("", "amber", amber_path)
+            if variant:
+                return variant
+        if "cuda" in script.lower():
+            return "CUDA"
+        return "CPU" if script else None
+
     return None
 
 
@@ -1279,6 +1297,10 @@ def _expected_equilibration_stage_count(eq_dir: Path, engine: str) -> int:
         inp_files = sorted(eq_dir.glob("step*.inp"))
         if inp_files:
             return len(inp_files)
+    elif engine == "amber":
+        mdin_files = sorted(eq_dir.glob("step*.mdin"))
+        if mdin_files:
+            return len(mdin_files)
     elif engine == "namd":
         conf_files = sorted(
             f for f in eq_dir.glob("step*.conf") if "_restraints" not in f.name
@@ -1529,19 +1551,21 @@ def project_status(directory: str) -> dict:
     for eq_dir in sorted(base.glob("*/run_equilibration.sh")):
         eq_dir = eq_dir.parent
         # Detect engine from directory name or files present
-        if list(eq_dir.glob("*.mdp")):
-            engine = "gromacs"
-        elif list(eq_dir.glob("*.inp")):
-            engine = "openmm"
-        else:
-            engine = "namd"
+        engine = _infer_equilibration_engine(eq_dir)
 
         pid_file = eq_dir / "equilibration.pid"
-        if not pid_file.exists() and not list(eq_dir.glob("*.log")):
+        stage_outputs = (
+            list(eq_dir.glob("step*.mdout"))
+            if engine == "amber"
+            else list(eq_dir.glob("step*.log"))
+        )
+        if not pid_file.exists() and not stage_outputs and not (
+            eq_dir / "equilibration_background.log"
+        ).exists():
             continue  # never started
 
         # Collect stage logs to compute progress
-        log_files = sorted(eq_dir.glob("step*.log"))
+        log_files = sorted(stage_outputs)
         total = _expected_equilibration_stage_count(eq_dir, engine)
         completed_logs = [f for f in log_files if f.stat().st_size > 0]
         n_done = len(completed_logs)
@@ -1924,7 +1948,7 @@ def prepare_pdb(payload: PreparePDBRequest) -> dict:
 
 
 class ProgramConfig(BaseModel):
-    engine: str = Field(description="Engine name: namd, gromacs, or openmm")
+    engine: str = Field(description="Engine name: namd, gromacs, openmm, or amber")
     executable: str = Field(description="Executable path or command name")
     gmxrc: str | None = Field(
         None,
@@ -2001,7 +2025,7 @@ class GenerateEquilibrationRequest(BaseModel):
 
 
 class ExecutableCheckRequest(BaseModel):
-    engine: str = Field(description="Engine name: namd, gromacs, or openmm")
+    engine: str = Field(description="Engine name: namd, gromacs, openmm, or amber")
     executable: str = Field(description="Executable path or command name")
 
 
@@ -2222,7 +2246,7 @@ def _validate_constraint_support(
         if float(force) > 0
     }
 
-    if engine in ("gromacs", "openmm"):
+    if engine in ("gromacs", "openmm", "amber"):
         std_keys = _GROMACS_STD_CONSTRAINT_KEYS
         missing = sorted(
             k
@@ -2315,7 +2339,7 @@ def check_executable(payload: ExecutableCheckRequest) -> dict:
 
 
 class ListEngineExecutablesRequest(BaseModel):
-    engine: str = Field(description="Engine name: namd, gromacs, or openmm")
+    engine: str = Field(description="Engine name: namd, gromacs, openmm, or amber")
 
 
 @app.post("/list-engine-executables")
@@ -2356,7 +2380,7 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
     engine = payload.program_config.engine.lower().strip()
     executable = payload.program_config.executable.strip()
 
-    if engine not in {"namd", "gromacs", "openmm"}:
+    if engine not in {"namd", "gromacs", "openmm", "amber"}:
         raise HTTPException(status_code=400, detail=f"Unsupported engine: {engine}")
 
     resolved_exec = _executable_for_equilibration_setup(
@@ -2374,6 +2398,11 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
         raise HTTPException(
             status_code=501,
             detail="OpenMM support is not available in this gatewizard installation",
+        )
+    if engine == "amber" and AmberEquilibrationManager is None:
+        raise HTTPException(
+            status_code=501,
+            detail="Amber support is not available in this gatewizard installation",
         )
 
     stage_params = _build_stage_params(payload.protocol.stages)
@@ -2443,6 +2472,25 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
             stage_params,
             openmm_platform=payload.openmm_platform,
         )
+        _persist_equilibration_job_metadata(output_dir, payload, engine)
+        return
+
+    if engine == "amber":
+        if "prmtop" not in system_files or "inpcrd" not in system_files:
+            raise HTTPException(
+                status_code=404,
+                detail="Amber setup requires AMBER files (.prmtop and .inpcrd/.rst) in input directory",
+            )
+        manager = AmberEquilibrationManager(input_dir, amber_executable=resolved_exec)
+        manager.setup_amber_equilibration(
+            system_files=system_files,
+            stage_params_list=stage_params,
+            selections=selections,
+            output_name=str(output_dir),
+            scheme_type=_normalize_ensemble(payload.ensemble),
+            amber_executable=resolved_exec,
+        )
+        write_equilibration_resources(output_dir, engine, stage_params)
         _persist_equilibration_job_metadata(output_dir, payload, engine)
         return
 
@@ -2555,6 +2603,13 @@ _ENGINE_EXECUTABLES: dict[str, list[str]] = {
     "namd": ["namd3", "namd2", "namd"],
     "gromacs": ["gmx", "gmx_mpi", "mdrun", "gmx_seq"],
     "openmm": ["python", "python3"],
+    "amber": [
+        "pmemd.cuda",
+        "pmemd",
+        "pmemd.cuda.MPI",
+        "pmemd.MPI",
+        "sander",
+    ],
 }
 
 
@@ -2933,7 +2988,7 @@ class EnergeticColumnsRequest(BaseModel):
     file_times: dict[str, float] | None = Field(
         None, description="Optional per-file durations in ns"
     )
-    engine: str = Field("namd", description="Engine: namd, openmm, or gromacs")
+    engine: str = Field("namd", description="Engine: namd, openmm, gromacs, or amber")
 
 
 class EnergeticAnalysisRequest(BaseModel):
@@ -2949,7 +3004,7 @@ class EnergeticAnalysisRequest(BaseModel):
     pressure_units: str = Field("atm", description="Pressure units")
     temperature_units: str = Field("K", description="Temperature units")
     volume_units: str = Field("Å³", description="Volume units")
-    engine: str = Field("namd", description="Engine: namd, openmm, or gromacs")
+    engine: str = Field("namd", description="Engine: namd, openmm, gromacs, or amber")
 
 
 @app.post("/get-equilibration-status")
@@ -2978,7 +3033,17 @@ def get_equilibration_status(payload: EquilibrationRequest) -> dict:
         except Exception:
             pass
 
-    if not next(workdir.glob("*.log"), None):
+    has_stage_output = bool(
+        next(workdir.glob("*.log"), None)
+        or (
+            engine == "amber"
+            and (
+                next(workdir.glob("*.mdout"), None)
+                or next(workdir.glob("*.mdinfo"), None)
+            )
+        )
+    )
+    if not has_stage_output:
         return response
 
     log_file = workdir / "equilibration_background.log"
@@ -2993,6 +3058,8 @@ def get_equilibration_status(payload: EquilibrationRequest) -> dict:
             stage_data = gromacs_analysis.get_equilibration_progress(workdir)
         case "openmm":
             stage_data = openmm_analysis.get_equilibration_progress(workdir)
+        case "amber":
+            stage_data = amber_analysis.get_equilibration_progress(workdir)
         case _:
             raise HTTPException(
                 status_code=400, detail=f"Unsupported engine: {payload.engine}"
@@ -3065,7 +3132,7 @@ def get_equilibration_status(payload: EquilibrationRequest) -> dict:
             info["status"] == "completed" for info in response["stages"]
         ):
             response["status"] = "completed"
-        elif engine in {"gromacs", "openmm"}:
+        elif engine in {"gromacs", "openmm", "amber"}:
             # Do not treat bare "error" as failure — GROMACS unused-macro
             # warnings include the phrase "spelling error".
             # Also do NOT promote the job to "completed" just because the background
@@ -3543,6 +3610,10 @@ def list_energetic_properties(payload: EnergeticColumnsRequest) -> dict:
             props = gromacs_analysis.list_gromacs_energy_properties(
                 [str(p) for p in logs], file_times=payload.file_times
             )
+        elif engine == "amber":
+            props = amber_analysis.list_amber_energy_properties(
+                [str(p) for p in logs], file_times=payload.file_times
+            )
         else:  # namd (default)
             props = namd_analysis.list_namd_energy_properties(
                 [str(p) for p in logs], file_times=payload.file_times
@@ -3579,6 +3650,8 @@ def run_energetic_analysis(payload: EnergeticAnalysisRequest) -> dict:
             result = openmm_analysis.run_openmm_energetic_analysis(**kwargs)
         elif engine == "gromacs":
             result = gromacs_analysis.run_gromacs_energetic_analysis(**kwargs)
+        elif engine == "amber":
+            result = amber_analysis.run_amber_energetic_analysis(**kwargs)
         else:  # namd (default)
             result = namd_analysis.run_energetic_analysis(**kwargs)
         return sanitize_value(result)
