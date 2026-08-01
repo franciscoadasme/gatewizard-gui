@@ -123,6 +123,7 @@ from gatewizard.utils.equilibration_job_metadata import (
     infer_equilibration_job_metadata,
     write_equilibration_job_metadata,
 )
+from gatewizard.utils.equilibration_templates import normalize_scheme_label
 from gatewizard.utils.optional_deps import (
     get_dependency_versions,
     list_md_engine_candidates,
@@ -1592,6 +1593,15 @@ def _equilibration_job_summary(
             except Exception:
                 pass
 
+    # Prefer run script mtime as "generated at" (dir mtime moves when logs update).
+    try:
+        run_script = eq_dir / "run_equilibration.sh"
+        dir_mtime = float(
+            run_script.stat().st_mtime if run_script.is_file() else eq_dir.stat().st_mtime
+        )
+    except OSError:
+        dir_mtime = 0.0
+
     if for_form:
         # Local-only path for Use in form — never touches SSH/cluster. Skip heavy
         # resource inference; the card already has CPUs/GPUs from the last scan.
@@ -1606,6 +1616,7 @@ def _equilibration_job_summary(
             in {"RUNNING", "PENDING", "CONFIGURING", "COMPLETING", "REQUEUED"}
             else "not_started",
             "start_time": None,
+            "dir_mtime": dir_mtime,
             "stages_done": 0,
             "stages_total": len((job_meta.get("protocol") or {}).get("stages") or []),
             "error": None,
@@ -1614,6 +1625,7 @@ def _equilibration_job_summary(
             "input_dir": job_meta.get("input_dir"),
             "ensemble": job_meta.get("ensemble"),
             "protocol": job_meta.get("protocol"),
+            "gpu_resident": job_meta.get("gpu_resident"),
             "execution": execution,
         }
 
@@ -1778,6 +1790,7 @@ def _equilibration_job_summary(
         "variant": variant,
         "status": status,
         "start_time": start_time,
+        "dir_mtime": dir_mtime,
         "stages_done": n_done,
         "stages_total": total,
         "error": error_msg,
@@ -1786,6 +1799,7 @@ def _equilibration_job_summary(
         "input_dir": job_meta.get("input_dir"),
         "ensemble": job_meta.get("ensemble"),
         "protocol": job_meta.get("protocol"),
+        "gpu_resident": job_meta.get("gpu_resident"),
         "execution": execution,
         **_equilibration_resume_fields(eq_dir, engine),
     }
@@ -1834,17 +1848,8 @@ def scan_equilibration_jobs(payload: ScanJobsRequest) -> dict:
         except Exception:
             continue
 
-    def sort_key(job: dict[str, Any]) -> tuple:
-        st = job.get("start_time") or ""
-        if st:
-            return (1, st)
-        try:
-            mtime = Path(job["job_dir"]).stat().st_mtime
-            return (0, str(mtime))
-        except Exception:
-            return (0, "")
-
-    found.sort(key=sort_key, reverse=True)
+    # Newest generated job folders first (directory mtime).
+    found.sort(key=lambda job: float(job.get("dir_mtime") or 0.0), reverse=True)
     return {"jobs": found}
 
 
@@ -2409,6 +2414,13 @@ class GenerateEquilibrationRequest(BaseModel):
         None,
         description="OpenMM platform override: CUDA, OpenCL, CPU, or null for auto",
     )
+    gpu_resident: bool = Field(
+        False,
+        description=(
+            "NAMD GPU-resident mode (GPUresident) on the production stage only. "
+            "Equilibration stages keep reassignFreq/reassignTemp and omit GPUresident."
+        ),
+    )
 
 
 class ExecutableCheckRequest(BaseModel):
@@ -2547,10 +2559,10 @@ _ENSEMBLE_ALIASES = {
 
 def _normalize_ensemble(value: str) -> str:
     """Map GUI/API ensemble strings to gatewizard scheme_type values."""
-    key = value.strip()
-    if key in _VALID_ENSEMBLES:
-        return key
-    mapped = _ENSEMBLE_ALIASES.get(key.lower())
+    normalized = normalize_scheme_label(value)
+    if normalized in _VALID_ENSEMBLES:
+        return normalized
+    mapped = _ENSEMBLE_ALIASES.get(value.strip().lower())
     if mapped:
         return mapped
     raise HTTPException(
@@ -2587,6 +2599,7 @@ def _persist_equilibration_job_metadata(
         protocol=payload.protocol.model_dump(),
         engine=engine,
         openmm_platform=payload.openmm_platform,
+        gpu_resident=payload.gpu_resident if engine == "namd" else None,
     )
 
 
@@ -2906,6 +2919,7 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
         add_rotation_restraint=payload.add_rotation_restraint,
         rotation_restraint_k=payload.rotation_restraint_k,
         water_model=water_model,
+        gpu_resident=payload.gpu_resident,
     )
     write_equilibration_resources(output_dir, engine, stage_params)
     _persist_equilibration_job_metadata(output_dir, payload, engine)
