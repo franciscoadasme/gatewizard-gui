@@ -3,7 +3,7 @@
   import Divider from './ui/Divider.svelte'
   import Gear from './icons/Gear.svelte'
   import Input from './ui/Input.svelte'
-  import { canonicalEnsemble } from '../lib/ensemble.js'
+  import { canonicalEnsemble, formEnsembleValue } from '../lib/ensemble.js'
 
   /** @typedef {{ id: string, name: string, force_constant: number, selection: string }} Constraint */
 
@@ -110,7 +110,7 @@
       <p class="text-xs text-neutral-500">atm</p>
     {/if}
 
-    {#if ['npat', 'npgt'].includes(stage.ensemble || ensemble)}
+    {#if ['npat', 'npgt'].includes(formEnsembleValue(stage.ensemble || ensemble))}
       <label for="{uid}-surface-tension">Surface Tension:</label>
       <Input
         id="{uid}-surface-tension"

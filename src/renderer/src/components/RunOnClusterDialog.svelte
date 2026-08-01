@@ -630,8 +630,15 @@
       schedulerJobId = res.job_id
       remoteState = 'PENDING'
       onExecutionUpdated(res.execution)
+      const resume = res.cluster_resume
+      const resumeNote =
+        resume?.enabled && resume.stage_name
+          ? ` — continuing after ${resume.completed_stages}/${resume.total_stages} stages (${resume.stage_name})`
+          : resume?.enabled
+            ? ` — continuing after ${resume.completed_stages}/${resume.total_stages} stages`
+            : ''
       setStatus(
-        `Submitted Slurm job ${res.job_id} (sbatch → bash run_equilibration_cluster.sh)`
+        `Submitted Slurm job ${res.job_id} (sbatch → bash run_equilibration_cluster.sh)${resumeNote}`
       )
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err), true)
@@ -667,7 +674,7 @@
         ...(execution || {}),
         ...(res.execution || {}),
         mode: 'remote',
-        scheduler_job_id: schedulerJobId,
+        scheduler_job_id: res.execution?.scheduler_job_id || schedulerJobId,
         last_remote_state: remoteState,
         remote_path: remotePath.trim() || execution?.remote_path
       }
@@ -1194,7 +1201,7 @@
                   · {remoteState}{/if}
                 {#if remoteTerminal}
                   <span class="text-amber-600 dark:text-amber-400">
-                    — finished; use Upload & resubmit for a new job</span
+                    — finished; resubmit continues from the last completed stage when checkpoints are present (Pull first if needed)</span
                   >
                 {/if}
               </p>
