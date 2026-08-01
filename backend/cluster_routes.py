@@ -467,9 +467,12 @@ def cluster_submit_job(payload: ClusterSubmitRequest) -> dict:
         if CLUSTER_RUN_SCRIPT in run_command:
             run_command = "bash run_equilibration.sh"
 
-    # Amber cancel/resubmit: keep finished stages when restart files are present.
-    if any(local.glob("step*.rst7")) and "RESUME=" not in run_command:
-        run_command = f"RESUME=1 {run_command}"
+    from gatewizard.utils.equilibration_job_metadata import infer_equilibration_job_metadata
+    from gatewizard.utils.equilibration_resume import prepare_cluster_resubmit
+
+    job_meta = infer_equilibration_job_metadata(local, heal=False)
+    engine = (job_meta.get("engine") if isinstance(job_meta, dict) else None) or "namd"
+    run_command, resume_point = prepare_cluster_resubmit(local, engine, run_command)
 
     launch_text = launch_script.read_text(encoding="utf-8", errors="replace")
     if script_has_wsl_or_windows_path(launch_text):
@@ -513,7 +516,7 @@ def cluster_submit_job(payload: ClusterSubmitRequest) -> dict:
             "bash run_equilibration.sh", f"bash {CLUSTER_RUN_SCRIPT}"
         )
 
-    # Keep RESUME=1 in edited/previewed .slurm when amber restarts are present.
+    # Keep RESUME=1 in edited/previewed .slurm when continuing a prior run.
     if script and "RESUME=1" in run_command and "RESUME=" not in script:
         script = script.replace(
             f"bash {CLUSTER_RUN_SCRIPT}",
@@ -533,7 +536,7 @@ def cluster_submit_job(payload: ClusterSubmitRequest) -> dict:
 
     from gatewizard.utils.equilibration_failure import archive_previous_run_outputs
 
-    archived = archive_previous_run_outputs(local)
+    archived = archive_previous_run_outputs(local, engine=engine)
 
     local_file_count = sum(1 for p in local.rglob("*") if p.is_file())
     try:
@@ -614,6 +617,7 @@ def cluster_submit_job(payload: ClusterSubmitRequest) -> dict:
         "last_error_source": None,
         "last_error_note": None,
         "archived_previous_outputs": archived,
+        "cluster_resume": resume_point.can_resume,
     }
     write_execution_metadata(local, execution)
     return {
@@ -625,6 +629,12 @@ def cluster_submit_job(payload: ClusterSubmitRequest) -> dict:
         "execution": execution,
         "uploaded_files_local": local_file_count,
         "archived_previous_outputs": archived,
+        "cluster_resume": {
+            "enabled": resume_point.can_resume,
+            "stage_name": resume_point.stage_name if resume_point.can_resume else None,
+            "completed_stages": resume_point.completed_stages,
+            "total_stages": resume_point.total_stages,
+        },
     }
 
 
@@ -706,6 +716,82 @@ def _pull_progress_logs(
         "pull_source": pull_source,
         "pull_note": "; ".join(note_parts) if note_parts else None,
     }
+
+
+def _prefer_newer_execution(
+    current: Dict[str, Any], prior: Dict[str, Any]
+) -> Dict[str, Any]:
+    """When resubmit races with pull/watch, keep the newest execution block."""
+    from gatewizard.utils.equilibration_failure import parse_submitted_at
+
+    if not prior:
+        return dict(current or {})
+    if not current:
+        return dict(prior)
+    tc = parse_submitted_at(current)
+    tp = parse_submitted_at(prior)
+    if tc and tp:
+        return dict(current if tc >= tp else prior)
+    if current.get("scheduler_job_id") and not prior.get("scheduler_job_id"):
+        return dict(current)
+    return dict(current or prior)
+
+
+def _resolve_stored_job_id(local: Path, request_jid: Optional[str] = None) -> str:
+    meta = read_job_metadata(local)
+    exec_meta = meta.get("execution") if isinstance(meta.get("execution"), dict) else {}
+    req = str(request_jid or "").strip()
+    if req:
+        newer = _prefer_newer_execution(exec_meta, {**exec_meta, "scheduler_job_id": req})
+        return str(newer.get("scheduler_job_id") or req or exec_meta.get("scheduler_job_id") or "")
+    return str(exec_meta.get("scheduler_job_id") or "").strip()
+
+
+def _query_slurm_job_state(session_id: str, job_id: str) -> str:
+    if not (session_id and job_id):
+        return ""
+    adapter = get_scheduler("slurm")
+    cmd = " ".join(shlex.quote(x) for x in adapter.status_command(job_id))
+    _rc, out, _err = run_remote(session_id, cmd, timeout=60)
+    handles = adapter.parse_status(out, job_id=job_id)
+    if handles:
+        return canonicalize_slurm_state(handles[0].state)
+    acct_cmd = " ".join(shlex.quote(x) for x in adapter.accounting_command(job_id))
+    _rc2, out2, _err2 = run_remote(session_id, acct_cmd, timeout=60)
+    if out2.strip():
+        first = out2.strip().splitlines()[0]
+        cols = first.split("|")
+        if len(cols) >= 2:
+            return canonicalize_slurm_state(cols[1])
+    return ""
+
+
+def _fetch_remote_execution(session_id: str, remote_dir: str) -> Dict[str, Any]:
+    remote_dir = (remote_dir or "").strip().rstrip("/")
+    if not (session_id and remote_dir):
+        return {}
+    remote_job = f"{remote_dir}/equilibration_job.json"
+    try:
+        _rc, out_m, _err = run_remote(
+            session_id,
+            "python3 -c "
+            + shlex.quote(
+                "import json;print(json.dumps(json.load(open("
+                + repr(remote_job)
+                + "))))"
+            )
+            + " 2>/dev/null || true",
+            timeout=30,
+        )
+        if out_m.strip():
+            remote_meta = json.loads(out_m.strip().splitlines()[-1])
+            if isinstance(remote_meta, dict):
+                ex = remote_meta.get("execution")
+                if isinstance(ex, dict):
+                    return ex
+    except Exception:
+        pass
+    return {}
 
 
 def _pull_job_files(
@@ -940,12 +1026,18 @@ def _pull_job_files(
                     if not local_meta.get(key) and remote_meta.get(key):
                         local_meta[key] = remote_meta[key]
                         changed = True
+                remote_exec = (
+                    remote_meta.get("execution")
+                    if isinstance(remote_meta.get("execution"), dict)
+                    else {}
+                )
+                if remote_exec.get("scheduler_job_id"):
+                    local_exec = dict(local_meta.get("execution") or {})
+                    newer = _prefer_newer_execution(local_exec, remote_exec)
+                    if newer.get("scheduler_job_id") != local_exec.get("scheduler_job_id"):
+                        local_meta["execution"] = newer
+                        changed = True
                 if changed:
-                    if prior_execution:
-                        local_meta["execution"] = {
-                            **dict(local_meta.get("execution") or {}),
-                            **prior_execution,
-                        }
                     (local / "equilibration_job.json").write_text(
                         _json.dumps(local_meta, indent=2), encoding="utf-8"
                     )
@@ -953,18 +1045,24 @@ def _pull_job_files(
         pass
 
     # Restore / merge local execution so the card stays in Remote manage mode.
-    merged = dict(prior_execution)
-    if remote_state:
+    current_execution = dict(read_job_metadata(local).get("execution") or {})
+    merged = _prefer_newer_execution(current_execution, prior_execution)
+    effective_jid = str(merged.get("scheduler_job_id") or job_id or "").strip()
+    if effective_jid:
+        merged["scheduler_job_id"] = effective_jid
+    live_state = _query_slurm_job_state(session_id, effective_jid) if effective_jid else ""
+    if live_state:
+        merged["last_remote_state"] = live_state
+    elif remote_state:
         merged["last_remote_state"] = remote_state
     merged.setdefault("mode", "remote")
     for key in (
-        "scheduler_job_id",
         "remote_path",
         "cluster_id",
         "cluster_name",
         "submitted_at",
     ):
-        if prior_execution.get(key):
+        if not merged.get(key) and prior_execution.get(key):
             merged[key] = prior_execution[key]
 
     state_u = str(merged.get("last_remote_state") or "").upper()
@@ -1059,20 +1157,41 @@ def cluster_job_status(payload: ClusterJobStatusRequest) -> dict:
     )
     payload.password = None
     adapter = get_scheduler("slurm")
-    cmd_parts = adapter.status_command(payload.job_id)
+
+    prev_exec: Dict[str, Any] = {}
+    effective_jid = str(payload.job_id or "").strip()
+    if payload.local_dir:
+        meta = read_job_metadata(Path(payload.local_dir))
+        if isinstance(meta.get("execution"), dict):
+            prev_exec = meta["execution"]
+        stored_jid = str(prev_exec.get("scheduler_job_id") or "").strip()
+        request_jid = effective_jid
+        if request_jid and request_jid != stored_jid:
+            candidate = _prefer_newer_execution(
+                prev_exec,
+                {**prev_exec, "scheduler_job_id": request_jid},
+            )
+            effective_jid = str(candidate.get("scheduler_job_id") or request_jid or stored_jid)
+        elif stored_jid:
+            effective_jid = stored_jid
+
+    if not effective_jid:
+        raise HTTPException(status_code=400, detail="No Slurm job id")
+
+    cmd_parts = adapter.status_command(effective_jid)
     cmd = " ".join(shlex.quote(x) for x in cmd_parts)
     try:
         rc, out, err = run_remote(session_id, cmd, timeout=60)
     except ClusterSSHError as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
 
-    handles = adapter.parse_status(out, job_id=payload.job_id)
+    handles = adapter.parse_status(out, job_id=effective_jid)
     state = canonicalize_slurm_state(handles[0].state if handles else "")
-    if payload.job_id and not handles:
+    if effective_jid and not handles:
         from gatewizard.utils.cluster.types import RemoteJobHandle
 
         acct_cmd = " ".join(
-            shlex.quote(x) for x in adapter.accounting_command(payload.job_id)
+            shlex.quote(x) for x in adapter.accounting_command(effective_jid)
         )
         _rc2, out2, _err2 = run_remote(session_id, acct_cmd, timeout=60)
         if out2.strip():
@@ -1083,7 +1202,7 @@ def cluster_job_status(payload: ClusterJobStatusRequest) -> dict:
                 handles = [
                     RemoteJobHandle(
                         scheduler="slurm",
-                        job_id=str(payload.job_id),
+                        job_id=str(effective_jid),
                         state=state,
                         raw=first,
                     )
@@ -1093,12 +1212,38 @@ def cluster_job_status(payload: ClusterJobStatusRequest) -> dict:
         handles[0].state = state
 
     resolved_remote = (payload.remote_dir or "").strip().rstrip("/")
+    remote_path_hint = resolved_remote or str(prev_exec.get("remote_path") or "")
+    state_u = str(state or "").upper()
+    if state_u in {"CANCELLED", "FAILED", "TIMEOUT", "COMPLETED", "COMPLETE", "NODE_FAIL"}:
+        remote_exec = _fetch_remote_execution(session_id, remote_path_hint)
+        if remote_exec.get("scheduler_job_id"):
+            newer = _prefer_newer_execution(prev_exec, remote_exec)
+            new_jid = str(newer.get("scheduler_job_id") or "").strip()
+            if new_jid and new_jid != effective_jid:
+                effective_jid = new_jid
+                live = _query_slurm_job_state(session_id, effective_jid)
+                if live:
+                    state = live
+                    state_u = live.upper()
+                    from gatewizard.utils.cluster.types import RemoteJobHandle
+
+                    handles = [
+                        RemoteJobHandle(
+                            scheduler="slurm",
+                            job_id=effective_jid,
+                            state=state,
+                            raw=f"{effective_jid}|{state}",
+                        )
+                    ]
+                prev_exec = newer
+
     if payload.local_dir and state:
         local = Path(payload.local_dir)
-        meta = read_job_metadata(local)
-        prev_exec = meta.get("execution") if isinstance(meta.get("execution"), dict) else {}
+        if not prev_exec:
+            meta = read_job_metadata(local)
+            prev_exec = meta.get("execution") if isinstance(meta.get("execution"), dict) else {}
         stored = payload.remote_dir or prev_exec.get("remote_path") or ""
-        jid = str(payload.job_id or prev_exec.get("scheduler_job_id") or "")
+        jid = effective_jid or str(prev_exec.get("scheduler_job_id") or "")
         if jid:
             resolved, source, _ = _resolve_remote_dir_for_job(
                 session_id,
@@ -1112,7 +1257,7 @@ def cluster_job_status(payload: ClusterJobStatusRequest) -> dict:
 
         fields: Dict[str, Any] = {
             "last_remote_state": state,
-            "scheduler_job_id": payload.job_id,
+            "scheduler_job_id": effective_jid,
             "mode": "remote",
         }
         # Re-stamp profile identity so Watching keeps working after thin pulls.
@@ -1182,7 +1327,7 @@ def cluster_job_status(payload: ClusterJobStatusRequest) -> dict:
             session_id,
             local_dir=Path(payload.local_dir),
             remote_dir=resolved_remote,
-            job_id=payload.job_id,
+            job_id=effective_jid,
             node_hint=node_hint,
             profile=payload.profile,
             remote_state=state_u,
@@ -1195,7 +1340,7 @@ def cluster_job_status(payload: ClusterJobStatusRequest) -> dict:
                 resolved_remote,
                 Path(payload.local_dir),
                 profile=payload.profile,
-                job_id=payload.job_id,
+                job_id=effective_jid,
             )
             if midrun_note and isinstance(pulled, dict):
                 pulled["midrun"] = midrun_note
@@ -1245,16 +1390,21 @@ def cluster_cancel_job(payload: ClusterCancelRequest) -> dict:
 @router.post("/pull-job")
 def cluster_pull_job(payload: ClusterPullRequest) -> dict:
     local = Path(payload.local_dir)
-    # Prefer last known remote state from local metadata for better errors.
     remote_state = None
     job_id = payload.job_id
     try:
         execution = read_job_metadata(local).get("execution") or {}
         remote_state = execution.get("last_remote_state")
-        if not job_id:
-            job_id = execution.get("scheduler_job_id")
+        job_id = _resolve_stored_job_id(local, job_id or execution.get("scheduler_job_id"))
     except Exception:
         pass
+    if job_id:
+        try:
+            live = _query_slurm_job_state(payload.session_id, str(job_id))
+            if live:
+                remote_state = live
+        except ClusterSSHError:
+            pass
     midrun_note = _midrun_sync_progress(
         payload.session_id,
         local_dir=local,
@@ -1287,10 +1437,16 @@ async def cluster_pull_job_stream(payload: ClusterPullRequest) -> StreamingRespo
     try:
         execution = read_job_metadata(local).get("execution") or {}
         remote_state = execution.get("last_remote_state")
-        if not job_id:
-            job_id = execution.get("scheduler_job_id")
+        job_id = _resolve_stored_job_id(local, job_id or execution.get("scheduler_job_id"))
     except Exception:
         pass
+    if job_id:
+        try:
+            live = _query_slurm_job_state(payload.session_id, str(job_id))
+            if live:
+                remote_state = live
+        except ClusterSSHError:
+            pass
 
     async def event_stream():
         progress_q: queue.Queue = queue.Queue()
