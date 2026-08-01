@@ -142,7 +142,7 @@ export function scanJobs(directory) {
 
 /**
  * @typedef {{ cpu_cores_min?: number|null, cpu_cores_max?: number|null, gpu_id_min?: number|null, gpu_id_max?: number|null, num_gpus?: number|null, use_gpu?: boolean|null, platform?: string|null, engine?: string }} EquilibrationJobResources
- * @typedef {{ job_dir: string, name: string, engine: string, variant: string|null, status: string, start_time: string|null, stages_done: number, stages_total: number, error: string|null, can_run?: boolean, can_resume?: boolean, resume_reason?: string, resume_stage_index?: number, resume_stage_name?: string, resume_completed_stages?: number, resources?: EquilibrationJobResources, input_dir?: string|null, ensemble?: string|null, protocol?: { name: string, description?: string, stages: object[] }|null, execution?: object|null }} EquilibrationJobSummary
+ * @typedef {{ job_dir: string, name: string, engine: string, variant: string|null, status: string, start_time: string|null, dir_mtime?: number|null, stages_done: number, stages_total: number, error: string|null, can_run?: boolean, can_resume?: boolean, resume_reason?: string, resume_stage_index?: number, resume_stage_name?: string, resume_completed_stages?: number, resources?: EquilibrationJobResources, input_dir?: string|null, ensemble?: string|null, protocol?: { name: string, description?: string, stages: object[] }|null, gpu_resident?: boolean|null, execution?: object|null }} EquilibrationJobSummary
  * Scan a directory for equilibration job folders (run_equilibration.sh).
  * @param {string} directory  Absolute path to the working directory
  * @returns {Promise<{ jobs: EquilibrationJobSummary[] }>}

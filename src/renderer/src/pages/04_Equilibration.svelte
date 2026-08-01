@@ -56,6 +56,7 @@
   } from '../lib/outputFolders.js'
   import { themeState } from '../lib/theme.svelte.js'
   import { themeBackgroundHex } from '../lib/viewerSettings.svelte.js'
+  import { formEnsembleValue } from '../lib/ensemble.js'
 
   const clusterSession = getClusterSession()
 
@@ -124,6 +125,8 @@
    * @type {'auto' | 'CPU' | 'CUDA' | 'OpenCL' | 'Metal'}
    */
   let computeTarget = $state(/** @type {'auto' | 'CPU' | 'CUDA' | 'OpenCL' | 'Metal'} */ ('auto'))
+  /** NAMD GPU-resident (GPUresident); default on when using GPU */
+  let gpuResident = $state(true)
   /** Targets detected on this machine after Check Executable / candidate scan */
   let availableCompute = $state(/** @type {string[]} */ ([]))
   let executableByEngine = $state({
@@ -148,6 +151,8 @@
       'all'
     )
   )
+  /** Order Progress cards by job folder generation time (directory mtime). */
+  let progressSortOrder = $state(/** @type {'newest' | 'oldest'} */ ('newest'))
   /** @type {{ jobDir: string, jobName: string, engine: string, cpus: number, gpus: number, execution: object|null } | null} */
   let clusterDialogJob = $state(null)
   /** Progress-strip cluster connect */
@@ -245,7 +250,7 @@
       : []
   )
   /** @typedef {{ name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, elapsed_time_seconds: number|null, is_minimization?: boolean, steps_completed?: number|null, total_steps?: number|null, minimization_converged_early?: boolean, output: string }} EqStageInfo */
-  /** @typedef {{ jobDir: string, name: string, engine: string, variant: string|null, status: string, startTime: string, elapsed: string, stagesDone: number, stagesTotal: number, error: string|null, canRun: boolean, canResume: boolean, resumeReason: string, resumeStageName: string, resources: import('../lib/backendApi.js').EquilibrationJobResources | null, inputDir: string|null, ensemble: string|null, protocol: { name: string, description?: string, stages: object[] }|null, execution: object|null, stages: EqStageInfo[], watched: boolean, showStages: boolean, showInfo: boolean, processInfo: { pid: number|null, running: boolean, command: string|null, start_time: string|null, working_dir: string, engine: string } | null, loadingProcessInfo: boolean, stopping: boolean, continuing: boolean, running: boolean, reloading: boolean, pulling: boolean, pullProgress: { percent: number|null, message: string, phase: string } | null, syncSizes: { localBytes: number|null, remoteBytes: number|null, localFormatted: string, remoteFormatted: string, loading: boolean } | null, selectedLog: string|null, logMode: 'head'|'tail', logLines: number, logLinesEditing: boolean, logFiles: string[], logView: { lines: string[], exists: boolean, loading: boolean, mode: string, lineCount: number } | null, loadingStages: boolean, syncingRemoteStages: boolean, equilibrationOutput: string }} EquilibrationJob */
+  /** @typedef {{ jobDir: string, name: string, engine: string, variant: string|null, status: string, startTime: string, dirMtime?: number, elapsed: string, stagesDone: number, stagesTotal: number, error: string|null, canRun: boolean, canResume: boolean, resumeReason: string, resumeStageName: string, resources: import('../lib/backendApi.js').EquilibrationJobResources | null, inputDir: string|null, ensemble: string|null, protocol: { name: string, description?: string, stages: object[] }|null, gpuResident?: boolean|null, execution: object|null, stages: EqStageInfo[], watched: boolean, showStages: boolean, showInfo: boolean, processInfo: { pid: number|null, running: boolean, command: string|null, start_time: string|null, working_dir: string, engine: string } | null, loadingProcessInfo: boolean, stopping: boolean, continuing: boolean, running: boolean, reloading: boolean, pulling: boolean, pullProgress: { percent: number|null, message: string, phase: string } | null, syncSizes: { localBytes: number|null, remoteBytes: number|null, localFormatted: string, remoteFormatted: string, loading: boolean } | null, selectedLog: string|null, logMode: 'head'|'tail', logLines: number, logLinesEditing: boolean, logFiles: string[], logView: { lines: string[], exists: boolean, loading: boolean, mode: string, lineCount: number } | null, loadingStages: boolean, syncingRemoteStages: boolean, equilibrationOutput: string }} EquilibrationJob */
 
   // state
   /** @type {null | { stageIndex: number, constraintIndex: number, source: Constraint | null }} */
@@ -683,6 +688,31 @@
     }
   }
 
+  /** @param {string} jobDir @param {object|null|undefined} execution */
+  function applyJobExecution(jobDir, execution) {
+    if (!jobDir || !execution || typeof execution !== 'object') return
+    const i = jobs.findIndex((j) => j.jobDir === jobDir)
+    if (i < 0) return
+    const current = jobs[i]
+    const remoteActive = isSlurmActiveState(execution.last_remote_state)
+    const nextExec = { ...(current.execution || {}), ...execution, mode: 'remote' }
+    jobs[i] = {
+      ...current,
+      execution: nextExec,
+      error: remoteActive ? null : current.error,
+      status: remoteActive ? 'running' : current.status,
+      canResume: remoteActive ? false : current.canResume,
+      canRun: remoteActive ? false : current.canRun,
+      startTime: String(nextExec.submitted_at || current.startTime || '').trim() || current.startTime
+    }
+    if (clusterDialogJob?.jobDir === jobDir) {
+      clusterDialogJob = { ...clusterDialogJob, execution: nextExec }
+    }
+    if (remoteActive) {
+      void loadJobStages(i)
+    }
+  }
+
   /**
    * @param {object|null|undefined} execution
    * @param {EquilibrationJob['syncSizes']} [existing]
@@ -1024,7 +1054,15 @@
           ...(current.execution || {}),
           ...(res.execution || {}),
           mode: 'remote',
+          scheduler_job_id:
+            res.execution?.scheduler_job_id ||
+            current.execution?.scheduler_job_id ||
+            job.execution.scheduler_job_id,
           remote_path: res.execution?.remote_path || remotePath,
+          last_remote_state:
+            res.execution?.last_remote_state ||
+            res.remote_state ||
+            current.execution?.last_remote_state,
           ...(localBytes != null ? { local_bytes: localBytes } : {}),
           ...(remoteBytes != null ? { remote_bytes: remoteBytes } : {})
         },
@@ -1066,16 +1104,23 @@
   }
 
   const filteredJobs = $derived(
-    jobs.filter((job) => {
-      if (progressFilter !== 'all') {
-        const remote = job.execution?.mode === 'remote'
-        if (progressFilter === 'remote' ? !remote : remote) return false
-      }
-      if (progressStatusFilter !== 'all' && jobProgressStatus(job) !== progressStatusFilter) {
-        return false
-      }
-      return true
-    })
+    jobs
+      .filter((job) => {
+        if (progressFilter !== 'all') {
+          const remote = job.execution?.mode === 'remote'
+          if (progressFilter === 'remote' ? !remote : remote) return false
+        }
+        if (progressStatusFilter !== 'all' && jobProgressStatus(job) !== progressStatusFilter) {
+          return false
+        }
+        return true
+      })
+      .slice()
+      .sort((a, b) => {
+        const am = typeof a.dirMtime === 'number' ? a.dirMtime : 0
+        const bm = typeof b.dirMtime === 'number' ? b.dirMtime : 0
+        return progressSortOrder === 'oldest' ? am - bm : bm - am
+      })
   )
 
   /** @param {EqStageInfo[]} stages */
@@ -1109,6 +1154,7 @@
       variant: summary.variant,
       status: remoteActive ? 'running' : summary.status || 'unknown',
       startTime: summary.start_time || String(summary.execution?.submitted_at || '').trim() || '',
+      dirMtime: typeof summary.dir_mtime === 'number' ? summary.dir_mtime : (existing?.dirMtime ?? 0),
       elapsed: formatJobElapsed(summary.start_time),
       stagesDone: summary.stages_done ?? 0,
       stagesTotal: summary.stages_total ?? 0,
@@ -1121,6 +1167,10 @@
       inputDir: summary.input_dir || null,
       ensemble: summary.ensemble || null,
       protocol: summary.protocol || null,
+      gpuResident:
+        typeof summary.gpu_resident === 'boolean'
+          ? summary.gpu_resident
+          : (existing?.gpuResident ?? null),
       execution: summary.execution ?? existing?.execution ?? null,
       stages: existing?.stages ?? [],
       watched: existing?.watched ?? false,
@@ -1310,10 +1360,14 @@
           profiles.find((p) => p.name && p.name === job.execution.cluster_name) ||
           profiles[0]
         if (profile?.identity_file || profile?.host || clusterSession.sessionId) {
+          const live = jobs[index]
+          if (!live || live.jobDir !== jobDir) return
+          const schedulerJobId = live.execution?.scheduler_job_id
+          if (!schedulerJobId) return
           const remote = await clusterJobStatus({
             session_id: clusterSession.sessionId || null,
             profile: sharedProfilePlain() || JSON.parse(JSON.stringify(profile)),
-            job_id: job.execution.scheduler_job_id,
+            job_id: schedulerJobId,
             local_dir: job.jobDir,
             remote_dir: job.execution.remote_path || null,
             // Watching: light log sync only (step*.log etc.) — not full Pull.
@@ -1321,6 +1375,10 @@
           })
           const current0 = jobs[index]
           if (!current0 || current0.jobDir !== jobDir) return
+          const resolvedJobId =
+            remote.execution?.scheduler_job_id ||
+            current0.execution?.scheduler_job_id ||
+            schedulerJobId
           const nextExec = {
             ...(current0.execution || {}),
             ...(remote.execution || {}),
@@ -1328,12 +1386,12 @@
             cluster_id: remote.execution?.cluster_id || profile.id || current0.execution?.cluster_id,
             cluster_name:
               remote.execution?.cluster_name || profile.name || current0.execution?.cluster_name,
-            scheduler_job_id: job.execution.scheduler_job_id,
+            scheduler_job_id: resolvedJobId,
             last_remote_state:
               remote.execution?.last_remote_state ||
               remote.state ||
               current0.execution?.last_remote_state,
-            remote_path: remote.execution?.remote_path || job.execution.remote_path,
+            remote_path: remote.execution?.remote_path || current0.execution?.remote_path,
             allocated_cpus:
               remote.execution?.allocated_cpus || current0.execution?.allocated_cpus,
             resources: remote.execution?.resources || current0.execution?.resources,
@@ -1480,12 +1538,48 @@
     }
   }
 
+  /** Refresh Slurm state in equilibration_job.json before re-reading the card. */
+  async function syncRemoteExecutionMetadata(/** @type {number} */ index) {
+    const job = jobs[index]
+    if (!job?.execution?.mode || job.execution.mode !== 'remote') return
+    const schedulerJobId = job.execution?.scheduler_job_id
+    if (!schedulerJobId) return
+    try {
+      const profiles = await loadClusterProfiles()
+      const profile =
+        profiles.find((p) => p.id && p.id === job.execution.cluster_id) ||
+        profiles.find((p) => p.name && p.name === job.execution.cluster_name) ||
+        profiles[0]
+      if (!clusterSession.sessionId && !profile?.identity_file) return
+      const remote = await clusterJobStatus({
+        session_id: clusterSession.sessionId || null,
+        profile: sharedProfilePlain() || (profile ? JSON.parse(JSON.stringify(profile)) : null),
+        job_id: schedulerJobId,
+        local_dir: job.jobDir,
+        remote_dir: job.execution.remote_path || null,
+        pull_logs: false
+      })
+      applyJobExecution(job.jobDir, {
+        ...(remote.execution || {}),
+        mode: 'remote',
+        scheduler_job_id: remote.execution?.scheduler_job_id || schedulerJobId,
+        last_remote_state:
+          remote.execution?.last_remote_state || remote.state || job.execution.last_remote_state
+      })
+    } catch {
+      /* cluster unreachable */
+    }
+  }
+
   async function reloadJobCard(/** @type {number} */ index) {
     const job = jobs[index]
     if (!job || job.reloading) return
     const jobDir = job.jobDir
     jobs[index] = { ...job, reloading: true }
     try {
+      if (job.execution?.mode === 'remote') {
+        await syncRemoteExecutionMetadata(index)
+      }
       const summary = await getEquilibrationJobSummary(job.jobDir, workingDir || undefined)
       const existing = jobs[index]
       if (!existing || existing.jobDir !== jobDir) return
@@ -1613,30 +1707,29 @@
     const stage0 = appliedProtocol?.stages?.[0] ?? null
     const res = job.resources ?? null
 
+    // Prefer equilibration_resources.json (written at generate time) over per-stage
+    // cpu_cores baked into an older protocol snapshot.
     const cpu =
-      (typeof stage0?.cpu_cores === 'number' && stage0.cpu_cores > 0
-        ? stage0.cpu_cores
-        : null) ??
       (typeof res?.cpu_cores_max === 'number' ? res.cpu_cores_max : null) ??
-      (typeof res?.cpu_cores_min === 'number' ? res.cpu_cores_min : null)
+      (typeof res?.cpu_cores_min === 'number' ? res.cpu_cores_min : null) ??
+      (typeof stage0?.cpu_cores === 'number' && stage0.cpu_cores > 0 ? stage0.cpu_cores : null)
     if (typeof cpu === 'number' && cpu > 0) totalCpus = cpu
 
     const gpuId =
-      (typeof stage0?.gpu_id === 'number' ? stage0.gpu_id : null) ??
-      (typeof res?.gpu_id_min === 'number' ? res.gpu_id_min : null)
+      (typeof res?.gpu_id_min === 'number' ? res.gpu_id_min : null) ??
+      (typeof stage0?.gpu_id === 'number' ? stage0.gpu_id : null)
     if (typeof gpuId === 'number' && gpuId >= 0) gpuDevice = gpuId
 
     const numGpus =
-      (typeof stage0?.num_gpus === 'number' && stage0.num_gpus > 0
-        ? stage0.num_gpus
-        : null) ?? (typeof res?.num_gpus === 'number' ? res.num_gpus : null)
+      (typeof res?.num_gpus === 'number' ? res.num_gpus : null) ??
+      (typeof stage0?.num_gpus === 'number' && stage0.num_gpus > 0 ? stage0.num_gpus : null)
     if (typeof numGpus === 'number' && numGpus > 0) totalGpus = numGpus
 
     const useGpuFlag =
-      typeof stage0?.use_gpu === 'boolean'
-        ? stage0.use_gpu
-        : typeof res?.use_gpu === 'boolean'
-          ? res.use_gpu
+      typeof res?.use_gpu === 'boolean'
+        ? res.use_gpu
+        : typeof stage0?.use_gpu === 'boolean'
+          ? stage0.use_gpu
           : null
     if (useGpuFlag === false) {
       computeTarget = 'CPU'
@@ -1656,6 +1749,7 @@
    *   resources?: EquilibrationJob['resources'],
    *   variant?: string|null,
    *   engine?: string|null,
+   *   gpuResident?: boolean|null,
    * }} fields
    */
   function applyLoadedJobToForm(job, fields) {
@@ -1673,7 +1767,12 @@
     if (fields.inputDir != null && String(fields.inputDir).trim()) {
       setInputDirectory(fields.inputDir)
     }
-    if (fields.ensemble) ensemble = String(fields.ensemble).toLowerCase()
+    if (fields.ensemble) ensemble = formEnsembleValue(fields.ensemble)
+    if (typeof fields.gpuResident === 'boolean') {
+      gpuResident = fields.gpuResident
+    } else if (typeof /** @type {any} */ (job).gpuResident === 'boolean') {
+      gpuResident = /** @type {any} */ (job).gpuResident
+    }
 
     const applied = protocolFromJobMetadata(fields.protocol ?? null)
     if (applied) {
@@ -1751,7 +1850,7 @@
       }
       outputName = job.name
       if (job.inputDir) setInputDirectory(job.inputDir)
-      if (job.ensemble) ensemble = String(job.ensemble).toLowerCase()
+      if (job.ensemble) ensemble = formEnsembleValue(job.ensemble)
 
       const summary = await Promise.race([
         getEquilibrationJobSummary(dir, workingDir || undefined, { forForm: true }),
@@ -1768,7 +1867,11 @@
           ? summary.resources
           : job.resources,
         variant: summary.variant ?? job.variant,
-        engine: summary.engine ?? job.engine
+        engine: summary.engine ?? job.engine,
+        gpuResident:
+          typeof summary.gpu_resident === 'boolean'
+            ? summary.gpu_resident
+            : /** @type {any} */ (job).gpuResident
       })
     } catch (err) {
       try {
@@ -1778,7 +1881,8 @@
           ensemble: job.ensemble,
           resources: job.resources,
           variant: job.variant,
-          engine: job.engine
+          engine: job.engine,
+          gpuResident: /** @type {any} */ (job).gpuResident
         })
       } catch (applyErr) {
         logEvent(
@@ -2164,7 +2268,8 @@
 
       generatingInputFiles = true
       let currentProtocol = $state.snapshot(protocol)
-      currentProtocol.stages = currentProtocol.stages.map((stage) => ({ ...resources, ...stage }))
+      // Computational Resources panel must override stale per-stage cpu/gpu fields.
+      currentProtocol.stages = currentProtocol.stages.map((stage) => ({ ...stage, ...resources }))
       await generateEquilibration({
         inputDir,
         outputDir,
@@ -2180,8 +2285,10 @@
         comRestraintK,
         addRotationRestraint,
         rotationRestraintK,
-        ...(engine === 'openmm' && openmmPlatform !== null ? { openmmPlatform } : {})
+        ...(engine === 'openmm' && openmmPlatform !== null ? { openmmPlatform } : {}),
+        ...(engine === 'namd' && useGpu ? { gpuResident } : {})
       })
+      protocol = prepareProtocolForRendering(currentProtocol)
       statusSynced = true
       await rescanJobs()
       logEvent(
@@ -2267,11 +2374,8 @@
     }
     try {
       let currentProtocol = $state.snapshot(protocol)
-      currentProtocol.stages = currentProtocol.stages.map((stage) => ({ ...resources, ...stage }))
-      await window.api.writeJson(
-        filePath,
-        prepareProtocolForSerialization($state.snapshot(protocol))
-      )
+      currentProtocol.stages = currentProtocol.stages.map((stage) => ({ ...stage, ...resources }))
+      await window.api.writeJson(filePath, prepareProtocolForSerialization(currentProtocol))
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
     }
@@ -2517,6 +2621,7 @@
     checkingExecutable = false
     executableCheck = null
     computeTarget = 'auto'
+    gpuResident = true
     availableCompute = []
     executableByEngine = { namd: 'namd3', gromacs: 'gmx', openmm: 'python', amber: 'pmemd' }
     engineCandidates = []
@@ -2780,6 +2885,18 @@
             </p>
           {/if}
         </div>
+        {#if engine === 'namd' && useGpu}
+          <div class="space-y-1 pt-1">
+            <div class="flex items-center gap-2">
+              <Checkbox id="gpu-resident" bind:checked={gpuResident} />
+              <label for="gpu-resident" class="sidebar-label">GPU-resident mode</label>
+            </div>
+            <p class="sidebar-hint">
+              Adds GPUresident to the production stage only. Equilibration keeps
+              reassignFreq/reassignTemp for stability.
+            </p>
+          </div>
+        {/if}
       </div>
       <div class="col-span-2 flex items-center gap-2">
         <Checkbox
@@ -3033,6 +3150,18 @@
           </button>
 
           <span class="hidden h-4 w-px shrink-0 bg-neutral-300 sm:inline dark:bg-neutral-700" aria-hidden="true"></span>
+
+          <label for="progress-sort-order" class="text-neutral-500">Order</label>
+          <select
+            id="progress-sort-order"
+            class="rounded-md border border-neutral-300 bg-white px-2 py-1 text-[11px] text-neutral-900 [color-scheme:light] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-50 dark:[color-scheme:dark] dark:focus-visible:ring-neutral-600"
+            value={progressSortOrder}
+            onchange={(e) =>
+              (progressSortOrder = /** @type {'newest' | 'oldest'} */ (e.currentTarget.value))}
+          >
+            <option value="newest">Newest</option>
+            <option value="oldest">Oldest</option>
+          </select>
 
           <label for="progress-location-filter" class="text-neutral-500">Location</label>
           <select
@@ -3889,7 +4018,8 @@
       onMessage={(msg, isError = false) => {
         logEvent(isError ? 'error' : 'info', 'eq', msg)
       }}
-      onExecutionUpdated={() => {
+      onExecutionUpdated={(execution) => {
+        if (clusterDialogJob?.jobDir) applyJobExecution(clusterDialogJob.jobDir, execution)
         void rescanJobs()
       }}
     />
