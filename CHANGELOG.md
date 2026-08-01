@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Equilibration Progress:** job cards for local and remote runs — Watch, Pull, sync ring, expandable Stages/Details with log viewer, location/status filters, shared cluster **Connect** in the toolbar
+- **Equilibration (remote / Slurm):** cluster profiles in Settings; **Run on cluster…** from job cards (connect/probe, modules, partitions, verified upload before sbatch); SSH passwords are session-only, never saved
 - **Equilibration (Amber):** engine option alongside NAMD/GROMACS/OpenMM — generate/run/status, executable discovery in Settings, compute targets CPU/CUDA
 - **Builder:** Amber in the 4-site water MD-engine select (FlexibleWater remains NAMD-only)
 - **Analysis:** Amber energetic engine option (mdout parsing)
@@ -23,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Equilibration Use in form:** protocol stages load reliably; re-read job folder on repeat load; **Clear form** no longer clears Progress cards; recover restraints from engine inputs when job JSON omits them
+- **Equilibration Progress:** loading spinner while scanning jobs; runtime prefetch; compact toolbar (Auto, Location/Status filters); pending-in-queue UX; sync-ring alignment and remote generation date; warn when watching without Connect; selected buttons readable in light mode
+- **Cluster — Watch vs Pull:** Watch polls Slurm and syncs stage logs only; **Pull** downloads files with live progress bar (**Pull (partial)** while the job is still running); sync ring compares Local/Remote folder sizes
+- **Cluster — remote cards & dialog:** Slurm status, node, GPU type, allocated CPUs; path recovery and scratch log sync; resubmit after cancel; optional `#SBATCH --nodelist`; Amber `pmemd.cuda` when GPUs > 0; dialog reuses Progress **Connect** session and seeds resources from the form
+- **OpenMM Progress cards:** log rows near 100% count as stage complete; Slurm COMPLETED only when all stages finished locally
 - **Equilibration:** job cards no longer show “interrupted” while MD is actively running (show “running” instead; “interrupted” only when the process has stopped and a continue is available)
 - **Equilibration:** after Kill MD, do not mark the current GROMACS stage as finished/100% when the log still contains `Finished mdrun` but steps are below `nsteps` (keep partial ns; needs matching gatewizard log-parser fix)
 - **Equilibration:** compute-target warning refers to the selected executable (and suggests a matching CUDA/OpenCL build from the list) instead of implying the PC has no GPU
@@ -35,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Equilibration (remote):** generate locally first (**Run locally** on the left panel); cluster submit on the job card via **Run on cluster…**; Slurm runs `run_equilibration_cluster.sh`, local runs use `run_equilibration.sh`
 - **Visualize:** transforms (gizmo / dialog) update coordinates in memory — no temp PDB on every drag; **Save PDB** writes when you choose (marker when unsaved)
 - **Visualize — Animation:** keyframes can store sparse coordinate patches for moved atoms so playback/export can interpolate atom motion without duplicating full structures
 - **Visualize — Animation:** unsaved atom moves (like unsaved color/representation edits) revert to the last keyframe when scrubbing the timeline; capture a keyframe to keep the new positions
