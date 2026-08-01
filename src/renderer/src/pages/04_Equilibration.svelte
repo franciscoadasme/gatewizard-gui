@@ -7,11 +7,14 @@
   import Empty from '../components/ui/Empty.svelte'
   import EquilibrationStage from '../components/EquilibrationStage.svelte'
   import EquilibrationStageStatus from '../components/EquilibrationStageStatus.svelte'
+  import RunOnClusterDialog from '../components/RunOnClusterDialog.svelte'
+  import PullSyncRing from '../components/PullSyncRing.svelte'
   import baseProtocol from '../../../../resources/protocols/base.json'
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Input from '../components/ui/Input.svelte'
   import Select from '../components/ui/Select.svelte'
   import Spinner from '../components/ui/Spinner.svelte'
+  import ResetIcon from '../components/icons/Reset.svelte'
   import {
     checkExecutable,
     generateEquilibration,
@@ -24,14 +27,37 @@
     scanEquilibrationJobs,
     getEquilibrationJobSummary,
     stopEquilibration,
-    getStructure
+    getStructure,
+    clusterJobStatus,
+    clusterPullJobStream,
+    clusterJobFolderSizes,
+    listEquilibrationJobFiles,
+    getEquilibrationJobLog
   } from '../lib/backendApi'
+  import { loadClusterProfiles } from '../lib/clusterProfiles.js'
+  import {
+    connectSharedCluster,
+    disconnectSharedCluster,
+    getClusterSession,
+    sharedProfilePlain
+  } from '../lib/clusterSession.svelte.js'
+  import { formatClusterConnectError } from '../lib/clusterConnectError.js'
+  import {
+    canonicalizeSlurmState,
+    isSlurmActiveState,
+    isSlurmPendingState,
+    isSlurmRunningState,
+    partialPullConfirmMessage,
+    isSlurmTerminalState
+  } from '../lib/slurmState.js'
   import {
     defaultEquilibrationFolderName,
     outputFolderPath
   } from '../lib/outputFolders.js'
   import { themeState } from '../lib/theme.svelte.js'
   import { themeBackgroundHex } from '../lib/viewerSettings.svelte.js'
+
+  const clusterSession = getClusterSession()
 
   /** @typedef {{ id: string, name: string, force_constant: number, selection: string }} Constraint */
 
@@ -50,7 +76,7 @@
   let { workingDir = '' } = $props()
 
   // form fields
-  let autoMonitor = $state(true)
+  let autoMonitor = $state(false)
   let engine = $state('namd')
   let ensemble = $state('npt')
   let gpuDevice = $state(0)
@@ -73,11 +99,9 @@
     return resolved
   }
 
-  $effect(() => {
-    if (workingDir && inputDir && !outputName.trim()) {
-      outputName = defaultEquilibrationFolderName(inputDir)
-    }
-  })
+  const suggestedOutputFolderName = $derived(
+    inputDir ? defaultEquilibrationFolderName(inputDir) : '03_equilibration'
+  )
 
   let addComRestraint = $state(false)
   let comSelection = $state('name CA')
@@ -111,9 +135,32 @@
   /** @type {number | null} */
   let systemSize = $state(null)
   let loadingSystemSize = $state(false)
+  /** Bumped whenever inputDir is (re)assigned so the size loader re-runs for the same path. */
+  let inputDirRevision = $state(0)
   let totalCpus = $state(4)
   let totalGpus = $state(1)
-  let updateInterval = $state(5)
+  let updateInterval = $state(60)
+  /** @type {'all' | 'local' | 'remote'} */
+  let progressFilter = $state(/** @type {'all' | 'local' | 'remote'} */ ('all'))
+  /** @type {'all' | 'pending' | 'running' | 'completed' | 'cancelled' | 'failed' | 'ready'} */
+  let progressStatusFilter = $state(
+    /** @type {'all' | 'pending' | 'running' | 'completed' | 'cancelled' | 'failed' | 'ready'} */ (
+      'all'
+    )
+  )
+  /** @type {{ jobDir: string, jobName: string, engine: string, cpus: number, gpus: number, execution: object|null } | null} */
+  let clusterDialogJob = $state(null)
+  /** Progress-strip cluster connect */
+  /** @type {any[]} */
+  let progressClusterProfiles = $state([])
+  let progressClusterProfileId = $state('')
+  let progressClusterPassword = $state('')
+
+  const formJobDir = $derived(
+    workingDir && resolveOutputFolderName()
+      ? outputFolderPath(workingDir, resolveOutputFolderName())
+      : ''
+  )
 
   const GPU_TARGETS = ['CUDA', 'OpenCL', 'Metal']
   const OPENMM_COMPUTE_TARGETS = /** @type {const} */ (['auto', 'CPU', 'CUDA', 'OpenCL', 'Metal'])
@@ -151,8 +198,6 @@
       isEngineSupported &&
       !startingEquilibration
   )
-  const watchedJobs = $derived(jobs.filter((j) => j.watched))
-  const hasRunningWatched = $derived(watchedJobs.some((j) => j.status === 'running'))
   const selectedExecutable = $derived(executableByEngine[engine] ?? '')
   const resources = $derived({
     cpu_cores: totalCpus,
@@ -200,7 +245,7 @@
       : []
   )
   /** @typedef {{ name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, elapsed_time_seconds: number|null, is_minimization?: boolean, steps_completed?: number|null, total_steps?: number|null, minimization_converged_early?: boolean, output: string }} EqStageInfo */
-  /** @typedef {{ jobDir: string, name: string, engine: string, variant: string|null, status: string, startTime: string, elapsed: string, stagesDone: number, stagesTotal: number, error: string|null, canRun: boolean, canResume: boolean, resumeReason: string, resumeStageName: string, resources: import('../lib/backendApi.js').EquilibrationJobResources | null, inputDir: string|null, ensemble: string|null, protocol: { name: string, description?: string, stages: object[] }|null, stages: EqStageInfo[], watched: boolean, showInfo: boolean, processInfo: { pid: number|null, running: boolean, command: string|null, start_time: string|null, working_dir: string, engine: string } | null, loadingProcessInfo: boolean, stopping: boolean, continuing: boolean, running: boolean, reloading: boolean, equilibrationOutput: string }} EquilibrationJob */
+  /** @typedef {{ jobDir: string, name: string, engine: string, variant: string|null, status: string, startTime: string, elapsed: string, stagesDone: number, stagesTotal: number, error: string|null, canRun: boolean, canResume: boolean, resumeReason: string, resumeStageName: string, resources: import('../lib/backendApi.js').EquilibrationJobResources | null, inputDir: string|null, ensemble: string|null, protocol: { name: string, description?: string, stages: object[] }|null, execution: object|null, stages: EqStageInfo[], watched: boolean, showStages: boolean, showInfo: boolean, processInfo: { pid: number|null, running: boolean, command: string|null, start_time: string|null, working_dir: string, engine: string } | null, loadingProcessInfo: boolean, stopping: boolean, continuing: boolean, running: boolean, reloading: boolean, pulling: boolean, pullProgress: { percent: number|null, message: string, phase: string } | null, syncSizes: { localBytes: number|null, remoteBytes: number|null, localFormatted: string, remoteFormatted: string, loading: boolean } | null, selectedLog: string|null, logMode: 'head'|'tail', logLines: number, logLinesEditing: boolean, logFiles: string[], logView: { lines: string[], exists: boolean, loading: boolean, mode: string, lineCount: number } | null, loadingStages: boolean, syncingRemoteStages: boolean, equilibrationOutput: string }} EquilibrationJob */
 
   // state
   /** @type {null | { stageIndex: number, constraintIndex: number, source: Constraint | null }} */
@@ -209,10 +254,26 @@
   let statusSynced = $state(false)
   let generatingInputFiles = $state(false)
   let startingEquilibration = $state(false)
+  /** True while scanning the working directory for equilibration job folders. */
+  let loadingJobs = $state(false)
+  /** Job dir currently loading into the left-hand form via Use in form. */
+  let usingInFormDir = $state(/** @type {string | null} */ (null))
+  /** Last job successfully loaded into the form (persistent card highlight). */
+  let formSourceJobDir = $state(/** @type {string | null} */ (null))
   /** @type {EquilibrationJob[]} */
   let jobs = $state([])
   /** @type {ReturnType<typeof setInterval> | null} */
   let pollIntervalId = null
+  /** Guards overlapping directory scans when the working directory changes quickly. */
+  let jobsScanGeneration = 0
+
+  /** @param {unknown} raw */
+  function normalizeEngineId(raw) {
+    const e = String(raw || '')
+      .trim()
+      .toLowerCase()
+    return ['namd', 'gromacs', 'openmm', 'amber'].includes(e) ? e : ''
+  }
 
   // ── Sync to shared status bar store ──
   $effect(() => {
@@ -235,6 +296,7 @@
   function formatJobElapsed(startIso, endIso = null) {
     if (!startIso) return ''
     const start = new Date(startIso).getTime()
+    if (!Number.isFinite(start)) return ''
     const end = endIso ? new Date(endIso).getTime() : Date.now()
     const s = Math.max(0, Math.round((end - start) / 1000))
     const m = Math.floor(s / 60)
@@ -242,6 +304,50 @@
     if (h > 0) return `${h}h ${m % 60}m ${s % 60}s`
     if (m > 0) return `${m}m ${s % 60}s`
     return `${s}s`
+  }
+
+  /** Generation / start timestamp for the card header (not wall-clock elapsed). */
+  function formatJobGenerated(startIso) {
+    if (!startIso) return ''
+    const d = new Date(startIso)
+    if (!Number.isFinite(d.getTime())) return ''
+    try {
+      return d.toLocaleString(undefined, {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      })
+    } catch {
+      return d.toISOString().slice(0, 16).replace('T', ' ')
+    }
+  }
+
+  /** Local generate time, or cluster submit time for remote jobs without a local stamp. */
+  /** @param {EquilibrationJob} job */
+  function jobGeneratedIso(job) {
+    return job.startTime || String(job.execution?.submitted_at || '').trim() || ''
+  }
+
+  /** Sum of per-stage MD elapsed seconds from logs (actual compute time, not calendar since generate). */
+  function formatStagesMdElapsed(stages) {
+    if (!stages?.length) return ''
+    let total = 0
+    let any = false
+    for (const s of stages) {
+      if (Number.isFinite(s.elapsed_time_seconds) && s.elapsed_time_seconds > 0) {
+        total += s.elapsed_time_seconds
+        any = true
+      }
+    }
+    if (!any) return ''
+    const sec = Math.round(total)
+    const m = Math.floor(sec / 60)
+    const h = Math.floor(m / 60)
+    if (h > 0) return `${h}h ${m % 60}m ${sec % 60}s`
+    if (m > 0) return `${m}m ${sec % 60}s`
+    return `${sec}s`
   }
 
   function formatNs(value) {
@@ -296,6 +402,682 @@
     return parts.join(' · ')
   }
 
+  /** Card resource line: prefer cluster submit / Slurm allocation when remote. */
+  /** @param {EquilibrationJob} job */
+  function formatJobCardResources(job) {
+    const exec = job.execution
+    if (exec?.mode === 'remote') {
+      const parts = []
+      // Never fall back to local equilibration_resources.json for remote CPUs —
+      // that file is the generate-time default (often 6), not the sbatch request.
+      const cpus = Number(exec.allocated_cpus) || Number(exec.resources?.cpus) || 0
+      if (cpus > 0) parts.push(`${cpus} CPU`)
+      const gpus = Number(exec.resources?.gpus) || 0
+      const gpuLabel = String(exec.node_gpu_label || '').trim()
+      if (gpus > 0 && gpuLabel) {
+        parts.push(gpus > 1 ? `${gpus}× ${gpuLabel}` : gpuLabel)
+      } else if (gpus > 0) {
+        parts.push(gpus === 1 ? '1 GPU' : `${gpus} GPU`)
+      } else if (gpuLabel) {
+        parts.push(gpuLabel)
+      }
+      const node = String(exec.node_list || '').split(',')[0].trim()
+      if (node) parts.push(`node ${node}`)
+      if (parts.length) return parts.join(' · ')
+      return formatJobResources(job.resources)
+    }
+    return formatJobResources(job.resources)
+  }
+
+  /** @param {EquilibrationJob} job */
+  function remoteSchedulerRunning(job) {
+    return isSlurmActiveState(job.execution?.last_remote_state)
+  }
+
+  /** @param {EquilibrationJob} job */
+  function remoteSchedulerPending(job) {
+    return (
+      job.execution?.mode === 'remote' && isSlurmPendingState(job.execution?.last_remote_state)
+    )
+  }
+
+  /** @param {EquilibrationJob} job */
+  function remoteSchedulerRunningOnly(job) {
+    return (
+      job.execution?.mode === 'remote' && isSlurmRunningState(job.execution?.last_remote_state)
+    )
+  }
+
+  /** @param {EquilibrationJob} job */
+  function remoteSchedulerStatusClass(job) {
+    if (remoteSchedulerPending(job)) return 'text-amber-600 dark:text-amber-400'
+    if (remoteSchedulerRunningOnly(job)) return 'text-green-400'
+    return 'text-neutral-400'
+  }
+
+  /** Protocol stage placeholders when cluster logs are not local yet. */
+  /** @param {EquilibrationJob} job @returns {EqStageInfo[]} */
+  function protocolPlaceholderStages(job) {
+    const defs = job.protocol?.stages
+    if (!Array.isArray(defs) || !defs.length) return []
+    return defs.map((s) => ({
+      name: String(s.name || 'Stage'),
+      status: /** @type {'not_started'} */ ('not_started'),
+      simulated_time: null,
+      total_simulation_time:
+        Number.isFinite(Number(s.time_ns)) ? Number(s.time_ns) : null,
+      performance: null,
+      elapsed_time_seconds: null,
+      is_minimization: false,
+      output: ''
+    }))
+  }
+
+  /** Stages from logs when present; otherwise protocol outline for remote cards. */
+  /** @param {EquilibrationJob} job @returns {EqStageInfo[]} */
+  function jobDisplayStages(job) {
+    if (job.stages?.length) return job.stages
+    return protocolPlaceholderStages(job)
+  }
+
+  /**
+   * Progress-list status bucket for filtering (local + remote Slurm).
+   * @param {EquilibrationJob} job
+   * @returns {'pending' | 'running' | 'completed' | 'cancelled' | 'failed' | 'ready'}
+   */
+  function jobProgressStatus(job) {
+    const remote = job.execution?.mode === 'remote'
+    const rs = job.execution?.last_remote_state
+    if (remote && rs) {
+      const canon = canonicalizeSlurmState(rs)
+      if (isSlurmPendingState(rs)) return 'pending'
+      if (canon === 'CANCELLED') return 'cancelled'
+      if (canon === 'COMPLETED' || remoteJobFinishedLocally(job)) return 'completed'
+      if (
+        ['FAILED', 'TIMEOUT', 'NODE_FAIL', 'OUT_OF_MEMORY', 'PREEMPTED', 'BOOT_FAIL'].includes(
+          canon
+        )
+      ) {
+        return 'failed'
+      }
+      if (isSlurmActiveState(rs)) return 'running'
+    }
+    if (job.status === 'running') return 'running'
+    if (job.status === 'completed') return 'completed'
+    if (job.status === 'error') return 'failed'
+    return 'ready'
+  }
+
+  /** @param {'all' | 'local' | 'remote'} loc @param {typeof progressStatusFilter} st */
+  function progressFilterEmptyLabel(loc, st) {
+    const parts = []
+    if (loc !== 'all') parts.push(loc)
+    if (st !== 'all') {
+      const labels = {
+        pending: 'pending',
+        running: 'running',
+        completed: 'completed',
+        cancelled: 'cancelled',
+        failed: 'failed',
+        ready: 'ready'
+      }
+      parts.push(labels[st] || st)
+    }
+    return parts.length ? parts.join(' · ') : 'matching'
+  }
+
+  /** @param {EquilibrationJob} job */
+  function jobClusterCpus(job) {
+    const fromExec =
+      Number(job.execution?.allocated_cpus) || Number(job.execution?.resources?.cpus) || 0
+    if (fromExec > 0) return fromExec
+    const r = job.resources
+    if (r?.cpu_cores_max != null) return Number(r.cpu_cores_max) || totalCpus
+    if (r?.cpu_cores_min != null) return Number(r.cpu_cores_min) || totalCpus
+    return totalCpus
+  }
+
+  /** @param {EquilibrationJob} job */
+  function jobClusterGpus(job) {
+    const fromExec = Number(job.execution?.resources?.gpus)
+    if (Number.isFinite(fromExec) && fromExec >= 0 && job.execution?.mode === 'remote') {
+      return fromExec
+    }
+    const r = job.resources
+    if (r?.use_gpu === false) return 0
+    if (r?.num_gpus != null) return Number(r.num_gpus) || 0
+    return useGpu ? totalGpus : 0
+  }
+
+  /** @param {EquilibrationJob} job */
+  function remoteJobFinishedLocally(job) {
+    return (
+      job.execution?.mode === 'remote' &&
+      canonicalizeSlurmState(job.execution?.last_remote_state) === 'COMPLETED'
+    )
+  }
+
+  /** @param {EquilibrationJob} job */
+  function remoteJobTerminal(job) {
+    return isSlurmTerminalState(job.execution?.last_remote_state)
+  }
+
+  /** @param {EquilibrationJob} job */
+  function localStagesComplete(job) {
+    if (!job.stages?.length) return job.stagesTotal > 0 && job.stagesDone >= job.stagesTotal
+    return job.stages.every((s) => s.status === 'completed')
+  }
+
+  /** @param {EquilibrationJob} job @param {EqStageInfo[]} stages @param {string} rawStatus */
+  function mergeJobStages(job, stages, rawStatus) {
+    let status = rawStatus
+    let displayStages = stages.length > 0 ? stages : job.stages
+    if (status === 'running' && job.execution?.mode === 'remote') {
+      displayStages = displayStages.map((s) =>
+        s.status === 'error' ? { ...s, status: 'not_started', output: '' } : s
+      )
+    }
+    if (
+      job.execution?.mode === 'remote' &&
+      job.execution?.last_remote_state &&
+      isSlurmActiveState(job.execution.last_remote_state)
+    ) {
+      status = 'running'
+    } else if (
+      remoteJobFinishedLocally(job) &&
+      (displayStages.length === 0 || displayStages.every((s) => s.status === 'completed'))
+    ) {
+      status = 'completed'
+    }
+    return {
+      status,
+      stages: displayStages,
+      stagesDone: displayStages.length
+        ? displayStages.filter((s) => s.status === 'completed').length
+        : job.stagesDone,
+      stagesTotal: displayStages.length || job.stagesTotal
+    }
+  }
+
+  /** @param {number} index @param {{ localOnly?: boolean }} [opts] */
+  async function loadJobStages(index, { localOnly = false } = {}) {
+    const job = jobs[index]
+    if (!job || job.loadingStages) return
+    jobs[index] = { ...job, loadingStages: true }
+    try {
+      const { status: rawStatus, stages, run_start_time } = await getEquilibrationStatus({
+        workingDir: job.jobDir,
+        engine: job.engine
+      })
+      const current = jobs[index]
+      if (!current || current.jobDir !== job.jobDir) return
+      const merged = mergeJobStages(current, stages, rawStatus)
+      const allDone =
+        merged.stages.length > 0 && merged.stages.every((s) => s.status === 'completed')
+      const status =
+        remoteJobFinishedLocally(current) && allDone ? 'completed' : merged.status
+      jobs[index] = {
+        ...current,
+        ...merged,
+        status,
+        startTime: run_start_time || current.startTime,
+        elapsed: formatJobElapsed(run_start_time || current.startTime),
+        error: status === 'completed' ? null : current.error,
+        equilibrationOutput: status === 'completed' ? '' : current.equilibrationOutput,
+        canResume: status === 'completed' || status === 'running' ? false : current.canResume,
+        canRun: status === 'running' ? false : current.canRun
+      }
+    } catch {
+      /* keep card summary if local read fails */
+    } finally {
+      const current = jobs[index]
+      if (current?.jobDir === job.jobDir) {
+        jobs[index] = { ...current, loadingStages: false }
+      }
+    }
+  }
+
+  /**
+   * Prefetch stage logs so header Runtime is available without opening Stages.
+   * Local jobs: always. Remote: only when a shared cluster session is connected
+   * (may light-sync logs via refreshJobDetail when the job is still live).
+   * @param {number} index
+   */
+  async function ensureJobRuntimeLoaded(index) {
+    const job = jobs[index]
+    if (!job) return
+    // One-shot: skip if already loading, already have stage payload, or runtime known.
+    if (job.loadingStages || job.stages?.length || formatStagesMdElapsed(job.stages)) return
+    const remote = job.execution?.mode === 'remote'
+    if (remote && !clusterSession.sessionId) return
+    if (
+      remote &&
+      !remoteJobFinishedLocally(job) &&
+      job.execution?.scheduler_job_id
+    ) {
+      await refreshJobDetail(index)
+      return
+    }
+    await loadJobStages(index)
+  }
+
+  /** Prefetch runtimes for every card that is allowed to load them now. */
+  function prefetchJobRuntimes() {
+    for (let i = 0; i < jobs.length; i++) {
+      void ensureJobRuntimeLoaded(i)
+    }
+  }
+
+  /** @param {EquilibrationJob} job */
+  function openClusterDialog(job) {
+    // Prefer the left-panel CPU/GPU controls so Cluster matches the form.
+    clusterDialogJob = {
+      jobDir: job.jobDir,
+      jobName: job.name,
+      engine: job.engine || engine,
+      cpus: Math.max(1, Number(totalCpus) || jobClusterCpus(job) || 1),
+      gpus: useGpu
+        ? Math.max(0, Number(totalGpus) || jobClusterGpus(job) || 0)
+        : 0,
+      execution: job.execution || null
+    }
+  }
+
+  /**
+   * @param {object|null|undefined} execution
+   * @param {EquilibrationJob['syncSizes']} [existing]
+   * @returns {EquilibrationJob['syncSizes']}
+   */
+  function syncSizesFromExecution(execution, existing = null) {
+    const localBytes =
+      Number(execution?.local_bytes) > 0
+        ? Number(execution.local_bytes)
+        : (existing?.localBytes ?? null)
+    const remoteBytes =
+      Number(execution?.remote_bytes) > 0
+        ? Number(execution.remote_bytes)
+        : (existing?.remoteBytes ?? null)
+    if (localBytes == null && remoteBytes == null && !existing) return null
+    return {
+      localBytes,
+      remoteBytes,
+      localFormatted: existing?.localFormatted || formatBytesLabel(localBytes),
+      remoteFormatted: existing?.remoteFormatted || formatBytesLabel(remoteBytes),
+      loading: false
+    }
+  }
+
+  /** @param {number|null|undefined} n */
+  function formatBytesLabel(n) {
+    if (n == null || !Number.isFinite(Number(n))) return '—'
+    const units = ['B', 'KB', 'MB', 'GB', 'TB']
+    let v = Math.max(0, Number(n))
+    let i = 0
+    while (v >= 1024 && i < units.length - 1) {
+      v /= 1024
+      i += 1
+    }
+    if (i === 0) return `${Math.round(v)} ${units[i]}`
+    return `${v.toFixed(1)} ${units[i]}`
+  }
+
+  /**
+   * Refresh local (+ remote when connected) folder sizes for the sync ring.
+   * @param {number} index
+   * @param {{ measureRemote?: boolean }} [opts]
+   */
+  async function refreshJobSyncSizes(index, opts = {}) {
+    const job = jobs[index]
+    if (!job?.jobDir) return
+    const measureRemote =
+      opts.measureRemote !== false &&
+      job.execution?.mode === 'remote' &&
+      !!job.execution?.remote_path &&
+      !!clusterSession.sessionId
+
+    jobs[index] = {
+      ...job,
+      syncSizes: {
+        localBytes: job.syncSizes?.localBytes ?? null,
+        remoteBytes: job.syncSizes?.remoteBytes ?? null,
+        localFormatted: job.syncSizes?.localFormatted || '—',
+        remoteFormatted: job.syncSizes?.remoteFormatted || '—',
+        loading: true
+      }
+    }
+    try {
+      const res = await clusterJobFolderSizes({
+        local_dir: job.jobDir,
+        session_id: measureRemote ? clusterSession.sessionId : null,
+        remote_dir: measureRemote ? job.execution?.remote_path : null,
+        measure_remote: measureRemote
+      })
+      const current = jobs[index]
+      if (!current || current.jobDir !== job.jobDir) return
+      const localBytes = res.local_bytes ?? null
+      const remoteBytes =
+        res.remote_bytes != null && Number(res.remote_bytes) > 0
+          ? Number(res.remote_bytes)
+          : (current.syncSizes?.remoteBytes ?? null)
+      jobs[index] = {
+        ...current,
+        execution: {
+          ...(current.execution || {}),
+          ...(localBytes != null ? { local_bytes: localBytes } : {}),
+          ...(remoteBytes != null ? { remote_bytes: remoteBytes } : {})
+        },
+        syncSizes: {
+          localBytes,
+          remoteBytes,
+          localFormatted: res.local_formatted || formatBytesLabel(localBytes),
+          remoteFormatted: res.remote_formatted || formatBytesLabel(remoteBytes),
+          loading: false
+        }
+      }
+    } catch {
+      const current = jobs[index]
+      if (current?.jobDir === job.jobDir && current.syncSizes) {
+        jobs[index] = {
+          ...current,
+          syncSizes: { ...current.syncSizes, loading: false }
+        }
+      }
+    }
+  }
+
+  const LOG_LINE_PRESETS = [50, 100, 200, 500, 1000]
+  /** Soft ceiling so a huge paste cannot freeze the renderer; head/tail still stream from disk. */
+  const LOG_LINES_MAX = 100_000
+  const LOG_LINES_DEFAULT = 50
+
+  function clampLogLines(n) {
+    const v = Math.floor(Number(n))
+    if (!Number.isFinite(v) || v < 1) return LOG_LINES_DEFAULT
+    return Math.min(LOG_LINES_MAX, v)
+  }
+
+  /** @param {number} index */
+  async function refreshJobLogFiles(index) {
+    const job = jobs[index]
+    if (!job?.jobDir) return
+    jobs[index] = {
+      ...job,
+      logView: {
+        lines: job.logView?.lines || [],
+        exists: job.logView?.exists ?? false,
+        loading: true,
+        mode: job.logView?.mode || (job.logMode === 'head' ? 'head' : 'tail'),
+        lineCount: job.logView?.lineCount || clampLogLines(job.logLines)
+      }
+    }
+    try {
+      const res = await listEquilibrationJobFiles(job.jobDir)
+      const files = (res.files || []).map((f) => f.path)
+      const current = jobs[index]
+      if (!current || current.jobDir !== job.jobDir) return
+      let selectedLog = current.selectedLog
+      if (selectedLog && !files.includes(selectedLog)) selectedLog = null
+      if (!selectedLog && files.length) selectedLog = files[0]
+      jobs[index] = { ...current, logFiles: files, selectedLog }
+      if (selectedLog) {
+        await refreshJobLogView(index)
+      } else {
+        jobs[index] = {
+          ...jobs[index],
+          logView: {
+            lines: [],
+            exists: false,
+            loading: false,
+            mode: current.logMode === 'head' ? 'head' : 'tail',
+            lineCount: clampLogLines(current.logLines)
+          }
+        }
+      }
+    } catch {
+      const current = jobs[index]
+      if (current?.jobDir === job.jobDir && current.logView?.loading) {
+        jobs[index] = {
+          ...current,
+          logView: { ...current.logView, loading: false }
+        }
+      }
+    }
+  }
+
+  /** @param {number} index */
+  async function refreshJobLogView(index) {
+    const job = jobs[index]
+    if (!job?.jobDir || !job.selectedLog) return
+    const mode = job.logMode === 'head' ? 'head' : 'tail'
+    const lines = clampLogLines(job.logLines)
+    jobs[index] = {
+      ...job,
+      logView: {
+        lines: job.logView?.lines || [],
+        exists: job.logView?.exists ?? false,
+        loading: true,
+        mode,
+        lineCount: lines
+      }
+    }
+    try {
+      const res = await getEquilibrationJobLog({
+        jobDir: job.jobDir,
+        relPath: job.selectedLog,
+        mode,
+        lines
+      })
+      const current = jobs[index]
+      if (!current || current.jobDir !== job.jobDir) return
+      jobs[index] = {
+        ...current,
+        logView: {
+          lines: res.lines || [],
+          exists: !!res.exists,
+          loading: false,
+          mode: res.mode || mode,
+          lineCount: res.line_count || lines
+        }
+      }
+    } catch {
+      const current = jobs[index]
+      if (current?.jobDir === job.jobDir) {
+        jobs[index] = {
+          ...current,
+          logView: {
+            lines: [],
+            exists: false,
+            loading: false,
+            mode,
+            lineCount: lines
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * @param {number} index
+   * @param {{ selectedLog?: string|null, logMode?: 'head'|'tail', logLines?: number, logLinesEditing?: boolean }} patch
+   */
+  async function updateJobLogOptions(index, patch) {
+    const job = jobs[index]
+    if (!job) return
+    const next = {
+      ...job,
+      ...(patch.selectedLog !== undefined ? { selectedLog: patch.selectedLog } : {}),
+      ...(patch.logMode !== undefined ? { logMode: patch.logMode } : {}),
+      ...(patch.logLines !== undefined ? { logLines: clampLogLines(patch.logLines) } : {}),
+      ...(patch.logLinesEditing !== undefined ? { logLinesEditing: !!patch.logLinesEditing } : {})
+    }
+    jobs[index] = next
+    if (next.selectedLog && patch.logLinesEditing !== true) await refreshJobLogView(index)
+  }
+
+  /** @param {number} index */
+  async function pullRemoteJob(index) {
+    const job = jobs[index]
+    if (!job?.execution?.mode || job.execution.mode !== 'remote') return
+    const remotePath = job.execution.remote_path
+    if (!remotePath) return
+    if (job.pulling) return
+
+    const remoteState = job.execution?.last_remote_state
+    if (isSlurmActiveState(remoteState) && !confirm(partialPullConfirmMessage(remoteState))) {
+      return
+    }
+
+    jobs[index] = {
+      ...job,
+      pulling: true,
+      pullProgress: {
+        percent: 0,
+        message: isSlurmActiveState(remoteState)
+          ? `Partial pull (job still ${canonicalizeSlurmState(remoteState)})…`
+          : 'Starting pull…',
+        phase: 'resolve'
+      },
+      error: null
+    }
+    try {
+      let sessionId = clusterSession.sessionId
+      const profiles = await loadClusterProfiles()
+      const profile =
+        profiles.find((p) => p.id && p.id === job.execution.cluster_id) ||
+        profiles.find((p) => p.name && p.name === job.execution.cluster_name) ||
+        profiles[0]
+      if (!sessionId) {
+        if (!profile?.identity_file && !profile?.host) {
+          jobs[index] = { ...jobs[index], pulling: false, pullProgress: null }
+          openClusterDialog(job)
+          return
+        }
+        await connectSharedCluster(profile)
+        sessionId = clusterSession.sessionId
+      }
+      if (!sessionId) {
+        jobs[index] = { ...jobs[index], pulling: false, pullProgress: null }
+        openClusterDialog(job)
+        return
+      }
+      const res = await clusterPullJobStream(
+        {
+          session_id: sessionId,
+          local_dir: job.jobDir,
+          remote_dir: remotePath,
+          full: true,
+          profile: sharedProfilePlain() || (profile ? JSON.parse(JSON.stringify(profile)) : null),
+          job_id: job.execution.scheduler_job_id || null
+        },
+        (evt) => {
+          const current = jobs[index]
+          if (!current || current.jobDir !== job.jobDir) return
+          const pct =
+            typeof evt.percent === 'number' && Number.isFinite(evt.percent)
+              ? Math.max(0, Math.min(100, evt.percent))
+              : current.pullProgress?.percent ?? null
+          const msg =
+            evt.message ||
+            current.pullProgress?.message ||
+            'Pulling…'
+          const nextSync = { ...(current.syncSizes || {
+            localBytes: null,
+            remoteBytes: null,
+            localFormatted: '—',
+            remoteFormatted: '—',
+            loading: false
+          }) }
+          if (typeof evt.total_bytes === 'number' && evt.total_bytes > 0) {
+            nextSync.remoteBytes = evt.total_bytes
+            nextSync.remoteFormatted = formatBytesLabel(evt.total_bytes)
+          }
+          if (typeof evt.bytes === 'number' && evt.bytes >= 0 && evt.phase === 'sync') {
+            // Prefer local folder growth when the event reports on-disk bytes.
+            nextSync.localBytes = evt.bytes
+            nextSync.localFormatted = formatBytesLabel(evt.bytes)
+          }
+          jobs[index] = {
+            ...current,
+            pullProgress: {
+              percent: pct,
+              message: msg,
+              phase: evt.phase || current.pullProgress?.phase || 'sync'
+            },
+            syncSizes: nextSync
+          }
+        }
+      )
+      const current = jobs[index]
+      if (!current || current.jobDir !== job.jobDir) return
+      const stillActive = isSlurmActiveState(
+        res.remote_state || res.execution?.last_remote_state || remoteState
+      )
+      const localBytes =
+        typeof res.local_bytes === 'number' ? res.local_bytes : current.syncSizes?.localBytes
+      const remoteBytes =
+        typeof res.remote_bytes === 'number' && res.remote_bytes > 0
+          ? res.remote_bytes
+          : current.syncSizes?.remoteBytes
+      jobs[index] = {
+        ...current,
+        execution: {
+          ...(current.execution || {}),
+          ...(res.execution || {}),
+          mode: 'remote',
+          remote_path: res.execution?.remote_path || remotePath,
+          ...(localBytes != null ? { local_bytes: localBytes } : {}),
+          ...(remoteBytes != null ? { remote_bytes: remoteBytes } : {})
+        },
+        syncSizes: {
+          localBytes: localBytes ?? null,
+          remoteBytes: remoteBytes ?? null,
+          localFormatted: res.local_formatted || formatBytesLabel(localBytes),
+          remoteFormatted: res.remote_formatted || formatBytesLabel(remoteBytes),
+          loading: false
+        },
+        pullProgress: {
+          percent: 100,
+          message: stillActive
+            ? 'Partial pull complete — pull again when the job finishes for full results'
+            : 'Pull complete',
+          phase: 'done'
+        }
+      }
+      await reloadJobCard(index)
+      jobs[index] = { ...jobs[index], showStages: true }
+      await loadJobStages(index)
+      void refreshJobSyncSizes(index, { measureRemote: true })
+      void refreshJobLogFiles(index)
+    } catch (err) {
+      const current = jobs[index]
+      if (current?.jobDir === job.jobDir) {
+        jobs[index] = {
+          ...current,
+          error: err instanceof Error ? err.message : String(err),
+          pullProgress: null
+        }
+      }
+    } finally {
+      const current = jobs[index]
+      if (current?.jobDir === job.jobDir && current.pulling) {
+        jobs[index] = { ...current, pulling: false, pullProgress: null }
+      }
+    }
+  }
+
+  const filteredJobs = $derived(
+    jobs.filter((job) => {
+      if (progressFilter !== 'all') {
+        const remote = job.execution?.mode === 'remote'
+        if (progressFilter === 'remote' ? !remote : remote) return false
+      }
+      if (progressStatusFilter !== 'all' && jobProgressStatus(job) !== progressStatusFilter) {
+        return false
+      }
+      return true
+    })
+  )
+
   /** @param {EqStageInfo[]} stages */
   function jobSimulatedTotals(stages) {
     let sim = 0
@@ -318,27 +1100,31 @@
 
   /** @param {import('../lib/backendApi.js').EquilibrationJobSummary} summary */
   function jobFromScan(summary, /** @type {EquilibrationJob | undefined} */ existing) {
+    const remoteActive =
+      summary.execution?.mode === 'remote' && isSlurmActiveState(summary.execution?.last_remote_state)
     return {
       jobDir: summary.job_dir,
       name: summary.name,
       engine: summary.engine,
       variant: summary.variant,
-      status: summary.status || 'unknown',
-      startTime: summary.start_time || '',
+      status: remoteActive ? 'running' : summary.status || 'unknown',
+      startTime: summary.start_time || String(summary.execution?.submitted_at || '').trim() || '',
       elapsed: formatJobElapsed(summary.start_time),
       stagesDone: summary.stages_done ?? 0,
       stagesTotal: summary.stages_total ?? 0,
-      error: summary.error || null,
-      canRun: summary.can_run ?? false,
-      canResume: summary.can_resume ?? false,
+      error: remoteActive ? null : summary.error || null,
+      canRun: remoteActive ? false : (summary.can_run ?? false),
+      canResume: remoteActive ? false : (summary.can_resume ?? false),
       resumeReason: summary.resume_reason || '',
       resumeStageName: summary.resume_stage_name || '',
       resources: summary.resources ?? null,
       inputDir: summary.input_dir || null,
       ensemble: summary.ensemble || null,
       protocol: summary.protocol || null,
+      execution: summary.execution ?? existing?.execution ?? null,
       stages: existing?.stages ?? [],
       watched: existing?.watched ?? false,
+      showStages: existing?.showStages ?? false,
       showInfo: existing?.showInfo ?? false,
       processInfo: existing?.processInfo ?? null,
       loadingProcessInfo: false,
@@ -346,61 +1132,137 @@
       continuing: false,
       running: false,
       reloading: false,
+      pulling: existing?.pulling ?? false,
+      pullProgress: existing?.pullProgress ?? null,
+      syncSizes: syncSizesFromExecution(summary.execution, existing?.syncSizes),
+      selectedLog: existing?.selectedLog ?? null,
+      logMode: existing?.logMode ?? 'tail',
+      logLines: existing?.logLines ?? LOG_LINES_DEFAULT,
+      logLinesEditing: existing?.logLinesEditing ?? false,
+      logFiles: existing?.logFiles ?? [],
+      logView: existing?.logView ?? null,
+      loadingStages: existing?.loadingStages ?? false,
+      syncingRemoteStages: existing?.syncingRemoteStages ?? false,
       // Only keep stage error output while the job is still in error; Continue/resume
       // must not resurrect a stale failure log under a running card.
       equilibrationOutput:
-        summary.status === 'error' ? (existing?.equilibrationOutput ?? '') : ''
+        !remoteActive && summary.status === 'error'
+          ? summary.error || existing?.equilibrationOutput || ''
+          : ''
     }
   }
 
-  function applyAutoWatch(/** @type {EquilibrationJob[]} */ list) {
-    const running = list.filter((j) => j.status === 'running')
-    if (running.length > 0) {
-      const runningDirs = new Set(running.map((r) => r.jobDir))
-      return list.map((j) => ({ ...j, watched: runningDirs.has(j.jobDir) }))
+  /** Oldest by startTime, else first in list. */
+  function oldestJobIndex(/** @type {EquilibrationJob[]} */ list = jobs) {
+    if (!list.length) return -1
+    let best = 0
+    let bestTs = Number.POSITIVE_INFINITY
+    for (let i = 0; i < list.length; i++) {
+      const t = list[i].startTime ? new Date(list[i].startTime).getTime() : Number.POSITIVE_INFINITY
+      if (Number.isFinite(t) && t < bestTs) {
+        bestTs = t
+        best = i
+      }
     }
-    if (list.length > 0 && !list.some((j) => j.watched)) {
-      return list.map((j, i) => (i === 0 ? { ...j, watched: true } : j))
+    if (!Number.isFinite(bestTs) || bestTs === Number.POSITIVE_INFINITY) return 0
+    return best
+  }
+
+  /** Ensure at least one job is watched (oldest). Returns true if a watch was set. */
+  function watchOldestJob() {
+    if (jobs.some((j) => j.watched)) return false
+    const idx = oldestJobIndex(jobs)
+    if (idx < 0) return false
+    jobs = jobs.map((j, i) =>
+      i === idx ? { ...j, watched: true, showStages: j.status === 'running' ? true : j.showStages } : j
+    )
+    return true
+  }
+
+  function stopPolling() {
+    if (pollIntervalId) {
+      clearInterval(pollIntervalId)
+      pollIntervalId = null
     }
-    return list
+  }
+
+  function restartPolling() {
+    stopPolling()
+    if (autoMonitor && jobs.some((j) => j.watched)) {
+      pollIntervalId = setInterval(pollWatchedJobs, Math.max(1, Number(updateInterval) || 60) * 1000)
+    }
   }
 
   async function rescanJobs() {
     if (!workingDir) return
+    const dir = workingDir
+    const gen = ++jobsScanGeneration
+    loadingJobs = true
     try {
-      const { jobs: found } = await scanEquilibrationJobs(workingDir)
+      const { jobs: found } = await scanEquilibrationJobs(dir)
+      if (gen !== jobsScanGeneration || dir !== workingDir) return
       const byDir = new Map(jobs.map((j) => [j.jobDir, j]))
-      let merged = found.map((summary) => jobFromScan(summary, byDir.get(summary.job_dir)))
-      merged = applyAutoWatch(merged)
-      jobs = merged
+      // Preserve existing watched flags; do not auto-watch on open.
+      jobs = found.map((summary) => jobFromScan(summary, byDir.get(summary.job_dir)))
       statusSynced = true
-      if (merged.some((j) => j.watched && j.status === 'running')) {
-        startPolling()
+      void refreshRemoteCardSizes()
+      prefetchJobRuntimes()
+      for (let i = 0; i < jobs.length; i++) {
+        void refreshJobLogFiles(i)
       }
-      await pollWatchedJobs({ scheduleNext: false })
+      if (autoMonitor && jobs.some((j) => j.watched)) {
+        restartPolling()
+        await pollWatchedJobs({ scheduleNext: false })
+      }
     } catch {
       /* backend unreachable */
+    } finally {
+      if (gen === jobsScanGeneration) loadingJobs = false
     }
   }
 
+  /** Light local size for all remote cards; remote du only when SSH session is up. */
+  async function refreshRemoteCardSizes() {
+    const idxs = jobs
+      .map((j, i) => (j.execution?.mode === 'remote' ? i : -1))
+      .filter((i) => i >= 0)
+    await Promise.all(
+      idxs.map((i) =>
+        refreshJobSyncSizes(i, {
+          measureRemote: !!clusterSession.sessionId && !!jobs[i]?.execution?.remote_path
+        })
+      )
+    )
+  }
+
   function startPolling() {
+    if (!autoMonitor) return
     if (pollIntervalId) return
-    pollIntervalId = setInterval(pollWatchedJobs, updateInterval * 1000)
+    pollIntervalId = setInterval(pollWatchedJobs, Math.max(1, Number(updateInterval) || 60) * 1000)
   }
 
   function stopPollingIfDone() {
-    if (!jobs.some((j) => j.watched && j.status === 'running')) {
-      if (pollIntervalId) {
-        clearInterval(pollIntervalId)
-        pollIntervalId = null
-      }
+    if (!autoMonitor || !jobs.some((j) => j.watched)) {
+      stopPolling()
     }
   }
 
   async function pollWatchedJobs({ scheduleNext = true } = {}) {
     for (let i = 0; i < jobs.length; i++) {
       if (!jobs[i].watched) continue
+      // Finished remote: re-read local logs only (no cluster transfer).
+      // Live remote: refreshJobDetail polls Slurm + light log sync.
+      if (remoteJobFinishedLocally(jobs[i])) {
+        await loadJobStages(i)
+        if (jobs[i].logMode === 'tail' && jobs[i].selectedLog) {
+          await refreshJobLogView(i)
+        }
+        continue
+      }
       await refreshJobDetail(i)
+      if (jobs[i].logMode === 'tail' && jobs[i].selectedLog) {
+        await refreshJobLogView(i)
+      }
     }
     for (let i = 0; i < jobs.length; i++) {
       if (jobs[i].status === 'running') {
@@ -408,19 +1270,104 @@
       }
     }
     stopPollingIfDone()
-    if (scheduleNext && autoMonitor && hasRunningWatched) {
+    if (scheduleNext && autoMonitor && jobs.some((j) => j.watched)) {
       startPolling()
     }
   }
 
-  async function refreshJobDetail(/** @type {number} */ index) {
+  /** @param {number} index @param {{ localOnly?: boolean }} [opts] */
+  async function refreshJobDetail(index, { localOnly = false } = {}) {
     const job = jobs[index]
     if (!job) return
     const prevStatus = job.status
     const jobDir = job.jobDir
     const jobName = job.name
+    const finishedRemote = remoteJobFinishedLocally(job)
+    const syncRemoteStages =
+      !localOnly &&
+      !finishedRemote &&
+      job.execution?.mode === 'remote' &&
+      job.watched &&
+      job.stages.length === 0 &&
+      !isSlurmPendingState(job.execution?.last_remote_state)
+
+    if (syncRemoteStages) {
+      jobs[index] = { ...jobs[index], syncingRemoteStages: true }
+    }
+
     try {
-      const { status, stages, run_start_time } = await getEquilibrationStatus({
+    // Remote Watching: poll Slurm (auto-connect via SSH key on the profile).
+    if (
+      !localOnly &&
+      !finishedRemote &&
+      job.execution?.mode === 'remote' &&
+      job.execution?.scheduler_job_id
+    ) {
+      try {
+        const profiles = await loadClusterProfiles()
+        const profile =
+          profiles.find((p) => p.id && p.id === job.execution.cluster_id) ||
+          profiles.find((p) => p.name && p.name === job.execution.cluster_name) ||
+          profiles[0]
+        if (profile?.identity_file || profile?.host || clusterSession.sessionId) {
+          const remote = await clusterJobStatus({
+            session_id: clusterSession.sessionId || null,
+            profile: sharedProfilePlain() || JSON.parse(JSON.stringify(profile)),
+            job_id: job.execution.scheduler_job_id,
+            local_dir: job.jobDir,
+            remote_dir: job.execution.remote_path || null,
+            // Watching: light log sync only (step*.log etc.) — not full Pull.
+            pull_logs: true
+          })
+          const current0 = jobs[index]
+          if (!current0 || current0.jobDir !== jobDir) return
+          const nextExec = {
+            ...(current0.execution || {}),
+            ...(remote.execution || {}),
+            mode: 'remote',
+            cluster_id: remote.execution?.cluster_id || profile.id || current0.execution?.cluster_id,
+            cluster_name:
+              remote.execution?.cluster_name || profile.name || current0.execution?.cluster_name,
+            scheduler_job_id: job.execution.scheduler_job_id,
+            last_remote_state:
+              remote.execution?.last_remote_state ||
+              remote.state ||
+              current0.execution?.last_remote_state,
+            remote_path: remote.execution?.remote_path || job.execution.remote_path,
+            allocated_cpus:
+              remote.execution?.allocated_cpus || current0.execution?.allocated_cpus,
+            resources: remote.execution?.resources || current0.execution?.resources,
+            node_list: remote.execution?.node_list || current0.execution?.node_list,
+            node_gpu_label:
+              remote.execution?.node_gpu_label || current0.execution?.node_gpu_label
+          }
+          const remoteActive0 = isSlurmActiveState(nextExec.last_remote_state)
+          let error = current0.error
+          if (remoteActive0) {
+            error = null
+          } else if (remote.pulled?.failure) {
+            error = remote.pulled.failure_source
+              ? `${remote.pulled.failure} (${remote.pulled.failure_source})`
+              : remote.pulled.failure
+          } else if (nextExec.last_error) {
+            error = String(nextExec.last_error)
+          }
+          jobs[index] = {
+            ...current0,
+            execution: nextExec,
+            error,
+            status: remoteActive0 ? 'running' : current0.status,
+            canResume: remoteActive0 ? false : current0.canResume,
+            canRun: remoteActive0 ? false : current0.canRun
+          }
+        }
+      } catch {
+        /* keep local overlay if SSH fails this cycle */
+      }
+    }
+
+    try {
+      const { status: rawStatus, stages, run_start_time } = await getEquilibrationStatus({
         workingDir: job.jobDir,
         engine: job.engine
       })
@@ -428,20 +1375,54 @@
       // re-apply a stale snapshot (e.g. reloading: true) after the await.
       const current = jobs[index]
       if (!current || current.jobDir !== jobDir) return
-      const equilibrationOutput =
+      const merged = mergeJobStages(current, stages, rawStatus)
+      let status = merged.status
+      const stageErr =
+        stages.find((s) => s.status === 'error')?.output ||
+        stages.map((s) => s.output || '').join('\n')
+      let error =
         status === 'error'
-          ? (stages.find((s) => s.status === 'error')?.output ?? '')
-          : ''
+          ? (current.error ||
+              stageErr
+                .split('\n')
+                .find((l) =>
+                  /fatal error|error in stage|stub library|cuda driver:\s*0\.0|gpu detection failed/i.test(
+                    l
+                  )
+                ) ||
+              stageErr.trim() ||
+              null)
+          : null
+      if (current.execution?.mode === 'remote' && current.execution?.last_remote_state) {
+        const rs = String(current.execution.last_remote_state)
+        if (isSlurmActiveState(rs)) {
+          status = 'running'
+          error = null
+        } else if (isSlurmTerminalState(rs) && canonicalizeSlurmState(rs) !== 'COMPLETED') {
+          status = 'error'
+          error =
+            error ||
+            current.execution.last_error ||
+            current.error ||
+            `Remote job ${canonicalizeSlurmState(rs)}`
+        } else if (remoteJobFinishedLocally(current) && merged.stages.length > 0) {
+          status = merged.stages.every((s) => s.status === 'completed') ? 'completed' : status
+          if (status === 'completed') error = null
+        }
+      }
+      const equilibrationOutput = status === 'error' ? stageErr || error || '' : ''
       jobs[index] = {
         ...current,
         status,
-        stages: stages.length > 0 ? stages : current.stages,
-        stagesDone: stages.filter((s) => s.status === 'completed').length || current.stagesDone,
-        stagesTotal: stages.length || current.stagesTotal,
+        stages: merged.stages,
+        stagesDone: merged.stagesDone,
+        stagesTotal: merged.stagesTotal,
         startTime: run_start_time || current.startTime,
         elapsed: formatJobElapsed(run_start_time || current.startTime),
         equilibrationOutput,
-        error: status === 'error' ? current.error : null
+        error,
+        canResume: status === 'running' && current.execution?.mode === 'remote' ? false : current.canResume,
+        canRun: status === 'running' ? false : current.canRun
       }
       if (prevStatus === 'running' && status !== 'running') {
         if (status === 'completed') {
@@ -453,15 +1434,49 @@
     } catch {
       /* skip cycle */
     }
+    } finally {
+      const current = jobs[index]
+      if (current?.jobDir === jobDir && current.syncingRemoteStages) {
+        jobs[index] = { ...current, syncingRemoteStages: false }
+      }
+    }
   }
 
   function toggleJobWatch(/** @type {number} */ index) {
-    jobs[index] = { ...jobs[index], watched: !jobs[index].watched }
-    if (jobs[index].watched) {
+    const turningOn = !jobs[index].watched
+    const job = jobs[index]
+    const isRemote = job.execution?.mode === 'remote'
+    jobs[index] = {
+      ...job,
+      watched: turningOn,
+      showStages:
+        turningOn && (job.status === 'running' || isRemote) ? true : job.showStages
+    }
+    if (turningOn) {
+      if (isRemote && !clusterSession.sessionId) {
+        logEvent(
+          'info',
+          'eq',
+          'Cluster not connected',
+          `Watching "${job.name}" — connect in the Progress toolbar to poll Slurm status and sync remote stage logs.`
+        )
+      }
+      autoMonitor = true
       void refreshJobDetail(index)
-      if (jobs[index].status === 'running') startPolling()
+      restartPolling()
+    } else if (!jobs.some((j) => j.watched)) {
+      autoMonitor = false
+      stopPolling()
     } else {
       stopPollingIfDone()
+    }
+  }
+
+  async function toggleJobStages(/** @type {number} */ index) {
+    const turningOn = !jobs[index].showStages
+    jobs[index] = { ...jobs[index], showStages: turningOn }
+    if (turningOn && jobs[index].stages.length === 0) {
+      await loadJobStages(index)
     }
   }
 
@@ -475,8 +1490,13 @@
       const existing = jobs[index]
       if (!existing || existing.jobDir !== jobDir) return
       jobs[index] = { ...jobFromScan(summary, existing), reloading: true }
-      if (jobs[index].watched) {
-        await refreshJobDetail(index)
+      const finishedRemote = remoteJobFinishedLocally(jobs[index])
+      if (jobs[index].watched || jobs[index].showStages || finishedRemote) {
+        if (finishedRemote) {
+          await loadJobStages(index)
+        } else {
+          await refreshJobDetail(index)
+        }
       }
       if (jobs[index].showInfo) {
         jobs[index] = { ...jobs[index], processInfo: null, loadingProcessInfo: true }
@@ -495,8 +1515,57 @@
     } finally {
       if (jobs[index]?.jobDir === jobDir) {
         jobs[index] = { ...jobs[index], reloading: false }
+        void refreshJobSyncSizes(index, {
+          measureRemote: !!clusterSession.sessionId && !!jobs[index]?.execution?.remote_path
+        })
+        void refreshJobLogFiles(index)
       }
     }
+  }
+
+  /**
+   * Plain deep copy — job.protocol lives on a $state card and structuredClone
+   * throws DataCloneError on Svelte proxies (Use in form then never updates stages).
+   * @param {unknown} value
+   */
+  function plainClone(value) {
+    try {
+      return $state.snapshot(value)
+    } catch {
+      try {
+        return JSON.parse(JSON.stringify(value))
+      } catch {
+        return null
+      }
+    }
+  }
+
+  /**
+   * Assign input directory and force the system-size loader to refresh even when
+   * the path string is unchanged (Use in form / re-select same folder).
+   * @param {string | null | undefined} dirPath
+   */
+  function setInputDirectory(dirPath) {
+    const next = String(dirPath ?? '').trim()
+    inputDir = next
+    inputDirRevision += 1
+  }
+
+  /**
+   * Ensure recovered protocol stages have fields the stage editor expects.
+   * @param {Record<string, unknown>} stage
+   */
+  function fillStageDefaults(stage) {
+    const s = { ...stage }
+    if (s.description == null) s.description = ''
+    if (s.pressure == null) s.pressure = 1.0
+    if (s.dcd_freq == null) s.dcd_freq = 5000
+    if (s.timestep == null || Number(s.timestep) <= 0) s.timestep = 2.0
+    if (s.temperature == null) s.temperature = 303.15
+    if (s.time_ns == null) s.time_ns = 0
+    if (s.steps == null) s.steps = 0
+    if (!Array.isArray(s.constraints)) s.constraints = []
+    return s
   }
 
   /**
@@ -505,11 +1574,13 @@
    */
   function protocolFromJobMetadata(raw) {
     if (!raw || !Array.isArray(raw.stages) || raw.stages.length === 0) return null
-    const cloned = structuredClone(raw)
+    const cloned = plainClone(raw)
+    if (!cloned || !Array.isArray(cloned.stages)) return null
     cloned.selections = {
       ...(baseProtocol.selections ?? {}),
       ...(cloned.selections ?? {})
     }
+    cloned.stages = cloned.stages.map((stage) => fillStageDefaults(stage))
     // Ensure constraints are GUI list-shaped (API may still send dicts for older jobs)
     for (const stage of cloned.stages) {
       const c = stage?.constraints
@@ -519,6 +1590,15 @@
           force_constant: Number(force),
           selection: key
         }))
+      }
+      // Keep Time (ns) ↔ Steps consistent (production often has only one side filled).
+      const ts = Number(stage.timestep) || 0
+      const steps = Number(stage.steps) || 0
+      const timeNs = Number(stage.time_ns) || 0
+      if (ts > 0 && steps > 0 && timeNs <= 0) {
+        stage.time_ns = Number(((steps * ts) / 1_000_000).toPrecision(9))
+      } else if (ts > 0 && timeNs > 0 && steps <= 0) {
+        stage.steps = Math.round((timeNs * 1_000_000) / ts)
       }
     }
     return prepareProtocolForRendering(cloned)
@@ -567,48 +1647,158 @@
     }
   }
 
-  /** @param {EquilibrationJob} job */
-  async function useJobInForm(job) {
-    // Re-read folder metadata so protocol comes from equilibration_job.json /
-    // protocol_summary.json even if the card summary was incomplete.
-    let summaryProtocol = job.protocol
-    let summaryInput = job.inputDir
-    let summaryEnsemble = job.ensemble
-    let summaryResources = job.resources
-    let summaryVariant = job.variant
-    try {
-      const summary = await getEquilibrationJobSummary(job.jobDir, workingDir || undefined)
-      if (summary.protocol?.stages?.length) summaryProtocol = summary.protocol
-      if (summary.input_dir) summaryInput = summary.input_dir
-      if (summary.ensemble) summaryEnsemble = summary.ensemble
-      if (summary.resources) summaryResources = summary.resources
-      if (summary.variant) summaryVariant = summary.variant
-      if (summary.engine) engine = summary.engine
-    } catch {
-      /* use card fields */
-    }
-
+  /**
+   * @param {EquilibrationJob} job
+   * @param {{
+   *   protocol?: EquilibrationJob['protocol'],
+   *   inputDir?: string|null,
+   *   ensemble?: string|null,
+   *   resources?: EquilibrationJob['resources'],
+   *   variant?: string|null,
+   *   engine?: string|null,
+   * }} fields
+   */
+  function applyLoadedJobToForm(job, fields) {
     outputName = job.name
-    engine = job.engine || engine
-    if (summaryInput) inputDir = summaryInput
-    if (summaryEnsemble) ensemble = summaryEnsemble.toLowerCase()
+    const nextEngine = normalizeEngineId(fields.engine) || normalizeEngineId(job.engine)
+    if (nextEngine && nextEngine !== engine) {
+      engine = nextEngine
+      engineCandidateId = 'custom'
+      executableCheck = null
+      availableCompute = []
+      selectedGmxrc = null
+    } else if (nextEngine) {
+      engine = nextEngine
+    }
+    if (fields.inputDir != null && String(fields.inputDir).trim()) {
+      setInputDirectory(fields.inputDir)
+    }
+    if (fields.ensemble) ensemble = String(fields.ensemble).toLowerCase()
 
-    const applied = protocolFromJobMetadata(summaryProtocol)
+    const applied = protocolFromJobMetadata(fields.protocol ?? null)
     if (applied) {
       protocol = applied
       protocolFormKey += 1
+      logEvent(
+        'info',
+        'eq',
+        `Loaded form from ${job.name}`,
+        nextEngine
+          ? `${nextEngine.toUpperCase()} · ${applied.stages.length} stages restored`
+          : `${applied.stages.length} protocol stages restored`
+      )
     } else {
-      alert(
-        `No protocol metadata found in "${job.name}". ` +
-          'Generate inputs from this GUI (writes equilibration_job.json) or ensure protocol_summary.json exists.'
+      logEvent(
+        'warn',
+        'eq',
+        `Loaded ${job.name} without protocol stages`,
+        'Re-generate inputs or restore protocol_summary.json / equilibration_job.json protocol'
       )
     }
 
     applyJobResourcesToForm(
-      { ...job, resources: summaryResources, variant: summaryVariant },
+      {
+        ...job,
+        resources: fields.resources ?? job.resources,
+        variant: fields.variant ?? job.variant,
+        engine: nextEngine || job.engine
+      },
       applied
     )
+    formSourceJobDir = job.jobDir
     statusSynced = true
+    queueMicrotask(() => {
+      document.getElementById('eq-protocol-panel')?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest'
+      })
+    })
+  }
+
+  /** @param {unknown} protocol */
+  function protocolLooksComplete(protocol) {
+    const stages = /** @type {{ name?: string, time_ns?: number, steps?: number }[]} */ (
+      protocol && typeof protocol === 'object' && Array.isArray(/** @type {any} */ (protocol).stages)
+        ? /** @type {any} */ (protocol).stages
+        : null
+    )
+    if (!stages?.length) return false
+    const prod = stages.find((s) => /production/i.test(String(s?.name || '')))
+    if (!prod) return false
+    return Number(prod.time_ns) > 0 || Number(prod.steps) > 0
+  }
+
+  /** @param {EquilibrationJob} job */
+  async function useJobInForm(job) {
+    // Local disk only — never needs Connect & probe / SSH.
+    usingInFormDir = job.jobDir
+    const dir = job.jobDir
+    formSourceJobDir = dir
+
+    try {
+      // Apply identity fields while we recover metadata from local job files.
+      const nextEngine = normalizeEngineId(job.engine)
+      if (nextEngine) {
+        if (nextEngine !== engine) {
+          engine = nextEngine
+          engineCandidateId = 'custom'
+          executableCheck = null
+          availableCompute = []
+          selectedGmxrc = null
+        } else {
+          engine = nextEngine
+        }
+      }
+      outputName = job.name
+      if (job.inputDir) setInputDirectory(job.inputDir)
+      if (job.ensemble) ensemble = String(job.ensemble).toLowerCase()
+
+      const summary = await Promise.race([
+        getEquilibrationJobSummary(dir, workingDir || undefined, { forForm: true }),
+        new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Job summary timed out')), 8000)
+        })
+      ])
+      if (formSourceJobDir !== dir) return
+      applyLoadedJobToForm(job, {
+        protocol: summary.protocol?.stages?.length ? summary.protocol : job.protocol,
+        inputDir: summary.input_dir ?? job.inputDir,
+        ensemble: summary.ensemble ?? job.ensemble,
+        resources: summary.resources?.num_gpus != null || summary.resources?.cpu_cores_max != null
+          ? summary.resources
+          : job.resources,
+        variant: summary.variant ?? job.variant,
+        engine: summary.engine ?? job.engine
+      })
+    } catch (err) {
+      try {
+        applyLoadedJobToForm(job, {
+          protocol: job.protocol,
+          inputDir: job.inputDir,
+          ensemble: job.ensemble,
+          resources: job.resources,
+          variant: job.variant,
+          engine: job.engine
+        })
+      } catch (applyErr) {
+        logEvent(
+          'error',
+          'eq',
+          `Use in form failed for ${job.name}`,
+          applyErr instanceof Error ? applyErr.message : String(applyErr)
+        )
+      }
+      if (String(err?.message || err).includes('timed out')) {
+        logEvent(
+          'warn',
+          'eq',
+          `Use in form: local folder read timed out for ${job.name}`,
+          'No cluster connection required — try again, or Pull if inputs are missing locally'
+        )
+      }
+    } finally {
+      if (usingInFormDir === dir) usingInFormDir = null
+    }
   }
 
   function removeJob(/** @type {number} */ index) {
@@ -622,6 +1812,7 @@
       return
     }
     jobs[index] = { ...jobs[index], showInfo: true, loadingProcessInfo: true }
+    void refreshJobLogFiles(index)
     try {
       const info = await getProcessInfo({
         workingDir: jobs[index].jobDir,
@@ -664,8 +1855,9 @@
         `Started equilibration: "${job.name}"`,
         `${job.engine.toUpperCase()} · ${job.jobDir}`
       )
-      jobs[index] = { ...jobs[index], watched: true, running: false }
-      startPolling()
+      jobs[index] = { ...jobs[index], watched: true, showStages: true, running: false }
+      autoMonitor = true
+      restartPolling()
       await rescanJobs()
       const idx = jobs.findIndex((j) => j.jobDir === job.jobDir)
       if (idx >= 0) await refreshJobDetail(idx)
@@ -706,12 +1898,14 @@
       jobs[index] = {
         ...jobs[index],
         watched: true,
+        showStages: true,
         continuing: false,
         status: 'running',
         error: null,
         equilibrationOutput: ''
       }
-      startPolling()
+      autoMonitor = true
+      restartPolling()
       await rescanJobs()
       const idx = jobs.findIndex((j) => j.jobDir === job.jobDir)
       if (idx >= 0) await refreshJobDetail(idx)
@@ -758,36 +1952,118 @@
     }
   })
 
+  /** Last workingDir we scanned — avoid wiping Use-in-form state on spurious effect re-runs. */
+  let lastScannedWorkingDir = ''
+
   $effect(() => {
-    if (!workingDir) {
+    const dir = workingDir || ''
+    if (!dir) {
       jobs = []
+      loadingJobs = false
+      usingInFormDir = null
+      formSourceJobDir = null
+      jobsScanGeneration += 1
+      lastScannedWorkingDir = ''
       return
     }
+    if (dir === lastScannedWorkingDir) return
+    lastScannedWorkingDir = dir
+    // Clear previous directory cards immediately so the Progress pane shows Loading…
+    jobs = []
+    formSourceJobDir = null
+    usingInFormDir = null
+    loadingJobs = true
     void rescanJobs()
   })
 
   $effect(() => {
     if (!autoMonitor) {
-      if (pollIntervalId) {
-        clearInterval(pollIntervalId)
-        pollIntervalId = null
-      }
+      stopPolling()
       return
     }
-    if (hasRunningWatched) {
+    // Ticking Update progress with nothing watched → watch oldest so polling has a target.
+    if (!jobs.some((j) => j.watched)) {
+      watchOldestJob()
+    }
+    if (jobs.some((j) => j.watched)) {
       startPolling()
     }
   })
 
+  // Restart interval when the period changes while monitoring.
+  $effect(() => {
+    const _sec = updateInterval
+    if (!autoMonitor || !pollIntervalId) return
+    untrack(() => restartPolling())
+  })
+
+  $effect(() => {
+    void loadClusterProfiles()
+      .then((list) => {
+        progressClusterProfiles = list
+        if (!progressClusterProfileId && list.length) {
+          progressClusterProfileId = list[0].id
+        } else if (
+          progressClusterProfileId &&
+          list.length &&
+          !list.some((p) => p.id === progressClusterProfileId)
+        ) {
+          progressClusterProfileId = list[0].id
+        }
+      })
+      .catch(() => {})
+  })
+
   onDestroy(() => {
-    if (pollIntervalId) {
-      clearInterval(pollIntervalId)
-      pollIntervalId = null
+    stopPolling()
+  })
+
+  async function connectProgressCluster() {
+    const profile = progressClusterProfiles.find((p) => p.id === progressClusterProfileId)
+    if (!profile) {
+      logEvent('error', 'eq', 'Select a cluster profile first')
+      return
     }
+    try {
+      await connectSharedCluster(profile, progressClusterPassword)
+      progressClusterPassword = ''
+      logEvent('info', 'eq', `Cluster connected: ${profile.name || profile.host}`)
+      void refreshRemoteCardSizes()
+      prefetchJobRuntimes()
+    } catch (err) {
+      const msg = formatClusterConnectError(err, profile)
+      logEvent('error', 'eq', msg)
+    }
+  }
+
+  async function disconnectProgressCluster() {
+    await disconnectSharedCluster()
+    logEvent('info', 'eq', 'Cluster disconnected')
+  }
+
+  // When a shared session appears (Progress Connect, Pull auto-connect, or cluster dialog),
+  // load remote card runtimes without requiring Stages to be opened.
+  let remoteRuntimePrefetchKey = ''
+  $effect(() => {
+    const sid = clusterSession.sessionId || ''
+    const remoteDirs = jobs
+      .filter((j) => j.execution?.mode === 'remote')
+      .map((j) => j.jobDir)
+      .join('|')
+    if (!sid || !remoteDirs) return
+    const key = `${sid}:${remoteDirs}`
+    if (key === remoteRuntimePrefetchKey) return
+    remoteRuntimePrefetchKey = key
+    untrack(() => {
+      for (let i = 0; i < jobs.length; i++) {
+        if (jobs[i].execution?.mode === 'remote') void ensureJobRuntimeLoaded(i)
+      }
+    })
   })
 
   $effect(() => {
     const dir = inputDir
+    void inputDirRevision
     if (!dir) {
       systemSize = null
       loadingSystemSize = false
@@ -796,35 +2072,37 @@
     loadingSystemSize = true
     systemSize = null
     let cancelled = false
-    countMatchingAtoms('all').then((n) => {
-      if (cancelled) return
-      systemSize = n
-      loadingSystemSize = false
-    })
+    countMatchingAtoms(dir, 'all')
+      .then((n) => {
+        if (!cancelled) systemSize = n
+      })
+      .finally(() => {
+        if (!cancelled) loadingSystemSize = false
+      })
     return () => {
       cancelled = true
     }
   })
 
   /**
-   * Count the number of atoms in the system.inpcrd file.
-   * @param {string} selection - The selection to select atoms from.
+   * Count atoms in the builder system files under {@link dir}.
+   * @param {string} dir - Builder input directory (absolute path).
+   * @param {string} selection - MDAnalysis selection or named alias.
    * @returns {Promise<number|null>} The number of selected atoms.
    */
-  async function countMatchingAtoms(selection) {
-    if (!inputDir) {
+  async function countMatchingAtoms(dir, selection) {
+    if (!dir) {
       return null
     }
     const payload = {
-      path: `${inputDir}/system.inpcrd`,
+      path: `${dir}/system.inpcrd`,
       selection,
-      topology: `${inputDir}/system.prmtop`
+      topology: `${dir}/system.prmtop`
     }
     try {
       const { atoms } = await getStructure(payload)
       return atoms.length
-    } catch (error) {
-      // alert(error instanceof Error ? error.message : String(error))
+    } catch {
       return null
     }
   }
@@ -906,7 +2184,6 @@
       })
       statusSynced = true
       await rescanJobs()
-      jobs = jobs.map((j) => (j.jobDir === outputDir ? { ...j, watched: true } : j))
       logEvent(
         'info',
         'eq',
@@ -1026,7 +2303,7 @@
     if (canceled) {
       return
     }
-    inputDir = dirPath
+    setInputDirectory(dirPath)
     outputName = defaultEquilibrationFolderName(dirPath)
   }
 
@@ -1162,8 +2439,11 @@
       await rescanJobs()
       const idx = jobs.findIndex((j) => j.jobDir === outputDir)
       if (idx >= 0) {
-        jobs = jobs.map((j, i) => (i === idx ? { ...j, watched: true } : j))
-        startPolling()
+        jobs = jobs.map((j, i) =>
+          i === idx ? { ...j, watched: true, showStages: true } : j
+        )
+        autoMonitor = true
+        restartPolling()
         await refreshJobDetail(idx)
       }
     } catch (error) {
@@ -1217,22 +2497,16 @@
     constraintEditor = { stageIndex, constraintIndex, source: { ...c } }
   }
 
-  function onClear() {
-    if (pollIntervalId) {
-      clearInterval(pollIntervalId)
-      pollIntervalId = null
-    }
-    inputDir = ''
+  function onClearForm() {
+    setInputDirectory('')
     outputName = ''
-    systemSize = null
-    loadingSystemSize = false
-    autoMonitor = true
+    formSourceJobDir = null
     engine = 'namd'
     ensemble = 'npt'
     gpuDevice = 0
     totalCpus = 4
     totalGpus = 1
-    updateInterval = 5
+    updateInterval = 60
     addComRestraint = false
     comSelection = 'name CA'
     comRestraintK = 10
@@ -1253,7 +2527,6 @@
     constraintEditor = null
     statusSynced = false
     generatingInputFiles = false
-    jobs = []
     showWorkingDirHint = false
     equilibrationPageStatus.engine = ''
     equilibrationPageStatus.outputName = ''
@@ -1302,7 +2575,18 @@
       </div>
       <div class="space-y-1">
         <p class="sidebar-label">Output folder</p>
-        <Input type="text" size="sm" bind:value={outputName} className="w-full" placeholder="03_equilibration_input" />
+        <Input
+          type="text"
+          size="sm"
+          bind:value={outputName}
+          className="w-full"
+          placeholder={suggestedOutputFolderName}
+        />
+        {#if !outputName.trim() && inputDir}
+          <p class="sidebar-hint">
+            Empty uses <span class="font-mono">{suggestedOutputFolderName}</span> when generating inputs
+          </p>
+        {/if}
         <p
           class="rounded-md border border-neutral-200 p-2 wrap-break-word sidebar-label dark:border-neutral-800"
         >
@@ -1319,23 +2603,25 @@
     <Divider />
     <div class="space-y-2">
       <h2 class="sidebar-heading">Molecular Dynamics</h2>
-      <div class="space-y-1">
+      <div class="space-y-1" id="eq-engine-select">
         <p class="sidebar-label">Engine</p>
-        <Select
-          size="sm"
-          className="w-full"
-          bind:value={engine}
-          onchange={() => {
-            executableCheck = null
-            availableCompute = []
-            engineCandidateId = 'custom'
-            selectedGmxrc = null
-          }}
-        >
-          {#each engines as item (item.id)}
-            <option value={item.id}>{item.label}</option>
-          {/each}
-        </Select>
+        {#key engine}
+          <Select
+            size="sm"
+            className="w-full"
+            bind:value={engine}
+            onchange={() => {
+              executableCheck = null
+              availableCompute = []
+              engineCandidateId = 'custom'
+              selectedGmxrc = null
+            }}
+          >
+            {#each engines as item (item.id)}
+              <option value={item.id}>{item.label}</option>
+            {/each}
+          </Select>
+        {/key}
         {#if engine === 'namd'}
           <p class="sidebar-hint">
             NAMD + OPC builds: waterModel tip4 is added automatically from the builder
@@ -1629,7 +2915,7 @@
             <Spinner className="mr-1" />
             Starting…
           {:else}
-            Run Equilibration
+            Run locally
           {/if}
         </Button>
       </div>
@@ -1652,7 +2938,10 @@
         <div class="gw-notice gw-notice-success">
           <p>✓ Input files are ready in</p>
           <p class="mt-0.5 break-all font-semibold">{resolveOutputFolderName()}</p>
-          <p class="mt-1">Click <strong>Run Equilibration</strong> to proceed.</p>
+          <p class="mt-1">
+            Click <strong>Run locally</strong>, or open the job card and choose
+            <strong>Run on cluster…</strong>
+          </p>
         </div>
       {/if}
       {#if workingDir === '' && showWorkingDirHint}
@@ -1660,18 +2949,21 @@
           Set a <strong>Working Directory</strong> in the top bar to enable these actions.
         </p>
       {/if}
-      <Button className="w-full" variant="ghost" onclick={onClear}>Clear</Button>
+      <Button className="w-full" variant="ghost" onclick={onClearForm}>Clear form</Button>
     </div>
   </aside>
   <div
     class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
     style={paneBackgroundStyle}
   >
-    <h1 class="m-4 mb-2 text-xl font-semibold">Equilibration protocol</h1>
-    <div class="flex min-h-0 flex-1 flex-col space-y-4 overflow-auto px-4 pb-4">
+    <div class="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 pt-4 pb-6">
+      <h1 id="eq-protocol-panel" class="text-xl font-semibold">Equilibration protocol</h1>
       <div>
         {#if isProtocolValid}
-          <p class="text-sm font-medium text-neutral-800 dark:text-neutral-200">{protocol.name}</p>
+          <p class="text-sm font-medium text-neutral-800 dark:text-neutral-200">
+            {protocol.name}
+            <span class="ml-2 font-normal text-neutral-500">({protocol.stages.length} stages)</span>
+          </p>
         {/if}
         <p class="mb-2 text-sm text-neutral-500 dark:text-neutral-400">
           {isProtocolValid ? protocol.description : 'Load a protocol to get started'}
@@ -1689,7 +2981,7 @@
         </div>
       </div>
       {#if isProtocolValid}
-        <div class="flex min-h-0 w-full flex-1 items-start gap-4 overflow-auto pb-2">
+        <div class="flex w-full items-start gap-4 overflow-x-auto pb-2">
           {#key protocolFormKey}
             {#each protocol.stages as _, i (protocol.stages[i].name + '-' + i)}
               <EquilibrationStage
@@ -1704,249 +2996,904 @@
       {:else}
         <Empty message="No protocol loaded" />
       {/if}
-    </div>
-    <div
-      class="flex max-h-2/5 min-h-1/5 flex-col gap-2 overflow-y-auto border-t border-neutral-200 p-4 text-xs dark:border-neutral-800"
-    >
-      <h3 class="font-semibold uppercase">Progress</h3>
-      <div class="flex flex-wrap items-center gap-2">
-        <Checkbox name="auto-monitor" size="sm" bind:checked={autoMonitor} />
-        <label for="auto-monitor">Update progress every</label>
-        <Input
-          type="number"
-          name="update-interval"
-          min="1"
-          max="100"
-          step="1"
-          bind:value={updateInterval}
-          size="sm"
-          className="w-16"
-        />
-        <label for="update-interval">seconds</label>
-        {#if hasRunningWatched && autoMonitor}
-          <Spinner className="mr-1" />
-        {/if}
-        <Button variant="outline" size="sm" onclick={() => pollWatchedJobs({ scheduleNext: false })}>
-          Refresh
-        </Button>
-      </div>
 
-      <h4 class="mt-1 font-semibold text-neutral-800 dark:text-neutral-200">Equilibration Jobs</h4>
-      {#if jobs.length === 0}
-        <p
-          class="flex items-center justify-center rounded-lg border border-dashed border-neutral-300 p-4 text-neutral-500 dark:border-neutral-800 dark:text-neutral-700"
-        >
-          No equilibration runs found under the working directory. Generate input files or run an MD job to see it here.
-        </p>
-      {:else}
-        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {#each jobs as job, ji (job.jobDir)}
-            <div class="gw-notice flex min-w-0 flex-col rounded-lg p-3 {jobNoticeClass(job.status)}">
-              <div class="mb-2 flex items-center justify-between gap-2">
-                <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-                  {#if job.status === 'running'}
-                    <span class="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-yellow-500"></span>
-                  {:else if job.status === 'completed'}
-                    <span class="inline-block h-2 w-2 shrink-0 rounded-full bg-green-500"></span>
-                  {:else if job.status === 'error'}
-                    <span class="inline-block h-2 w-2 shrink-0 rounded-full bg-red-500"></span>
-                  {:else if job.status === 'not_started'}
-                    <span class="inline-block h-2 w-2 shrink-0 rounded-full bg-blue-500"></span>
-                  {:else}
-                    <span class="inline-block h-2 w-2 shrink-0 rounded-full bg-neutral-500"></span>
-                  {/if}
-                  <span
-                    class="min-w-0 font-semibold text-neutral-900 wrap-break-word dark:text-neutral-200"
-                    title={job.jobDir}>{job.name}</span
-                  >
-                  <span class="gw-chip shrink-0 uppercase">{job.engine}</span>
-                  {#if job.ensemble}
-                    <span class="gw-chip shrink-0 uppercase">{job.ensemble}</span>
-                  {/if}
-                  {#if job.variant}
-                    <span class="gw-chip shrink-0">{job.variant}</span>
-                  {/if}
-                </div>
-                <div class="flex shrink-0 items-center gap-2">
-                  <span class="tabular-nums dark:text-neutral-500">{job.elapsed}</span>
-                  {#if job.status !== 'running'}
-                    <button
-                      class="dark:text-neutral-600 dark:hover:text-neutral-300"
-                      onclick={() => removeJob(ji)}
-                      title="Remove">&times;</button
-                    >
-                  {/if}
-                </div>
-              </div>
+      <div
+        class="flex flex-col gap-2 border-t border-neutral-200 pt-4 text-xs dark:border-neutral-800"
+      >
+        <h3 class="font-semibold uppercase">Progress</h3>
+        <div class="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-xs">
+          <Checkbox name="auto-monitor" size="sm" bind:checked={autoMonitor} />
+          <label for="auto-monitor" class="text-neutral-600 dark:text-neutral-400" title="Auto-update watched jobs"
+            >Auto</label
+          >
+          <Input
+            type="number"
+            name="update-interval"
+            min="1"
+            max="600"
+            step="1"
+            bind:value={updateInterval}
+            size="sm"
+            className="w-12"
+            title="Update interval (seconds)"
+          />
+          <span class="text-neutral-500">s</span>
+          {#if jobs.some((j) => j.watched) && autoMonitor}
+            <Spinner className="size-3.5" label="Updating watched jobs" />
+          {/if}
+          <button
+            type="button"
+            class="inline-flex size-6 items-center justify-center rounded text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 disabled:cursor-not-allowed disabled:opacity-40 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+            onclick={() => pollWatchedJobs({ scheduleNext: false })}
+            disabled={!jobs.some((j) => j.watched)}
+            title="Refresh watched jobs"
+            aria-label="Refresh watched jobs"
+          >
+            <ResetIcon className="size-3.5 fill-current" />
+          </button>
 
-              {#if formatJobResources(job.resources)}
-                <p class="mb-2 break-all text-xs text-neutral-500" title="Resources assigned in generated inputs">
-                  {formatJobResources(job.resources)}
-                </p>
-              {/if}
+          <span class="hidden h-4 w-px shrink-0 bg-neutral-300 sm:inline dark:bg-neutral-700" aria-hidden="true"></span>
 
-              {#if job.stagesTotal > 0 && (job.stagesDone > 0 || job.status !== 'not_started')}
-                <div class="mb-2 flex gap-1">
-                  {#each Array(job.stagesTotal) as _, si (si)}
-                    {@const done = si < job.stagesDone || job.status === 'completed'}
-                    {@const active =
-                      job.status === 'running' && !done && si === job.stagesDone}
-                    <div class="h-1 flex-1 overflow-hidden rounded-full bg-neutral-800">
-                      <div
-                        class="h-full transition-all duration-300 {done
-                          ? 'bg-green-600'
-                          : active
-                            ? 'bg-blue-500'
-                            : 'bg-transparent'}"
-                        style="width: {done ? '100%' : active ? '50%' : '0%'}"
-                      ></div>
-                    </div>
-                  {/each}
-                </div>
-              {/if}
-              {#if job.stagesTotal > 0}
-                <p class="mb-2 text-neutral-500">
-                  {#if job.status === 'running'}
-                    {job.stagesDone}/{job.stagesTotal} stages · running
-                  {:else if job.status === 'not_started' && job.stagesDone === 0 && !job.canResume}
-                    {job.stagesTotal} stages · inputs ready — not started yet
-                  {:else if job.canResume || job.status === 'error'}
-                    {job.stagesDone}/{job.stagesTotal} stages · interrupted
-                  {:else}
-                    {job.stagesDone}/{job.stagesTotal} stages
-                  {/if}
-                </p>
-              {/if}
+          <label for="progress-location-filter" class="text-neutral-500">Location</label>
+          <select
+            id="progress-location-filter"
+            class="rounded-md border border-neutral-300 bg-white px-2 py-1 text-[11px] text-neutral-900 [color-scheme:light] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-50 dark:[color-scheme:dark] dark:focus-visible:ring-neutral-600"
+            value={progressFilter}
+            onchange={(e) =>
+              (progressFilter = /** @type {'all' | 'local' | 'remote'} */ (
+                e.currentTarget.value
+              ))}
+          >
+            <option value="all">All</option>
+            <option value="local">Local</option>
+            <option value="remote">Remote</option>
+          </select>
 
-              <div class="flex flex-wrap gap-2">
-                <Button
-                  variant={job.watched ? 'default' : 'outline'}
-                  size="sm"
-                  onclick={() => toggleJobWatch(ji)}
-                >
-                  {job.watched ? 'Watching' : 'Watch'}
-                </Button>
-                <Button variant="outline" size="sm" onclick={() => useJobInForm(job)}>
-                  Use in form
-                </Button>
-                <Button variant="outline" size="sm" onclick={() => toggleJobProcessInfo(ji)}>
-                  {job.showInfo ? 'Hide Info' : 'Info'}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onclick={() => reloadJobCard(ji)}
-                  disabled={job.reloading}
-                  title="Re-read job metadata from disk (e.g. after editing equilibration_resources.json)"
-                >
-                  {job.reloading ? 'Reloading…' : 'Reload'}
-                </Button>
-                {#if job.status === 'running'}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onclick={() => killJob(ji)}
-                    disabled={job.stopping}
-                  >
-                    {job.stopping ? 'Stopping…' : 'Kill MD'}
-                  </Button>
-                {:else if job.canResume && job.status !== 'completed'}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onclick={() => continueJob(ji)}
-                    disabled={job.continuing}
-                    title={job.resumeReason || 'Skip completed stages; incomplete stages restart from the beginning'}
-                  >
-                    {job.continuing ? 'Starting…' : 'Continue'}
-                  </Button>
-                {:else if job.canRun}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onclick={() => runJob(ji)}
-                    disabled={job.running}
-                    title="Run the full equilibration protocol from stage 1"
-                  >
-                    {job.running ? 'Starting…' : 'Run'}
-                  </Button>
+          <label for="progress-status-filter" class="text-neutral-500">Status</label>
+          <select
+            id="progress-status-filter"
+            class="rounded-md border border-neutral-300 bg-white px-2 py-1 text-[11px] text-neutral-900 [color-scheme:light] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-50 dark:[color-scheme:dark] dark:focus-visible:ring-neutral-600"
+            value={progressStatusFilter}
+            onchange={(e) =>
+              (progressStatusFilter = /** @type {typeof progressStatusFilter} */ (
+                e.currentTarget.value
+              ))}
+          >
+            <option value="all">All</option>
+            <option value="pending">Pending</option>
+            <option value="running">Running</option>
+            <option value="completed">Completed</option>
+            <option value="cancelled">Cancelled</option>
+            <option value="failed">Failed</option>
+            <option value="ready">Ready</option>
+          </select>
+
+          {#if progressClusterProfiles.length > 0 && (progressFilter === 'remote' || jobs.some((j) => j.execution?.mode === 'remote'))}
+            <span class="hidden h-4 w-px shrink-0 bg-neutral-300 sm:inline dark:bg-neutral-700" aria-hidden="true"></span>
+            <span class="font-medium text-neutral-600 dark:text-neutral-400">Cluster</span>
+            <select
+              class="max-w-[9rem] rounded-md border border-neutral-300 bg-white px-2 py-1 text-[11px] text-neutral-900 [color-scheme:light] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 disabled:opacity-50 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-50 dark:[color-scheme:dark] dark:focus-visible:ring-neutral-600"
+              value={progressClusterProfileId}
+              disabled={clusterSession.connecting || clusterSession.connected}
+              onchange={(e) => (progressClusterProfileId = e.currentTarget.value)}
+            >
+              {#each progressClusterProfiles as p (p.id)}
+                <option value={p.id}>{p.name}</option>
+              {/each}
+            </select>
+            {#if !clusterSession.connected}
+              <Input
+                type="password"
+                size="sm"
+                placeholder="Password"
+                bind:value={progressClusterPassword}
+                className="w-24"
+                disabled={clusterSession.connecting}
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                onclick={connectProgressCluster}
+                disabled={clusterSession.connecting || !progressClusterProfileId}
+              >
+                {#if clusterSession.connecting}
+                  <Spinner className="mr-1 size-3" />
                 {/if}
-              </div>
+                Connect
+              </Button>
+            {:else}
+              <span
+                class="max-w-[8rem] truncate text-green-600 dark:text-green-400"
+                title={clusterSession.connectedAt}
+              >
+                {clusterSession.profile?.name || clusterSession.profile?.host}
+              </span>
+              <Button variant="outline" size="sm" onclick={disconnectProgressCluster}>
+                Disconnect
+              </Button>
+            {/if}
+          {/if}
 
-              {#if job.showInfo}
-                <div
-                  class="mt-2 rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
-                >
-                  {#if job.loadingProcessInfo}
-                    <span class="text-neutral-400">Loading…</span>
-                  {:else if job.processInfo}
-                    <div class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
-                      <span class="text-neutral-500">Engine</span>
-                      <span class="uppercase">{job.processInfo.engine}</span>
-                      <span class="text-neutral-500">Directory</span>
-                      <span class="truncate font-mono" title={job.processInfo.working_dir}
-                        >{job.processInfo.working_dir}</span
-                      >
-                      <span class="text-neutral-500">PID</span>
-                      <span>{job.processInfo.pid ?? '—'}</span>
-                      <span class="text-neutral-500">Status</span>
-                      <span class={job.processInfo.running ? 'text-green-400' : 'text-neutral-400'}
-                        >{job.processInfo.running ? 'Running' : 'Not running'}</span
-                      >
-                      {#if job.processInfo.start_time}
-                        <span class="text-neutral-500">Started</span>
-                        <span>{new Date(job.processInfo.start_time).toLocaleString()}</span>
+          {#if clusterSession.statusMessage && (progressFilter === 'remote' || jobs.some((j) => j.execution?.mode === 'remote'))}
+            <p
+              class="basis-full truncate text-[11px] leading-snug {clusterSession.statusError
+                ? 'text-amber-600 dark:text-amber-400'
+                : 'text-neutral-500'}"
+              title={clusterSession.statusMessage}
+            >
+              {clusterSession.statusMessage}
+            </p>
+          {/if}
+        </div>
+
+        <h4 class="flex items-center gap-2 font-semibold text-neutral-800 dark:text-neutral-200">
+          Equilibration Jobs
+          {#if loadingJobs}
+            <Spinner className="size-3.5" />
+          {/if}
+        </h4>
+        {#if loadingJobs && jobs.length === 0}
+          <p
+            class="flex items-center justify-center gap-2 rounded-lg border border-dashed border-neutral-300 p-4 text-neutral-500 dark:border-neutral-800 dark:text-neutral-400"
+          >
+            <Spinner className="size-4" />
+            Loading equilibration jobs…
+          </p>
+        {:else if filteredJobs.length === 0}
+          <p
+            class="flex items-center justify-center rounded-lg border border-dashed border-neutral-300 p-4 text-neutral-500 dark:border-neutral-800 dark:text-neutral-700"
+          >
+            {#if jobs.length === 0}
+              No equilibration runs found under the working directory. Generate input files or run an
+              MD job to see it here.
+            {:else}
+              No {progressFilterEmptyLabel(progressFilter, progressStatusFilter)} jobs in this list.
+            {/if}
+          </p>
+        {:else}
+          <div class="flex flex-col gap-2">
+            {#each filteredJobs as job (job.jobDir)}
+              {@const jobIndex = jobs.findIndex((j) => j.jobDir === job.jobDir)}
+              {@const loadingIntoForm = usingInFormDir === job.jobDir}
+              {@const isFormSource = formSourceJobDir === job.jobDir}
+              {@const generatedIso = jobGeneratedIso(job)}
+              {@const remotePending = remoteSchedulerPending(job)}
+              {@const displayStages = jobDisplayStages(job)}
+              <div
+                class="gw-notice flex min-w-0 flex-col rounded-lg p-2.5 transition-shadow {jobNoticeClass(
+                  job.status
+                )} {loadingIntoForm
+                  ? 'ring-2 ring-sky-500 ring-offset-1 ring-offset-white dark:ring-offset-neutral-950'
+                  : isFormSource
+                    ? 'ring-2 ring-emerald-500/80 ring-offset-1 ring-offset-white dark:ring-offset-neutral-950'
+                    : ''}"
+              >
+                <div class="flex items-start justify-between gap-2">
+                  <div class="min-w-0 flex-1">
+                    <div class="flex min-w-0 flex-wrap items-center gap-1.5">
+                      {#if job.status === 'running'}
+                        {#if remotePending}
+                          <span
+                            class="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-amber-400"
+                            title="Pending in cluster queue"
+                          ></span>
+                        {:else}
+                          <span
+                            class="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-yellow-500"
+                          ></span>
+                        {/if}
+                      {:else if job.status === 'completed'}
+                        <span class="inline-block h-2 w-2 shrink-0 rounded-full bg-green-500"></span>
+                      {:else if job.status === 'error'}
+                        <span class="inline-block h-2 w-2 shrink-0 rounded-full bg-red-500"></span>
+                      {:else if job.status === 'not_started'}
+                        <span class="inline-block h-2 w-2 shrink-0 rounded-full bg-blue-500"></span>
+                      {:else}
+                        <span class="inline-block h-2 w-2 shrink-0 rounded-full bg-neutral-500"></span>
                       {/if}
-                      {#if job.processInfo.command}
-                        <span class="text-neutral-500">Command</span>
-                        <span class="truncate font-mono text-neutral-300" title={job.processInfo.command}
-                          >{job.processInfo.command}</span
+                      <span
+                        class="min-w-0 font-semibold text-neutral-900 wrap-break-word dark:text-neutral-200"
+                        title={job.jobDir}>{job.name}</span
+                      >
+                      <span class="gw-chip shrink-0 uppercase">{job.engine}</span>
+                      {#if loadingIntoForm}
+                        <span
+                          class="inline-flex shrink-0 items-center gap-1 rounded border border-sky-500 bg-sky-600 px-2 py-0.5 text-[11px] font-medium text-white"
+                        >
+                          <Spinner className="size-3" />
+                          Loading into form…
+                        </span>
+                      {:else if isFormSource}
+                        <span
+                          class="inline-flex shrink-0 items-center rounded border border-emerald-600 bg-emerald-700 px-2 py-0.5 text-[11px] font-medium text-white"
+                        >
+                          In form
+                        </span>
+                      {/if}
+                      {#if job.execution?.mode === 'remote'}
+                        <span
+                          class="gw-chip shrink-0"
+                          title={job.execution.remote_path || job.execution.cluster_name || 'Remote'}
+                        >
+                          Remote{#if job.execution.scheduler_job_id}
+                            · {job.execution.scheduler_job_id}{/if}
+                          {#if job.execution.node_list}
+                            · {String(job.execution.node_list).split(',')[0]}{/if}
+                          {#if job.execution.last_remote_state}
+                            · {job.execution.last_remote_state}{/if}
+                        </span>
+                      {:else}
+                        <span class="gw-chip shrink-0">Local</span>
+                      {/if}
+                      {#if job.variant}
+                        <span class="gw-chip shrink-0">{job.variant}</span>
+                      {/if}
+                    </div>
+                    {#if formatJobCardResources(job)}
+                      <p
+                        class="mt-1 truncate text-neutral-500"
+                        title={formatJobCardResources(job)}
+                      >
+                        {formatJobCardResources(job)}
+                      </p>
+                    {/if}
+                  </div>
+                  <div class="grid shrink-0 grid-cols-[7.75rem_minmax(7rem,auto)_auto] items-start gap-x-2">
+                    {#if job.execution?.mode === 'remote' || job.syncSizes}
+                      <div class="flex w-[7.75rem] flex-col items-start gap-0.5">
+                        <PullSyncRing
+                          localBytes={job.syncSizes?.localBytes}
+                          remoteBytes={job.syncSizes?.remoteBytes}
+                          localLabel={job.syncSizes?.localFormatted || ''}
+                          remoteLabel={job.syncSizes?.remoteFormatted || ''}
+                          loading={!!job.syncSizes?.loading}
+                          pulling={job.pulling}
+                          compact
+                        />
+                        {#if job.execution?.mode === 'remote' && !job.syncSizes?.remoteBytes && clusterSession.sessionId && job.execution?.remote_path && !job.syncSizes?.loading && jobIndex >= 0}
+                          <button
+                            type="button"
+                            class="text-left text-[9px] leading-tight text-sky-600 hover:underline dark:text-sky-400"
+                            onclick={() => refreshJobSyncSizes(jobIndex, { measureRemote: true })}
+                            title="Measure remote folder size on the cluster"
+                          >
+                            Measure remote
+                          </button>
+                        {/if}
+                      </div>
+                    {:else}
+                      <span aria-hidden="true"></span>
+                    {/if}
+                    <div class="flex min-w-[7rem] flex-col items-end gap-0.5 pt-0.5 text-right">
+                      {#if generatedIso}
+                        <span
+                          class="text-[10px] tabular-nums text-neutral-500"
+                          title={job.execution?.mode === 'remote' && !job.startTime
+                            ? 'When this job was submitted to the cluster'
+                            : 'When this job folder / inputs were generated'}
+                          >{formatJobGenerated(generatedIso)}</span
+                        >
+                      {/if}
+                      {#if formatStagesMdElapsed(job.stages)}
+                        <span
+                          class="text-[11px] tabular-nums text-neutral-600 dark:text-neutral-300"
+                          title="Sum of stage runtimes from MD logs (restarts do not double-count wall calendar time)"
+                          >Runtime {formatStagesMdElapsed(job.stages)}</span
+                        >
+                      {:else if job.loadingStages}
+                        <span
+                          class="text-[10px] text-neutral-500"
+                          title="Reading stage runtimes from logs…"
+                          >Runtime …</span
+                        >
+                      {:else if job.stages?.length}
+                        <span
+                          class="text-[10px] text-neutral-500"
+                          title="Stage logs do not report runtimes yet"
+                          >Runtime —</span
+                        >
+                      {:else if
+                        job.execution?.mode === 'remote' &&
+                        !clusterSession.sessionId &&
+                        (job.stagesDone > 0 ||
+                          job.status === 'running' ||
+                          job.status === 'completed')}
+                        <span
+                          class="text-[10px] text-neutral-500"
+                          title="Connect to the cluster to load stage runtimes"
+                          >Runtime —</span
+                        >
+                      {:else if job.stagesDone > 0 || job.status === 'running' || job.status === 'completed'}
+                        <span
+                          class="text-[10px] text-neutral-500"
+                          title="Stage runtimes not available yet"
+                          >Runtime —</span
                         >
                       {/if}
                     </div>
-                  {:else}
-                    <span class="text-neutral-400">No process information available.</span>
-                  {/if}
-                </div>
-              {/if}
-
-              {#if job.watched}
-                <div
-                  class="mt-3 border-t border-neutral-200 pt-3 dark:border-neutral-700"
-                >
-                  {#if job.stages.length > 0}
-                    {@const totals = jobSimulatedTotals(job.stages)}
-                    <p class="mb-2 text-neutral-500">
-                      Simulated: {formatNs(totals.sim)} / {formatNs(totals.total)} ns
-                    </p>
-                    <div class="flex flex-col gap-1">
-                      {#each job.stages as stage_info (stage_info.name)}
-                        <EquilibrationStageStatus
-                          {stage_info}
-                          compact
-                          tracking={job.status === 'running' && autoMonitor}
-                        />
-                      {/each}
-                    </div>
-                    {#if job.status === 'error' && job.equilibrationOutput}
-                      <pre
-                        class="mt-2 max-h-32 overflow-auto rounded-md border border-neutral-200 p-2 text-xs dark:border-neutral-800"
-                        >{job.equilibrationOutput}</pre
+                    {#if job.status !== 'running' && jobIndex >= 0}
+                      <button
+                        class="pt-0.5 dark:text-neutral-600 dark:hover:text-neutral-300"
+                        onclick={() => removeJob(jobIndex)}
+                        title="Remove">&times;</button
                       >
                     {/if}
-                  {:else if job.status === 'not_started'}
-                    <p class="text-neutral-500">Inputs ready — not started yet.</p>
-                  {:else}
-                    <p class="text-neutral-500">No stage detail yet.</p>
+                  </div>
+                </div>
+
+                {#if job.error}
+                  <p class="mt-1 truncate text-xs text-red-600 dark:text-red-400" title={job.error}>
+                    {job.error.length > 160 ? job.error.slice(0, 160) + '…' : job.error}
+                  </p>
+                {/if}
+
+                {#if job.watched && job.execution?.mode === 'remote' && !clusterSession.sessionId}
+                  <p
+                    class="mt-1 flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-800 dark:text-amber-200"
+                  >
+                    <span
+                      class="mt-0.5 inline-block h-2 w-2 shrink-0 rounded-full bg-amber-400"
+                      aria-hidden="true"
+                    ></span>
+                    <span
+                      >Cluster not connected — use <strong>Connect</strong> in the Progress toolbar
+                      to poll Slurm status and sync remote stage logs.</span
+                    >
+                  </p>
+                {/if}
+
+                {#if job.stagesTotal > 0 && (job.stagesDone > 0 || job.status !== 'not_started' || remotePending)}
+                  <div class="mt-1.5 flex gap-0.5">
+                    {#each Array(job.stagesTotal) as _, si (si)}
+                      {@const done = si < job.stagesDone || job.status === 'completed'}
+                      {@const active =
+                        job.status === 'running' &&
+                        !remotePending &&
+                        !done &&
+                        si === job.stagesDone}
+                      <div class="h-1 flex-1 overflow-hidden rounded-full bg-neutral-800">
+                        <div
+                          class="h-full transition-all duration-300 {done
+                            ? 'bg-green-600'
+                            : active
+                              ? 'bg-blue-500'
+                              : 'bg-transparent'}"
+                          style="width: {done ? '100%' : active ? '50%' : '0%'}"
+                        ></div>
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+                {#if job.stagesTotal > 0}
+                  <p class="mt-1 {remotePending ? 'text-amber-600 dark:text-amber-400' : 'text-neutral-500'}">
+                    {#if remotePending}
+                      {job.stagesDone}/{job.stagesTotal} · pending in queue
+                    {:else if job.status === 'running'}
+                      {job.stagesDone}/{job.stagesTotal} · running
+                    {:else if job.status === 'not_started' && job.stagesDone === 0 && !job.canResume}
+                      {job.stagesTotal} stages · ready
+                    {:else if job.canResume || job.status === 'error'}
+                      {job.stagesDone}/{job.stagesTotal} · interrupted
+                    {:else}
+                      {job.stagesDone}/{job.stagesTotal} stages
+                    {/if}
+                  </p>
+                {/if}
+
+                {#if job.showStages || job.showInfo}
+                  <div
+                    class="mt-2 grid grid-cols-1 gap-3 {job.showStages && job.showInfo
+                      ? 'lg:grid-cols-2'
+                      : ''}"
+                  >
+                    {#if job.showStages}
+                      <div class="min-w-0">
+                        <div class="border-t border-neutral-200 pt-2 dark:border-neutral-700 lg:border-t-0 lg:pt-0">
+                          {#if remotePending && job.execution?.mode === 'remote'}
+                            <p
+                              class="mb-2 flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-800 dark:text-amber-200"
+                            >
+                              <span
+                                class="mt-1 inline-block h-2 w-2 shrink-0 rounded-full bg-amber-400"
+                                aria-hidden="true"
+                              ></span>
+                              <span>
+                                Job pending in the cluster queue ({canonicalizeSlurmState(
+                                  job.execution?.last_remote_state
+                                ) || 'PENDING'}) — MD has not started yet. Stages below are from
+                                the protocol outline.
+                              </span>
+                            </p>
+                          {:else if job.syncingRemoteStages && job.execution?.mode === 'remote' && job.watched}
+                            <p class="mb-2 flex items-center gap-1.5 text-xs text-neutral-500">
+                              <Spinner className="size-3.5 shrink-0" label="Syncing stage logs" />
+                              Syncing stage logs from the cluster (lightweight)… keep Watching on,
+                              or click Pull for a full download.
+                            </p>
+                          {/if}
+                          {#if job.loadingStages}
+                            <p class="flex items-center gap-1.5 text-neutral-500">
+                              <Spinner className="size-3" />
+                              Loading stage detail from local files…
+                            </p>
+                          {:else if displayStages.length > 0}
+                            {@const totals = jobSimulatedTotals(displayStages)}
+                            <p class="mb-1.5 text-neutral-500">
+                              Simulated: {formatNs(totals.sim)} / {formatNs(totals.total)} ns
+                            </p>
+                            <div class="flex flex-col gap-1">
+                              {#each displayStages as stage_info (stage_info.name)}
+                                <EquilibrationStageStatus
+                                  {stage_info}
+                                  compact
+                                  tracking={job.status === 'running' &&
+                                    !remotePending &&
+                                    autoMonitor &&
+                                    job.watched &&
+                                    job.stages.length > 0}
+                                />
+                              {/each}
+                            </div>
+                            {#if job.status === 'error' && job.equilibrationOutput}
+                              <pre
+                                class="mt-2 max-h-24 overflow-auto rounded-md border border-neutral-200 p-2 text-xs dark:border-neutral-800"
+                                >{job.equilibrationOutput}</pre
+                              >
+                            {/if}
+                          {:else if job.status === 'not_started'}
+                            <p class="text-neutral-500">Inputs ready — not started yet.</p>
+                          {:else if remoteJobFinishedLocally(job) || job.status === 'completed'}
+                            <p class="text-neutral-500">
+                              Stage logs not found locally — try Pull, then Reload.
+                            </p>
+                          {:else if job.execution?.mode === 'remote' && job.watched}
+                            <p class="flex items-center gap-1.5 text-neutral-500">
+                              <Spinner className="size-3" label="Waiting for stage logs" />
+                              Waiting for stage logs from the cluster…
+                            </p>
+                          {:else}
+                            <p class="text-neutral-500">
+                              {job.watched
+                                ? 'No stage detail yet — waiting for next refresh.'
+                                : 'Watch the job to load stage detail.'}
+                            </p>
+                          {/if}
+                        </div>
+                      </div>
+                    {/if}
+
+                    {#if job.showInfo}
+                      <div
+                        class="min-w-0 space-y-2 border-t border-neutral-200 pt-2 dark:border-neutral-700 {job.showStages
+                          ? 'lg:border-t-0 lg:border-l lg:pt-0 lg:pl-3'
+                          : ''}"
+                      >
+                        <div
+                          class="rounded-md border border-neutral-200 bg-neutral-50 px-2.5 py-1.5 text-[11px] dark:border-neutral-700 dark:bg-neutral-900"
+                        >
+                          <div class="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
+                            <span class="text-neutral-500">Engine</span>
+                            <span class="uppercase">{job.engine}</span>
+                            <span class="text-neutral-500">Directory</span>
+                            <span class="truncate font-mono" title={job.jobDir}>{job.jobDir}</span>
+                            {#if generatedIso}
+                              <span class="text-neutral-500">Generated</span>
+                              <span class="tabular-nums">{formatJobGenerated(generatedIso)}</span>
+                            {/if}
+                            {#if formatStagesMdElapsed(job.stages)}
+                              <span class="text-neutral-500">Runtime</span>
+                              <span
+                                class="tabular-nums"
+                                title="Sum of stage runtimes from MD logs"
+                                >{formatStagesMdElapsed(job.stages)}</span
+                              >
+                            {/if}
+                            {#if job.execution?.mode === 'remote'}
+                              <span class="text-neutral-500">Status</span>
+                              <span class={remoteSchedulerStatusClass(job)}
+                                >{job.execution.last_remote_state || job.status}</span
+                              >
+                              <span class="text-neutral-500">Remote</span>
+                              <span
+                                class="truncate font-mono"
+                                title={job.execution.remote_path || ''}
+                                >{job.execution.remote_path || '—'}</span
+                              >
+                              {#if job.execution.node_list}
+                                <span class="text-neutral-500">Node</span>
+                                <span>{String(job.execution.node_list).split(',')[0]}</span>
+                              {/if}
+                              {#if job.execution.node_gpu_label || Number(job.execution.resources?.gpus) > 0}
+                                <span class="text-neutral-500">GPU</span>
+                                <span
+                                  >{job.execution.node_gpu_label ||
+                                    `${job.execution.resources?.gpus || 1} GPU`}</span
+                                >
+                              {/if}
+                              {#if Number(job.execution.allocated_cpus) || Number(job.execution.resources?.cpus)}
+                                <span class="text-neutral-500">CPUs</span>
+                                <span
+                                  >{job.execution.allocated_cpus ||
+                                    job.execution.resources?.cpus}</span
+                                >
+                              {/if}
+                            {:else if job.loadingProcessInfo}
+                              <span class="text-neutral-500">Status</span>
+                              <span class="text-neutral-400">Loading…</span>
+                            {:else if job.processInfo}
+                              <span class="text-neutral-500">PID</span>
+                              <span>{job.processInfo.pid ?? '—'}</span>
+                              <span class="text-neutral-500">Status</span>
+                              <span
+                                class={job.processInfo.running
+                                  ? 'text-green-400'
+                                  : 'text-neutral-400'}
+                                >{job.processInfo.running ? 'Running' : 'Not running'}</span
+                              >
+                            {/if}
+                          </div>
+                        </div>
+
+                        <div class="space-y-1">
+                          <div class="flex flex-wrap items-center gap-1.5">
+                            <span class="text-[11px] font-medium text-neutral-500">Logs</span>
+                            <select
+                              class="max-w-[11rem] min-w-[7rem] truncate rounded-md border border-neutral-300 bg-white px-2 py-1 text-[11px] text-neutral-900 [color-scheme:light] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 disabled:opacity-50 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-50 dark:[color-scheme:dark] dark:focus-visible:ring-neutral-600"
+                              value={job.selectedLog || ''}
+                              disabled={jobIndex < 0 || !job.logFiles?.length}
+                              onchange={(e) =>
+                                jobIndex >= 0 &&
+                                updateJobLogOptions(jobIndex, {
+                                  selectedLog:
+                                    /** @type {HTMLSelectElement} */ (e.currentTarget).value || null
+                                })}
+                            >
+                              {#if !job.logFiles?.length}
+                                <option value="">No log files</option>
+                              {:else}
+                                {#each job.logFiles as path (path)}
+                                  <option value={path}>{path}</option>
+                                {/each}
+                              {/if}
+                            </select>
+                            <div
+                              class="inline-flex overflow-hidden rounded-md border border-neutral-300 dark:border-neutral-800"
+                              role="group"
+                              aria-label="Log view mode"
+                            >
+                              <button
+                                type="button"
+                                class="px-2.5 py-1 text-[11px] font-medium {job.logMode === 'head'
+                                  ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+                                  : 'bg-white text-neutral-700 hover:bg-neutral-100 dark:bg-neutral-950 dark:text-neutral-300 dark:hover:bg-neutral-900'}"
+                                aria-pressed={job.logMode === 'head'}
+                                disabled={jobIndex < 0}
+                                onclick={() =>
+                                  jobIndex >= 0 &&
+                                  updateJobLogOptions(jobIndex, { logMode: 'head' })}
+                              >
+                                Head
+                              </button>
+                              <button
+                                type="button"
+                                class="border-l border-neutral-300 px-2.5 py-1 text-[11px] font-medium dark:border-neutral-800 {job.logMode ===
+                                'tail'
+                                  ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+                                  : 'bg-white text-neutral-700 hover:bg-neutral-100 dark:bg-neutral-950 dark:text-neutral-300 dark:hover:bg-neutral-900'}"
+                                aria-pressed={job.logMode === 'tail'}
+                                disabled={jobIndex < 0}
+                                onclick={() =>
+                                  jobIndex >= 0 &&
+                                  updateJobLogOptions(jobIndex, { logMode: 'tail' })}
+                              >
+                                Tail
+                              </button>
+                            </div>
+                            {#if job.logLinesEditing || !LOG_LINE_PRESETS.includes(Number(job.logLines))}
+                              <input
+                                type="number"
+                                min="1"
+                                max={LOG_LINES_MAX}
+                                step="1"
+                                class="w-[7.5rem] rounded-md border border-neutral-300 bg-white px-2 py-1 text-[11px] tabular-nums text-neutral-900 [color-scheme:light] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-50 dark:[color-scheme:dark] dark:focus-visible:ring-neutral-600"
+                                value={job.logLines || LOG_LINES_DEFAULT}
+                                disabled={jobIndex < 0}
+                                title={`Custom line count (1–${LOG_LINES_MAX.toLocaleString()}). Enter a preset (${LOG_LINE_PRESETS.join(', ')}) to return to the list.`}
+                                {@attach (node) => {
+                                  if (!job.logLinesEditing) return
+                                  queueMicrotask(() => {
+                                    /** @type {HTMLInputElement} */ (node).focus()
+                                    /** @type {HTMLInputElement} */ (node).select()
+                                  })
+                                }}
+                                onkeydown={(e) => {
+                                  if (e.key === 'Escape' && jobIndex >= 0) {
+                                    // Escape: if value is still a preset, leave edit mode; else keep custom input.
+                                    void updateJobLogOptions(jobIndex, { logLinesEditing: false })
+                                  }
+                                  if (e.key === 'Enter' && jobIndex >= 0) {
+                                    e.currentTarget.blur()
+                                  }
+                                }}
+                                onblur={(e) => {
+                                  if (jobIndex < 0) return
+                                  const n = clampLogLines(
+                                    /** @type {HTMLInputElement} */ (e.currentTarget).value
+                                  )
+                                  void updateJobLogOptions(jobIndex, {
+                                    logLines: n,
+                                    logLinesEditing: false
+                                  })
+                                }}
+                              />
+                            {:else}
+                              <select
+                                class="w-[7.5rem] rounded-md border border-neutral-300 bg-white px-2 py-1 text-[11px] text-neutral-900 [color-scheme:light] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 disabled:opacity-50 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-50 dark:[color-scheme:dark] dark:focus-visible:ring-neutral-600"
+                                value={String(job.logLines)}
+                                disabled={jobIndex < 0}
+                                title="Number of lines"
+                                onchange={(e) => {
+                                  if (jobIndex < 0) return
+                                  const v = /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                                  if (v === 'custom') {
+                                    void updateJobLogOptions(jobIndex, { logLinesEditing: true })
+                                    return
+                                  }
+                                  void updateJobLogOptions(jobIndex, {
+                                    logLines: Number(v),
+                                    logLinesEditing: false
+                                  })
+                                }}
+                              >
+                                {#each LOG_LINE_PRESETS as n (n)}
+                                  <option value={String(n)}>{n} lines</option>
+                                {/each}
+                                <option value="custom">Custom…</option>
+                              </select>
+                            {/if}
+                            {#if jobIndex >= 0}
+                              <button
+                                type="button"
+                                class="inline-flex size-6 items-center justify-center rounded text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 disabled:cursor-wait disabled:opacity-70 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+                                onclick={() => refreshJobLogFiles(jobIndex)}
+                                disabled={!!job.logView?.loading}
+                                title={job.logView?.loading
+                                  ? 'Refreshing log file list and view…'
+                                  : 'Refresh log file list and view'}
+                                aria-label={job.logView?.loading
+                                  ? 'Refreshing log'
+                                  : 'Refresh log file list and view'}
+                                aria-busy={!!job.logView?.loading}
+                              >
+                                {#if job.logView?.loading}
+                                  <Spinner className="size-3.5" label="Refreshing log" />
+                                {:else}
+                                  <ResetIcon className="size-3.5 fill-current" />
+                                {/if}
+                              </button>
+                            {/if}
+                          </div>
+                          <p class="flex items-center gap-1.5 text-[10px] text-neutral-500">
+                            <span>
+                              Showing {job.logMode === 'head' ? 'head' : 'tail'} · {job.logLines ||
+                                LOG_LINES_DEFAULT} lines
+                            </span>
+                            {#if job.logView?.loading}
+                              <Spinner className="size-3 text-neutral-400" label="Loading log" />
+                            {/if}
+                          </p>
+                          <div class="relative">
+                            {#if job.logView?.loading}
+                              <div
+                                class="pointer-events-none absolute right-1.5 top-1.5 z-10 rounded bg-white/90 p-0.5 dark:bg-neutral-950/90"
+                                aria-hidden="true"
+                              >
+                                <Spinner className="size-3.5 text-neutral-500 dark:text-neutral-400" />
+                              </div>
+                            {/if}
+                            <pre
+                              class="max-h-40 overflow-auto rounded-md border border-neutral-200 bg-white p-2 font-mono text-[10px] leading-snug whitespace-pre-wrap text-neutral-800 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-200 {job.logView
+                                ?.loading
+                                ? 'opacity-70'
+                                : ''}"
+                              >{#if !job.selectedLog}Select a log file…
+{:else if job.logView?.loading && !job.logView?.lines?.length}Loading {job.logMode === 'head' ? 'head' : 'tail'}…
+{:else if job.logView && !job.logView.exists && !job.logView.loading}File not found locally.
+{:else if job.logView?.lines?.length}{job.logView.lines.join('\n')}
+{:else if job.logView && !job.logView.loading}(empty)
+{:else}Loading…{/if}</pre
+                            >
+                          </div>
+                        </div>
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
+
+                {#if job.pulling && job.pullProgress}
+                  <div class="mt-2 space-y-1">
+                    <div class="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                      <span class="truncate" title={job.pullProgress.message}
+                        >{job.pullProgress.message}</span
+                      >
+                      {#if job.pullProgress.percent != null}
+                        <span class="shrink-0 tabular-nums"
+                          >{Math.round(job.pullProgress.percent)}%</span
+                        >
+                      {/if}
+                    </div>
+                    <div
+                      class="h-1.5 w-full overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-700"
+                      role="progressbar"
+                      aria-valuemin="0"
+                      aria-valuemax="100"
+                      aria-valuenow={job.pullProgress.percent ?? undefined}
+                      aria-label="Pull progress"
+                    >
+                      <div
+                        class="h-full rounded-full bg-sky-500 transition-[width] duration-200 ease-out dark:bg-sky-400"
+                        class:animate-pulse={job.pullProgress.percent == null}
+                        style:width="{job.pullProgress.percent != null
+                          ? Math.max(2, job.pullProgress.percent)
+                          : 35}%"
+                      ></div>
+                    </div>
+                  </div>
+                {/if}
+
+                <div class="mt-2 flex flex-wrap items-center gap-1.5">
+                  {#if jobIndex >= 0}
+                    <Button
+                      variant={job.watched ? 'default' : 'outline'}
+                      size="sm"
+                      onclick={() => toggleJobWatch(jobIndex)}
+                    >
+                      {job.watched ? 'Watching' : 'Watch'}
+                    </Button>
+                    {#if job.execution?.mode === 'remote' && job.execution?.remote_path}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onclick={() => pullRemoteJob(jobIndex)}
+                        disabled={job.pulling}
+                        title={remoteSchedulerRunning(job)
+                          ? 'Job still running — Pull downloads a partial snapshot only (confirm before start)'
+                          : 'Download results from the cluster (Watching does not pull — use this button)'}
+                      >
+                        {#if job.pulling}
+                          <Spinner className="mr-1 size-3" />
+                          {job.pullProgress?.percent != null
+                            ? `Pull ${Math.round(job.pullProgress.percent)}%`
+                            : 'Pulling…'}
+                        {:else if remoteSchedulerRunning(job)}
+                          Pull (partial)
+                        {:else}
+                          Pull
+                        {/if}
+                      </Button>
+                    {/if}
+                    {#if job.canRun || job.status === 'not_started' || job.execution?.mode === 'remote' || job.status === 'error' || job.canResume}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onclick={() => openClusterDialog(job)}
+                        title={clusterSession.connected
+                          ? 'Manage / submit using the shared cluster connection'
+                          : job.execution?.mode === 'remote'
+                            ? 'Status / Pull / Cancel — connect in Progress strip for faster access'
+                            : 'Upload and submit with sbatch'}
+                      >
+                        {job.execution?.mode === 'remote'
+                          ? remoteJobTerminal(job)
+                            ? 'Resubmit…'
+                            : 'Cluster…'
+                          : 'Run on cluster…'}
+                      </Button>
+                    {/if}
+                    <Button
+                      variant={job.showStages ? 'default' : 'outline'}
+                      size="sm"
+                      onclick={() => toggleJobStages(jobIndex)}
+                      title={job.showStages ? 'Hide stage progress' : 'Show stage progress'}
+                    >
+                      Stages
+                    </Button>
+                    <Button
+                      variant={job.showInfo ? 'default' : 'outline'}
+                      size="sm"
+                      onclick={() => toggleJobProcessInfo(jobIndex)}
+                      title={job.showInfo ? 'Hide job info and logs' : 'Show job info and logs'}
+                    >
+                      Details
+                    </Button>
+                    <Button
+                      variant={isFormSource ? 'default' : 'outline'}
+                      size="sm"
+                      onclick={() => useJobInForm(job)}
+                      disabled={!!usingInFormDir}
+                      title="Load this job’s engine, protocol, and resources into the form"
+                    >
+                      {#if loadingIntoForm}
+                        <Spinner className="mr-1 size-3" />
+                        Loading…
+                      {:else if isFormSource}
+                        In form
+                      {:else}
+                        Use in form
+                      {/if}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onclick={() => reloadJobCard(jobIndex)}
+                      disabled={job.reloading}
+                      title="Re-read job metadata from disk"
+                    >
+                      {job.reloading ? '…' : 'Reload'}
+                    </Button>
+                    {#if job.status === 'running' && job.execution?.mode !== 'remote'}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onclick={() => killJob(jobIndex)}
+                        disabled={job.stopping}
+                      >
+                        {job.stopping ? 'Stopping…' : 'Kill MD'}
+                      </Button>
+                    {:else}
+                      {#if job.canResume && job.status !== 'completed'}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onclick={() => continueJob(jobIndex)}
+                          disabled={job.continuing}
+                          title={job.resumeReason || 'Continue locally'}
+                        >
+                          {job.continuing ? 'Starting…' : 'Continue'}
+                        </Button>
+                      {/if}
+                      {#if job.canRun}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onclick={() => runJob(jobIndex)}
+                          disabled={job.running}
+                          title="Run locally from stage 1"
+                        >
+                          {job.running ? 'Starting…' : 'Run locally'}
+                        </Button>
+                      {/if}
+                    {/if}
                   {/if}
                 </div>
-              {/if}
-            </div>
-          {/each}
-        </div>
-      {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
     </div>
   </div>
+
+  {#if clusterDialogJob}
+    <RunOnClusterDialog
+      open={true}
+      engine={clusterDialogJob.engine}
+      jobDir={clusterDialogJob.jobDir}
+      jobName={clusterDialogJob.jobName}
+      cpus={clusterDialogJob.cpus}
+      gpus={clusterDialogJob.gpus}
+      execution={clusterDialogJob.execution}
+      onClose={() => {
+        clusterDialogJob = null
+      }}
+      onMessage={(msg, isError = false) => {
+        logEvent(isError ? 'error' : 'info', 'eq', msg)
+      }}
+      onExecutionUpdated={() => {
+        void rescanJobs()
+      }}
+    />
+  {/if}
 
   {#if constraintEditor}
     {#key `${constraintEditor.stageIndex}-${constraintEditor.constraintIndex}-${constraintEditor.source?.id ?? 'new'}`}
