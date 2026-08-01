@@ -16,11 +16,11 @@
   } = $props()
 
   const baseClass =
-    'peer flex appearance-none rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 focus-visible:ring-offset-0 disabled:cursor-not-allowed disabled:opacity-50 dark:focus-visible:ring-neutral-600'
+    'peer flex appearance-none rounded-md transition-colors [color-scheme:light] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 focus-visible:ring-offset-0 disabled:cursor-not-allowed disabled:opacity-50 dark:[color-scheme:dark] dark:focus-visible:ring-neutral-600'
 
   const variantClasses = {
     default:
-      'border border-neutral-300 bg-transparent text-neutral-900 hover:border-neutral-400 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-50 dark:hover:border-neutral-700',
+      'border border-neutral-300 bg-white text-neutral-900 hover:border-neutral-400 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-50 dark:hover:border-neutral-700',
     ghost:
       'border border-transparent bg-transparent text-neutral-900 hover:bg-neutral-100 dark:text-neutral-50 dark:hover:bg-neutral-800'
   }
