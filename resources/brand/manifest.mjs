@@ -65,25 +65,57 @@ export const brandAssets = {
   },
 
   /**
-   * Splash screen — GW emblem on the back of the 3D key card.
-   * Currently inline SVG in splash.html (not loaded from a file at runtime).
+   * Splash lockup — emblem + GATEWIZARD wordmark + tagline (single PNG).
    */
   splashEmblem: {
-    label: 'Splash animation emblem',
+    label: 'Splash screen lockup',
     usedIn: [
-      'resources/splash.html — inline <svg> on the logo face of the 3D card',
+      'resources/splash.html — hex center image',
+      'README.md — repo header logo',
     ],
     files: {
-      svg: path.join(LOGOS_DIR, 'emblem.svg'),
-      referencePng: path.join(LOGOS_DIR, 'splash-reference.png'),
+      png: path.join(LOGOS_DIR, 'splash.png'),
     },
-    note:
-      'The splash uses inline SVG today. Copy emblem.svg path data into splash.html when updating the animation logo.',
+  },
+
+  /**
+   * Title-bar wordmark — GATEWIZARD text logo beside the window icon.
+   * Dark UI: light/white lettering. Light UI: dark lettering. Prefer transparent PNG.
+   */
+  wordmark: {
+    label: 'Title bar wordmark',
+    usedIn: [
+      'src/renderer/src/App.svelte — title bar beside window icon',
+      'src/shared/brand.js — getWordmarkUrl(theme)',
+    ],
+    files: {
+      dark: path.join(LOGOS_DIR, 'wordmark-dark.png'),
+      light: path.join(LOGOS_DIR, 'wordmark-light.png'),
+    },
+    defaultTheme: 'dark',
+  },
+
+  /**
+   * Activity sidebar stage icons (white line art on transparent PNG).
+   */
+  stageIcons: {
+    label: 'Sidebar stage icons',
+    usedIn: [
+      'src/renderer/src/components/icons/Eye.svelte — visualize',
+      'src/renderer/src/components/icons/Cauldron.svelte — preparation',
+      'src/renderer/src/components/icons/MagicWand.svelte — builder',
+      'src/renderer/src/components/icons/Hourglass.svelte — equilibration',
+      'src/renderer/src/components/icons/CrystalBall.svelte — analysis',
+    ],
+    files: {
+      visualize: path.join(LOGOS_DIR, 'stage-icons', 'visualize.png'),
+      preparation: path.join(LOGOS_DIR, 'stage-icons', 'preparation.png'),
+      builder: path.join(LOGOS_DIR, 'stage-icons', 'builder.png'),
+      equilibration: path.join(LOGOS_DIR, 'stage-icons', 'equilibration.png'),
+      analysis: path.join(LOGOS_DIR, 'stage-icons', 'analysis.png'),
+    },
   },
 }
-
-/** @deprecated Use resources/brand/logos/app-window-dark.png */
-export const legacyAppWindowIcon = path.join(__dirname, '..', 'window_icon.png')
 
 /**
  * Absolute path to the PNG used for packaging (with fallbacks).
@@ -112,4 +144,7 @@ export const brandImportPaths = {
   appWindowDark: `${BRAND_ROOT}/logos/app-window-dark.png`,
   appWindowLight: `${BRAND_ROOT}/logos/app-window-light.png`,
   packaging: `${BRAND_ROOT}/logos/packaging.png`,
+  splash: `${BRAND_ROOT}/logos/splash.png`,
+  wordmarkDark: `${BRAND_ROOT}/logos/wordmark-dark.png`,
+  wordmarkLight: `${BRAND_ROOT}/logos/wordmark-light.png`,
 }

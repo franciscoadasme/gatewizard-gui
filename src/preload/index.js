@@ -18,6 +18,7 @@ const api = {
     ipcRenderer.invoke('dialog:saveFile', title, filters, defaultPath),
 
   readJson: (filePath) => ipcRenderer.invoke('fs:readJson', filePath),
+  readText: (filePath) => ipcRenderer.invoke('fs:readText', filePath),
   writeJson: (filePath, data) => ipcRenderer.invoke('fs:writeJson', filePath, data),
   writeText: (filePath, text) => ipcRenderer.invoke('fs:writeText', filePath, text),
   writeBinary: (filePath, base64) => ipcRenderer.invoke('fs:writeBinary', filePath, base64),
@@ -33,6 +34,9 @@ const api = {
   upgradeGatewizard: (installSpec) => ipcRenderer.invoke('runtime:upgrade-gatewizard', installSpec),
 
   setAppTheme: (theme) => ipcRenderer.invoke('theme:set', theme),
+
+  loadClusterProfiles: () => ipcRenderer.invoke('clusters:load'),
+  saveClusterProfiles: (payload) => ipcRenderer.invoke('clusters:save', payload),
 
   isWindowFocused: () => ipcRenderer.invoke('window:isFocused'),
   showJobNotification: (payload) => ipcRenderer.invoke('notifications:showJobFinished', payload),

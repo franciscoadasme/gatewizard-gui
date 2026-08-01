@@ -2,6 +2,7 @@
   import Button from './ui/Button.svelte'
   import Spinner from './ui/Spinner.svelte'
   import SceneDefaultsForm from './SceneDefaultsForm.svelte'
+  import ClusterSettingsPanel from './ClusterSettingsPanel.svelte'
   import { appSettings, updateAppSettings } from '../lib/appSettings.svelte.js'
   import {
     clearPersistedViewerSettings,
@@ -15,7 +16,7 @@
    * @type {{
    *   open?: boolean,
    *   updatesPending?: boolean,
-   *   initialSection?: 'notifications' | 'appearance' | 'scene' | 'versions',
+   *   initialSection?: 'notifications' | 'appearance' | 'scene' | 'versions' | 'clusters',
    *   onUpdatesResult?: (result: any) => void,
    *   onClose?: () => void
    * }}
@@ -28,7 +29,7 @@
     onClose = () => {}
   } = $props()
 
-  /** @type {'notifications' | 'appearance' | 'scene' | 'versions'} */
+  /** @type {'notifications' | 'appearance' | 'scene' | 'versions' | 'clusters'} */
   let section = $state('notifications')
 
   let versionsLoading = $state(false)
@@ -338,6 +339,7 @@
     { id: 'notifications', label: 'Notifications' },
     { id: 'appearance', label: 'Appearance' },
     { id: 'scene', label: 'Scene defaults' },
+    { id: 'clusters', label: 'Clusters' },
     { id: 'versions', label: 'Versions & updates' }
   ]
 </script>
@@ -361,7 +363,7 @@
           Settings
         </h2>
         <p class="mt-1 text-neutral-500 dark:text-neutral-500">
-          Notifications, appearance, scene startup defaults, and software versions.
+          Notifications, appearance, scene defaults, HPC clusters, and software versions.
         </p>
       </div>
 
@@ -478,6 +480,8 @@
                 onPersist={onScenePersist}
               />
             </section>
+          {:else if section === 'clusters'}
+            <ClusterSettingsPanel />
           {:else if section === 'versions'}
             <section class="space-y-4">
               <div>

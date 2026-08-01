@@ -14,11 +14,9 @@
     dismissJobToast,
     notificationNav
   } from './lib/jobNotifications.svelte.js'
-  import { getAppWindowIconUrl } from '../../shared/brand.js'
+  import { getAppWindowIconUrl, getWordmarkUrl } from '../../shared/brand.js'
   import { installAppAlertOverride } from './lib/appDialog.svelte.js'
   import { themeState } from './lib/theme.svelte.js'
-  // TODO: re-enable Tipologo in the title bar (resources/brand/logos/Tipologo.png)
-  // import tipoLogo from '../../../resources/brand/logos/Tipologo.png'
   import {
     analysisStatus,
     builderStatus,
@@ -30,6 +28,7 @@
   } from './lib/pageStatus.svelte.js'
 
   const windowIcon = $derived(getAppWindowIconUrl(themeState.current))
+  const wordmark = $derived(getWordmarkUrl(themeState.current))
 
   const pageModules = import.meta.glob('./pages/*.svelte', { eager: true })
 
@@ -415,6 +414,8 @@
         return { name: 'Equilibration', bg: 'bg-cyan-800', text: 'text-cyan-200' }
       case 'analysis':
         return { name: 'Analysis', bg: 'bg-amber-700', text: 'text-amber-200' }
+      case 'tools':
+        return { name: 'Tools', bg: 'bg-teal-700', text: 'text-teal-200' }
       // file-based task types
       case 'preparation':
         return { name: 'Preparation', bg: 'bg-violet-700', text: 'text-violet-200' }
@@ -687,19 +688,17 @@
       <img
         src={windowIcon}
         alt="GateWizard"
-        class="pointer-events-none size-8 object-contain"
+        class="pointer-events-none size-9 object-contain"
       />
     </div>
     <div class="flex min-w-0 flex-1 items-stretch border-b border-neutral-200 dark:border-neutral-800">
-      <!-- TODO: Tipologo wordmark beside the window icon
       <div class="titlebar-no-drag flex shrink-0 items-center self-center pl-2 pr-1">
         <img
-          src={tipoLogo}
+          src={wordmark}
           alt="GateWizard"
-          class="pointer-events-none h-5 w-auto max-w-[11rem] object-contain object-left"
+          class="pointer-events-none h-6 w-auto max-w-[12rem] object-contain object-left"
         />
       </div>
-      -->
       <div class="titlebar-drag-zone min-w-8 flex-1" aria-hidden="true"></div>
       <div class="titlebar-no-drag flex shrink-0 items-center gap-2 self-center">
       <span class="titlebar-label shrink-0 text-xs font-medium text-neutral-600 dark:text-neutral-400"

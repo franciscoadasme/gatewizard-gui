@@ -8,7 +8,7 @@
   viewBox="0 0 24 24"
   fill="none"
   stroke="currentColor"
-  stroke-width="1.5"
+  stroke-width="1.7"
   class={className}
   role={title ? 'img' : 'presentation'}
   aria-hidden={title ? undefined : true}

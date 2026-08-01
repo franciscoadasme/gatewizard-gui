@@ -2,9 +2,10 @@
   import Cauldron from './icons/Cauldron.svelte'
   import CrystalBall from './icons/CrystalBall.svelte'
   import Eye from './icons/Eye.svelte'
+  import FlaskConical from './icons/FlaskConical.svelte'
   import Gear from './icons/Gear.svelte'
-  import MagicWand from './icons/MagicWand.svelte'
   import Hourglass from './icons/Hourglass.svelte'
+  import MagicWand from './icons/MagicWand.svelte'
   import ThemeToggle from './ThemeToggle.svelte'
 
   /** @type {{ id: string, label: string }[], currentId?: string, onNavigate?: (id: string) => void, onSettings?: () => void, updatesPending?: boolean }} */
@@ -22,8 +23,22 @@
     preparation: Cauldron,
     builder: MagicWand,
     equilibration: Hourglass,
+    tools: FlaskConical,
     analysis: CrystalBall
   }
+
+  /** Tailwind size classes per sidebar stage icon — tweak individually for optical balance. */
+  const STAGE_ICON_CLASS = {
+    visualize: 'size-8',
+    preparation: 'size-8',
+    builder: 'size-9',
+    equilibration: 'size-8',
+    tools: 'size-8',
+    analysis: 'size-8'
+  }
+
+  const DEFAULT_STAGE_ICON_CLASS = 'size-8'
+  const SETTINGS_ICON_CLASS = 'size-8'
 
   /**
    * @param {MouseEvent} e
@@ -42,11 +57,12 @@
   <nav class="flex flex-1 flex-col items-center gap-0.5 py-2">
     {#each stages as stage (stage.id)}
       {@const Icon = STAGE_ICONS[stage.id] ?? Eye}
+      {@const iconClass = STAGE_ICON_CLASS[stage.id] ?? DEFAULT_STAGE_ICON_CLASS}
       {@const active = currentId === stage.id}
       <a
         href="#{stage.id}"
-        class="activity-item group relative flex size-12 items-center justify-center rounded-md text-neutral-500 no-underline transition-colors hover:bg-neutral-100 hover:text-neutral-800 dark:hover:bg-neutral-800 dark:hover:text-neutral-200
-          {active ? 'bg-neutral-200 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100' : ''}"
+        class="activity-item group relative flex size-12 items-center justify-center rounded-md text-neutral-900 no-underline transition-colors hover:bg-neutral-100 hover:text-black dark:text-neutral-50 dark:hover:bg-neutral-800 dark:hover:text-white
+          {active ? 'bg-neutral-200 text-black dark:bg-neutral-800 dark:text-white' : ''}"
         aria-current={active ? 'page' : undefined}
         aria-label={stage.label}
         onclick={(e) => handleNav(e, stage.id)}
@@ -57,7 +73,7 @@
             aria-hidden="true"
           ></span>
         {/if}
-        <Icon className="size-8" />
+        <Icon className={iconClass} />
         <span class="activity-tooltip" role="tooltip">{stage.label}</span>
       </a>
     {/each}
@@ -67,11 +83,11 @@
     <ThemeToggle />
     <button
       type="button"
-      class="activity-item group relative flex size-12 items-center justify-center rounded-md border-0 bg-transparent text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-800 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+      class="activity-item group relative flex size-12 items-center justify-center rounded-md border-0 bg-transparent text-neutral-900 transition-colors hover:bg-neutral-100 hover:text-black dark:text-neutral-50 dark:hover:bg-neutral-800 dark:hover:text-white"
       aria-label="Settings"
       onclick={onSettings}
     >
-      <Gear className="size-8" />
+      <Gear className={SETTINGS_ICON_CLASS} />
       {#if updatesPending}
         <span
           class="absolute top-2 right-2 size-2 rounded-full bg-amber-500 ring-2 ring-white dark:ring-neutral-950"

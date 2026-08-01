@@ -9,7 +9,6 @@ import { fileURLToPath } from 'url'
 import pngToIco from 'png-to-ico'
 import {
   brandAssets,
-  legacyAppWindowIcon,
   resolvePackagingIconSource
 } from '../resources/brand/manifest.mjs'
 
@@ -41,8 +40,7 @@ async function resolveSource() {
   const candidates = [
     resolvePackagingIconSource(),
     brandAssets.appWindow.files.light,
-    brandAssets.appWindow.files.dark,
-    legacyAppWindowIcon
+    brandAssets.appWindow.files.dark
   ]
 
   for (const candidate of candidates) {
@@ -57,7 +55,6 @@ async function resolveSource() {
       `  ${path.relative(root, resolvePackagingIconSource())} (recommended — installer / .exe)`,
       `  ${path.relative(root, brandAssets.appWindow.files.light)}`,
       `  ${path.relative(root, brandAssets.appWindow.files.dark)}`,
-      `  ${path.relative(root, legacyAppWindowIcon)} (legacy)`,
       'See resources/brand/manifest.mjs for details.'
     ].join('\n')
   )

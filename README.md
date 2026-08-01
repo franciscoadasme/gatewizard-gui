@@ -1,5 +1,5 @@
 # GateWizard GUI
-<img src="./resources/gatewizard_logo_black_back-white.png" alt="GateWizard" width="140" align="right" />
+<img src="./resources/brand/logos/splash.png" alt="GateWizard" width="140" align="right" />
 
 Desktop application for membrane protein preparation, system building, equilibration setup, and MD trajectory analysis
 

@@ -59,6 +59,7 @@ import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import appWindowIcon from '../../resources/brand/logos/app-window-dark.png?asset'
 import { resolveAppWindowIconPath } from '../../resources/brand/manifest.mjs'
 // Brand asset map: resources/brand/manifest.mjs (use getAppWindowIconUrl when theme toggle exists)
+import { loadClusterProfiles, saveClusterProfiles } from './cluster-profiles.js'
 import {
   abortRuntimeInstalls,
   ensureMambaRuntime,
@@ -1136,6 +1137,14 @@ ipcMain.handle('fs:readJson', async (_event, filePath) => {
   const contents = await readFile(filePath, 'utf-8')
   return JSON.parse(contents)
 })
+
+ipcMain.handle('fs:readText', async (_event, filePath) => {
+  return readFile(filePath, 'utf-8')
+})
+
+ipcMain.handle('clusters:load', async () => loadClusterProfiles())
+
+ipcMain.handle('clusters:save', async (_event, payload) => saveClusterProfiles(payload || { profiles: [] }))
 
 ipcMain.handle('dialog:saveFile', async (_event, title, filters, defaultPath = undefined) => {
   filters = filters || []
