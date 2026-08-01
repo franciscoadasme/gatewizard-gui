@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Equilibration Progress:** Order filter (Newest / Oldest) — cards default to newest generated job folder first
+- **Equilibration (NAMD):** GPU-resident mode toggle (default on with GPU) — writes `GPUresident` on the production stage only; equilibration keeps `reassignFreq`/`reassignTemp`
 - **Equilibration Progress:** job cards for local and remote runs — Watch, Pull, sync ring, expandable Stages/Details with log viewer, location/status filters, shared cluster **Connect** in the toolbar
 - **Equilibration (remote / Slurm):** cluster profiles in Settings; **Run on cluster…** from job cards (connect/probe, modules, partitions, verified upload before sbatch); SSH passwords are session-only, never saved
 - **Equilibration (Amber):** engine option alongside NAMD/GROMACS/OpenMM — generate/run/status, executable discovery in Settings, compute targets CPU/CUDA
@@ -25,10 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Equilibration Use in form:** protocol stages load reliably; re-read job folder on repeat load; **Clear form** no longer clears Progress cards; recover restraints from engine inputs when job JSON omits them
+- **Equilibration (Amber):** NPgT ensemble generation no longer fails with `Unknown scheme_type 'NPGT'` — scheme labels keep lowercase **g** (`NPgT`, form value `npgt`)
 - **Equilibration Progress:** loading spinner while scanning jobs; runtime prefetch; compact toolbar (Auto, Location/Status filters); pending-in-queue UX; sync-ring alignment and remote generation date; warn when watching without Connect; selected buttons readable in light mode
 - **Cluster — Watch vs Pull:** Watch polls Slurm and syncs stage logs only; **Pull** downloads files with live progress bar (**Pull (partial)** while the job is still running); sync ring compares Local/Remote folder sizes
-- **Cluster — remote cards & dialog:** Slurm status, node, GPU type, allocated CPUs; path recovery and scratch log sync; resubmit after cancel; optional `#SBATCH --nodelist`; Amber `pmemd.cuda` when GPUs > 0; dialog reuses Progress **Connect** session and seeds resources from the form
+- **Cluster — remote cards & dialog:** Slurm status, node, GPU type, allocated CPUs; path recovery and scratch log sync; resubmit after cancel continues from the last completed stage (NAMD/GROMACS/OpenMM/Amber); optional `#SBATCH --nodelist`; Amber `pmemd.cuda` when GPUs > 0; dialog reuses Progress **Connect** session and seeds resources from the form
 - **OpenMM Progress cards:** log rows near 100% count as stage complete; Slurm COMPLETED only when all stages finished locally
 - **Equilibration:** job cards no longer show “interrupted” while MD is actively running (show “running” instead; “interrupted” only when the process has stopped and a continue is available)
 - **Equilibration:** after Kill MD, do not mark the current GROMACS stage as finished/100% when the log still contains `Finished mdrun` but steps are below `nsteps` (keep partial ns; needs matching gatewizard log-parser fix)
