@@ -102,6 +102,36 @@ export function getJobLog(jobDir, logName = 'preparation.log', tail = 200) {
 }
 
 /**
+ * List allow-listed log/text files under an equilibration job folder.
+ * @param {string} jobDir
+ * @returns {Promise<{ files: Array<{ path: string, name: string, mtime: number, size: number }> }>}
+ */
+export function listEquilibrationJobFiles(jobDir) {
+  return backendJson('/equilibration-job-files', { jobDir })
+}
+
+/**
+ * Read head or tail of a relative path under an equilibration job folder.
+ * @param {{
+ *   jobDir?: string,
+ *   job_dir?: string,
+ *   relPath?: string,
+ *   rel_path?: string,
+ *   mode?: 'head'|'tail',
+ *   lines?: number
+ * }} props
+ * @returns {Promise<{ lines: string[], exists: boolean, mode: string, line_count: number, file_size: number }>}
+ */
+export function getEquilibrationJobLog(props) {
+  return backendJson('/equilibration-job-log', {
+    jobDir: props.jobDir || props.job_dir,
+    relPath: props.relPath || props.rel_path,
+    mode: props.mode || 'tail',
+    lines: props.lines ?? 50
+  })
+}
+
+/**
  * Scan a directory for existing preparation job sub-directories.
  * @param {string} directory  Absolute path to the working directory
  * @returns {Promise<{ jobs: Array<{ job_dir: string, name: string, status: string, current_step: number, steps_completed: string[], error: string|null, start_time: string|null, end_time: string|null }> }>}
@@ -112,7 +142,7 @@ export function scanJobs(directory) {
 
 /**
  * @typedef {{ cpu_cores_min?: number|null, cpu_cores_max?: number|null, gpu_id_min?: number|null, gpu_id_max?: number|null, num_gpus?: number|null, use_gpu?: boolean|null, platform?: string|null, engine?: string }} EquilibrationJobResources
- * @typedef {{ job_dir: string, name: string, engine: string, variant: string|null, status: string, start_time: string|null, stages_done: number, stages_total: number, error: string|null, can_run?: boolean, can_resume?: boolean, resume_reason?: string, resume_stage_index?: number, resume_stage_name?: string, resume_completed_stages?: number, resources?: EquilibrationJobResources, input_dir?: string|null, ensemble?: string|null, protocol?: { name: string, description?: string, stages: object[] }|null }} EquilibrationJobSummary
+ * @typedef {{ job_dir: string, name: string, engine: string, variant: string|null, status: string, start_time: string|null, stages_done: number, stages_total: number, error: string|null, can_run?: boolean, can_resume?: boolean, resume_reason?: string, resume_stage_index?: number, resume_stage_name?: string, resume_completed_stages?: number, resources?: EquilibrationJobResources, input_dir?: string|null, ensemble?: string|null, protocol?: { name: string, description?: string, stages: object[] }|null, execution?: object|null }} EquilibrationJobSummary
  * Scan a directory for equilibration job folders (run_equilibration.sh).
  * @param {string} directory  Absolute path to the working directory
  * @returns {Promise<{ jobs: EquilibrationJobSummary[] }>}
@@ -125,12 +155,14 @@ export function scanEquilibrationJobs(directory) {
  * Re-read a single equilibration job folder from disk.
  * @param {string} jobDir
  * @param {string} [workingDir]
+ * @param {{ forForm?: boolean }} [opts]
  * @returns {Promise<EquilibrationJobSummary>}
  */
-export function getEquilibrationJobSummary(jobDir, workingDir) {
+export function getEquilibrationJobSummary(jobDir, workingDir, opts = {}) {
   return backendJson('/equilibration-job-summary', {
     jobDir,
-    ...(workingDir ? { workingDir } : {})
+    ...(workingDir ? { workingDir } : {}),
+    ...(opts.forForm ? { forForm: true } : {})
   })
 }
 
@@ -452,6 +484,286 @@ export async function getProcessInfo(props) {
  */
 export async function getOpenmmPlatforms() {
   return backendJson('/get-openmm-platforms')
+}
+
+/** @param {{ profile: object, password?: string|null }} props */
+export async function clusterConnect(props) {
+  return backendJson('/cluster/connect', props)
+}
+
+/** @param {{ session_id: string }} props */
+export async function clusterDisconnect(props) {
+  return backendJson('/cluster/disconnect', props)
+}
+
+/** @param {{ session_id: string, profile: object, want_gpu?: boolean, engine?: string }} props */
+export async function clusterProbe(props) {
+  return backendJson('/cluster/probe', props)
+}
+
+/** @param {object} profile */
+export async function clusterDefaultTemplate(profile) {
+  return backendJson('/cluster/default-template', profile)
+}
+
+/** @param {object} props */
+export async function clusterRenderScript(props) {
+  return backendJson('/cluster/render-script', props)
+}
+
+/** @param {object} props */
+export async function clusterUploadJob(props) {
+  return backendJson('/cluster/upload-job', props)
+}
+
+/** @param {object} props */
+export async function clusterSubmitJob(props) {
+  return backendJson('/cluster/submit-job', props)
+}
+
+/** @param {object} props */
+export async function clusterJobStatus(props) {
+  return backendJson('/cluster/job-status', props)
+}
+
+/** @param {object} props */
+export async function clusterCancelJob(props) {
+  return backendJson('/cluster/cancel-job', props)
+}
+
+/** @param {object} props */
+export async function clusterPullJob(props) {
+  return backendJson('/cluster/pull-job', props)
+}
+
+/**
+ * Streamed pull with NDJSON progress events.
+ * @param {object} props
+ * @param {(evt: {
+ *   phase?: string,
+ *   percent?: number|null,
+ *   message?: string,
+ *   speed?: string,
+ *   eta?: string,
+ *   error?: string,
+ *   result?: object
+ * }) => void} [onProgress]
+ * @returns {Promise<object>} final pull result
+ */
+/**
+ * Live Pull with NDJSON progress. Also polls local folder size so the UI updates
+ * even if middleware buffers the stream (files landing on disk still move the bar).
+ * @param {{
+ *   session_id?: string,
+ *   sessionId?: string,
+ *   local_dir?: string,
+ *   localDir?: string,
+ *   remote_dir?: string,
+ *   remoteDir?: string,
+ *   full?: boolean,
+ *   profile?: object|null,
+ *   job_id?: string|null,
+ *   jobId?: string|null
+ * }} props
+ * @param {(evt: {
+ *   phase?: string,
+ *   percent?: number|null,
+ *   message?: string,
+ *   bytes?: number,
+ *   total_bytes?: number,
+ *   partial?: boolean,
+ *   error?: string,
+ *   result?: object
+ * }) => void} [onProgress]
+ * @returns {Promise<object>} final pull result
+ */
+export async function clusterPullJobStream(props, onProgress) {
+  const url = `${BACKEND_BASE_URL}/cluster/pull-job-stream`
+  const localDir = props.local_dir || props.localDir || ''
+  /** @type {number} */
+  let expectedBytes = 0
+  /** @type {ReturnType<typeof setInterval>|null} */
+  let pollTimer = null
+  /** @type {number} */
+  let lastPollPct = -1
+
+  const stopLocalPoll = () => {
+    if (pollTimer != null) {
+      clearInterval(pollTimer)
+      pollTimer = null
+    }
+  }
+
+  const emit = (evt) => {
+    if (typeof evt?.total_bytes === 'number' && evt.total_bytes > 0) {
+      expectedBytes = evt.total_bytes
+    }
+    if (typeof onProgress === 'function') onProgress(evt)
+  }
+
+  const startLocalPoll = () => {
+    if (!localDir || pollTimer != null) return
+    pollTimer = setInterval(async () => {
+      try {
+        const info = await clusterLocalDirSize({ local_dir: localDir })
+        const bytes = typeof info?.bytes === 'number' ? info.bytes : 0
+        const formatted = info?.formatted || `${bytes} B`
+        if (expectedBytes > 0) {
+          const raw = Math.max(0, Math.min(99, Math.round((100 * bytes) / expectedBytes)))
+          // Map onto overall Pull bar (sync ≈ 15–90), matching backend mapping.
+          const pct = 15 + Math.round(raw * 0.75)
+          if (pct === lastPollPct && raw !== 0) return
+          lastPollPct = pct
+          emit({
+            phase: 'sync',
+            percent: pct,
+            bytes,
+            total_bytes: expectedBytes,
+            message: `Downloading… ${formatted} / ${formatBytesApprox(expectedBytes)} (${raw}%)`
+          })
+        } else if (bytes > 0) {
+          emit({
+            phase: 'sync',
+            percent: null,
+            bytes,
+            message: `Downloading… ${formatted} on disk`
+          })
+        }
+      } catch {
+        /* ignore transient poll errors */
+      }
+    }, 500)
+  }
+
+  startLocalPoll()
+
+  let response
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/x-ndjson'
+      },
+      body: JSON.stringify(keysToSnakeCase(props))
+    })
+  } catch (err) {
+    stopLocalPoll()
+    console.error('[backendApi] pull stream failed', { url, err })
+    throw err
+  }
+
+  if (!response.ok) {
+    stopLocalPoll()
+    let data = {}
+    try {
+      data = await response.json()
+    } catch {
+      data = {}
+    }
+    throwFromFastApiBody(data, response)
+  }
+
+  const reader = response.body?.getReader()
+  if (!reader) {
+    stopLocalPoll()
+    throw new Error('Pull stream unavailable (empty response body)')
+  }
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+  /** @type {object|null} */
+  let finalResult = null
+  /** @type {string|null} */
+  let streamError = null
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        let evt
+        try {
+          evt = JSON.parse(trimmed)
+        } catch {
+          continue
+        }
+        emit(evt)
+        if (evt?.phase === 'done') {
+          finalResult = evt.result || { ok: true }
+        } else if (evt?.phase === 'error') {
+          streamError = evt.error || evt.message || 'Pull failed'
+        }
+      }
+    }
+
+    if (buffer.trim()) {
+      try {
+        const evt = JSON.parse(buffer.trim())
+        emit(evt)
+        if (evt?.phase === 'done') finalResult = evt.result || { ok: true }
+        else if (evt?.phase === 'error') streamError = evt.error || evt.message || 'Pull failed'
+      } catch {
+        /* ignore trailing garbage */
+      }
+    }
+  } finally {
+    stopLocalPoll()
+  }
+
+  if (streamError) throw new Error(streamError)
+  if (!finalResult) throw new Error('Pull finished without a result')
+  return finalResult
+}
+
+/**
+ * @param {{
+ *   local_dir?: string,
+ *   localDir?: string,
+ *   session_id?: string|null,
+ *   sessionId?: string|null,
+ *   remote_dir?: string|null,
+ *   remoteDir?: string|null,
+ *   measure_remote?: boolean,
+ *   measureRemote?: boolean
+ * }} props
+ * @returns {Promise<{
+ *   local_bytes: number,
+ *   remote_bytes: number|null,
+ *   local_formatted: string,
+ *   remote_formatted: string|null,
+ *   ratio: number|null,
+ *   remote_error?: string|null
+ * }>}
+ */
+export async function clusterJobFolderSizes(props) {
+  return backendJson('/cluster/job-folder-sizes', props)
+}
+
+/**
+ * @param {{ local_dir?: string, localDir?: string, excludes?: string[] }} props
+ * @returns {Promise<{ bytes: number, formatted: string, exists: boolean }>}
+ */
+export async function clusterLocalDirSize(props) {
+  return backendJson('/cluster/local-dir-size', props)
+}
+
+/** @param {number} n */
+function formatBytesApprox(n) {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let v = Math.max(0, Number(n) || 0)
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i += 1
+  }
+  if (i === 0) return `${Math.round(v)} ${units[i]}`
+  return `${v.toFixed(1)} ${units[i]}`
 }
 
 /**

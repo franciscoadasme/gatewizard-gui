@@ -34,6 +34,30 @@ import MDAnalysis as mda
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
+
+
+class SelectiveGZipMiddleware:
+    """GZip JSON payloads, but never buffer NDJSON/stream endpoints (breaks live progress)."""
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        minimum_size: int = 1000,
+        exclude_path_suffixes: tuple[str, ...] = ("/pull-job-stream",),
+    ) -> None:
+        self.app = app
+        self.exclude_path_suffixes = exclude_path_suffixes
+        self.gzip_app = GZipMiddleware(app, minimum_size=minimum_size)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            path = scope.get("path") or ""
+            if any(path.endswith(suffix) for suffix in self.exclude_path_suffixes):
+                await self.app(scope, receive, send)
+                return
+        await self.gzip_app(scope, receive, send)
 from pydantic import BaseModel, Field
 
 from gatewizard.utils.protein_capping import (
@@ -42,6 +66,9 @@ from gatewizard.utils.protein_capping import (
 )
 from gatewizard.utils.helpers import resolve_pdb_chain_id
 from gatewizard.utils.logger import get_logger
+from gatewizard.utils.equilibration_failure import (
+    failure_line_from_text as _equilibration_log_failure_line,
+)
 from gatewizard.core.structure_manager import (
     StructureManager,
     StructureError,
@@ -660,7 +687,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 # Compress large structure payloads (columnar atoms + bonds) over localhost.
-app.add_middleware(GZipMiddleware, minimum_size=1000)
+# Skip /cluster/pull-job-stream — GZip buffers small NDJSON chunks and freezes the Pull %.
+app.add_middleware(
+    SelectiveGZipMiddleware,
+    minimum_size=1000,
+    exclude_path_suffixes=("/pull-job-stream",),
+)
+
+from cluster_routes import router as cluster_router  # noqa: E402
+
+app.include_router(cluster_router)
 
 
 class RunPropKaRequest(BaseModel):
@@ -1141,6 +1177,174 @@ def job_log(payload: JobLogRequest) -> dict:
         raise HTTPException(status_code=500, detail=str(ex)) from ex
 
 
+_EQ_LOG_GLOBS = (
+    "step*.log",
+    "step*.mdout",
+    "*.out",
+    "*.err",
+    "run_equilibration.slurm",
+    "run_equilibration.sbatch",
+    "logs/*",
+)
+
+
+class EquilibrationJobFilesRequest(BaseModel):
+    job_dir: str = Field(..., description="Absolute path to the equilibration job directory")
+
+
+class EquilibrationJobLogRequest(BaseModel):
+    job_dir: str = Field(..., description="Absolute path to the equilibration job directory")
+    rel_path: str = Field(..., description="Relative path under job_dir")
+    mode: str = Field("tail", description="'head' or 'tail'")
+    lines: int = Field(50, description="Number of lines to return (1–100000)")
+
+
+def _eq_job_dir(path_str: str) -> Path:
+    return Path(os.path.abspath(os.path.expanduser(path_str)))
+
+
+def _resolve_eq_rel_path(job_dir: Path, rel_path: str) -> Path | None:
+    """Resolve *rel_path* under *job_dir*; reject traversal / absolute paths."""
+    raw = (rel_path or "").strip().replace("\\", "/")
+    if not raw or raw.startswith("/") or ".." in Path(raw).parts:
+        return None
+    candidate = (job_dir / raw).resolve()
+    try:
+        candidate.relative_to(job_dir.resolve())
+    except ValueError:
+        return None
+    return candidate
+
+
+def _read_file_head_lines(path: Path, n: int) -> list[str]:
+    """Read the first *n* lines without loading the whole file."""
+    lines: list[str] = []
+    with path.open("rb") as fh:
+        while len(lines) < n:
+            chunk = fh.readline()
+            if not chunk:
+                break
+            lines.append(chunk.decode("utf-8", errors="replace").rstrip("\r\n"))
+    return lines
+
+
+def _read_file_tail_lines(path: Path, n: int) -> list[str]:
+    """Read the last *n* lines; seek from end for large files."""
+    size = path.stat().st_size
+    if size <= 0 or n <= 0:
+        return []
+    # Small files: cheap full read.
+    if size <= 2 * 1024 * 1024:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        all_lines = text.splitlines()
+        return all_lines[-n:]
+    # Large: block-seek from end until we have enough newlines.
+    block = 64 * 1024
+    data = b""
+    with path.open("rb") as fh:
+        pos = size
+        while pos > 0 and data.count(b"\n") <= n:
+            read_size = min(block, pos)
+            pos -= read_size
+            fh.seek(pos)
+            data = fh.read(read_size) + data
+            if pos == 0:
+                break
+    text = data.decode("utf-8", errors="replace")
+    all_lines = text.splitlines()
+    # If we started mid-line, drop the first partial line (unless at BOF).
+    if pos > 0 and all_lines:
+        all_lines = all_lines[1:]
+    return all_lines[-n:]
+
+
+@app.post("/equilibration-job-files")
+def equilibration_job_files(payload: EquilibrationJobFilesRequest) -> dict:
+    """List allow-listed text/log files under an equilibration job folder."""
+    import fnmatch
+
+    job_dir = _eq_job_dir(payload.job_dir)
+    if not job_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Not a directory: {job_dir}")
+
+    found: dict[str, float] = {}
+    for pattern in _EQ_LOG_GLOBS:
+        if "/" in pattern:
+            # e.g. logs/*
+            parent_pat, name_pat = pattern.split("/", 1)
+            parent = job_dir / parent_pat
+            if not parent.is_dir():
+                continue
+            for path in parent.iterdir():
+                if path.is_file() and fnmatch.fnmatch(path.name, name_pat):
+                    rel = f"{parent_pat}/{path.name}"
+                    try:
+                        found[rel] = path.stat().st_mtime
+                    except OSError:
+                        found[rel] = 0.0
+        else:
+            for path in job_dir.glob(pattern):
+                if not path.is_file():
+                    continue
+                rel = path.name
+                try:
+                    found[rel] = path.stat().st_mtime
+                except OSError:
+                    found[rel] = 0.0
+
+    ordered = sorted(found.keys(), key=lambda r: (-found[r], r.lower()))[:50]
+    files_out = []
+    for rel in ordered:
+        p = job_dir / rel
+        try:
+            sz = p.stat().st_size if p.is_file() else 0
+        except OSError:
+            sz = 0
+        files_out.append(
+            {"path": rel, "name": Path(rel).name, "mtime": found[rel], "size": sz}
+        )
+    return {"files": files_out}
+
+
+@app.post("/equilibration-job-log")
+def equilibration_job_log(payload: EquilibrationJobLogRequest) -> dict:
+    """Read head or tail of a relative path under an equilibration job folder."""
+    job_dir = _eq_job_dir(payload.job_dir)
+    if not job_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Not a directory: {job_dir}")
+    path = _resolve_eq_rel_path(job_dir, payload.rel_path)
+    if path is None:
+        raise HTTPException(status_code=400, detail="Invalid relative path")
+    mode = (payload.mode or "tail").strip().lower()
+    if mode not in {"head", "tail"}:
+        raise HTTPException(status_code=400, detail="mode must be 'head' or 'tail'")
+    n = max(1, min(100_000, int(payload.lines or 50)))
+    if not path.is_file():
+        return {
+            "lines": [],
+            "exists": False,
+            "mode": mode,
+            "line_count": n,
+            "file_size": 0,
+        }
+    try:
+        file_size = path.stat().st_size
+        lines = (
+            _read_file_head_lines(path, n)
+            if mode == "head"
+            else _read_file_tail_lines(path, n)
+        )
+        return {
+            "lines": lines,
+            "exists": True,
+            "mode": mode,
+            "line_count": n,
+            "file_size": file_size,
+        }
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=str(ex)) from ex
+
+
 class ScanJobsRequest(BaseModel):
     directory: str = Field(..., description="Absolute path to the working directory")
 
@@ -1152,6 +1356,13 @@ class EquilibrationJobSummaryRequest(BaseModel):
     working_dir: str | None = Field(
         None,
         description="Working directory for input-dir inference (defaults to job parent)",
+    )
+    for_form: bool = Field(
+        False,
+        description=(
+            "Fast path for Use in form: skip log failure scans, PID checks, and "
+            "metadata heal writes (avoids hanging on remote/OneDrive folders)."
+        ),
     )
 
 
@@ -1190,30 +1401,47 @@ def scan_jobs(payload: ScanJobsRequest) -> dict:
 
 def _infer_equilibration_engine(eq_dir: Path) -> str:
     """Infer MD engine from files present in an equilibration job folder."""
+    # Prefer explicit metadata — protocol_summary.json alone is written by every engine.
+    meta_path = eq_dir / "equilibration_job.json"
+    if meta_path.is_file():
+        try:
+            raw = json.loads(meta_path.read_text(encoding="utf-8"))
+            eng = raw.get("engine") if isinstance(raw, dict) else None
+            if isinstance(eng, str) and eng.strip().lower() in {
+                "namd",
+                "gromacs",
+                "openmm",
+                "amber",
+            }:
+                return eng.strip().lower()
+        except Exception:
+            pass
     if (eq_dir / "openmm_run.py").is_file() or list(eq_dir.glob("step*_equilibration.inp")):
         return "openmm"
     if list(eq_dir.glob("*.mdp")) or (eq_dir / "index.ndx").is_file():
         return "gromacs"
     if list(eq_dir.glob("step*.mdin")) or list(eq_dir.glob("*.mdout")):
         return "amber"
-    if list(eq_dir.glob("step*_equilibration.conf")) or (
-        eq_dir / "protocol_summary.json"
-    ).is_file():
+    if list(eq_dir.glob("step*_equilibration.conf")) or list(
+        eq_dir.glob("step*_minimization.conf")
+    ):
         return "namd"
     run_script = eq_dir / "run_equilibration.sh"
     if run_script.is_file():
         try:
             script = run_script.read_text(encoding="utf-8", errors="replace").lower()
-            if "openmm_run.py" in script or "openmm" in script:
+            if "openmm_run.py" in script or "from openmm" in script:
                 return "openmm"
             if "gmx" in script or "grompp" in script or "mdrun" in script:
                 return "gromacs"
-            if "pmemd" in script or "sander" in script or "amber" in script:
+            if "pmemd" in script or "sander" in script or "amber=" in script:
                 return "amber"
             if "namd" in script:
                 return "namd"
         except Exception:
             pass
+    if (eq_dir / "protocol_summary.json").is_file():
+        return "namd"
     return "namd"
 
 
@@ -1330,11 +1558,64 @@ def _job_resources_summary(eq_dir: Path, engine: str, variant: str | None) -> di
 
 
 def _equilibration_job_summary(
-    eq_dir: Path, *, working_dir: Path | None = None
+    eq_dir: Path,
+    *,
+    working_dir: Path | None = None,
+    for_form: bool = False,
 ) -> dict[str, Any]:
     """Lightweight summary for one equilibration job directory."""
-    engine = _infer_equilibration_engine(eq_dir)
+    # Use in form must stay snappy: no heal writes (OneDrive locks) and no log scans.
+    job_meta = infer_equilibration_job_metadata(
+        eq_dir, working_dir=working_dir, heal=not for_form
+    )
+    meta_engine = job_meta.get("engine")
+    if isinstance(meta_engine, str) and meta_engine.strip().lower() in {
+        "namd",
+        "gromacs",
+        "openmm",
+        "amber",
+    }:
+        engine = meta_engine.strip().lower()
+    else:
+        engine = _infer_equilibration_engine(eq_dir)
     variant = _infer_equilibration_variant(eq_dir, engine)
+
+    execution = job_meta.get("execution") if isinstance(job_meta.get("execution"), dict) else None
+    # Prefer reading execution from equilibration_job.json even when inference omits it
+    if execution is None:
+        meta_path = eq_dir / "equilibration_job.json"
+        if meta_path.is_file():
+            try:
+                raw = json.loads(meta_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict) and isinstance(raw.get("execution"), dict):
+                    execution = raw["execution"]
+            except Exception:
+                pass
+
+    if for_form:
+        # Local-only path for Use in form — never touches SSH/cluster. Skip heavy
+        # resource inference; the card already has CPUs/GPUs from the last scan.
+        return {
+            "job_dir": str(eq_dir),
+            "name": eq_dir.name,
+            "engine": engine,
+            "variant": variant,
+            "status": "running"
+            if isinstance(execution, dict)
+            and str(execution.get("last_remote_state") or "").upper()
+            in {"RUNNING", "PENDING", "CONFIGURING", "COMPLETING", "REQUEUED"}
+            else "not_started",
+            "start_time": None,
+            "stages_done": 0,
+            "stages_total": len((job_meta.get("protocol") or {}).get("stages") or []),
+            "error": None,
+            "can_run": False,
+            "resources": {},
+            "input_dir": job_meta.get("input_dir"),
+            "ensemble": job_meta.get("ensemble"),
+            "protocol": job_meta.get("protocol"),
+            "execution": execution,
+        }
 
     start_time: str | None = None
     start_file = eq_dir / "equilibration_start_time.txt"
@@ -1343,6 +1624,10 @@ def _equilibration_job_summary(
             start_time = start_file.read_text(encoding="utf-8").strip() or None
         except Exception:
             pass
+    if not start_time and isinstance(execution, dict):
+        submitted = execution.get("submitted_at")
+        if submitted:
+            start_time = str(submitted).strip() or None
 
     log_files = sorted(eq_dir.glob("step*.log"))
     total = _expected_equilibration_stage_count(eq_dir, engine)
@@ -1359,6 +1644,32 @@ def _equilibration_job_summary(
                 bg_log.read_text(encoding="utf-8", errors="replace").splitlines()[-40:]
             )
             error_msg = _equilibration_log_failure_line(tail)
+        except Exception:
+            pass
+
+    # Stage logs / Slurm outs (remote NAMD FATAL lives here, not in background.log)
+    submitted_at_ts = None
+    try:
+        from gatewizard.utils.equilibration_failure import (
+            find_equilibration_failure,
+            parse_submitted_at,
+            remote_job_is_active,
+        )
+    except Exception:
+        find_equilibration_failure = None  # type: ignore
+        parse_submitted_at = None  # type: ignore
+        remote_job_is_active = None  # type: ignore
+
+    if parse_submitted_at:
+        submitted_at_ts = parse_submitted_at(execution)
+
+    if not error_msg and find_equilibration_failure:
+        try:
+            fail_msg, fail_src = find_equilibration_failure(
+                eq_dir, newer_than=submitted_at_ts
+            )
+            if fail_msg:
+                error_msg = f"{fail_msg}" + (f" ({fail_src})" if fail_src else "")
         except Exception:
             pass
 
@@ -1385,18 +1696,82 @@ def _equilibration_job_summary(
     else:
         status = "not_started"
 
+    if (
+        not error_msg
+        and isinstance(execution, dict)
+        and execution.get("last_error")
+    ):
+        error_msg = str(execution.get("last_error"))
+        src = execution.get("last_error_source")
+        if src and src not in error_msg:
+            error_msg = f"{error_msg} ({src})"
+        note = execution.get("last_error_note")
+        if note:
+            error_msg = f"{error_msg} — {note}"
+
+    # Remote jobs: surface scheduler state when local process is idle
+    remote_active = bool(remote_job_is_active(execution)) if remote_job_is_active else False
+    if (
+        execution
+        and execution.get("mode") == "remote"
+        and status not in {"running"}
+        and execution.get("last_remote_state")
+    ):
+        remote_state = str(execution.get("last_remote_state") or "").upper()
+        if remote_state in {"RUNNING", "PENDING", "CONFIGURING", "COMPLETING"}:
+            status = "running"
+        elif remote_state in {"COMPLETED", "COMPLETE"}:
+            # Slurm COMPLETED means the batch exited; only mark the job done when
+            # every stage finished locally (or was already completed).
+            if not error_msg and total > 0 and n_done >= total:
+                status = "completed"
+                interrupted = False
+            elif status not in {"completed", "error"}:
+                status = "completed"
+        elif remote_state in {"FAILED", "CANCELLED", "TIMEOUT", "NODE_FAIL"}:
+            status = "error"
+
+    # Live remote job: do not keep a prior attempt's red error / interrupted banner.
+    if remote_active:
+        status = "running"
+        error_msg = None
+        interrupted = False
+
     can_run = (
         has_script
         and status != "running"
-        and not interrupted
         and n_done == 0
         and total > 0
         and resume_point.reason != "run_equilibration.sh not found"
     )
+    remote_state = ""
+    if execution and execution.get("mode") == "remote":
+        remote_state = str(execution.get("last_remote_state") or "").upper()
+    remote_terminal = remote_state in {
+        "FAILED",
+        "CANCELLED",
+        "TIMEOUT",
+        "NODE_FAIL",
+        "COMPLETED",
+        "COMPLETE",
+    }
+    # Block a fresh "Run" while a local/remote run is still active, or while an
+    # interrupted local run should use Continue — but allow restart after a
+    # finished remote job (FAILED/CANCELLED/…) even if stage logs exist.
+    if interrupted and not remote_terminal:
+        can_run = False
+    if execution and execution.get("mode") == "remote" and status == "running":
+        can_run = False
 
-    job_meta = infer_equilibration_job_metadata(eq_dir, working_dir=working_dir)
+    if execution and execution.get("mode") == "remote":
+        try:
+            from gatewizard.utils.cluster.probe import enrich_execution_resources
 
-    return {
+            execution = enrich_execution_resources(eq_dir, execution)
+        except Exception:
+            pass
+
+    result = {
         "job_dir": str(eq_dir),
         "name": eq_dir.name,
         "engine": engine,
@@ -1411,8 +1786,16 @@ def _equilibration_job_summary(
         "input_dir": job_meta.get("input_dir"),
         "ensemble": job_meta.get("ensemble"),
         "protocol": job_meta.get("protocol"),
+        "execution": execution,
         **_equilibration_resume_fields(eq_dir, engine),
     }
+    # While a remote job is live, hide Continue/restart from a previous attempt.
+    if remote_active:
+        result["can_run"] = False
+        result["can_resume"] = False
+        result["error"] = None
+        result["status"] = "running"
+    return result
 
 
 def _equilibration_resume_fields(eq_dir: Path, engine: str) -> dict[str, Any]:
@@ -1483,7 +1866,11 @@ def equilibration_job_summary(payload: EquilibrationJobSummaryRequest) -> dict[s
     else:
         working_dir = eq_dir.parent
     try:
-        return _equilibration_job_summary(eq_dir, working_dir=working_dir)
+        return _equilibration_job_summary(
+            eq_dir,
+            working_dir=working_dir,
+            for_form=bool(payload.for_form),
+        )
     except Exception as ex:
         raise HTTPException(status_code=500, detail=str(ex)) from ex
 
@@ -2671,34 +3058,6 @@ def is_equilibration_process_running(workdir: Path, engine: str = "") -> bool:
     )
 
 
-# Real failure markers from engine logs / run_equilibration.sh — NOT bare
-# "error" (GROMACS unused-macro warnings say "spelling error").
-_EQ_FAILURE_RE = re.compile(
-    r"(?i)"
-    r"("
-    r"fatal error:"
-    r"|error in user input:"
-    r"|error in stage\b"
-    r"|error: namd executable"
-    r"|minimisation failed"
-    r"|minimization failed"
-    r"|production failed"
-    r"|stage\s+\d+.*failed"
-    r"|equilibration failed"
-    r"|command not found"
-    r"|segmentation fault"
-    r")"
-)
-
-
-def _equilibration_log_failure_line(text: str) -> str | None:
-    """Return the first line that indicates a real MD failure, else None."""
-    for line in text.splitlines():
-        if _EQ_FAILURE_RE.search(line):
-            return line.strip() or line
-    return None
-
-
 def _pid_file_alive(workdir: Path) -> bool:
     """Check only the pid file (any executable)."""
     pid_file = workdir / "equilibration.pid"
@@ -3132,13 +3491,26 @@ def get_equilibration_status(payload: EquilibrationRequest) -> dict:
             info["status"] == "completed" for info in response["stages"]
         ):
             response["status"] = "completed"
-        elif engine in {"gromacs", "openmm", "amber"}:
+        elif engine in {"gromacs", "openmm", "amber", "namd"}:
             # Do not treat bare "error" as failure — GROMACS unused-macro
             # warnings include the phrase "spelling error".
             # Also do NOT promote the job to "completed" just because the background
             # log contains "Finished mdrun" / "complete" — Kill MD still prints those.
             if _equilibration_log_failure_line(response["output"]):
                 response["status"] = "error"
+            else:
+                try:
+                    from gatewizard.utils.equilibration_failure import (
+                        find_equilibration_failure,
+                    )
+
+                    fail_msg, _src = find_equilibration_failure(workdir)
+                    if fail_msg:
+                        response["status"] = "error"
+                        if not response.get("output"):
+                            response["output"] = fail_msg
+                except Exception:
+                    pass
 
     return response
 
