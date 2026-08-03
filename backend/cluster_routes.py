@@ -972,6 +972,7 @@ def _pull_job_files(
             ignore_times=True,
             on_progress=_sync_progress if on_progress else None,
             expected_bytes=remote_bytes or None,
+            timeout=1800 if not remote_bytes else 600,
         )
     except ClusterSSHError as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
