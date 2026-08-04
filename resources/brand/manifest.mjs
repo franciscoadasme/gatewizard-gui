@@ -96,7 +96,8 @@ export const brandAssets = {
   },
 
   /**
-   * Activity sidebar stage icons (white line art on transparent PNG).
+   * Activity sidebar stage icons (SVG; black art → currentColor in SvgIcon).
+   * Stroke tweaks: ActivitySidebar STAGE_STROKE_MODE + STAGE_STROKE.
    */
   stageIcons: {
     label: 'Sidebar stage icons',
@@ -105,14 +106,16 @@ export const brandAssets = {
       'src/renderer/src/components/icons/Cauldron.svelte — preparation',
       'src/renderer/src/components/icons/MagicWand.svelte — builder',
       'src/renderer/src/components/icons/Hourglass.svelte — equilibration',
+      'src/renderer/src/components/icons/FlaskConical.svelte — tools',
       'src/renderer/src/components/icons/CrystalBall.svelte — analysis',
     ],
     files: {
-      visualize: path.join(LOGOS_DIR, 'stage-icons', 'visualize.png'),
-      preparation: path.join(LOGOS_DIR, 'stage-icons', 'preparation.png'),
-      builder: path.join(LOGOS_DIR, 'stage-icons', 'builder.png'),
-      equilibration: path.join(LOGOS_DIR, 'stage-icons', 'equilibration.png'),
-      analysis: path.join(LOGOS_DIR, 'stage-icons', 'analysis.png'),
+      visualize: path.join(LOGOS_DIR, 'stage-icons', 'visualize.svg'),
+      preparation: path.join(LOGOS_DIR, 'stage-icons', 'preparation.svg'),
+      builder: path.join(LOGOS_DIR, 'stage-icons', 'builder.svg'),
+      equilibration: path.join(LOGOS_DIR, 'stage-icons', 'equilibration.svg'),
+      tools: path.join(LOGOS_DIR, 'stage-icons', 'tools.svg'),
+      analysis: path.join(LOGOS_DIR, 'stage-icons', 'analysis.svg'),
     },
   },
 }

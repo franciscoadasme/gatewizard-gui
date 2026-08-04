@@ -1,9 +1,9 @@
 <script>
-  import PngIcon from './PngIcon.svelte'
-  import preparationIcon from '../../../../../resources/brand/logos/stage-icons/preparation.png'
+  import SvgIcon from './SvgIcon.svelte'
+  import markup from '../../../../../resources/brand/logos/stage-icons/preparation.svg?raw'
 
-  /** @type {{ className?: string, title?: string }} */
-  let { className = '', title } = $props()
+  /** @type {{ className?: string, title?: string, strokeMode?: 'absolute' | 'relative', stroke?: number | null }} */
+  let { className = '', title, strokeMode = 'absolute', stroke = null } = $props()
 </script>
 
-<PngIcon src={preparationIcon} {className} {title} />
+<SvgIcon {markup} {className} {title} {strokeMode} {stroke} />

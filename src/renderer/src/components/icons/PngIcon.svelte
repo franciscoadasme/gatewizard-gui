@@ -6,7 +6,7 @@
 <img
   {src}
   alt=""
-  class="pointer-events-none object-contain invert dark:invert-0 {className}"
+  class="pointer-events-none object-contain dark:invert {className}"
   role={title ? 'img' : 'presentation'}
   aria-hidden={title ? undefined : true}
 />

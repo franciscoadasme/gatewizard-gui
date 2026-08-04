@@ -31,10 +31,34 @@
   const STAGE_ICON_CLASS = {
     visualize: 'size-8',
     preparation: 'size-8',
-    builder: 'size-9',
+    builder: 'size-8',
     equilibration: 'size-8',
     tools: 'size-8',
     analysis: 'size-8'
+  }
+
+  /**
+   * Stroke tweak mode for stage SVGs (see SvgIcon.svelte):
+   * - 'absolute': STAGE_STROKE values are viewBox stroke-width (~0–1200; tools native ≈ 810)
+   * - 'relative': STAGE_STROKE values are multipliers (1 = original; 1.2 = +20%, 0.8 = −20% on real strokes)
+   *
+   * null = leave the SVG as exported (no override).
+   * Most icons are filled Corel outlines — absolute/relative mainly thickens; thinning below
+   * the baked fill needs a re-export. Tools uses a real stroke, so both modes work fully.
+   *
+   * Relative example: set mode to 'relative' and use values like
+   *   visualize: 1.1, preparation: 1, builder: 1.15, equilibration: 1, tools: 0.9, analysis: 1.05
+   */
+  const STAGE_STROKE_MODE = /** @type {'absolute' | 'relative'} */ ('relative')
+
+  /** @type {Record<string, number | null>} */
+  const STAGE_STROKE = {
+    visualize: 1.3,
+    preparation: 1,
+    builder: 1.3,
+    equilibration: 1.5,
+    tools: 1.2,
+    analysis: 1.3
   }
 
   const DEFAULT_STAGE_ICON_CLASS = 'size-8'
@@ -58,6 +82,7 @@
     {#each stages as stage (stage.id)}
       {@const Icon = STAGE_ICONS[stage.id] ?? Eye}
       {@const iconClass = STAGE_ICON_CLASS[stage.id] ?? DEFAULT_STAGE_ICON_CLASS}
+      {@const iconStroke = STAGE_STROKE[stage.id] ?? null}
       {@const active = currentId === stage.id}
       <a
         href="#{stage.id}"
@@ -73,7 +98,7 @@
             aria-hidden="true"
           ></span>
         {/if}
-        <Icon className={iconClass} />
+        <Icon className={iconClass} strokeMode={STAGE_STROKE_MODE} stroke={iconStroke} />
         <span class="activity-tooltip" role="tooltip">{stage.label}</span>
       </a>
     {/each}

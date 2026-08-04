@@ -696,7 +696,7 @@
         <img
           src={wordmark}
           alt="GateWizard"
-          class="pointer-events-none h-6 w-auto max-w-[12rem] object-contain object-left"
+          class="pointer-events-none h-5 w-auto max-w-[12rem] object-contain object-left"
         />
       </div>
       <div class="titlebar-drag-zone min-w-8 flex-1" aria-hidden="true"></div>
