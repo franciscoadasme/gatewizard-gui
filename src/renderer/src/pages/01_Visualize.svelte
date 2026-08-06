@@ -222,7 +222,7 @@
   let measLiftDir = $state('up')
   let measLineWidth = $state(3)
   // Panel section collapse state (labels start collapsed — less clutter with representations)
-  let measExpanded = $state(true)
+  let measExpanded = $state(false)
   let labelsExpanded = $state(false)
   /** @type {{ kind: 'label' | 'meas' | 'view', id: string } | null} */
   let overlayFadeEditor = $state(null)

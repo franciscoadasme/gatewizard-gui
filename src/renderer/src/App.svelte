@@ -306,7 +306,7 @@
 
   // ── Settings / updates ──
   let showSettings = $state(false)
-  /** @type {'notifications' | 'appearance' | 'scene' | 'versions'} */
+  /** @type {'notifications' | 'appearance' | 'scene' | 'versions' | 'clusters' | 'about'} */
   let settingsSection = $state('notifications')
   let updatesPending = $state(false)
   let showUpdateAvailableDialog = $state(false)
@@ -459,7 +459,7 @@
   let chipTimestamps = $state({})
   /** @type {string[]} */
   let chipSeqOrder = $state([])
-  /** Level filter for the history panel: show 'info' only, 'detail', or 'verbose' (all) */
+  /** Level filter for the history panel: 'info' (major + warnings/errors) or 'all' */
   let historyLevel = $state('info')
   /** Tracks previous chip status to detect meaningful state transitions (plain, non-reactive) */
   const _prevChipStatus = {}
@@ -714,9 +714,11 @@
   const visibleLogEntries = $derived(
     historyLog.filter((e) => {
       if (logDismissed.has(e.id)) return false
-      if (historyLevel === 'info') return e.level === 'info'
-      if (historyLevel === 'detail') return e.level === 'info' || e.level === 'detail'
-      return true // 'verbose' = show everything
+      if (historyLevel === 'info') {
+        // Major actions + problems; secondary 'detail' events only under All
+        return e.level === 'info' || e.level === 'error' || e.level === 'warn'
+      }
+      return true // 'all'
     })
   )
 
@@ -875,7 +877,7 @@
           <span class="shrink-0 font-semibold text-neutral-700 dark:text-neutral-300">History</span>
           <!-- Level filter tabs -->
           <div class="flex gap-0.5 rounded bg-neutral-200 p-0.5 dark:bg-neutral-800">
-            {#each [{ id: 'info', label: 'Info', title: 'Major actions only (file open, edits, runs)' }, { id: 'detail', label: 'Detail', title: 'Info + secondary actions (add/remove view, measurements)' }, { id: 'verbose', label: 'All', title: 'Everything including micro changes (gizmo, labels)' }] as lvl (lvl.id)}
+            {#each [{ id: 'info', label: 'Info', title: 'Major actions and warnings/errors' }, { id: 'all', label: 'All', title: 'Everything, including secondary actions (add/remove view, measurements, clears)' }] as lvl (lvl.id)}
               {@const activeClass =
                 historyLevel === lvl.id
                   ? 'bg-neutral-400 text-neutral-900 dark:bg-neutral-600 dark:text-neutral-100'
@@ -910,7 +912,7 @@
               {@const tag = pageTag(entry.page)}
               <div
                 class="flex items-start gap-2 px-3 py-1.5
-                  {entry.level === 'verbose' ? 'opacity-60' : ''}"
+                  {entry.level === 'detail' ? 'opacity-70' : ''}"
               >
                 <!-- global seq number -->
                 <span

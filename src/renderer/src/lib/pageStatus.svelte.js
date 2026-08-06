@@ -132,7 +132,7 @@ export const analysisStatus = $state({
 
 // ── Global history log ────────────────────────────────────────────────────────
 /**
- * @typedef {{ id: string, level: 'info'|'detail'|'verbose', page: string, label: string, detail: string, timestamp: Date }} HistoryEvent
+ * @typedef {{ id: string, level: 'info'|'detail'|'error'|'warn', page: string, label: string, detail: string, timestamp: Date }} HistoryEvent
  */
 export const historyLog = $state(/** @type {HistoryEvent[]} */ ([]))
 
@@ -140,12 +140,12 @@ export const historyLog = $state(/** @type {HistoryEvent[]} */ ([]))
  * Append a timestamped event to the global history log.
  * Call from any page to record an action at the appropriate detail level.
  *
- * Levels:
- *   'info'    — major actions (file open, structure edit, run start/stop)
- *   'detail'  — secondary actions (add/remove view, clear measurements)
- *   'verbose' — micro changes (label added, gizmo drag)
+ * Levels (status-bar History filter: Info vs All):
+ *   'info'   — major actions (file open, structure edit, run start/stop); shown under Info
+ *   'detail' — secondary actions (add/remove view, clear measurements); shown under All only
+ *   'error' / 'warn' — problems; shown under Info and All
  *
- * @param {'info'|'detail'|'verbose'} level
+ * @param {'info'|'detail'|'error'|'warn'} level
  * @param {string} page   — page type matching pageTag(): 'view'|'prep'|'build'|'eq'|'tools'|'analysis'
  * @param {string} label  — short title shown in the log
  * @param {string} [detail] — optional longer description
