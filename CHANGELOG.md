@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Analysis:** simulation sets for structural and energetic runs — overlays, per-file stride/time, save/load sessions, chart tools (pan, zoom, range stats), and mixed structural+energetic sessions
+- **Analysis:** membrane thickness / APL headgroup picking, energetic compare layouts (by property / by set / overlay), and PlotSpec-style PNG export
+- **Tools:** Fix PBC job UI (engine detect, per-file stride, center selection, job cards)
+- **Equilibration protocol:** explicit Minimization stage; per-stage CPU/GPU on protocol cards with bulk **Apply to MD stages**
 - **Equilibration Progress:** Order filter (Newest / Oldest) — cards default to newest generated job folder first
 - **Equilibration (NAMD):** GPU-resident mode toggle (default on with GPU) — writes `GPUresident` on the production stage only; equilibration keeps `reassignFreq`/`reassignTemp`
 - **Equilibration Progress:** job cards for local and remote runs — Watch, Pull, sync ring, expandable Stages/Details with log viewer, location/status filters, shared cluster **Connect** in the toolbar
@@ -21,12 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Visualize — Viewpoints:** save/open a full view snapshot (structure, camera, representations, lights, labels, measurements)
 - **Visualize — Labels:** background color/opacity, padding, corner radius, and lift distance/direction (works in live view and animation)
 - **Visualize — Labels:** show/hide all labels from the Labels panel header (does not delete labels)
+- **Visualize — Measurements:** same chip styling as labels (size, opacity, pad, round, lift, background) with show/hide all; type icons kept on each row; styles animate and save in viewpoints
 - **Visualize — Depth of field:** camera-style focus blur in Scene rendering settings (enable, focus distance, range, blur); **Focus here** from the atom menu / toolbar; saved in viewpoints and animation keyframes (enable/disable fades via blur strength between keyframes)
 - **Runtime:** conda-forge **FFmpeg** is installed with the embedded micromamba environment (Linux / macOS / WSL) so animation video/GIF export works without a separate system FFmpeg
 - **Visualize:** split a representation by chain, residue, residue name, molecule, or element (not only chain)
 
 ### Fixed
 
+- **Analysis:** multi-set progress and live chart updates; energetic compare follows set visibility (no ghost plot / wrong colors); slim sessions hydrate after load
+- **Visualize:** chain delete no longer blacks out the canvas; **Clear scene** vs status-bar **Clear chips**; bond-loading spinner sits next to the visibility toggle
 - **Equilibration (Amber):** NPgT ensemble generation no longer fails with `Unknown scheme_type 'NPGT'` — scheme labels keep lowercase **g** (`NPgT`, form value `npgt`)
 - **Equilibration Progress:** loading spinner while scanning jobs; runtime prefetch; compact toolbar (Auto, Location/Status filters); pending-in-queue UX; sync-ring alignment and remote generation date; warn when watching without Connect; selected buttons readable in light mode
 - **Cluster — Watch vs Pull:** Watch polls Slurm and syncs stage logs only; **Pull** downloads files with live progress bar (**Pull (partial)** while the job is still running); sync ring compares Local/Remote folder sizes
@@ -46,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Equilibration (remote):** generate locally first (**Run locally** on the left panel); cluster submit on the job card via **Run on cluster…**; Slurm runs `run_equilibration_cluster.sh`, local runs use `run_equilibration.sh`
 - **Visualize:** transforms (gizmo / dialog) update coordinates in memory — no temp PDB on every drag; **Save PDB** writes when you choose (marker when unsaved)
+- **Visualize:** Labels section starts collapsed so representations stay easier to reach
 - **Visualize — Animation:** keyframes can store sparse coordinate patches for moved atoms so playback/export can interpolate atom motion without duplicating full structures
 - **Visualize — Animation:** unsaved atom moves (like unsaved color/representation edits) revert to the last keyframe when scrubbing the timeline; capture a keyframe to keep the new positions
 
