@@ -1,5 +1,5 @@
 <script>
-  import { onDestroy, untrack } from 'svelte'
+  import { onDestroy, onMount, untrack } from 'svelte'
   import Button from '../components/ui/Button.svelte'
   import { equilibrationPageStatus, logEvent } from '../lib/pageStatus.svelte.js'
   import ConstraintEditor from '../components/ConstraintEditor.svelte'
@@ -73,6 +73,68 @@
     { id: 'amber', label: 'Amber' }
   ]
 
+  /** Engine-specific default compute profiles (sidebar + per-stage cards). */
+  const ENGINE_RESOURCE_PROFILES = {
+    gromacs: {
+      sidebar: { totalCpus: 6, totalGpus: 1, gpuId: 0, computeTarget: /** @type {const} */ ('auto') },
+      minimization: { cpu_cores: 6, gpu_id: 0, num_gpus: 0, use_gpu: false },
+      md: { cpu_cores: 6, gpu_id: 0, num_gpus: 1, use_gpu: true },
+      production: { cpu_cores: 6, gpu_id: 0, num_gpus: 1, use_gpu: true }
+    },
+    amber: {
+      sidebar: { totalCpus: 6, totalGpus: 1, gpuId: 0, computeTarget: /** @type {const} */ ('CPU') },
+      minimization: { cpu_cores: 6, gpu_id: 0, num_gpus: 0, use_gpu: false },
+      md: { cpu_cores: 6, gpu_id: 0, num_gpus: 0, use_gpu: false },
+      production: { cpu_cores: 1, gpu_id: 0, num_gpus: 1, use_gpu: true }
+    },
+    namd: {
+      sidebar: { totalCpus: 6, totalGpus: 1, gpuId: 0, computeTarget: /** @type {const} */ ('auto') },
+      minimization: { cpu_cores: 6, gpu_id: 0, num_gpus: 0, use_gpu: false },
+      md: { cpu_cores: 6, gpu_id: 0, num_gpus: 1, use_gpu: true },
+      production: { cpu_cores: 1, gpu_id: 0, num_gpus: 1, use_gpu: true }
+    },
+    openmm: {
+      sidebar: { totalCpus: 6, totalGpus: 0, gpuId: 0, computeTarget: /** @type {const} */ ('auto') },
+      minimization: { cpu_cores: 6, gpu_id: 0, num_gpus: 0, use_gpu: false },
+      md: { cpu_cores: 6, gpu_id: 0, num_gpus: 0, use_gpu: false },
+      production: { cpu_cores: 6, gpu_id: 0, num_gpus: 0, use_gpu: false }
+    }
+  }
+
+  /** @param {string} eng */
+  function applyEngineResourceDefaults(eng) {
+    const profile = ENGINE_RESOURCE_PROFILES[eng] ?? ENGINE_RESOURCE_PROFILES.namd
+    totalCpus = profile.sidebar.totalCpus
+    totalGpus = profile.sidebar.totalGpus
+    gpuDevice = profile.sidebar.gpuId ?? 0
+    computeTarget = profile.sidebar.computeTarget
+    protocol.compute_defaults = {
+      cpu_cores: profile.sidebar.totalCpus,
+      gpu_id: gpuDevice,
+      num_gpus: profile.sidebar.totalGpus,
+      use_gpu: profile.sidebar.computeTarget !== 'CPU',
+      compute_target: computeTarget
+    }
+    for (const stage of protocol.stages ?? []) {
+      const kind = String(stage.stage_kind || '').toLowerCase()
+      const name = String(stage.name || '').toLowerCase()
+      const isMini =
+        kind === 'minimization' || name === 'minimization' || name === 'energy minimization'
+      const isProd = kind === 'production' || name === 'production'
+      const res = isMini ? profile.minimization : isProd ? profile.production : profile.md
+      stage.cpu_cores = res.cpu_cores
+      stage.gpu_id = res.gpu_id
+      stage.num_gpus = res.num_gpus
+      stage.use_gpu = res.use_gpu
+      stage.resources_inherit = false
+    }
+    protocolFormKey += 1
+  }
+
+  onMount(() => {
+    applyEngineResourceDefaults(engine)
+  })
+
   /** @type {{ workingDir?: string }} */
   let { workingDir = '' } = $props()
 
@@ -83,6 +145,9 @@
   let gpuDevice = $state(0)
   let inputDir = $state('')
   let outputName = $state('')
+  let computeTarget = $state(/** @type {'auto' | 'CPU' | 'CUDA' | 'OpenCL' | 'Metal'} */ ('auto'))
+  let totalCpus = $state(1)
+  let totalGpus = $state(1)
   let protocol = $state(prepareProtocolForRendering(structuredClone(baseProtocol)))
   /** Bumped when loading a job into the form so stage cards remount with new values. */
   let protocolFormKey = $state(0)
@@ -120,11 +185,6 @@
   let engineCandidateId = $state('custom')
   /** GMXRC paired with the selected GROMACS candidate (if any) */
   let selectedGmxrc = $state(/** @type {string|null} */ (null))
-  /**
-   * Compute target written into run scripts (may differ from this machine).
-   * @type {'auto' | 'CPU' | 'CUDA' | 'OpenCL' | 'Metal'}
-   */
-  let computeTarget = $state(/** @type {'auto' | 'CPU' | 'CUDA' | 'OpenCL' | 'Metal'} */ ('auto'))
   /** NAMD GPU-resident (GPUresident); default on when using GPU */
   let gpuResident = $state(true)
   /** Targets detected on this machine after Check Executable / candidate scan */
@@ -140,8 +200,6 @@
   let loadingSystemSize = $state(false)
   /** Bumped whenever inputDir is (re)assigned so the size loader re-runs for the same path. */
   let inputDirRevision = $state(0)
-  let totalCpus = $state(4)
-  let totalGpus = $state(1)
   let updateInterval = $state(60)
   /** @type {'all' | 'local' | 'remote'} */
   let progressFilter = $state(/** @type {'all' | 'local' | 'remote'} */ ('all'))
@@ -204,11 +262,12 @@
       !startingEquilibration
   )
   const selectedExecutable = $derived(executableByEngine[engine] ?? '')
-  const resources = $derived({
+  const computeDefaults = $derived({
     cpu_cores: totalCpus,
     gpu_id: gpuDevice,
     num_gpus: totalGpus,
-    use_gpu: useGpu
+    use_gpu: useGpu,
+    compute_target: computeTarget
   })
 
   /** @param {string} target */
@@ -363,10 +422,17 @@
   /** @param {import('../lib/backendApi.js').EquilibrationJobResources | null | undefined} resources */
   function formatJobResources(resources) {
     if (!resources) return ''
+    if (resources.summary) return resources.summary
+    const slurm = resources.slurm
+    if (slurm?.cpu_cores != null) {
+      const gpuPart =
+        slurm.use_gpu && slurm.num_gpus ? ` · GPU×${slurm.num_gpus}` : ''
+      return `Slurm CPU×${slurm.cpu_cores}${gpuPart}`
+    }
+
     const cpuMin = resources.cpu_cores_min
     const cpuMax = resources.cpu_cores_max
     const parts = []
-
     if (Number.isFinite(cpuMin) && Number.isFinite(cpuMax)) {
       parts.push(cpuMin === cpuMax ? `${cpuMin} CPU` : `${cpuMin}–${cpuMax} CPU`)
     }
@@ -536,6 +602,8 @@
     const fromExec =
       Number(job.execution?.allocated_cpus) || Number(job.execution?.resources?.cpus) || 0
     if (fromExec > 0) return fromExec
+    const slurm = job.resources?.slurm
+    if (slurm?.cpu_cores != null) return Number(slurm.cpu_cores) || totalCpus
     const r = job.resources
     if (r?.cpu_cores_max != null) return Number(r.cpu_cores_max) || totalCpus
     if (r?.cpu_cores_min != null) return Number(r.cpu_cores_min) || totalCpus
@@ -548,6 +616,8 @@
     if (Number.isFinite(fromExec) && fromExec >= 0 && job.execution?.mode === 'remote') {
       return fromExec
     }
+    const slurm = job.resources?.slurm
+    if (slurm?.num_gpus != null) return Number(slurm.num_gpus) || 0
     const r = job.resources
     if (r?.use_gpu === false) return 0
     if (r?.num_gpus != null) return Number(r.num_gpus) || 0
@@ -1646,6 +1716,62 @@
   }
 
   /**
+   * Expand inherited / missing per-stage compute fields so every card is editable.
+   * @param {object} p
+   */
+  function materializeStageResources(p) {
+    const defaults = {
+      cpu_cores: 1,
+      gpu_id: 0,
+      num_gpus: 1,
+      use_gpu: true,
+      ...(p?.compute_defaults ?? {})
+    }
+    for (const stage of p?.stages ?? []) {
+      const kind = String(stage.stage_kind || '').toLowerCase()
+      const name = String(stage.name || '').toLowerCase()
+      const isMini =
+        kind === 'minimization' || name === 'minimization' || name === 'energy minimization'
+      if (isMini) {
+        if (stage.cpu_cores == null) stage.cpu_cores = 6
+        stage.use_gpu = false
+        stage.num_gpus = 0
+        stage.resources_inherit = false
+        continue
+      }
+      const hasExplicit =
+        stage.resources_inherit === false &&
+        stage.cpu_cores != null &&
+        stage.use_gpu != null
+      if (hasExplicit) continue
+      stage.cpu_cores = defaults.cpu_cores ?? 1
+      stage.gpu_id = defaults.gpu_id ?? 0
+      stage.num_gpus = defaults.num_gpus ?? 1
+      stage.use_gpu = defaults.use_gpu ?? true
+      stage.resources_inherit = false
+    }
+  }
+
+  /**
+   * Apply sidebar defaults to all equilibration / production stages.
+   */
+  function applySidebarDefaultsToMdStages() {
+    protocol.compute_defaults = { ...computeDefaults }
+    const defaults = protocol.compute_defaults
+    for (const stage of protocol.stages ?? []) {
+      const kind = String(stage.stage_kind || '').toLowerCase()
+      const name = String(stage.name || '').toLowerCase()
+      if (kind === 'minimization' || name === 'minimization') continue
+      stage.cpu_cores = defaults.cpu_cores ?? 1
+      stage.gpu_id = defaults.gpu_id ?? 0
+      stage.num_gpus = defaults.num_gpus ?? 1
+      stage.use_gpu = defaults.use_gpu ?? true
+      stage.resources_inherit = false
+    }
+    protocolFormKey += 1
+  }
+
+  /**
    * Ensure recovered protocol stages have fields the stage editor expects.
    * @param {Record<string, unknown>} stage
    */
@@ -1704,11 +1830,40 @@
    * @param {object | null} appliedProtocol
    */
   function applyJobResourcesToForm(job, appliedProtocol) {
-    const stage0 = appliedProtocol?.stages?.[0] ?? null
     const res = job.resources ?? null
 
-    // Prefer equilibration_resources.json (written at generate time) over per-stage
-    // cpu_cores baked into an older protocol snapshot.
+    const defaults = res?.compute_defaults
+    if (defaults && typeof defaults === 'object') {
+      if (typeof defaults.cpu_cores === 'number' && defaults.cpu_cores > 0) {
+        totalCpus = defaults.cpu_cores
+      }
+      if (typeof defaults.gpu_id === 'number' && defaults.gpu_id >= 0) {
+        gpuDevice = defaults.gpu_id
+      }
+      if (typeof defaults.num_gpus === 'number' && defaults.num_gpus >= 0) {
+        totalGpus = defaults.num_gpus
+      }
+      if (typeof defaults.use_gpu === 'boolean') {
+        computeTarget = defaults.use_gpu ? computeTarget : 'CPU'
+      }
+    }
+
+    if (appliedProtocol?.stages?.length && res?.stages?.length) {
+      for (let i = 0; i < appliedProtocol.stages.length; i++) {
+        const saved = res.stages[i]
+        if (!saved || typeof saved !== 'object') continue
+        const stage = appliedProtocol.stages[i]
+        for (const key of ['cpu_cores', 'gpu_id', 'num_gpus', 'use_gpu', 'resources_inherit', 'stage_kind']) {
+          if (saved[key] != null) stage[key] = saved[key]
+        }
+      }
+    }
+
+    if (appliedProtocol && res?.compute_defaults) {
+      appliedProtocol.compute_defaults = { ...res.compute_defaults }
+    }
+
+    const stage0 = appliedProtocol?.stages?.[0] ?? null
     const cpu =
       (typeof res?.cpu_cores_max === 'number' ? res.cpu_cores_max : null) ??
       (typeof res?.cpu_cores_min === 'number' ? res.cpu_cores_min : null) ??
@@ -2268,8 +2423,7 @@
 
       generatingInputFiles = true
       let currentProtocol = $state.snapshot(protocol)
-      // Computational Resources panel must override stale per-stage cpu/gpu fields.
-      currentProtocol.stages = currentProtocol.stages.map((stage) => ({ ...stage, ...resources }))
+      currentProtocol.compute_defaults = { ...computeDefaults }
       await generateEquilibration({
         inputDir,
         outputDir,
@@ -2340,6 +2494,14 @@
         }
       }
     }
+    if (p?.compute_defaults && typeof p.compute_defaults === 'object') {
+      const d = p.compute_defaults
+      if (typeof d.cpu_cores === 'number' && d.cpu_cores > 0) totalCpus = d.cpu_cores
+      if (typeof d.gpu_id === 'number' && d.gpu_id >= 0) gpuDevice = d.gpu_id
+      if (typeof d.num_gpus === 'number' && d.num_gpus > 0) totalGpus = d.num_gpus
+      if (d.use_gpu === false) computeTarget = 'CPU'
+    }
+    materializeStageResources(p)
     return p
   }
 
@@ -2374,7 +2536,7 @@
     }
     try {
       let currentProtocol = $state.snapshot(protocol)
-      currentProtocol.stages = currentProtocol.stages.map((stage) => ({ ...stage, ...resources }))
+      currentProtocol.compute_defaults = { ...computeDefaults }
       await window.api.writeJson(filePath, prepareProtocolForSerialization(currentProtocol))
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
@@ -2608,7 +2770,7 @@
     engine = 'namd'
     ensemble = 'npt'
     gpuDevice = 0
-    totalCpus = 4
+    totalCpus = 1
     totalGpus = 1
     updateInterval = 60
     addComRestraint = false
@@ -2628,6 +2790,7 @@
     engineCandidateId = 'custom'
     selectedGmxrc = null
     protocol = prepareProtocolForRendering(structuredClone(baseProtocol))
+    applyEngineResourceDefaults('namd')
     protocolFormKey += 1
     constraintEditor = null
     statusSynced = false
@@ -2720,6 +2883,7 @@
               availableCompute = []
               engineCandidateId = 'custom'
               selectedGmxrc = null
+              applyEngineResourceDefaults(engine)
             }}
           >
             {#each engines as item (item.id)}
@@ -2973,7 +3137,7 @@
     <Divider />
 
     <div class="grid grid-cols-[1fr_--spacing(15)] items-center gap-2">
-      <h2 class="sidebar-heading col-span-2">Computational Resources</h2>
+      <h2 class="sidebar-heading col-span-2">Default compute resources</h2>
       <label for="cpu-cores" class="sidebar-label flex-1">CPU Cores</label>
       <Input id="cpu-cores" type="number" size="sm" bind:value={totalCpus} />
 
@@ -2984,6 +3148,19 @@
         <label for="num-gpus" class="sidebar-label">Number of GPUs</label>
         <Input id="num-gpus" type="number" size="sm" bind:value={totalGpus} />
       {/if}
+      <p class="sidebar-hint col-span-2">
+        Defaults for new / inherited stages. Edit each card directly, or apply in bulk:
+      </p>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="col-span-2 w-full"
+        onclick={applySidebarDefaultsToMdStages}
+        disabled={!isProtocolValid}
+      >
+        Apply defaults to MD stages
+      </Button>
     </div>
 
     <Divider />

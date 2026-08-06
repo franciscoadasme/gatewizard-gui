@@ -1,16 +1,51 @@
 {
   "name": "Default Protocol",
   "description": "Equilibration protocol for membrane protein systems",
+  "compute_defaults": {
+    "cpu_cores": 6,
+    "gpu_id": 0,
+    "num_gpus": 1,
+    "use_gpu": true,
+    "compute_target": "auto"
+  },
   "stages": [
+    {
+      "name": "Minimization",
+      "description": "Energy minimization with strong restraints",
+      "stage_kind": "minimization",
+      "time_ns": 0,
+      "steps": 0,
+      "ensemble": "NVT",
+      "temperature": 303.15,
+      "pressure": 1.0,
+      "minimize_steps": 10000,
+      "cpu_cores": 6,
+      "gpu_id": 0,
+      "num_gpus": 0,
+      "use_gpu": false,
+      "resources_inherit": false,
+      "constraints": [
+        { "name": "Protein backbone", "force_constant": 10.0, "selection": "protein_backbone" },
+        { "name": "Protein sidechain", "force_constant": 5.0, "selection": "protein_sidechain" },
+        { "name": "Lipid head", "force_constant": 2.5, "selection": "lipid_head" },
+        { "name": "Lipid tail", "force_constant": 2.5, "selection": "lipid_tail" },
+        { "name": "Water", "force_constant": 0.0, "selection": "water" },
+        { "name": "Ions", "force_constant": 10.0, "selection": "ions" },
+        { "name": "Other", "force_constant": 0.0, "selection": "other" }
+      ],
+      "timestep": 1.0,
+      "dcd_freq": 5000
+    },
     {
       "name": "Equilibration 1",
       "description": "Initial equilibration with strong restraints",
+      "stage_kind": "equilibration",
+      "resources_inherit": true,
       "time_ns": 0.125,
       "steps": 125000,
       "ensemble": "NVT",
       "temperature": 303.15,
       "pressure": 1.0,
-      "minimize_steps": 10000,
       "constraints": [
         { "name": "Protein backbone", "force_constant": 10.0, "selection": "protein_backbone" },
         { "name": "Protein sidechain", "force_constant": 5.0, "selection": "protein_sidechain" },
@@ -26,6 +61,8 @@
     {
       "name": "Equilibration 2",
       "description": "Second equilibration stage",
+      "stage_kind": "equilibration",
+      "resources_inherit": true,
       "time_ns": 0.125,
       "steps": 125000,
       "ensemble": "NVT",
@@ -46,6 +83,8 @@
     {
       "name": "Equilibration 3",
       "description": "Third equilibration stage",
+      "stage_kind": "equilibration",
+      "resources_inherit": true,
       "time_ns": 0.125,
       "steps": 125000,
       "ensemble": null,
@@ -68,6 +107,8 @@
     {
       "name": "Equilibration 4",
       "description": "Fourth equilibration stage",
+      "stage_kind": "equilibration",
+      "resources_inherit": true,
       "time_ns": 0.5,
       "steps": 500000,
       "ensemble": null,
@@ -90,6 +131,8 @@
     {
       "name": "Equilibration 5",
       "description": "Fifth equilibration stage",
+      "stage_kind": "equilibration",
+      "resources_inherit": true,
       "time_ns": 0.5,
       "steps": 250000,
       "ensemble": null,
@@ -112,6 +155,8 @@
     {
       "name": "Equilibration 6",
       "description": "Sixth equilibration stage",
+      "stage_kind": "equilibration",
+      "resources_inherit": true,
       "time_ns": 0.5,
       "steps": 250000,
       "ensemble": null,
@@ -134,6 +179,12 @@
     {
       "name": "Production",
       "description": "Production simulation",
+      "stage_kind": "production",
+      "resources_inherit": false,
+      "cpu_cores": 1,
+      "gpu_id": 0,
+      "num_gpus": 1,
+      "use_gpu": true,
       "time_ns": 100.0,
       "steps": 50000000,
       "ensemble": null,
