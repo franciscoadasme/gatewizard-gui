@@ -16,7 +16,7 @@
    * @type {{
    *   open?: boolean,
    *   updatesPending?: boolean,
-   *   initialSection?: 'notifications' | 'appearance' | 'scene' | 'versions' | 'clusters',
+   *   initialSection?: 'notifications' | 'appearance' | 'scene' | 'versions' | 'clusters' | 'about',
    *   onUpdatesResult?: (result: any) => void,
    *   onClose?: () => void
    * }}
@@ -29,8 +29,29 @@
     onClose = () => {}
   } = $props()
 
-  /** @type {'notifications' | 'appearance' | 'scene' | 'versions' | 'clusters'} */
+  /** @type {'notifications' | 'appearance' | 'scene' | 'versions' | 'clusters' | 'about'} */
   let section = $state('notifications')
+
+  const ABOUT_AUTHORS = [
+    'Constanza González',
+    'Francisco Adasme',
+    'Mauricio González',
+    'Janin Riedelsberger',
+    'Mauricio Bedoya',
+  ]
+
+  /** @param {string} url */
+  async function openAboutLink(url) {
+    if (window.api?.openExternalUrl) {
+      try {
+        await window.api.openExternalUrl(url)
+        return
+      } catch {
+        /* fall through */
+      }
+    }
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
 
   let versionsLoading = $state(false)
   /** @type {string | null} */
@@ -340,7 +361,8 @@
     { id: 'appearance', label: 'Appearance' },
     { id: 'scene', label: 'Scene defaults' },
     { id: 'clusters', label: 'Clusters' },
-    { id: 'versions', label: 'Versions & updates' }
+    { id: 'versions', label: 'Versions & updates' },
+    { id: 'about', label: 'About' }
   ]
 </script>
 
@@ -363,7 +385,7 @@
           Settings
         </h2>
         <p class="mt-1 text-neutral-500 dark:text-neutral-500">
-          Notifications, appearance, scene defaults, HPC clusters, and software versions.
+          Notifications, appearance, scene defaults, HPC clusters, software versions, and about.
         </p>
       </div>
 
@@ -749,6 +771,61 @@
                   Compares installed versions with the public update manifest on GitHub.
                 </p>
               </div>
+            </section>
+          {:else if section === 'about'}
+            <section class="space-y-4">
+              <div>
+                <h3 class="text-sm font-semibold text-neutral-800 dark:text-neutral-200">About</h3>
+                <p class="mt-1 text-neutral-500 dark:text-neutral-400">
+                  Desktop application for membrane-protein preparation, system building, equilibration setup, analysis, and
+                  visualization. Built on the GateWizard Python API.
+                </p>
+              </div>
+
+              <div>
+                <h4 class="font-medium text-neutral-800 dark:text-neutral-200">
+                  Authors and contributors
+                </h4>
+                <ul class="mt-1.5 list-inside list-disc space-y-0.5 text-neutral-600 dark:text-neutral-400">
+                  {#each ABOUT_AUTHORS as name (name)}
+                    <li>{name}</li>
+                  {/each}
+                </ul>
+              </div>
+
+              <div>
+                <h4 class="font-medium text-neutral-800 dark:text-neutral-200">License</h4>
+                <p class="mt-1 text-neutral-500 dark:text-neutral-400">MIT</p>
+              </div>
+
+              <div>
+                <h4 class="font-medium text-neutral-800 dark:text-neutral-200">Links</h4>
+                <ul class="mt-1.5 space-y-1">
+                  <li>
+                    <button
+                      type="button"
+                      class="text-blue-600 hover:underline dark:text-blue-400"
+                      onclick={() => openAboutLink('https://github.com/franciscoadasme/gatewizard-gui')}
+                    >
+                      GUI repository
+                    </button>
+                  </li>
+                  <li>
+                    <button
+                      type="button"
+                      class="text-blue-600 hover:underline dark:text-blue-400"
+                      onclick={() => openAboutLink('https://github.com/maurobedoya/gatewizard')}
+                    >
+                      API repository
+                    </button>
+                  </li>
+                </ul>
+              </div>
+
+              <p class="text-neutral-500 dark:text-neutral-500">
+                GUI v{pkg.version}{#if versionsData?.dependencies?.gatewizard?.version}
+                  · API v{versionsData.dependencies.gatewizard.version}{/if}
+              </p>
             </section>
           {/if}
         </div>
