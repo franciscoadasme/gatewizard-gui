@@ -1436,12 +1436,12 @@
       </div>
     {/if}
 
-    <h1 class="m-4 mb-2 text-xl font-semibold">Preparation Jobs</h1>
+    <h1 class="m-4 mb-2 text-xl font-semibold">Builder Jobs</h1>
     {#if jobs.length === 0}
       <p
         class="mx-4 mb-4 flex flex-1 items-center justify-center rounded-lg border border-dashed border-neutral-300 text-neutral-500 dark:border-neutral-800 dark:text-neutral-700"
       >
-        No preparations yet. Configure options, generate input files, then click "Start Preparation".
+        No builder jobs yet. Configure options, generate input files, then click "Start Preparation".
       </p>
     {:else}
       <div class="mx-4 mb-4 min-h-0 flex-1 space-y-3 overflow-y-auto">

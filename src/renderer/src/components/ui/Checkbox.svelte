@@ -24,13 +24,17 @@
   <input
     type="checkbox"
     class="peer absolute inset-0 z-10 cursor-pointer opacity-0 disabled:cursor-not-allowed"
-    bind:checked
+    {checked}
     {disabled}
     id={id ?? name}
     {name}
     {value}
     {required}
-    {...restProps}
+    onchange={(e) => {
+      checked = e.currentTarget.checked
+      restProps.onchange?.(e)
+    }}
+    {...Object.fromEntries(Object.entries(restProps).filter(([key]) => key !== 'onchange'))}
   />
   <div
     class="pointer-events-none flex shrink-0 items-center justify-center rounded-[4px] border border-neutral-300 transition-colors peer-checked:border-neutral-900 peer-checked:bg-neutral-900 peer-focus-visible:ring-2 peer-focus-visible:ring-neutral-400 peer-focus-visible:ring-offset-2 peer-disabled:opacity-50 dark:border-neutral-600 dark:peer-checked:border-neutral-50 dark:peer-checked:bg-neutral-50 dark:peer-focus-visible:ring-neutral-600 dark:peer-focus-visible:ring-offset-neutral-950 peer-checked:[&_svg]:opacity-100 {boxSize}"

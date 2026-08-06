@@ -201,11 +201,41 @@
     align-self: stretch;
   }
 
+  .titlebar-wordmark-slot {
+    -webkit-app-region: drag;
+    cursor: default !important;
+  }
+
+  /*
+   * Work-area maximize (Win/Linux/WSL): disable Chromium drag so preload can
+   * restore-to-floating size on pointer move. will-move is unreliable on WSLg.
+   */
+  html.window-maximized .titlebar-drag-zone,
+  html.window-maximized .titlebar-logo-slot,
+  html.window-maximized .titlebar-wordmark-slot {
+    -webkit-app-region: no-drag;
+  }
+
   .titlebar-no-drag {
     -webkit-app-region: no-drag;
   }
 
   .titlebar-label {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  .titlebar-drag-zone,
+  .titlebar-logo-slot,
+  .titlebar-wordmark-slot {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  .titlebar-drag-zone img,
+  .titlebar-logo-slot img,
+  .titlebar-wordmark-slot img {
+    -webkit-user-drag: none;
     user-select: none;
     -webkit-user-select: none;
   }
@@ -279,7 +309,7 @@
   }
 
   .gw-notice-error {
-    @apply border-l-[5px] border-l-red-500;
+    @apply border-l-[5px] border-l-red-500 select-text;
   }
 
   .gw-notice-info {

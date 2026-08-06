@@ -51,7 +51,19 @@
 </script>
 
 <div class="relative">
-  <select class={classes} bind:value {disabled} {required} id={id ?? name} {name} {...restProps}>
+  <select
+    class={classes}
+    {value}
+    {disabled}
+    {required}
+    id={id ?? name}
+    {name}
+    onchange={(e) => {
+      value = e.currentTarget.value
+      restProps.onchange?.(e)
+    }}
+    {...Object.fromEntries(Object.entries(restProps).filter(([key]) => key !== 'onchange'))}
+  >
     {#if placeholder}
       <option value="" disabled hidden selected={value === '' || value == null}>
         {placeholder}

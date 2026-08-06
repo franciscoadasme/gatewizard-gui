@@ -9,12 +9,23 @@
     disabled = false,
     readonly = false,
     required = false,
+    /** When true, Enter blurs the field to confirm inline edits. */
+    blurOnEnter = false,
     id,
     name,
     placeholder,
     className = '',
+    onkeydown,
     ...restProps
   } = $props()
+
+  /** @param {KeyboardEvent} e */
+  function handleKeydown(e) {
+    if (blurOnEnter && e.key === 'Enter') {
+      e.currentTarget instanceof HTMLInputElement && e.currentTarget.blur()
+    }
+    onkeydown?.(e)
+  }
 
   const baseClass =
     'flex rounded-md text-sm transition-colors placeholder:text-neutral-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 focus-visible:ring-offset-0 disabled:cursor-not-allowed disabled:opacity-50 dark:placeholder:text-neutral-400 dark:focus-visible:ring-neutral-600'
@@ -50,5 +61,6 @@
   {name}
   {placeholder}
   spellcheck="false"
+  onkeydown={handleKeydown}
   {...restProps}
 />
