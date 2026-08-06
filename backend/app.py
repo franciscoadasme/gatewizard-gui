@@ -109,6 +109,7 @@ from gatewizard.utils import amber_analysis
 from gatewizard.utils import namd_analysis
 from gatewizard.utils import gromacs_analysis
 from gatewizard.utils import openmm_analysis
+from gatewizard.utils import trajectory_tools
 from gatewizard.utils.equilibration_resume import (
     equilibration_script_supports_resume,
     get_equilibration_resume_point,
@@ -2358,32 +2359,54 @@ class Constraint(BaseModel):
 
 class Stage(BaseModel):
     constraints: list[Constraint] = Field(description="List of constraints")
-    cpu_cores: int = Field(description="Number of CPU cores")
+    cpu_cores: int | None = Field(default=None, description="Number of CPU cores")
     dcd_freq: int = Field(description="Frame output frequency")
     description: str = Field(description="Stage description")
     ensemble: str | None = Field(description="NVT, NPT, etc.")
-    gpu_id: int | None = Field(description="GPU ID to use")
+    gpu_id: int | None = Field(default=None, description="GPU ID to use")
     margin: float | None = Field(description="Nonbonded margin parameter", default=5)
     minimize_steps: int | None = Field(
         description="Energy minimization steps", default=None
     )
     name: str = Field(description="Stage name")
-    num_gpus: int | None = Field(description="Number of GPUs to use")
+    num_gpus: int | None = Field(default=None, description="Number of GPUs to use")
     pressure: float | None = Field(description="Pressure in bar")
     steps: int = Field(description="Number of MD steps")
+    stage_kind: str | None = Field(
+        default=None,
+        description="minimization | equilibration | production",
+    )
+    resources_inherit: bool | None = Field(
+        default=None,
+        description="When true, use protocol compute_defaults for this stage",
+    )
+    compute_target: str | None = Field(
+        default=None, description="Per-stage compute target override"
+    )
     surface_tension: float | None = Field(
         description="Surface tension in dyne/cm", default=None
     )
     temperature: float = Field(description="Temperature in Kelvin")
     time_ns: float = Field(description="Stage time in nanoseconds")
     timestep: float = Field(description="Integration timestep (fs)")
-    use_gpu: bool = Field(description="Whether to use GPU")
+    use_gpu: bool | None = Field(default=None, description="Whether to use GPU")
+
+
+class ComputeDefaults(BaseModel):
+    cpu_cores: int = Field(default=1, description="Default CPU cores for MD stages")
+    gpu_id: int = Field(default=0, description="Default GPU device index")
+    num_gpus: int = Field(default=1, description="Default GPU count for MD stages")
+    use_gpu: bool = Field(default=True, description="Default GPU use for MD stages")
+    compute_target: str = Field(default="auto", description="Default compute target")
 
 
 class Protocol(BaseModel):
     name: str = Field(description="Protocol name")
     stages: list[Stage] = Field(description="Protocol stages")
     description: str = Field(description="Overall protocol description")
+    compute_defaults: ComputeDefaults | None = Field(
+        default=None, description="Default compute resources for equilibration stages"
+    )
 
 
 class GenerateEquilibrationRequest(BaseModel):
@@ -2806,6 +2829,11 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
         )
 
     stage_params = _build_stage_params(payload.protocol.stages)
+    compute_defaults = (
+        payload.protocol.compute_defaults.model_dump()
+        if payload.protocol.compute_defaults
+        else None
+    )
     selections = _build_selections(payload.protocol.stages)
     _validate_constraint_support(engine, stage_params, selections)
     system_files = _collect_system_files(input_dir)
@@ -2830,8 +2858,11 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
             com_restraint_k=payload.com_restraint_k,
             add_rotation_restraint=payload.add_rotation_restraint,
             rotation_restraint_k=payload.rotation_restraint_k,
+            compute_defaults=compute_defaults,
         )
-        write_equilibration_resources(output_dir, engine, stage_params)
+        write_equilibration_resources(
+            output_dir, engine, stage_params, compute_defaults=compute_defaults
+        )
         _persist_equilibration_job_metadata(output_dir, payload, engine)
         return
 
@@ -2871,6 +2902,7 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
             engine,
             stage_params,
             openmm_platform=payload.openmm_platform,
+            compute_defaults=compute_defaults,
         )
         _persist_equilibration_job_metadata(output_dir, payload, engine)
         return
@@ -2889,8 +2921,11 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
             output_name=str(output_dir),
             scheme_type=_normalize_ensemble(payload.ensemble),
             amber_executable=resolved_exec,
+            compute_defaults=compute_defaults,
         )
-        write_equilibration_resources(output_dir, engine, stage_params)
+        write_equilibration_resources(
+            output_dir, engine, stage_params, compute_defaults=compute_defaults
+        )
         _persist_equilibration_job_metadata(output_dir, payload, engine)
         return
 
@@ -2921,7 +2956,9 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
         water_model=water_model,
         gpu_resident=payload.gpu_resident,
     )
-    write_equilibration_resources(output_dir, engine, stage_params)
+    write_equilibration_resources(
+        output_dir, engine, stage_params, compute_defaults=compute_defaults
+    )
     _persist_equilibration_job_metadata(output_dir, payload, engine)
 
 
@@ -3113,6 +3150,9 @@ class StructuralAnalysisRequest(BaseModel):
     align: bool = Field(True, description="Align structures before RMSD")
     file_times: dict[str, float] | None = Field(
         None, description="Optional per-file durations in ns"
+    )
+    file_strides: dict[str, int] | None = Field(
+        None, description="Optional per-file frame stride (≥1, default 1)"
     )
     rmsf_xaxis_type: str = Field(
         "residue_number",
@@ -3361,6 +3401,9 @@ class EnergeticColumnsRequest(BaseModel):
     file_times: dict[str, float] | None = Field(
         None, description="Optional per-file durations in ns"
     )
+    file_strides: dict[str, int] | None = Field(
+        None, description="Optional per-file frame stride (≥1, default 1)"
+    )
     engine: str = Field("namd", description="Engine: namd, openmm, gromacs, or amber")
 
 
@@ -3372,12 +3415,20 @@ class EnergeticAnalysisRequest(BaseModel):
     file_times: dict[str, float] | None = Field(
         None, description="Optional per-file durations in ns"
     )
+    file_strides: dict[str, int] | None = Field(
+        None, description="Optional per-file frame stride (≥1, default 1)"
+    )
     time_units: str = Field("ns", description="ns, ps, or µs")
     energy_units: str = Field("kcal/mol", description="kcal/mol or kJ/mol")
     pressure_units: str = Field("atm", description="Pressure units")
     temperature_units: str = Field("K", description="Temperature units")
     volume_units: str = Field("Å³", description="Volume units")
     engine: str = Field("namd", description="Engine: namd, openmm, gromacs, or amber")
+
+
+class AnalysisRenderPlotRequest(BaseModel):
+    data: dict[str, Any] = Field(..., description="Energetic data {x, series}")
+    plot_spec: dict[str, Any] = Field(..., description="PlotSpec layout + style")
 
 
 @app.post("/get-equilibration-status")
@@ -3896,6 +3947,50 @@ def _bilayer_analysis_error_message(exc: Exception, lipid_sel: str) -> str:
     return msg or "Bilayer analysis failed."
 
 
+class AnalysisCountSelectionRequest(BaseModel):
+    topology_path: str = Field(..., description="Absolute path to topology file")
+    trajectory_paths: list[str] = Field(
+        default_factory=list,
+        description="Optional trajectory paths (uses topology + first coord file when set)",
+    )
+    selection: str = Field(..., description="MDAnalysis selection string")
+    selection2: str | None = Field(
+        None, description="Optional second selection (distance analysis)"
+    )
+
+
+@app.post("/analysis-count-selection")
+def analysis_count_selection(payload: AnalysisCountSelectionRequest) -> dict:
+    """Return atom counts for MDAnalysis selection string(s) on the active topology."""
+    top = Path(os.path.abspath(os.path.expanduser(payload.topology_path)))
+    if not top.is_file():
+        raise HTTPException(status_code=404, detail=f"Topology file not found: {top}")
+
+    trajs = [
+        Path(os.path.abspath(os.path.expanduser(p)))
+        for p in payload.trajectory_paths
+        if p and str(p).strip()
+    ]
+    sel = payload.selection.strip()
+    if not sel:
+        raise HTTPException(status_code=400, detail="Selection is empty.")
+
+    try:
+        u = _load_structure_for_headgroup_detection(top, trajs if trajs else None)
+        count = _count_selection_atoms(u, sel)
+        result: dict[str, Any] = {
+            "count": count,
+            "total_atoms": int(u.atoms.n_atoms),
+        }
+        if payload.selection2 and payload.selection2.strip():
+            result["count2"] = _count_selection_atoms(u, payload.selection2.strip())
+        return result
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
 @app.post("/analysis-structural")
 def run_structural_analysis(payload: StructuralAnalysisRequest) -> dict:
     top = Path(os.path.abspath(os.path.expanduser(payload.topology_path)))
@@ -3950,6 +4045,7 @@ def run_structural_analysis(payload: StructuralAnalysisRequest) -> dict:
                     n_bins=payload.n_bins,
                     interpolate=payload.interpolate,
                     file_times=payload.file_times,
+                    file_strides=payload.file_strides,
                     start=payload.start,
                     stop=payload.stop,
                     step=payload.step,
@@ -3968,9 +4064,329 @@ def run_structural_analysis(payload: StructuralAnalysisRequest) -> dict:
                 reference_frame=payload.reference_frame,
                 align=payload.align,
                 file_times=payload.file_times,
+                file_strides=payload.file_strides,
                 rmsf_xaxis_type=payload.rmsf_xaxis_type,
             )
         return sanitize_value(result)
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+class DetectPbcEngineRequest(BaseModel):
+    topology_path: str = Field(..., description="Absolute path to topology / TPR")
+    trajectory_paths: list[str] = Field(
+        default_factory=list, description="Absolute paths to trajectory files"
+    )
+    engine: str = Field(
+        "auto",
+        description="auto | gromacs | amber | namd | openmm | mdanalysis",
+    )
+
+
+@app.post("/tools-detect-pbc-engine")
+def tools_detect_pbc_engine(payload: DetectPbcEngineRequest) -> dict:
+    top = Path(os.path.abspath(os.path.expanduser(payload.topology_path)))
+    if not top.is_file():
+        raise HTTPException(status_code=404, detail=f"Topology file not found: {top}")
+    trajs = [
+        Path(os.path.abspath(os.path.expanduser(p))) for p in payload.trajectory_paths
+    ]
+    try:
+        return sanitize_value(
+            trajectory_tools.detect_pbc_engine(
+                str(top),
+                [str(p) for p in trajs],
+                engine_hint=payload.engine,
+            )
+        )
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+class ListGromacsGroupsRequest(BaseModel):
+    ndx_path: str | None = Field(None, description="Optional index.ndx path")
+    tpr_path: str | None = Field(None, description="Optional .tpr path")
+    gmx_executable: str | None = Field(None, description="Optional gmx path")
+
+
+@app.post("/tools-list-gromacs-groups")
+def tools_list_gromacs_groups(payload: ListGromacsGroupsRequest) -> dict:
+    """List GROMACS index groups for Fix PBC centering."""
+    if not payload.ndx_path and not payload.tpr_path:
+        raise HTTPException(
+            status_code=400, detail="Provide ndx_path and/or tpr_path"
+        )
+    try:
+        return sanitize_value(
+            trajectory_tools.list_gromacs_index_groups(
+                ndx_path=payload.ndx_path,
+                tpr_path=payload.tpr_path,
+                gmx_executable=payload.gmx_executable,
+            )
+        )
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+class FixPbcRequest(BaseModel):
+    topology_path: str = Field(
+        ..., description="Absolute path to topology (prmtop/pdb/gro) or TPR"
+    )
+    trajectory_paths: list[str] = Field(
+        ..., description="Absolute paths to trajectory files"
+    )
+    output_dir: str = Field(
+        ...,
+        description="Parent directory for the job folder (usually the working directory)",
+    )
+    engine: str = Field(
+        "auto",
+        description="auto | gromacs | amber | namd | openmm | mdanalysis",
+    )
+    center_selection: str = Field(
+        "protein",
+        description="Centering selection (MDAnalysis / cpptraj mask hint)",
+    )
+    center_group: str | None = Field(
+        None,
+        description="GROMACS index group for centering (default SOLU_MEMB/Protein)",
+    )
+    output_group: str | None = Field(
+        None,
+        description="GROMACS index group written to the trajectory (default System)",
+    )
+    tpr_path: str | None = Field(
+        None, description="Explicit GROMACS .tpr (required for GROMACS)"
+    )
+    ndx_path: str | None = Field(
+        None, description="Optional GROMACS index.ndx"
+    )
+    gmx_executable: str | None = Field(None, description="Optional path to gmx")
+    cpptraj_executable: str | None = Field(
+        None, description="Optional path to cpptraj"
+    )
+    output_format: str = Field(
+        "same", description="dcd | xtc | nc | same (match engine default / input)"
+    )
+    stride: int = Field(
+        1,
+        ge=1,
+        description="Default keep every Nth frame when file_strides omits a path",
+    )
+    file_strides: dict[str, int] | None = Field(
+        None,
+        description="Optional per-trajectory stride map (path → N, ≥1)",
+    )
+    job_name: str | None = Field(None, description="Optional job folder name")
+    # Legacy fields kept so older clients do not break
+    wrap_mode: str = Field("center+wrap", description="Legacy; ignored for native engines")
+    residue_as_rigid: bool = Field(True, description="Legacy; ignored for native engines")
+
+
+@app.post("/tools-fix-pbc")
+def tools_fix_pbc(payload: FixPbcRequest) -> dict:
+    """Start an async Fix PBC job (Builder-style). Returns job_dir immediately."""
+    top = Path(os.path.abspath(os.path.expanduser(payload.topology_path)))
+    if not top.is_file():
+        raise HTTPException(status_code=404, detail=f"Topology file not found: {top}")
+
+    trajs = [
+        Path(os.path.abspath(os.path.expanduser(p))) for p in payload.trajectory_paths
+    ]
+    if not trajs:
+        raise HTTPException(status_code=400, detail="No trajectory files provided")
+    missing = [str(p) for p in trajs if not p.is_file()]
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Trajectory file(s) not found: {', '.join(missing)}",
+        )
+    # For GROMACS the "topology" may be a .tpr (also a coordinate source for MDA);
+    # do not drop real trajs when top is tpr.
+    if top.suffix.lower() == ".tpr":
+        coord_trajs = [p for p in trajs if p.resolve() != top.resolve()]
+    else:
+        coord_trajs = _filter_coordinate_trajectories(top, trajs)
+    if not coord_trajs:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No coordinate trajectory files found. Topology {top.name!r} cannot "
+                "be used as a trajectory. Add DCD, XTC, TRR, NC, or similar files."
+            ),
+        )
+
+    out_dir = Path(os.path.abspath(os.path.expanduser(payload.output_dir)))
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as ex:
+        raise HTTPException(
+            status_code=400, detail=f"Cannot create output directory: {ex}"
+        ) from ex
+
+    tpr = (
+        Path(os.path.abspath(os.path.expanduser(payload.tpr_path)))
+        if payload.tpr_path
+        else None
+    )
+    ndx = (
+        Path(os.path.abspath(os.path.expanduser(payload.ndx_path)))
+        if payload.ndx_path
+        else None
+    )
+    # If topology itself is a tpr, use it
+    if tpr is None and top.suffix.lower() == ".tpr":
+        tpr = top
+
+    try:
+        result = trajectory_tools.start_fix_pbc_job(
+            topology_file=str(top),
+            trajectory_files=[str(p) for p in coord_trajs],
+            output_parent=str(out_dir),
+            engine=payload.engine,
+            center_selection=payload.center_selection,
+            center_group=payload.center_group,
+            output_group=payload.output_group,
+            tpr_path=str(tpr) if tpr else None,
+            ndx_path=str(ndx) if ndx else None,
+            gmx_executable=payload.gmx_executable,
+            cpptraj_executable=payload.cpptraj_executable,
+            output_format=payload.output_format,
+            stride=payload.stride,
+            file_strides=payload.file_strides,
+            job_name=payload.job_name,
+        )
+        return sanitize_value(result)
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+class ScanToolsJobsRequest(BaseModel):
+    directory: str = Field(
+        ..., description="Working directory or tools output folder to scan"
+    )
+
+
+@app.post("/scan-tools-jobs")
+def scan_tools_jobs(payload: ScanToolsJobsRequest) -> dict:
+    base = Path(os.path.abspath(os.path.expanduser(payload.directory)))
+    if not base.is_dir():
+        return {"jobs": []}
+    try:
+        return {"jobs": sanitize_value(trajectory_tools.scan_tools_jobs(str(base)))}
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+class ScanAnalysisSessionsRequest(BaseModel):
+    directory: str = Field(
+        ..., description="Working directory to scan for analysis_session.json files"
+    )
+
+
+def _analysis_session_summary(data: dict) -> str:
+    mode = data.get("mode") or ""
+    sets = data.get("sets") or []
+    with_results = [
+        s
+        for s in sets
+        if (mode == "energetic" and s.get("energeticResult"))
+        or (
+            mode != "energetic"
+            and (
+                s.get("structuralResult")
+                or (s.get("structuralResults") or {})
+            )
+        )
+    ]
+    if not with_results:
+        return "No results"
+    if mode == "structural":
+        types_set: set[str] = set()
+        for s in with_results:
+            sr = s.get("structuralResults") or {}
+            if sr:
+                types_set.update(sr.keys())
+            legacy = (s.get("structuralResult") or {}).get("analysisType")
+            if legacy:
+                types_set.add(legacy)
+        types = sorted(types_set)
+        return ", ".join(types) if types else "structural"
+    props: list[str] = []
+    for s in with_results:
+        res = s.get("energeticResult") or {}
+        opts = s.get("energeticOptions") or {}
+        props.extend(res.get("selectedProperties") or opts.get("selectedProperties") or [])
+    uniq = list(dict.fromkeys(props))
+    if not uniq:
+        return "energetic"
+    head = ", ".join(uniq[:3])
+    return head + ("…" if len(uniq) > 3 else "")
+
+
+def _scan_analysis_sessions(directory: str) -> list[dict]:
+    base = Path(os.path.abspath(os.path.expanduser(directory)))
+    if not base.is_dir():
+        return []
+    candidates = list(base.glob("*/analysis_session.json")) + list(
+        base.glob("*/*/analysis_session.json")
+    )
+    if (base / "analysis_session.json").is_file():
+        candidates.insert(0, base / "analysis_session.json")
+    seen: set[str] = set()
+    found: list[dict] = []
+    for session_path in candidates:
+        out_dir = session_path.parent
+        key = str(out_dir.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            data = json.loads(session_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        sets = data.get("sets")
+        if not isinstance(sets, list) or not sets:
+            continue
+        found.append(
+            {
+                "session_path": str(session_path),
+                "output_dir": str(out_dir),
+                "name": out_dir.name,
+                "saved_at": data.get("savedAt") or "",
+                "mode": data.get("mode") or "",
+                "set_count": len(sets),
+                "analysis_summary": _analysis_session_summary(data),
+            }
+        )
+    found.sort(key=lambda j: j.get("saved_at") or "", reverse=True)
+    return found
+
+
+@app.post("/scan-analysis-sessions")
+def scan_analysis_sessions(payload: ScanAnalysisSessionsRequest) -> dict:
+    try:
+        return {"sessions": sanitize_value(_scan_analysis_sessions(payload.directory))}
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+class CancelToolsJobRequest(BaseModel):
+    job_dir: str = Field(..., description="Absolute path to the Tools job directory")
+
+
+@app.post("/tools-cancel-job")
+def tools_cancel_job(payload: CancelToolsJobRequest) -> dict:
+    """Cancel a specific running Tools (Fix PBC) job."""
+    job_dir = Path(os.path.abspath(os.path.expanduser(payload.job_dir)))
+    if not job_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Job directory not found: {job_dir}")
+    try:
+        return sanitize_value(trajectory_tools.cancel_fix_pbc_job(str(job_dir)))
+    except FileNotFoundError as ex:
+        raise HTTPException(status_code=404, detail=str(ex)) from ex
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
 
@@ -4025,6 +4441,7 @@ def run_energetic_analysis(payload: EnergeticAnalysisRequest) -> dict:
         log_files=[str(p) for p in logs],
         properties=payload.properties,
         file_times=payload.file_times,
+        file_strides=payload.file_strides,
         time_units=payload.time_units,
         energy_units=payload.energy_units,
         pressure_units=payload.pressure_units,
@@ -4041,6 +4458,27 @@ def run_energetic_analysis(payload: EnergeticAnalysisRequest) -> dict:
         else:  # namd (default)
             result = namd_analysis.run_energetic_analysis(**kwargs)
         return sanitize_value(result)
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+@app.post("/analysis-render-plot")
+def render_analysis_plot(payload: AnalysisRenderPlotRequest):
+    """Render energetic PlotSpec to PNG via shared matplotlib renderer (API-identical export)."""
+    from fastapi.responses import Response
+
+    from gatewizard.utils.matplotlib_renderer import render_energetic_to_bytes
+    from gatewizard.utils.plot_spec import normalize_plot_spec
+
+    try:
+        spec = normalize_plot_spec(payload.plot_spec)
+        png = render_energetic_to_bytes(payload.data, spec, fmt="png")
+        return Response(content=png, media_type="image/png")
+    except ImportError as ex:
+        raise HTTPException(
+            status_code=503,
+            detail="matplotlib is required for publication plot export",
+        ) from ex
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
 
@@ -4309,7 +4747,12 @@ def detect_molecules(payload: DetectMoleculesRequest) -> list[dict]:
 
 
 def _mv_edit(pdb_path: str, operation) -> dict:
-    """Load pdb_path into StructureManager, run operation(mv), save temp PDB, return atoms dict."""
+    """Load pdb_path into StructureManager, run operation(mv), save temp PDB.
+
+    Returns path (+ bond cache metadata). Does **not** ship a full atom list —
+    clients reload via columnar ``/get-structure``. Legacy list-of-dicts atoms
+    here routinely broke Electron ``fetch`` on large PDBs ("Failed to fetch").
+    """
     mv = StructureManager()
     mv.load_structure(pdb_path)
     operation(mv)
@@ -4317,13 +4760,15 @@ def _mv_edit(pdb_path: str, operation) -> dict:
     os.close(fd)
     mv.save_pdb(tmp_path)
     u = mda.Universe(tmp_path)
-    data: dict = {"path": tmp_path, "atoms": get_atoms(u.atoms)}
+    data: dict = {"path": tmp_path, "n_atoms": int(u.atoms.n_atoms)}
 
     # Try to get bonds from the cached source universe first (transforms don't
     # change connectivity, so re-guessing on the new temp file is wasteful).
+    # After atom deletion, source bond indices are invalid — skip transfer.
     src_key = str(Path(pdb_path).resolve())
     bonds: list = []
     src_had_bonds = False
+    n_src = None
     with FILE_CACHE_LOCK:
         src_entry = FILE_CACHE.get(src_key)
         if src_entry is None:
@@ -4333,18 +4778,22 @@ def _mv_edit(pdb_path: str, operation) -> dict:
                     break
         if src_entry and src_entry.bond_guessed:
             try:
+                n_src = int(src_entry.universe.atoms.n_atoms)
                 bonds = src_entry.universe.atoms.bonds.indices.tolist()
                 src_had_bonds = True
             except mda.exceptions.NoDataError:
                 pass
 
-    if not src_had_bonds:
+    # Only reuse source bonds when atom count is unchanged (rename/transform).
+    if src_had_bonds and n_src is not None and n_src == int(u.atoms.n_atoms):
+        data["bonds"] = bonds
+    else:
         try:
-            bonds = u.atoms.bonds.indices.tolist()
+            data["bonds"] = u.atoms.bonds.indices.tolist()
         except mda.exceptions.NoDataError:
-            bonds = []
-
-    data["bonds"] = bonds
+            data["bonds"] = []
+        src_had_bonds = False
+        bonds = data["bonds"]
 
     # Pre-populate the cache for the new temp file so future getStructure calls
     # with needs_bonds=True don't re-run the expensive guess_bonds().
@@ -5018,7 +5467,7 @@ def mempro_apply(payload: MemProApplyRequest) -> dict:
     # Fallback: load oriented MemPro output only (protein + dummy atoms).
     try:
         u, _, _ = load_structure(oriented_pdb)
-        data: dict = {"path": oriented_pdb, "atoms": get_atoms(u.atoms)}
+        data: dict = {"path": oriented_pdb, "n_atoms": int(u.atoms.n_atoms)}
         try:
             data["bonds"] = u.atoms.bonds.indices.tolist()
         except mda.exceptions.NoDataError:

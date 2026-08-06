@@ -57,7 +57,11 @@ function installTitlebarDoubleClickHandler() {
     'dblclick',
     (event) => {
       const target = event.target
-      if (!(target instanceof Element) || !target.closest('.titlebar-drag-zone')) return
+      if (
+        !(target instanceof Element) ||
+        !target.closest('.titlebar-drag-zone, .titlebar-logo-slot, .titlebar-wordmark-slot')
+      )
+        return
       event.preventDefault()
       event.stopImmediatePropagation()
       ipcRenderer.send('win:invoke', 'max')
@@ -66,10 +70,82 @@ function installTitlebarDoubleClickHandler() {
   )
 }
 
+/**
+ * When work-area-maximized, Chromium -webkit-app-region drag never restores
+ * (and will-move often never fires on Linux/WSL). Handle drag ourselves:
+ * move past a small threshold → restore floating size → follow the cursor.
+ */
+function installMaximizedTitlebarDragHandler() {
+  const DRAG_THRESHOLD_PX = 4
+  /** @type {{ pointerId: number, startX: number, startY: number } | null} */
+  let pending = null
+  let dragging = false
+
+  function isDragHandle(target) {
+    return (
+      target instanceof Element &&
+      Boolean(target.closest('.titlebar-drag-zone, .titlebar-logo-slot, .titlebar-wordmark-slot')) &&
+      !target.closest('.titlebar-no-drag, .titlebar-controls, button, a, input, select, textarea')
+    )
+  }
+
+  function isMaximizedChrome() {
+    return document.documentElement.classList.contains('window-maximized')
+  }
+
+  function endDrag() {
+    pending = null
+    if (!dragging) return
+    dragging = false
+    ipcRenderer.send('win:title-drag-end')
+  }
+
+  document.addEventListener(
+    'pointerdown',
+    (event) => {
+      if (event.button !== 0 || !isMaximizedChrome() || !isDragHandle(event.target)) return
+      pending = { pointerId: event.pointerId, startX: event.screenX, startY: event.screenY }
+      dragging = false
+    },
+    true
+  )
+
+  document.addEventListener(
+    'pointermove',
+    (event) => {
+      if (pending && event.pointerId === pending.pointerId && !dragging) {
+        const dx = event.screenX - pending.startX
+        const dy = event.screenY - pending.startY
+        if (dx * dx + dy * dy < DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX) return
+        const ok = ipcRenderer.sendSync('win:restore-for-drag')
+        pending = null
+        if (!ok) return
+        dragging = true
+        try {
+          event.target?.setPointerCapture?.(event.pointerId)
+        } catch {
+          /* ignore */
+        }
+      }
+      if (dragging) {
+        ipcRenderer.send('win:title-drag-move')
+      }
+    },
+    true
+  )
+
+  document.addEventListener('pointerup', endDrag, true)
+  document.addEventListener('pointercancel', endDrag, true)
+}
+
 if (document.readyState === 'loading') {
-  window.addEventListener('DOMContentLoaded', installTitlebarDoubleClickHandler)
+  window.addEventListener('DOMContentLoaded', () => {
+    installTitlebarDoubleClickHandler()
+    installMaximizedTitlebarDragHandler()
+  })
 } else {
   installTitlebarDoubleClickHandler()
+  installMaximizedTitlebarDragHandler()
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to

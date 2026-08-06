@@ -252,11 +252,74 @@ export function checkLigandParametrization(pdbPath, ligandNames, outputDir = nul
 
 /**
  * Run structural trajectory analysis (RMSD/RMSF/Distance/Rg/bilayer).
- * @param {{ topologyPath: string, trajectoryPaths: string[], analysisType: string, selection?: string, selection2?: string, referenceFrame?: number, align?: boolean, fileTimes?: Record<string, number>, rmsfXaxisType?: string, leafletLipidSel?: string|null, leafletFilterSel?: string|null, nBins?: number, interpolate?: boolean, start?: number|null, stop?: number|null, step?: number|null }} payload
+ * @param {{ topologyPath: string, trajectoryPaths: string[], analysisType: string, selection?: string, selection2?: string, referenceFrame?: number, align?: boolean, fileTimes?: Record<string, number>, fileStrides?: Record<string, number>, rmsfXaxisType?: string, leafletLipidSel?: string|null, leafletFilterSel?: string|null, nBins?: number, interpolate?: boolean, start?: number|null, stop?: number|null, step?: number|null }} payload
  * @returns {Promise<{ analysis_type: string, x: number[], y: number[], x_label: string, y_label: string, series_name: string, x_labels?: string[], stats?: Record<string, number>, mean_upper_leaflet?: number[], mean_lower_leaflet?: number[] }>}
  */
 export function runStructuralAnalysis(payload) {
   return backendJson('/analysis-structural', payload)
+}
+
+/**
+ * Count atoms matching MDAnalysis selection(s) on the analysis topology.
+ * @param {{ topologyPath: string, trajectoryPaths?: string[], selection: string, selection2?: string|null }} payload
+ * @returns {Promise<{ count: number, total_atoms: number, count2?: number }>}
+ */
+export function countAnalysisSelection(payload) {
+  return backendJson('/analysis-count-selection', payload)
+}
+
+/**
+ * Detect which engine/tool should fix PBC for the given inputs.
+ * @param {{ topologyPath: string, trajectoryPaths?: string[], engine?: string }} payload
+ * @returns {Promise<{ engine: string, method: string, reason: string, tpr: string|null, ndx: string|null, topology: string|null, warnings: string[], center_groups?: Array<{ name: string, index: number, n_atoms: number, recommended?: boolean }>, recommended_center?: string|null, recommended_output?: string|null, supported_output_formats?: string[] }>}
+ */
+export function detectPbcEngine(payload) {
+  return backendJson('/tools-detect-pbc-engine', payload)
+}
+
+/**
+ * List GROMACS index groups for centering.
+ * @param {{ ndxPath?: string|null, tprPath?: string|null, gmxExecutable?: string|null }} payload
+ * @returns {Promise<{ groups: Array<{ name: string, index: number, n_atoms: number, recommended?: boolean }>, recommended: string, source: string|null, warnings: string[] }>}
+ */
+export function listGromacsGroups(payload) {
+  return backendJson('/tools-list-gromacs-groups', payload)
+}
+
+/**
+ * Start an async Fix PBC job (returns immediately with job_dir).
+ * @param {{ topologyPath: string, trajectoryPaths: string[], outputDir: string, engine?: string, centerSelection?: string, centerGroup?: string|null, outputGroup?: string|null, tprPath?: string|null, ndxPath?: string|null, gmxExecutable?: string|null, cpptrajExecutable?: string|null, outputFormat?: 'dcd'|'xtc'|'nc'|'same', stride?: number, fileStrides?: Record<string, number>|null, jobName?: string|null }} payload
+ * @returns {Promise<{ success: boolean, job_dir: string, engine: string, method: string, message: string, pid?: number, detect?: object }>}
+ */
+export function runFixPbc(payload) {
+  return backendJson('/tools-fix-pbc', payload)
+}
+
+/**
+ * Scan for Tools jobs (tools_job.json) under a directory.
+ * @param {string} directory
+ * @returns {Promise<{ jobs: Array<{ job_dir: string, name: string, type: string, engine?: string, method?: string, status: string, current_step: number, steps: string[], steps_completed: string[], error: string|null, start_time?: string, end_time?: string|null, outputs?: any[] }> }>}
+ */
+export function scanToolsJobs(directory) {
+  return backendJson('/scan-tools-jobs', { directory })
+}
+
+/**
+ * Scan for saved analysis sessions (analysis_session.json) under a working directory.
+ * @param {string} directory
+ * @returns {Promise<{ sessions: Array<{ session_path: string, output_dir: string, name: string, saved_at: string, mode: string, set_count: number, analysis_summary: string }> }>}
+ */
+export function scanAnalysisSessions(directory) {
+  return backendJson('/scan-analysis-sessions', { directory })
+}
+
+/**
+ * Cancel a running Tools job.
+ * @param {string} jobDir
+ * @returns {Promise<{ success: boolean, job_dir: string, stopped: boolean, status: string, message: string, killed_process?: boolean }>}
+ */
+export function cancelToolsJob(jobDir) {
+  return backendJson('/tools-cancel-job', { jobDir })
 }
 
 /**
@@ -270,11 +333,35 @@ export function getEnergeticProperties(payload) {
 
 /**
  * Run energetic analysis from MD engine log files.
- * @param {{ logPaths: string[], properties?: string[], fileTimes?: Record<string, number>, timeUnits?: string, energyUnits?: string, pressureUnits?: string, temperatureUnits?: string, volumeUnits?: string, engine?: 'namd'|'openmm'|'gromacs' }} payload
+ * @param {{ logPaths: string[], properties?: string[], fileTimes?: Record<string, number>, fileStrides?: Record<string, number>, timeUnits?: string, energyUnits?: string, pressureUnits?: string, temperatureUnits?: string, volumeUnits?: string, engine?: 'namd'|'openmm'|'gromacs'|'amber' }} payload
  * @returns {Promise<{ x: number[], x_label: string, series: Array<{ name: string, key: string, unit: string, y: number[] }>, statistics: Record<string, Record<string, number>> }>}
  */
 export function runEnergeticAnalysis(payload) {
   return backendJson('/analysis-energetic', payload)
+}
+
+/**
+ * Render publication PNG from energetic data + PlotSpec (matches Python API styling).
+ * @param {{ data: object, plotSpec: object }} payload
+ * @returns {Promise<Blob>}
+ */
+export async function renderAnalysisPlot(payload) {
+  const url = `${BACKEND_BASE_URL}/analysis-render-plot`
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(keysToSnakeCase(payload))
+  })
+  if (!response.ok) {
+    let data = {}
+    try {
+      data = await response.json()
+    } catch {
+      data = {}
+    }
+    throwFromFastApiBody(data, response)
+  }
+  return response.blob()
 }
 
 /**
@@ -1068,6 +1155,12 @@ export async function backendJson(path, payload) {
     response = await fetch(url, init)
   } catch (err) {
     console.error('[backendApi] fetch failed', { url, err })
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg === 'Failed to fetch' || err instanceof TypeError) {
+      throw new Error(
+        `Could not reach the backend at ${path}. It may be busy, restarted, or the response was too large — try again or restart the backend.`
+      )
+    }
     throw err
   }
 
@@ -1089,15 +1182,25 @@ function toSnakeCase(str) {
 }
 
 /**
- * Recursively convert all object keys from camelCase to snake_case.
+ * Recursively convert object keys from camelCase to snake_case.
+ * Preserves basename keys inside file_times / file_strides maps.
  * @param {unknown} obj
+ * @param {string} [parentKey]
  * @returns {unknown}
  */
-function keysToSnakeCase(obj) {
-  if (Array.isArray(obj)) return obj.map(keysToSnakeCase)
+function keysToSnakeCase(obj, parentKey = '') {
+  if (Array.isArray(obj)) return obj.map((v) => keysToSnakeCase(v, parentKey))
   if (obj !== null && typeof obj === 'object') {
+    const preserveKeys =
+      parentKey === 'file_times' ||
+      parentKey === 'fileTimes' ||
+      parentKey === 'file_strides' ||
+      parentKey === 'fileStrides'
     return Object.fromEntries(
-      Object.entries(obj).map(([k, v]) => [toSnakeCase(k), keysToSnakeCase(v)])
+      Object.entries(obj).map(([k, v]) => [
+        preserveKeys ? k : toSnakeCase(k),
+        keysToSnakeCase(v, preserveKeys ? k : toSnakeCase(k))
+      ])
     )
   }
   return obj

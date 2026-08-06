@@ -192,6 +192,9 @@ let launchDisplay = null
 /** @type {{ win: BrowserWindow, edge: string, startBounds: Electron.Rectangle, startPoint: { x: number, y: number } } | null} */
 let activeResize = null
 
+/** @type {{ win: BrowserWindow, offsetX: number, offsetY: number } | null} */
+let activeTitleDrag = null
+
 const MIN_WINDOW_WIDTH = 640
 const MIN_WINDOW_HEIGHT = 480
 
@@ -217,7 +220,19 @@ function setupWorkAreaFramelessWindow(win) {
 
   win.on('will-resize', () => {
     const state = getWorkAreaWindowState(win)
-    if (!state.applyingBounds) state.maximized = false
+    if (state.applyingBounds || !state.maximized) return
+    // User is resizing out of work-area maximize — drop the flag so the next
+    // maximize click expands again (instead of restoring).
+    clearWorkAreaMaximizeLimits(win)
+    state.maximized = false
+    sendWindowChromeStyle(win)
+  })
+
+  // Dragging the title bar while work-area-maximized should restore to the
+  // previous floating size under the cursor (native maximize does this; our
+  // fake maximize does not unless we handle will-move).
+  win.on('will-move', () => {
+    restoreWorkAreaMaximizeForDrag(win)
   })
 
   // Reroute native maximize to work-area bounds (keeps taskbar/dock visible).
@@ -255,6 +270,44 @@ function setupWorkAreaFramelessWindow(win) {
   }
 }
 
+/**
+ * When the user drags a work-area-maximized window, shrink back to restoreBounds
+ * positioned under the cursor (Windows-style drag-from-maximized).
+ * @param {BrowserWindow} win
+ * @returns {boolean}
+ */
+function restoreWorkAreaMaximizeForDrag(win) {
+  if (win.isDestroyed()) return false
+  const state = getWorkAreaWindowState(win)
+  if (!state.maximized || state.applyingBounds) return false
+
+  clearWorkAreaMaximizeLimits(win)
+
+  const cursor = screen.getCursorScreenPoint()
+  const current = win.getBounds()
+  const restore = state.restoreBounds
+  const width = Math.max(MIN_WINDOW_WIDTH, restore?.width ?? Math.min(current.width, 1280))
+  const height = Math.max(MIN_WINDOW_HEIGHT, restore?.height ?? Math.min(current.height, 800))
+  const relX = current.width > 0 ? (cursor.x - current.x) / current.width : 0.5
+  const x = Math.round(cursor.x - width * Math.min(1, Math.max(0, relX)))
+  // Keep the title bar roughly under the pointer while dragging.
+  const y = Math.round(cursor.y - 12)
+
+  state.maximized = false
+  state.applyingBounds = true
+  try {
+    win.setBounds({ x, y, width, height })
+  } finally {
+    state.applyingBounds = false
+  }
+
+  if (!win.isDestroyed()) {
+    win.webContents.send('window:bounds-changed')
+    sendWindowChromeStyle(win)
+  }
+  return true
+}
+
 function toggleWorkAreaMaximize(win) {
   const state = getWorkAreaWindowState(win)
 
@@ -289,7 +342,10 @@ function toggleWorkAreaMaximize(win) {
 }
 
 function sendWindowChromeStyle(win) {
-  if (process.platform !== 'win32' || win.isDestroyed()) return
+  if (win.isDestroyed()) return
+  // Needed on Windows and Linux/WSL so the renderer can disable -webkit-app-region
+  // drag while work-area-maximized (will-move does not fire under WSLg).
+  if (process.platform !== 'win32' && process.platform !== 'linux') return
   const state = getWorkAreaWindowState(win)
   const maximized = state.maximized || win.isMaximized() || win.isFullScreen()
   win.webContents.send('window:chrome-style', maximized ? 'maximized' : 'normal')
@@ -397,6 +453,41 @@ function registerWindowControlsIpc() {
     } else if (action === 'close') {
       win.close()
     }
+  })
+
+  // Sync restore used by preload titlebar drag on Linux/WSL (and as a Win fallback).
+  ipcMain.on('win:restore-for-drag', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win || win.isDestroyed()) {
+      event.returnValue = false
+      return
+    }
+    const ok = restoreWorkAreaMaximizeForDrag(win)
+    if (ok) {
+      const cursor = screen.getCursorScreenPoint()
+      const bounds = win.getBounds()
+      activeTitleDrag = {
+        win,
+        offsetX: cursor.x - bounds.x,
+        offsetY: cursor.y - bounds.y
+      }
+    }
+    event.returnValue = ok
+  })
+
+  ipcMain.on('win:title-drag-move', (event) => {
+    if (!activeTitleDrag) return
+    const { win, offsetX, offsetY } = activeTitleDrag
+    if (win.isDestroyed()) {
+      activeTitleDrag = null
+      return
+    }
+    const cursor = screen.getCursorScreenPoint()
+    win.setPosition(Math.round(cursor.x - offsetX), Math.round(cursor.y - offsetY))
+  })
+
+  ipcMain.on('win:title-drag-end', () => {
+    activeTitleDrag = null
   })
 }
 
@@ -1173,10 +1264,12 @@ ipcMain.handle('dialog:saveFile', async (_event, title, filters, defaultPath = u
 })
 
 ipcMain.handle('fs:writeJson', async (_event, filePath, data) => {
+  await mkdir(path.dirname(filePath), { recursive: true })
   await writeFile(filePath, JSON.stringify(data, null, 2))
 })
 
 ipcMain.handle('fs:writeText', async (_event, filePath, text) => {
+  await mkdir(path.dirname(filePath), { recursive: true })
   await writeFile(filePath, text, 'utf-8')
 })
 
