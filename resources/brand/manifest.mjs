@@ -72,9 +72,21 @@ export const brandAssets = {
     usedIn: [
       'resources/splash.html — hex center image',
       'README.md — repo header logo',
+      'gatewizard docs/images/splash.png — API README header',
     ],
     files: {
       png: path.join(LOGOS_DIR, 'splash.png'),
+    },
+  },
+
+  /**
+   * README hero screenshot — desktop Visualize view (not used in the running app).
+   */
+  readmeViewer: {
+    label: 'README main viewer screenshot',
+    usedIn: ['README.md — hero screenshot under the intro'],
+    files: {
+      png: path.join(__dirname, '..', 'readme', 'main_viewer.png'),
     },
   },
 
