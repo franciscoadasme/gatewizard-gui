@@ -55,6 +55,15 @@ export function defaultAnalysisFolderName(_topologyPath = '') {
   return '04_analysis'
 }
 
+/**
+ * Default tools output folder under the working directory.
+ *
+ * @param {string} [_topologyPath] unused; kept for call-site compatibility
+ */
+export function defaultToolsFolderName(_topologyPath = '') {
+  return '05_tools'
+}
+
 /** @param {string} workingFile */
 export function defaultHydrationFolderName(workingFile) {
   if (!workingFile) return ''

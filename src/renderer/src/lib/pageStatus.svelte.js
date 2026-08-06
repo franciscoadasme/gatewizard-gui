@@ -87,7 +87,28 @@ export const equilibrationPageStatus = $state({
   wasKilled: false,
 })
 
-// ── 05 Analysis ──────────────────────────────────────────────────────────────
+// ── 05 Tools ─────────────────────────────────────────────────────────────────
+export const toolsStatus = $state({
+  /** Total Tools jobs in this session / scan */
+  jobCount: 0,
+  runningCount: 0,
+  completedCount: 0,
+  errorCount: 0,
+  /** Active tool id for the latest launch, e.g. 'fix_pbc' */
+  tool: '',
+  /** Name of the most recent job */
+  latestName: '',
+  /** Status of the most recent job */
+  latestStatus: '',
+  /** Elapsed string for the most recent job */
+  latestElapsed: '',
+  /** Whether a launch request is in flight */
+  launching: false,
+  /** Last launch error message, or empty string */
+  error: '',
+})
+
+// ── 06 Analysis ──────────────────────────────────────────────────────────────
 export const analysisStatus = $state({
   /** Whether an analysis is currently running */
   running: false,
@@ -99,6 +120,14 @@ export const analysisStatus = $state({
   resultAvailable: false,
   /** Last analysis error message, or empty string */
   error: '',
+  /** Multi-set batch progress (inactive during single-set runs) */
+  progress: {
+    active: false,
+    current: 0,
+    total: 0,
+    label: '',
+    phase: 'running'
+  }
 })
 
 // ── Global history log ────────────────────────────────────────────────────────
@@ -117,7 +146,7 @@ export const historyLog = $state(/** @type {HistoryEvent[]} */ ([]))
  *   'verbose' — micro changes (label added, gizmo drag)
  *
  * @param {'info'|'detail'|'verbose'} level
- * @param {string} page   — page type matching pageTag(): 'view'|'prep'|'build'|'eq'|'analysis'
+ * @param {string} page   — page type matching pageTag(): 'view'|'prep'|'build'|'eq'|'tools'|'analysis'
  * @param {string} label  — short title shown in the log
  * @param {string} [detail] — optional longer description
  */
