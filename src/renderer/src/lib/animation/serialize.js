@@ -82,7 +82,7 @@ export function serializeAtomLabel(label) {
 }
 
 /**
- * @param {{ id: string, type: 'distance' | 'angle' | 'dihedral', atoms: { index?: number }[], color?: string, size?: number, lineWidth?: number, visible?: boolean }} measurement
+ * @param {{ id: string, type: 'distance' | 'angle' | 'dihedral', atoms: { index?: number }[], color?: string, size?: number, lineWidth?: number, background?: string, backgroundOpacity?: number, padding?: number, radius?: number, offsetY?: number, liftDir?: string, visible?: boolean }} measurement
  * @returns {import('./schema.js').SerializedMeasurement | null}
  */
 export function serializeMeasurement(measurement) {
@@ -91,6 +91,13 @@ export function serializeMeasurement(measurement) {
     .filter((i) => typeof i === 'number')
   if (atomIndices.length !== measurement.atoms.length) return null
   const fade = normalizeFadeSettings(measurement)
+  const liftDir =
+    measurement.liftDir === 'up' ||
+    measurement.liftDir === 'down' ||
+    measurement.liftDir === 'left' ||
+    measurement.liftDir === 'right'
+      ? measurement.liftDir
+      : 'up'
   return {
     id: measurement.id,
     type: measurement.type,
@@ -98,6 +105,13 @@ export function serializeMeasurement(measurement) {
     color: measurement.color ?? '#facc15',
     size: measurement.size ?? 15,
     lineWidth: measurement.lineWidth ?? 3,
+    background: measurement.background ?? '#000000',
+    backgroundOpacity:
+      typeof measurement.backgroundOpacity === 'number' ? measurement.backgroundOpacity : 0.75,
+    padding: typeof measurement.padding === 'number' ? measurement.padding : 6,
+    radius: typeof measurement.radius === 'number' ? measurement.radius : 4,
+    offsetY: typeof measurement.offsetY === 'number' ? measurement.offsetY : 0,
+    liftDir,
     visible: measurement.visible !== false,
     ...fade
   }
@@ -158,6 +172,21 @@ export function deserializeMeasurement(data, atoms) {
     color: data.color ?? '#facc15',
     size: data.size ?? 15,
     lineWidth: data.lineWidth ?? 3,
+    background: data.background ?? '#000000',
+    backgroundOpacity:
+      typeof data.backgroundOpacity === 'number' ? data.backgroundOpacity : 0.75,
+    padding: typeof data.padding === 'number' ? data.padding : 6,
+    radius: typeof data.radius === 'number' ? data.radius : 4,
+    offsetY: typeof data.offsetY === 'number' ? data.offsetY : 0,
+    liftDir:
+      data.liftDir === 'up' ||
+      data.liftDir === 'down' ||
+      data.liftDir === 'left' ||
+      data.liftDir === 'right'
+        ? data.liftDir
+        : 'up',
+    ...(typeof data.screenDX === 'number' ? { screenDX: data.screenDX } : {}),
+    ...(typeof data.screenDY === 'number' ? { screenDY: data.screenDY } : {}),
     visible: data.visible !== false,
     opacity,
     ...fade

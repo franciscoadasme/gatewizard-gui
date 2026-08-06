@@ -110,6 +110,18 @@ function normalizeMeasurement(raw) {
     color: typeof m.color === 'string' ? m.color : '#facc15',
     size: typeof m.size === 'number' ? m.size : 15,
     lineWidth: typeof m.lineWidth === 'number' ? m.lineWidth : 3,
+    background: typeof m.background === 'string' ? m.background : '#000000',
+    backgroundOpacity:
+      typeof m.backgroundOpacity === 'number' && m.backgroundOpacity >= 0
+        ? Math.min(1, m.backgroundOpacity)
+        : 0.75,
+    padding: typeof m.padding === 'number' && m.padding >= 0 ? Math.min(24, m.padding) : 6,
+    radius: typeof m.radius === 'number' && m.radius >= 0 ? Math.min(24, m.radius) : 4,
+    offsetY: typeof m.offsetY === 'number' && m.offsetY >= 0 ? Math.min(80, m.offsetY) : 0,
+    liftDir:
+      m.liftDir === 'up' || m.liftDir === 'down' || m.liftDir === 'left' || m.liftDir === 'right'
+        ? m.liftDir
+        : 'up',
     visible: m.visible !== false,
     ...normalizeFadeSettings(m)
   }

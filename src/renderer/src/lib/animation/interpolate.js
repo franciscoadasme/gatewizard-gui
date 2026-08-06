@@ -135,16 +135,37 @@ function interpolateMeasurement(a, b, t) {
   } else if (t >= 0.5) {
     color = b.color ?? a.color ?? '#facc15'
   }
+  let background = a.background ?? b.background ?? '#000000'
+  if (a.background?.startsWith('#') && b.background?.startsWith('#')) {
+    background = lerpHex(a.background, b.background, t)
+  } else if (t >= 0.5) {
+    background = b.background ?? a.background ?? '#000000'
+  }
   const atomIndices = t < 0.5 ? [...a.atomIndices] : [...b.atomIndices]
+  const pick = t < 0.5
+  // Measurements default lift to 0 (centroid); labels use 22 via labelOffsetY fallback.
+  const lift = interpolateLabelLift(
+    { offsetY: typeof a.offsetY === 'number' ? a.offsetY : 0, liftDir: a.liftDir },
+    { offsetY: typeof b.offsetY === 'number' ? b.offsetY : 0, liftDir: b.liftDir },
+    t
+  )
   return {
     id: a.id,
-    type: t < 0.5 ? a.type : b.type,
+    type: pick ? a.type : b.type,
     atomIndices,
     color,
+    background,
     size: lerpNum(a.size ?? 15, b.size ?? 15, t),
     lineWidth: lerpNum(a.lineWidth ?? 3, b.lineWidth ?? 3, t),
-    visible: t < 0.5 ? a.visible !== false : b.visible !== false,
-    fadeEnabled: t < 0.5 ? a.fadeEnabled !== false : b.fadeEnabled !== false,
+    backgroundOpacity: lerpNum(a.backgroundOpacity ?? 0.75, b.backgroundOpacity ?? 0.75, t),
+    padding: lerpNum(a.padding ?? 6, b.padding ?? 6, t),
+    radius: lerpNum(a.radius ?? 4, b.radius ?? 4, t),
+    offsetY: lift.offsetY,
+    liftDir: lift.liftDir,
+    screenDX: lift.screenDX,
+    screenDY: lift.screenDY,
+    visible: pick ? a.visible !== false : b.visible !== false,
+    fadeEnabled: pick ? a.fadeEnabled !== false : b.fadeEnabled !== false,
     fadeIn_s: t >= 0.5 ? (b.fadeIn_s ?? a.fadeIn_s) : (a.fadeIn_s ?? b.fadeIn_s),
     fadeOut_s: t >= 0.5 ? (b.fadeOut_s ?? a.fadeOut_s) : (a.fadeOut_s ?? b.fadeOut_s),
     fadeInEasing: t >= 0.5 ? (b.fadeInEasing ?? a.fadeInEasing) : (a.fadeInEasing ?? b.fadeInEasing),

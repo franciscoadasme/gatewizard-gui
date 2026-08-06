@@ -24,6 +24,7 @@
     historyLog,
     logEvent,
     preparationStatus,
+    toolsStatus,
     visualizeStatus
   } from './lib/pageStatus.svelte.js'
 
@@ -153,6 +154,7 @@
   /** @type {'running'|'done'|'error'|null} */
   let prevPackmolStatus = null
   let prevPropkaRunning = false
+  let prevToolsRunning = false
   let prevAnalysisRunning = false
 
   $effect(() => {
@@ -205,6 +207,27 @@
         sourcePage: 'preparation'
       })
     }
+  })
+
+  $effect(() => {
+    const running = toolsStatus.runningCount > 0
+    const prev = prevToolsRunning
+    prevToolsRunning = running
+    if (!prev || running) return
+
+    const label = toolsStatus.latestName || toolsStatus.tool || 'Tools'
+    const status = toolsStatus.latestStatus
+    if (!status || status === 'running') return
+
+    void notifyJobFinishedIfUnfocused({
+      id: `tools:${label}:${status}`,
+      title: status === 'error' ? 'Tool failed' : 'Tool finished',
+      body:
+        status === 'error'
+          ? `${label} ended with an error${toolsStatus.error ? `: ${toolsStatus.error}` : '.'}`
+          : `${label} completed successfully.`,
+      sourcePage: 'tools'
+    })
   })
 
   $effect(() => {
@@ -592,14 +615,46 @@
       })
     }
 
-    // 05 Analysis
+    // 05 Tools
+    if (toolsStatus.jobCount > 0 || toolsStatus.launching) {
+      const toolsRunning = toolsStatus.runningCount > 0 || toolsStatus.launching
+      const toolsError = toolsStatus.errorCount > 0 && !toolsRunning
+      chips.push({
+        id: 'tools',
+        type: 'tools',
+        label: 'Tools',
+        detail: toolsStatus.launching
+          ? 'launching…'
+          : toolsRunning
+            ? `${toolsStatus.runningCount} running`
+            : toolsStatus.latestName || `${toolsStatus.jobCount} job(s)`,
+        fullDetail: toolsStatus.launching
+          ? `Launching ${toolsStatus.tool || 'tool'}…`
+          : `${toolsStatus.jobCount} job(s) · ${toolsStatus.runningCount} running · ${toolsStatus.completedCount} done · ${toolsStatus.errorCount} error${
+              toolsStatus.latestName ? ` · latest: ${toolsStatus.latestName} (${toolsStatus.latestStatus})` : ''
+            }`,
+        status: toolsError ? 'error' : toolsRunning ? 'running' : 'done',
+        dismissible: !toolsRunning
+      })
+    }
+
+    // 06 Analysis
     if (analysisStatus.running || analysisStatus.resultAvailable) {
+      const prog = analysisStatus.progress
+      const progressDetail =
+        prog.active && prog.total > 0 ? ` · set ${prog.current}/${prog.total}` : ''
       chips.push({
         id: 'analysis',
         type: 'analysis',
         label: 'Analysis',
-        detail: `${analysisStatus.analysisType || analysisStatus.mode}${analysisStatus.running ? '' : ' ready'}`,
-        fullDetail: `Mode: ${analysisStatus.mode || '—'} · type: ${analysisStatus.analysisType || '—'} · ${analysisStatus.running ? 'running' : 'result available'}`,
+        detail: `${analysisStatus.analysisType || analysisStatus.mode}${analysisStatus.running ? progressDetail || '' : ' ready'}`,
+        fullDetail: `Mode: ${analysisStatus.mode || '—'} · type: ${analysisStatus.analysisType || '—'} · ${
+          prog.active && prog.label
+            ? `running ${prog.current}/${prog.total} (${prog.label})`
+            : analysisStatus.running
+              ? 'running'
+              : 'result available'
+        }`,
         status: analysisStatus.running ? 'running' : 'done',
         dismissible: !analysisStatus.running
       })
@@ -688,15 +743,17 @@
       <img
         src={windowIcon}
         alt="GateWizard"
+        draggable="false"
         class="pointer-events-none size-9 object-contain"
       />
     </div>
     <div class="flex min-w-0 flex-1 items-stretch border-b border-neutral-200 dark:border-neutral-800">
-      <div class="titlebar-no-drag flex shrink-0 items-center self-center pl-2 pr-1">
+      <div class="titlebar-wordmark-slot flex shrink-0 items-center self-center pl-2 pr-1">
         <img
           src={wordmark}
           alt="GateWizard"
-          class="pointer-events-none h-5 w-auto max-w-[12rem] object-contain object-left"
+          draggable="false"
+          class="pointer-events-none h-4 w-auto max-w-[12rem] object-contain object-left"
         />
       </div>
       <div class="titlebar-drag-zone min-w-8 flex-1" aria-hidden="true"></div>
@@ -967,9 +1024,9 @@
       <div class="flex shrink-0 items-center gap-1 border-l border-neutral-200 px-2 dark:border-neutral-800">
         <button
           onclick={clearBar}
-          title="Hide completed chips from status bar (history preserved)"
+          title="Hide completed status chips (does not clear the Visualize scene)"
           class="rounded px-1.5 py-0.5 text-[10px] text-neutral-500 hover:bg-neutral-200 hover:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
-          >Clear</button
+          >Clear chips</button
         >
         <button
           onclick={() => {

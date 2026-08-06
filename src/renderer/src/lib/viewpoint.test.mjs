@@ -45,7 +45,20 @@ test('normalizeViewpoint accepts a full session snapshot', () => {
         liftDir: 'right'
       }
     ],
-    measurements: [{ id: 'm1', type: 'distance', atomIndices: [1, 2] }]
+    measurements: [
+      {
+        id: 'm1',
+        type: 'distance',
+        atomIndices: [1, 2],
+        background: '#101010',
+        backgroundOpacity: 0.6,
+        padding: 10,
+        radius: 5,
+        offsetY: 12,
+        liftDir: 'up',
+        lineWidth: 2.5
+      }
+    ]
   })
 
   assert.equal(vp.format, VIEWPOINT_FORMAT)
@@ -65,6 +78,13 @@ test('normalizeViewpoint accepts a full session snapshot', () => {
   assert.equal(vp.labels[0].offsetY, 30)
   assert.equal(vp.labels[0].liftDir, 'right')
   assert.equal(vp.measurements[0].type, 'distance')
+  assert.equal(vp.measurements[0].background, '#101010')
+  assert.equal(vp.measurements[0].backgroundOpacity, 0.6)
+  assert.equal(vp.measurements[0].padding, 10)
+  assert.equal(vp.measurements[0].radius, 5)
+  assert.equal(vp.measurements[0].offsetY, 12)
+  assert.equal(vp.measurements[0].liftDir, 'up')
+  assert.equal(vp.measurements[0].lineWidth, 2.5)
 })
 
 test('normalizeViewpoint rejects animation projects and unknown formats', () => {

@@ -11,8 +11,8 @@
 
   /**
    * @typedef {{ x:number, y:number, z:number }} Pos
-   * @typedef {{ id:string, type:'distance'|'angle'|'dihedral', atoms:Pos[], visible?: boolean, color?: string, size?: number, lineWidth?: number }} Measurement
-   * @typedef {{ id:string, atom:Pos, text:string, visible?: boolean, size?: number, color?: string, background?: string, backgroundOpacity?: number, padding?: number, radius?: number, offsetY?: number, liftDir?: string }} AtomLabel
+   * @typedef {{ id:string, type:'distance'|'angle'|'dihedral', atoms:Pos[], visible?: boolean, color?: string, size?: number, lineWidth?: number, background?: string, backgroundOpacity?: number, padding?: number, radius?: number, offsetY?: number, liftDir?: string, screenDX?: number, screenDY?: number, opacity?: number }} Measurement
+   * @typedef {{ id:string, atom:Pos, text:string, visible?: boolean, size?: number, color?: string, background?: string, backgroundOpacity?: number, padding?: number, radius?: number, offsetY?: number, liftDir?: string, screenDX?: number, screenDY?: number, opacity?: number }} AtomLabel
    */
 
   /** @type {{ measurements?: Measurement[], picks?: Pos[], atomLabels?: AtomLabel[], width?: number, height?: number }} */
@@ -70,8 +70,17 @@
           cy,
           valueStr: _valueStr(m),
           color: m.color ?? '#facc15',
-          size: m.size ?? 11,
+          size: m.size ?? 15,
           lineWidth: m.lineWidth ?? 1.5,
+          background: m.background ?? '#000000',
+          backgroundOpacity: m.backgroundOpacity ?? 0.75,
+          padding: m.padding ?? 6,
+          radius: m.radius ?? 4,
+          // Missing offsetY must be 0 (centered), not the label default of 22.
+          offsetY: typeof m.offsetY === 'number' ? m.offsetY : 0,
+          liftDir: m.liftDir ?? 'up',
+          screenDX: m.screenDX,
+          screenDY: m.screenDY,
           opacity: typeof m.opacity === 'number' ? m.opacity : 1
         }
       })
@@ -104,9 +113,8 @@
       />
     {/each}
 
-    <!-- Completed measurements -->
+    <!-- Completed measurements (geometry only) -->
     {#each proj.ms as m (m.id)}
-      <!-- Dashed lines connecting atoms -->
       {#each m.pts.slice(1) as pt, i}
         <line
           x1={m.pts[i].x}
@@ -119,31 +127,24 @@
           opacity={(m.opacity ?? 1) * 0.9}
         />
       {/each}
-      <!-- Dots at each picked atom -->
       {#each m.pts as p}
         <circle cx={p.x} cy={p.y} r="4" fill={m.color} opacity={(m.opacity ?? 1) * 0.8} />
       {/each}
-      <!-- Value label with dark background -->
-      {@const lw = Math.round(m.valueStr.length * m.size * 0.64 + 10)}
-      <rect
-        x={m.cx - lw / 2}
-        y={m.cy - Math.round(m.size * 0.9)}
-        width={lw}
-        height={m.size + 6}
-        rx="3"
-        fill="rgba(0,0,0,{(m.opacity ?? 1) * 0.72})"
-      />
-      <text
-        x={m.cx}
-        y={m.cy + Math.round(m.size * 0.36)}
-        text-anchor="middle"
-        fill={m.color}
-        font-size={m.size}
-        font-family="monospace"
-        opacity={m.opacity ?? 1}>{m.valueStr}</text
-      >
     {/each}
   </svg>
+
+  <!-- Measurement value chips (same style model as atom labels) -->
+  {#each proj.ms as m (m.id)}
+    {@const pad = labelPadding(m)}
+    {@const rad = labelRadius(m)}
+    {@const place = labelScreenPlacement(m)}
+    <div
+      class="absolute font-mono leading-none"
+      style="left:{m.cx + place.left}px;top:{m.cy + place.top}px;transform:{place.transform};font-size:{m.size ?? 15}px;color:{m.color ?? '#facc15'};background:{labelBackgroundCss(m)};padding:{Math.max(1, Math.round(pad * 0.45))}px {pad}px;border-radius:{rad}px;opacity:{m.opacity ?? 1}"
+    >
+      {m.valueStr}
+    </div>
+  {/each}
 
   <!-- Atom labels as HTML divs (CSS-positioned over the canvas) -->
   {#each proj.ls as l (l.id)}

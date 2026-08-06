@@ -608,26 +608,33 @@ Distance:
     }}
   >
     <div class="flex items-center gap-2">
-      <!-- Visibility toggle -->
-      <div class="relative size-3 shrink-0">
-        <input
-          type="checkbox"
-          class="peer absolute inset-0 z-10 cursor-pointer opacity-0"
-          checked={view.visible}
-          aria-label="Show/hide"
-          onchange={() => {
-            const nextVisible = !view.visible
-            view.visible = nextVisible
-            if (animateMode) {
-              if (nextVisible) delete view.opacity
-              else view.opacity = 0
-            }
-          }}
-        />
-        <div
-          class="pointer-events-none h-full w-full rounded-full border-2 border-neutral-400 bg-transparent transition-[background-color,border-color] peer-checked:border-neutral-800 peer-checked:bg-neutral-800 peer-focus-visible:ring-2 peer-focus-visible:ring-neutral-400 dark:border-neutral-500 dark:peer-checked:border-neutral-100 dark:peer-checked:bg-neutral-100 dark:peer-focus-visible:ring-neutral-600"
-          aria-hidden="true"
-        ></div>
+      <!-- Visibility toggle + load indicator (kept left so it is not hidden by the color swatch) -->
+      <div class="flex w-7 shrink-0 items-center gap-1" title={loadingStructure ? 'Loading structure / bonds…' : undefined}>
+        <div class="relative size-3 shrink-0">
+          <input
+            type="checkbox"
+            class="peer absolute inset-0 z-10 cursor-pointer opacity-0"
+            checked={view.visible}
+            aria-label="Show/hide"
+            onchange={() => {
+              const nextVisible = !view.visible
+              view.visible = nextVisible
+              if (animateMode) {
+                if (nextVisible) delete view.opacity
+                else view.opacity = 0
+              }
+            }}
+          />
+          <div
+            class="pointer-events-none h-full w-full rounded-full border-2 border-neutral-400 bg-transparent transition-[background-color,border-color] peer-checked:border-neutral-800 peer-checked:bg-neutral-800 peer-focus-visible:ring-2 peer-focus-visible:ring-neutral-400 dark:border-neutral-500 dark:peer-checked:border-neutral-100 dark:peer-checked:bg-neutral-100 dark:peer-focus-visible:ring-neutral-600"
+            aria-hidden="true"
+          ></div>
+        </div>
+        <div class="flex size-3 shrink-0 items-center justify-center" aria-hidden={!loadingStructure}>
+          {#if loadingStructure}
+            <Spinner className="size-3 text-amber-500 dark:text-amber-400" />
+          {/if}
+        </div>
       </div>
 
       <!-- Selection label — double-click to edit inline -->
@@ -671,20 +678,15 @@ Distance:
         </div>
       {/if}
 
-      <!-- Repr badge — click to cycle; spinner shown while loading -->
-      <div class="relative flex shrink-0 items-center">
-        <button
-          type="button"
-          class="rounded bg-neutral-200 px-1.5 py-0.5 text-[10px] text-neutral-800 transition-colors hover:bg-neutral-300 dark:bg-neutral-800 dark:text-neutral-100 dark:hover:bg-neutral-700"
-          onclick={cycleRepr}
-          title="Click to cycle representation"
-        >
-          {REPR_LABELS[view.representation.type]}
-        </button>
-        {#if loadingStructure}
-          <Spinner className="absolute -right-4 size-3 text-neutral-400" />
-        {/if}
-      </div>
+      <!-- Repr badge — click to cycle -->
+      <button
+        type="button"
+        class="shrink-0 rounded bg-neutral-200 px-1.5 py-0.5 text-[10px] text-neutral-800 transition-colors hover:bg-neutral-300 dark:bg-neutral-800 dark:text-neutral-100 dark:hover:bg-neutral-700"
+        onclick={cycleRepr}
+        title="Click to cycle representation"
+      >
+        {REPR_LABELS[view.representation.type]}
+      </button>
 
       <!-- Color swatch — click to toggle quick picker -->
       <button

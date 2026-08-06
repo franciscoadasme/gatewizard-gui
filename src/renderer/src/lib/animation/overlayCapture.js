@@ -35,20 +35,27 @@ function mapOverlayPoint(sx, sy, displayW, displayH, canvasW, canvasH, sourceRec
  * @param {number} cy
  * @param {number} size
  * @param {string} color
+ * @param {{ background?: string, backgroundOpacity?: number, padding?: number, radius?: number, offsetY?: number, liftDir?: string, screenDX?: number, screenDY?: number }} style
+ * @param {number} [scale=1]
  */
-function drawMeasurementLabel(ctx, text, cx, cy, size, color) {
+function drawMeasurementLabel(ctx, text, cx, cy, size, color, style = {}, scale = 1) {
   ctx.font = `${size}px monospace`
-  const lw = Math.round(text.length * size * 0.64 + 10)
-  const lh = size + 6
-  const rx = cx - lw / 2
-  const ry = cy - Math.round(size * 0.9)
-  ctx.fillStyle = 'rgba(0,0,0,0.72)'
-  roundRect(ctx, rx, ry, lw, lh, 3)
+  const pad = labelPadding(style) * scale
+  const padY = Math.max(1, Math.round(pad * 0.45))
+  const rad = labelRadius(style) * scale
+  const tw = ctx.measureText(text).width
+  const rw = tw + pad * 2
+  const rh = size + padY * 2
+  const { ox, oy } = labelExportBoxOrigin(style, rw, rh, scale)
+  const rx = cx + ox
+  const ry = cy + oy
+  ctx.fillStyle = labelBackgroundCss(style)
+  roundRect(ctx, rx, ry, rw, rh, rad)
   ctx.fill()
   ctx.fillStyle = color
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  ctx.fillText(text, cx, cy + Math.round(size * 0.36))
+  ctx.fillText(text, rx + rw / 2, ry + rh / 2)
 }
 
 /**
@@ -81,8 +88,8 @@ function measurementValueStr(m) {
  * Draw labels and measurements onto an export canvas (2D context already has the WebGL frame).
  * @param {CanvasRenderingContext2D} ctx
  * @param {{
- *   measurements?: Array<{ type: string, atoms: { x: number, y: number, z: number }[], color?: string, size?: number, lineWidth?: number, visible?: boolean }>
- *   atomLabels?: Array<{ atom: { x: number, y: number, z: number }, text: string, size?: number, color?: string, visible?: boolean }>
+ *   measurements?: Array<{ type: string, atoms: { x: number, y: number, z: number }[], color?: string, size?: number, lineWidth?: number, background?: string, backgroundOpacity?: number, padding?: number, radius?: number, offsetY?: number, liftDir?: string, screenDX?: number, screenDY?: number, visible?: boolean, opacity?: number }>
+ *   atomLabels?: Array<{ atom: { x: number, y: number, z: number }, text: string, size?: number, color?: string, background?: string, backgroundOpacity?: number, padding?: number, radius?: number, offsetY?: number, liftDir?: string, screenDX?: number, screenDY?: number, visible?: boolean, opacity?: number }>
  *   camera: import('three').Camera
  *   displayW: number
  *   displayH: number
@@ -147,7 +154,25 @@ export function drawMeasureOverlayOnContext(ctx, opts) {
     const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length
     const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length
     ctx.globalAlpha = op
-    drawMeasurementLabel(ctx, measurementValueStr(m), cx, cy, size, color)
+    drawMeasurementLabel(
+      ctx,
+      measurementValueStr(m),
+      cx,
+      cy,
+      size,
+      color,
+      {
+        background: m.background ?? '#000000',
+        backgroundOpacity: m.backgroundOpacity ?? 0.75,
+        padding: m.padding ?? 6,
+        radius: m.radius ?? 4,
+        offsetY: typeof m.offsetY === 'number' ? m.offsetY : 0,
+        liftDir: m.liftDir ?? 'up',
+        screenDX: m.screenDX,
+        screenDY: m.screenDY
+      },
+      scale
+    )
     ctx.restore()
   }
 

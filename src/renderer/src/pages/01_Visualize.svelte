@@ -192,9 +192,9 @@
   let measureMode = $state(null)
   /** @type {Atom[]} */
   let measurePicks = $state([])
-  /** @type {Array<{ id:string, type:'distance'|'angle'|'dihedral', atoms:Atom[], color:string, size:number, lineWidth:number }>} */
+  /** @type {Array<{ id:string, type:'distance'|'angle'|'dihedral', atoms:Atom[], color:string, size:number, lineWidth:number, background?: string, backgroundOpacity?: number, padding?: number, radius?: number, offsetY?: number, liftDir?: string, visible?: boolean }>} */
   let measurements = $state([])
-  /** @type {Array<{ id:string, atom:Atom, text:string, size:number, color:string }>} */
+  /** @type {Array<{ id:string, atom:Atom, text:string, size:number, color:string, background?: string, backgroundOpacity?: number, padding?: number, radius?: number, offsetY?: number, liftDir?: string, visible?: boolean }>} */
   let atomLabels = $state([])
   /** @type {{ x:number, y:number, atom:Atom } | null} */
   let ctxMenu = $state(null)
@@ -210,9 +210,20 @@
   let labelOffsetY = $state(22)
   /** @type {'up' | 'down' | 'left' | 'right'} */
   let labelLiftDir = $state('up')
-  // Panel section collapse state
+  // Measurement display settings — same chip model as labels (+ line width)
+  let measSize = $state(15)
+  let measColor = $state('#facc15')
+  let measBackground = $state('#000000')
+  let measBackgroundOpacity = $state(0.75)
+  let measPadding = $state(6)
+  let measRadius = $state(4)
+  let measOffsetY = $state(0)
+  /** @type {'up' | 'down' | 'left' | 'right'} */
+  let measLiftDir = $state('up')
+  let measLineWidth = $state(3)
+  // Panel section collapse state (labels start collapsed — less clutter with representations)
   let measExpanded = $state(true)
-  let labelsExpanded = $state(true)
+  let labelsExpanded = $state(false)
   /** @type {{ kind: 'label' | 'meas' | 'view', id: string } | null} */
   let overlayFadeEditor = $state(null)
 
@@ -1175,9 +1186,15 @@
           id: crypto.randomUUID(),
           type: measureMode,
           atoms: next.slice(0, need),
-          color: '#facc15',
-          size: 15,
-          lineWidth: 3.0,
+          color: measColor,
+          size: measSize,
+          lineWidth: measLineWidth,
+          background: measBackground,
+          backgroundOpacity: measBackgroundOpacity,
+          padding: measPadding,
+          radius: measRadius,
+          offsetY: measOffsetY,
+          liftDir: measLiftDir,
           visible: true,
           ...liveOverlayFadeDefaults()
         }
@@ -1255,6 +1272,22 @@
     atomLabels = [...atomLabels]
   }
 
+  /**
+   * Update lift on live measurements (same screen-offset model as labels).
+   * @param {number} [index] if omitted, apply to every measurement
+   * @param {{ offsetY?: number, liftDir?: 'up' | 'down' | 'left' | 'right' }} patch
+   */
+  function patchMeasurementLift(index, patch) {
+    const targets =
+      typeof index === 'number' ? [measurements[index]].filter(Boolean) : measurements
+    for (const m of targets) {
+      if (typeof patch.offsetY === 'number') m.offsetY = patch.offsetY
+      if (patch.liftDir) m.liftDir = patch.liftDir
+      clearLabelScreenOffset(m)
+    }
+    measurements = [...measurements]
+  }
+
   /** @param {import('../lib/animation/fade.js').AnimationFadeSettings} next */
   function onOverlayFadeChange(next) {
     if (!overlayFadeEditor) return
@@ -1288,11 +1321,24 @@
 
   /** True when at least one label is visible (master toggle → Hide all). */
   const labelsAnyVisible = $derived(atomLabels.some((l) => l.visible !== false))
+  /** True when at least one measurement is visible (master toggle → Hide all). */
+  const measAnyVisible = $derived(measurements.some((m) => m.visible !== false))
 
   function setAllLabelsVisible(visible) {
     if (!atomLabels.length) return
     atomLabels = atomLabels.map((l) => ({ ...l, visible }))
     logEvent('detail', 'view', visible ? 'Show all labels' : 'Hide all labels', `${atomLabels.length}`)
+  }
+
+  function setAllMeasurementsVisible(visible) {
+    if (!measurements.length) return
+    measurements = measurements.map((m) => ({ ...m, visible }))
+    logEvent(
+      'detail',
+      'view',
+      visible ? 'Show all measurements' : 'Hide all measurements',
+      `${measurements.length}`
+    )
   }
 
   function measurementLabel(m) {
@@ -1667,21 +1713,27 @@
   async function applyEditResult(result) {
     selectedGroupIndices = new Set()
     selectedAtom = null
+    if (!result?.path) {
+      alert('Edit finished but no structure path was returned.')
+      return
+    }
     if (views.length === 0) {
       await loadStructure(result.path, { resetCamera: false })
       return
     }
+    // Keep the previous structure on screen until reload succeeds.
+    // Never null `structure` on failure (that blacked out the canvas while
+    // leaving representation chips, and disabled Clear scene).
     try {
       loadingPDB = true
-      const [newStructure, detected] = await Promise.all([
-        getStructure({
-          path: result.path,
-          needs_bonds: false,
-          needs_secondary_structure: false,
-          save_dir: workingDir || null
-        }),
-        detectMolecules(result.path)
-      ])
+      const newStructure = await getStructure({
+        path: result.path,
+        topology: topologyPath || null,
+        // Bonds per-view via ViewItem when needed (ball-stick); keep edit reload light.
+        needs_bonds: false,
+        needs_secondary_structure: false,
+        save_dir: workingDir || null
+      })
       filePath = newStructure.path
       structure = newStructure
       baseAtomCoords = snapshotAtomCoords(newStructure.atoms)
@@ -1702,53 +1754,64 @@
         v.bonds = []
         v.residues = []
         v.path = filePath
+        v._prefetched = false
       }
-      // Add views for any newly detected molecule not covered by existing views
-      const coveredSels = new Set(views.map((v) => v.baseSelection).filter(Boolean))
-      if (!coveredSels.has('all')) {
-        for (const [i, mol] of detected.entries()) {
-          if (!coveredSels.has(mol.selection)) {
-            const repr = mol.selection === 'protein' ? { type: 'cartoon' } : { type: 'vdw' }
-            let colorScheme
-            if (mol.selection === 'protein' && mol.residues?.length) {
-              colorScheme = { name: 'ss', resolver: ssScheme(mol.residues, {}) }
-            } else if (mol.selection.startsWith('resname')) {
-              const color = `#${COLOR_PALETTE[(views.length + i) % COLOR_PALETTE.length].getHexString()}`
-              colorScheme = {
-                name: 'cpk-carbon',
-                color,
-                resolver: cpkScheme({ carbonColor: color })
+      views = [...views]
+      // Optional: discover new molecule types (e.g. after MemPro). Do not
+      // block the edit on detect-molecules — its legacy atom payload is heavy
+      // and was a common "Failed to fetch" source after chain delete.
+      try {
+        const detected = await detectMolecules(result.path)
+        const coveredSels = new Set(views.map((v) => v.baseSelection).filter(Boolean))
+        if (!coveredSels.has('all')) {
+          const extras = []
+          for (const [i, mol] of detected.entries()) {
+            if (!coveredSels.has(mol.selection)) {
+              const repr = mol.selection === 'protein' ? { type: 'cartoon' } : { type: 'vdw' }
+              let colorScheme
+              if (mol.selection === 'protein' && mol.residues?.length) {
+                colorScheme = { name: 'ss', resolver: ssScheme(mol.residues, {}) }
+              } else if (mol.selection.startsWith('resname')) {
+                const color = `#${COLOR_PALETTE[(views.length + i) % COLOR_PALETTE.length].getHexString()}`
+                colorScheme = {
+                  name: 'cpk-carbon',
+                  color,
+                  resolver: cpkScheme({ carbonColor: color })
+                }
+              } else {
+                colorScheme = { name: 'cpk', resolver: cpkScheme() }
               }
-            } else {
-              colorScheme = { name: 'cpk', resolver: cpkScheme() }
+              extras.push({
+                id: crypto.randomUUID(),
+                selection: mol.selection,
+                baseSelection: mol.selection,
+                representation: repr,
+                path: filePath,
+                atoms: mol.atoms,
+                bonds: mol.bonds ?? [],
+                residues: mol.residues ?? null,
+                visible: mol.selection !== 'water',
+                colorScheme,
+                helixWidth: 1.0,
+                sheetWidth: 0.875,
+                coilWidth: 0.125,
+                ssColors: null,
+                tubeRadius: 0.9,
+                atomScale: 1.0,
+                bondScale: 1.0,
+                pointSize: 3,
+                quality: 3,
+                material: { ...DEFAULT_VIEW_MATERIAL },
+                _prefetched: true
+              })
             }
-            views.push({
-              id: crypto.randomUUID(),
-              selection: mol.selection,
-              baseSelection: mol.selection,
-              representation: repr,
-              path: filePath,
-              atoms: mol.atoms,
-              bonds: mol.bonds ?? [],
-              residues: mol.residues ?? null,
-              visible: mol.selection !== 'water',
-              colorScheme,
-              helixWidth: 1.0,
-              sheetWidth: 0.875,
-              coilWidth: 0.125,
-              ssColors: null,
-              tubeRadius: 0.9,
-              atomScale: 1.0,
-              bondScale: 1.0,
-              pointSize: 3,
-              quality: 3,
-              material: { ...DEFAULT_VIEW_MATERIAL }
-            })
           }
+          if (extras.length) views = [...views, ...extras]
         }
+      } catch (detectEx) {
+        console.warn('[visualize] detectMolecules after edit failed', detectEx)
       }
     } catch (ex) {
-      structure = null
       alert(ex instanceof Error ? ex.message : String(ex))
     } finally {
       loadingPDB = false
@@ -4080,33 +4143,210 @@
               oncenter={() => centerCameraOnAtoms(view.atoms)}
             />
           {/each}
-        {#if measurements.length > 0}
-          <!-- Measurements collapsible section -->
-          <div class="border-t border-neutral-800">
-            <div class="flex items-center">
+        <!-- Measurements collapsible section (always shown; same chip style model as Labels) -->
+        <div class="border-t border-neutral-800">
+          <div class="flex items-center">
+            <button
+              class="flex flex-1 items-center justify-between px-2 py-1.5 hover:bg-neutral-800/40"
+              onclick={() => (measExpanded = !measExpanded)}
+            >
+              <span class="text-xs font-semibold text-neutral-300">Measurements</span>
+              <span class="text-xs text-neutral-500">{measExpanded ? '▾' : '▸'}</span>
+            </button>
+            {#if measurements.length > 0}
               <button
-                class="flex flex-1 items-center justify-between px-2 py-1.5 hover:bg-neutral-100/80 dark:hover:bg-neutral-800/40"
-                onclick={() => (measExpanded = !measExpanded)}
+                type="button"
+                onclick={() => setAllMeasurementsVisible(!measAnyVisible)}
+                class="px-1.5 py-1.5 text-neutral-500 hover:text-neutral-200"
+                title={measAnyVisible ? 'Hide all measurements' : 'Show all measurements'}
               >
-                <span class="text-xs font-semibold text-neutral-300">Measurements</span>
-                <span class="text-xs text-neutral-500">{measExpanded ? '▾' : '▸'}</span>
+                {#if measAnyVisible}
+                  <svg
+                    viewBox="0 0 16 10"
+                    class="size-3"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M1,5 Q8,-1.5 15,5 Q8,11.5 1,5" />
+                    <circle cx="8" cy="5" r="2.5" fill="currentColor" stroke="none" />
+                  </svg>
+                {:else}
+                  <svg
+                    viewBox="0 0 16 10"
+                    class="size-3 opacity-40"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M1,5 Q8,-1.5 15,5 Q8,11.5 1,5" />
+                    <circle cx="8" cy="5" r="2.5" fill="currentColor" stroke="none" />
+                    <line x1="2" y1="9" x2="14" y2="1" />
+                  </svg>
+                {/if}
               </button>
               <button
                 onclick={clearAllMeasurements}
                 class="px-2 py-1.5 text-xs text-neutral-500 hover:text-red-400"
                 title="Clear all measurements">&#x2715;</button
               >
+            {/if}
+          </div>
+          {#if measExpanded}
+            <div
+              class="space-y-0.5 border-b border-neutral-200/80 px-2 py-1 dark:border-neutral-800/60"
+            >
+              <div class="grid grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-x-1.5">
+                <span class="truncate text-[10px] text-neutral-500">Size</span>
+                <RangeInput
+                  bind:value={measSize}
+                  min={8}
+                  max={40}
+                  step={1}
+                  decimals={0}
+                  rangeClassName="h-3 flex-1 cursor-pointer accent-yellow-400"
+                  inputClassName="w-10"
+                  oninput={(v) => {
+                    for (const m of measurements) m.size = v
+                  }}
+                />
+                <div class="flex w-11 shrink-0 items-center justify-end gap-1">
+                  <span class="text-[9px] text-neutral-500">Aa</span>
+                  <input
+                    type="color"
+                    value={measColor}
+                    title="Text / line color"
+                    oninput={(e) => {
+                      measColor = e.target.value
+                      for (const m of measurements) m.color = measColor
+                    }}
+                    class="size-4 cursor-pointer rounded border border-neutral-600 bg-transparent p-0"
+                  />
+                </div>
+              </div>
+              <div class="grid grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-x-1.5">
+                <span class="truncate text-[10px] text-neutral-500">Opac</span>
+                <RangeInput
+                  bind:value={measBackgroundOpacity}
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  decimals={2}
+                  rangeClassName="h-3 flex-1 cursor-pointer accent-yellow-400"
+                  inputClassName="w-10"
+                  oninput={(v) => {
+                    for (const m of measurements) m.backgroundOpacity = v
+                  }}
+                />
+                <div class="flex w-11 shrink-0 items-center justify-end gap-1">
+                  <span class="text-[9px] text-neutral-500">Bg</span>
+                  <input
+                    type="color"
+                    value={measBackground}
+                    title="Background color"
+                    oninput={(e) => {
+                      measBackground = e.target.value
+                      for (const m of measurements) m.background = measBackground
+                    }}
+                    class="size-4 cursor-pointer rounded border border-neutral-600 bg-transparent p-0"
+                  />
+                </div>
+              </div>
+              <div class="grid grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-x-1.5">
+                <span class="truncate text-[10px] text-neutral-500" title="Background padding">Pad</span>
+                <RangeInput
+                  bind:value={measPadding}
+                  min={0}
+                  max={24}
+                  step={1}
+                  decimals={0}
+                  rangeClassName="h-3 flex-1 cursor-pointer accent-yellow-400"
+                  inputClassName="w-10"
+                  oninput={(v) => {
+                    for (const m of measurements) m.padding = v
+                  }}
+                />
+                <div class="w-11 shrink-0"></div>
+              </div>
+              <div class="grid grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-x-1.5">
+                <span class="truncate text-[10px] text-neutral-500" title="Corner radius">Round</span>
+                <RangeInput
+                  bind:value={measRadius}
+                  min={0}
+                  max={24}
+                  step={1}
+                  decimals={0}
+                  rangeClassName="h-3 flex-1 cursor-pointer accent-yellow-400"
+                  inputClassName="w-10"
+                  oninput={(v) => {
+                    for (const m of measurements) m.radius = v
+                  }}
+                />
+                <div class="w-11 shrink-0"></div>
+              </div>
+              <div class="grid grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-x-1.5">
+                <span class="truncate text-[10px] text-neutral-500" title="Lift distance from midpoint">Lift</span>
+                <RangeInput
+                  bind:value={measOffsetY}
+                  min={0}
+                  max={80}
+                  step={1}
+                  decimals={0}
+                  rangeClassName="h-3 flex-1 cursor-pointer accent-yellow-400"
+                  inputClassName="w-10"
+                  oninput={(v) => {
+                    patchMeasurementLift(undefined, { offsetY: v })
+                  }}
+                />
+                <div class="grid w-9 shrink-0 grid-cols-2 gap-px" title="Lift direction">
+                  {#each /** @type {const} */ (['up', 'down', 'left', 'right']) as dir}
+                    <button
+                      type="button"
+                      class="flex size-4 items-center justify-center rounded text-[9px] leading-none
+                        {measLiftDir === dir
+                        ? 'bg-yellow-500/25 text-yellow-300'
+                        : 'text-neutral-500 hover:bg-neutral-800 hover:text-neutral-300'}"
+                      title="Lift {dir}"
+                      onclick={() => {
+                        measLiftDir = dir
+                        patchMeasurementLift(undefined, { liftDir: dir })
+                      }}
+                    >
+                      {dir === 'up' ? '↑' : dir === 'down' ? '↓' : dir === 'left' ? '←' : '→'}
+                    </button>
+                  {/each}
+                </div>
+              </div>
+              <div class="grid grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-x-1.5">
+                <span class="truncate text-[10px] text-neutral-500" title="Connector line width">Line</span>
+                <RangeInput
+                  bind:value={measLineWidth}
+                  min={0.5}
+                  max={6}
+                  step={0.5}
+                  decimals={1}
+                  rangeClassName="h-3 flex-1 cursor-pointer accent-yellow-400"
+                  inputClassName="w-10"
+                  oninput={(v) => {
+                    for (const m of measurements) m.lineWidth = v
+                  }}
+                />
+                <div class="w-11 shrink-0"></div>
+              </div>
             </div>
-            {#if measExpanded}
-              <div class="max-h-40 space-y-0.5 overflow-y-auto px-1.5 pb-1.5">
+            {#if measurements.length > 0}
+              <div class="max-h-48 space-y-0 overflow-y-auto px-1 py-0.5">
                 {#each measurements as m, i (m.id)}
-                  <div class="flex flex-col rounded hover:bg-neutral-100/80 dark:hover:bg-neutral-800/40">
-                    <div class="flex items-center gap-1.5 px-1 py-0.5">
+                  <div class="flex flex-col rounded hover:bg-neutral-100/70 dark:hover:bg-neutral-800/35">
+                    <div class="flex items-center gap-1 px-1 py-0.5">
                       <span
                         class="shrink-0"
-                        style="color:{m.color ?? '#facc15'};opacity:{m.visible !== false
-                          ? 1
-                          : 0.35}"
+                        style="color:{m.color ?? '#facc15'};opacity:{m.visible !== false ? 1 : 0.35}"
+                        title={m.type === 'distance' ? 'Distance' : m.type === 'angle' ? 'Angle' : 'Dihedral'}
                       >
                         {#if m.type === 'distance'}
                           <svg
@@ -4179,7 +4419,20 @@
                         {/if}
                       </span>
                       <span
-                        class="flex-1 font-mono text-xs"
+                        class="inline-flex size-3.5 shrink-0 items-center justify-center border border-neutral-600"
+                        style="background:{m.background ?? '#000000'};border-radius:{Math.min(
+                          m.radius ?? 4,
+                          6
+                        )}px;opacity:{m.visible !== false ? (m.backgroundOpacity ?? 0.75) : 0.25}"
+                        title="Background"
+                      >
+                        <span
+                          class="size-1.5 rounded-full"
+                          style="background:{m.color ?? '#facc15'}"
+                        ></span>
+                      </span>
+                      <span
+                        class="min-w-0 flex-1 truncate font-mono text-[11px] leading-tight"
                         style="color:{m.color ?? '#facc15'};opacity:{m.visible !== false
                           ? 1
                           : 0.35}">{measurementLabel(m)}</span
@@ -4188,13 +4441,13 @@
                         onclick={() => {
                           measurements[i].visible = !(m.visible !== false)
                         }}
-                        class="shrink-0 text-neutral-600 hover:text-neutral-200"
+                        class="shrink-0 p-0.5 text-neutral-600 hover:text-neutral-200"
                         title={m.visible !== false ? 'Hide' : 'Show'}
                       >
                         {#if m.visible !== false}
                           <svg
                             viewBox="0 0 16 10"
-                            class="size-3.5"
+                            class="size-3"
                             fill="none"
                             stroke="currentColor"
                             stroke-width="1.5"
@@ -4207,7 +4460,7 @@
                         {:else}
                           <svg
                             viewBox="0 0 16 10"
-                            class="size-3.5 opacity-40"
+                            class="size-3 opacity-40"
                             fill="none"
                             stroke="currentColor"
                             stroke-width="1.5"
@@ -4222,27 +4475,19 @@
                       </button>
                       <button
                         onclick={() => toggleGear('meas', m.id)}
-                        class="shrink-0 text-sm text-neutral-600 hover:text-neutral-300"
+                        class="shrink-0 p-0.5 text-[11px] leading-none text-neutral-600 hover:text-neutral-300"
                         title="Settings">&#x2699;</button
                       >
                       <button
                         onclick={() => removeMeasurement(m.id)}
-                        class="shrink-0 text-sm text-neutral-600 hover:text-red-400"
+                        class="shrink-0 p-0.5 text-[11px] leading-none text-neutral-600 hover:text-red-400"
                         >&#x2715;</button
                       >
                     </div>
                     {#if gearOpen?.kind === 'meas' && gearOpen.id === m.id}
-                      <div class="space-y-1 border-t border-neutral-800/60 px-2 py-1">
-                        <div class="flex items-center gap-1.5">
-                          <span class="text-xs text-neutral-500">Color</span>
-                          <input
-                            type="color"
-                            bind:value={m.color}
-                            class="size-5 cursor-pointer rounded border-0 bg-transparent p-0"
-                          />
-                        </div>
-                        <div class="flex items-center gap-1.5">
-                          <span class="text-xs text-neutral-500">Size</span>
+                      <div class="space-y-0.5 border-t border-neutral-800/60 px-1.5 py-1">
+                        <div class="grid grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-x-1.5">
+                          <span class="truncate text-[10px] text-neutral-500">Size</span>
                           <RangeInput
                             bind:value={
                               () => m.size,
@@ -4255,11 +4500,119 @@
                             step={1}
                             decimals={0}
                             rangeClassName="h-3 flex-1 cursor-pointer accent-yellow-400"
-                            inputClassName="w-12"
+                            inputClassName="w-10"
                           />
+                          <div class="flex w-11 shrink-0 items-center justify-end gap-1">
+                            <span class="text-[9px] text-neutral-500">Aa</span>
+                            <input
+                              type="color"
+                              bind:value={m.color}
+                              title="Text / line color"
+                              class="size-4 cursor-pointer rounded border border-neutral-600 bg-transparent p-0"
+                            />
+                          </div>
                         </div>
-                        <div class="flex items-center gap-1.5">
-                          <span class="text-xs text-neutral-500">Line</span>
+                        <div class="grid grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-x-1.5">
+                          <span class="truncate text-[10px] text-neutral-500">Opac</span>
+                          <RangeInput
+                            bind:value={
+                              () => m.backgroundOpacity ?? 0.75,
+                              (v) => {
+                                measurements[i].backgroundOpacity = v
+                              }
+                            }
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            decimals={2}
+                            rangeClassName="h-3 flex-1 cursor-pointer accent-yellow-400"
+                            inputClassName="w-10"
+                          />
+                          <div class="flex w-11 shrink-0 items-center justify-end gap-1">
+                            <span class="text-[9px] text-neutral-500">Bg</span>
+                            <input
+                              type="color"
+                              value={m.background ?? '#000000'}
+                              title="Background color"
+                              oninput={(e) => {
+                                measurements[i].background = e.target.value
+                              }}
+                              class="size-4 cursor-pointer rounded border border-neutral-600 bg-transparent p-0"
+                            />
+                          </div>
+                        </div>
+                        <div class="grid grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-x-1.5">
+                          <span class="truncate text-[10px] text-neutral-500">Pad</span>
+                          <RangeInput
+                            bind:value={
+                              () => m.padding ?? 6,
+                              (v) => {
+                                measurements[i].padding = v
+                              }
+                            }
+                            min={0}
+                            max={24}
+                            step={1}
+                            decimals={0}
+                            rangeClassName="h-3 flex-1 cursor-pointer accent-yellow-400"
+                            inputClassName="w-10"
+                          />
+                          <div class="w-11 shrink-0"></div>
+                        </div>
+                        <div class="grid grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-x-1.5">
+                          <span class="truncate text-[10px] text-neutral-500">Round</span>
+                          <RangeInput
+                            bind:value={
+                              () => m.radius ?? 4,
+                              (v) => {
+                                measurements[i].radius = v
+                              }
+                            }
+                            min={0}
+                            max={24}
+                            step={1}
+                            decimals={0}
+                            rangeClassName="h-3 flex-1 cursor-pointer accent-yellow-400"
+                            inputClassName="w-10"
+                          />
+                          <div class="w-11 shrink-0"></div>
+                        </div>
+                        <div class="grid grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-x-1.5">
+                          <span class="truncate text-[10px] text-neutral-500">Lift</span>
+                          <RangeInput
+                            bind:value={
+                              () => m.offsetY ?? 0,
+                              (v) => {
+                                patchMeasurementLift(i, { offsetY: v })
+                              }
+                            }
+                            min={0}
+                            max={80}
+                            step={1}
+                            decimals={0}
+                            rangeClassName="h-3 flex-1 cursor-pointer accent-yellow-400"
+                            inputClassName="w-10"
+                          />
+                          <div class="grid w-9 shrink-0 grid-cols-2 gap-px" title="Lift direction">
+                            {#each /** @type {const} */ (['up', 'down', 'left', 'right']) as dir}
+                              <button
+                                type="button"
+                                class="flex size-4 items-center justify-center rounded text-[9px] leading-none
+                                  {(m.liftDir ?? 'up') === dir
+                                  ? 'bg-yellow-500/25 text-yellow-300'
+                                  : 'text-neutral-500 hover:bg-neutral-800 hover:text-neutral-300'}"
+                                title="Lift {dir}"
+                                onclick={() => {
+                                  patchMeasurementLift(i, { liftDir: dir })
+                                }}
+                              >
+                                {dir === 'up' ? '↑' : dir === 'down' ? '↓' : dir === 'left' ? '←' : '→'}
+                              </button>
+                            {/each}
+                          </div>
+                        </div>
+                        <div class="grid grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-x-1.5">
+                          <span class="truncate text-[10px] text-neutral-500">Line</span>
                           <RangeInput
                             bind:value={
                               () => m.lineWidth,
@@ -4272,18 +4625,18 @@
                             step={0.5}
                             decimals={1}
                             rangeClassName="h-3 flex-1 cursor-pointer accent-yellow-400"
-                            inputClassName="w-12"
+                            inputClassName="w-10"
                           />
+                          <div class="w-11 shrink-0"></div>
                         </div>
                         <button
                           type="button"
-                          class="w-full rounded border border-neutral-700 px-2 py-1 text-left text-[10px] text-neutral-300 hover:bg-neutral-800"
+                          class="mt-0.5 w-full rounded border border-neutral-700 px-1.5 py-0.5 text-left text-[10px] leading-tight text-neutral-300 hover:bg-neutral-800"
                           onclick={() => {
                             overlayFadeEditor = { kind: 'meas', id: m.id }
                           }}
                         >
-                          Fade in/out…
-                          <span class="block text-neutral-500">{fadeSummary(m)}</span>
+                          Fade… <span class="text-neutral-500">{fadeSummary(m)}</span>
                         </button>
                       </div>
                     {/if}
@@ -4291,9 +4644,9 @@
                 {/each}
               </div>
             {/if}
-          </div>
-        {/if}
-        <!-- Labels collapsible section (always shown when structure loaded) -->
+          {/if}
+        </div>
+        <!-- Labels collapsible section (collapsed by default) -->
         <div class="border-t border-neutral-800">
           <div class="flex items-center">
             <button
@@ -4899,6 +5252,19 @@
           >
             View…
           </button>
+          <div class="viz-toolbar-menu-sep"></div>
+          <button
+            type="button"
+            class="viz-toolbar-menu-item viz-toolbar-menu-item-danger"
+            onclick={() => {
+              openMenuOpen = false
+              clearWorkspace()
+            }}
+            disabled={!structure && views.length === 0 && !filePath}
+            title="Remove the loaded structure and all representations from the viewer"
+          >
+            Clear scene
+          </button>
         </div>
       {/if}
     </div>
@@ -5210,13 +5576,14 @@
 
     <div class="min-w-3 flex-1 shrink"></div>
 
-    <!-- Clear workspace -->
+    <!-- Clear scene (structure + representations); distinct from status-bar "Clear chips" -->
     <button
       type="button"
       class="flex h-[22px] shrink-0 items-center whitespace-nowrap rounded border border-red-300 bg-red-50 px-2 py-0 text-red-600 transition-colors hover:border-red-400 hover:bg-red-100 hover:text-red-700 disabled:opacity-40 dark:border-red-900/40 dark:bg-neutral-900 dark:text-red-400/70 dark:hover:border-red-700/60 dark:hover:bg-red-900/20 dark:hover:text-red-300"
       onclick={clearWorkspace}
-      disabled={!structure}
-      title="Clear workspace">Clear</button
+      disabled={!structure && views.length === 0 && !filePath}
+      title="Clear scene — remove structure and all representations"
+      >Clear scene</button
     >
   </div>
 </div>

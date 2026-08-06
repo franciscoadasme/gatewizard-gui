@@ -60,6 +60,14 @@ import { DEFAULT_ANIMATION_EXPORT_FORMAT, normalizeExportFormat } from './export
  * @property {string} [color]
  * @property {number} [size]
  * @property {number} [lineWidth]
+ * @property {string} [background]
+ * @property {number} [backgroundOpacity]
+ * @property {number} [padding]
+ * @property {number} [radius]
+ * @property {number} [offsetY]
+ * @property {'up' | 'down' | 'left' | 'right'} [liftDir]
+ * @property {number} [screenDX] runtime/interpolated screen offset X (px)
+ * @property {number} [screenDY] runtime/interpolated screen offset Y (px)
  * @property {boolean} [visible]
  * @property {boolean} [fadeEnabled]
  * @property {number} [fadeIn_s]
@@ -311,6 +319,19 @@ function normalizeMeasurement(raw) {
     color: typeof m.color === 'string' ? m.color : '#facc15',
     size: typeof m.size === 'number' ? m.size : 15,
     lineWidth: typeof m.lineWidth === 'number' ? m.lineWidth : 3,
+    background: typeof m.background === 'string' ? m.background : '#000000',
+    backgroundOpacity:
+      typeof m.backgroundOpacity === 'number' && m.backgroundOpacity >= 0
+        ? Math.min(1, m.backgroundOpacity)
+        : 0.75,
+    padding: typeof m.padding === 'number' && m.padding >= 0 ? Math.min(24, m.padding) : 6,
+    radius: typeof m.radius === 'number' && m.radius >= 0 ? Math.min(24, m.radius) : 4,
+    // Default 0 so older saves keep the chip centered on the measure midpoint.
+    offsetY: typeof m.offsetY === 'number' && m.offsetY >= 0 ? Math.min(80, m.offsetY) : 0,
+    liftDir:
+      m.liftDir === 'up' || m.liftDir === 'down' || m.liftDir === 'left' || m.liftDir === 'right'
+        ? m.liftDir
+        : 'up',
     visible: m.visible !== false,
     ...normalizeFadeSettings(m)
   }
