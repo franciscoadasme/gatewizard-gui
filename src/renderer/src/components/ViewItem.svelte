@@ -48,6 +48,7 @@
   import RangeInput from './ui/RangeInput.svelte'
   import Select from './ui/Select.svelte'
   import Spinner from './ui/Spinner.svelte'
+  import { themeState } from '../lib/theme.svelte.js'
 
   const NAMED_SELECTIONS = [
     'all',
@@ -162,6 +163,8 @@ Distance:
   let namedSelection = $state(NAMED_SELECTIONS.includes(view.selection) ? view.selection : 'other')
   let gearBackdropPointerDown = $state(false)
   let helpBackdropPointerDown = $state(false)
+  // Dialogs are moved to document.body (outside #app), so they need their own .dark class.
+  const isDark = $derived(themeState.current === 'dark')
   /** Inline selection edit (double-click the label). */
   let editingSelection = $state(false)
   let selectionDraft = $state('')
@@ -875,7 +878,9 @@ Distance:
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <dialog
     bind:this={gearDialog}
-    class="fixed top-10 bottom-10 left-16 z-50 m-0 w-80 max-w-[calc(100vw-5rem)] overflow-y-auto rounded-lg border border-neutral-300 bg-white p-0 text-xs text-neutral-900 shadow-2xl backdrop:bg-black/20 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+    class="fixed top-10 bottom-10 left-16 z-50 m-0 w-80 max-w-[calc(100vw-5rem)] overflow-y-auto rounded-lg border border-neutral-300 bg-white p-0 text-xs text-neutral-900 shadow-2xl backdrop:bg-black/20 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 {isDark
+      ? 'dark'
+      : ''}"
     onpointerdown={onGearDialogPointerDown}
     onclick={onGearDialogClick}
     oncancel={(e) => {
@@ -1346,7 +1351,9 @@ Distance:
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <dialog
     bind:this={helpDialog}
-    class="fixed top-1/2 left-1/2 m-0 max-h-[80vh] w-96 max-w-[90vw] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border border-neutral-300 bg-white p-0 text-xs text-neutral-900 shadow-2xl backdrop:bg-black/60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+    class="fixed top-1/2 left-1/2 m-0 max-h-[80vh] w-96 max-w-[90vw] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border border-neutral-300 bg-white p-0 text-xs text-neutral-900 shadow-2xl backdrop:bg-black/60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 {isDark
+      ? 'dark'
+      : ''}"
     onpointerdown={onHelpDialogPointerDown}
     onclick={onHelpDialogClick}
     oncancel={(e) => {

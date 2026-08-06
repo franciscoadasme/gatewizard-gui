@@ -1,5 +1,6 @@
 <script>
   import SceneDefaultsForm from './SceneDefaultsForm.svelte'
+  import { themeState } from '../lib/theme.svelte.js'
 
   /** @type {{ open?: boolean }} */
   let { open = $bindable(false) } = $props()
@@ -7,6 +8,8 @@
   /** @type {HTMLDialogElement | null} */
   let dialogEl = $state(null)
   let backdropPointerDown = $state(false)
+  // Dialog is moved to document.body (outside #app), so it needs its own .dark class.
+  const isDark = $derived(themeState.current === 'dark')
 
   /** @param {HTMLDialogElement | null} dialog */
   function mountDialogToBody(dialog) {
@@ -45,7 +48,9 @@
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <dialog
   bind:this={dialogEl}
-  class="fixed top-10 bottom-10 left-16 z-50 m-0 w-80 max-w-[calc(100vw-5rem)] overflow-y-auto rounded-lg border border-neutral-300 bg-white p-0 text-xs text-neutral-900 shadow-2xl backdrop:bg-black/20 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+  class="fixed top-10 bottom-10 left-16 z-50 m-0 w-80 max-w-[calc(100vw-5rem)] overflow-y-auto rounded-lg border border-neutral-300 bg-white p-0 text-xs text-neutral-900 shadow-2xl backdrop:bg-black/20 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 {isDark
+    ? 'dark'
+    : ''}"
   onpointerdown={onDialogPointerDown}
   onclick={onDialogClick}
   oncancel={(e) => {
