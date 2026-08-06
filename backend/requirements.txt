@@ -2,7 +2,7 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 paramiko>=3.4.0
 # RELEASE: PyPI pin (default for packaged installers)
-# gatewizard[full]>=1.0.53
+gatewizard[full]>=1.0.53
 # DEV: local editable clone
 # -e /mnt/d/github/gatewizard[full]
 # DEV: GitHub main branch

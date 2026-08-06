@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.13] - 2026-08-06
+
 ### Added
 
 - **Analysis:** simulation sets for structural and energetic runs — overlays, per-file stride/time, save/load sessions, chart tools (pan, zoom, range stats), and mixed structural+energetic sessions
@@ -30,10 +32,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Visualize — Depth of field:** camera-style focus blur in Scene rendering settings (enable, focus distance, range, blur); **Focus here** from the atom menu / toolbar; saved in viewpoints and animation keyframes (enable/disable fades via blur strength between keyframes)
 - **Runtime:** conda-forge **FFmpeg** is installed with the embedded micromamba environment (Linux / macOS / WSL) so animation video/GIF export works without a separate system FFmpeg
 - **Visualize:** split a representation by chain, residue, residue name, molecule, or element (not only chain)
+- **Settings:** About section with authors and contributors, MIT license, and project links
+
+### Changed
+
+- **README:** refreshed Visualize main window screenshot (`resources/readme/main_viewer.png`)
 
 ### Fixed
 
 - **Analysis:** multi-set progress and live chart updates; energetic compare follows set visibility (no ghost plot / wrong colors); slim sessions hydrate after load
+- **Status bar History:** filter is Info / All only — Detail matched All because the unused `verbose` level was never logged; secondary `detail` events still show under All
+- **Visualize:** View settings and Scene rendering settings dialogs follow app light/dark theme (body-mounted dialogs now sync the `.dark` class)
 - **Visualize:** chain delete no longer blacks out the canvas; **Clear scene** vs status-bar **Clear chips**; bond-loading spinner sits next to the visibility toggle
 - **Equilibration (Amber):** NPgT ensemble generation no longer fails with `Unknown scheme_type 'NPGT'` — scheme labels keep lowercase **g** (`NPgT`, form value `npgt`)
 - **Equilibration Progress:** loading spinner while scanning jobs; runtime prefetch; compact toolbar (Auto, Location/Status filters); pending-in-queue UX; sync-ring alignment and remote generation date; warn when watching without Connect; selected buttons readable in light mode
@@ -54,9 +63,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Equilibration (remote):** generate locally first (**Run locally** on the left panel); cluster submit on the job card via **Run on cluster…**; Slurm runs `run_equilibration_cluster.sh`, local runs use `run_equilibration.sh`
 - **Visualize:** transforms (gizmo / dialog) update coordinates in memory — no temp PDB on every drag; **Save PDB** writes when you choose (marker when unsaved)
-- **Visualize:** Labels section starts collapsed so representations stay easier to reach
+- **Visualize:** Measurements and Labels sections start collapsed so representations stay easier to reach
 - **Visualize — Animation:** keyframes can store sparse coordinate patches for moved atoms so playback/export can interpolate atom motion without duplicating full structures
 - **Visualize — Animation:** unsaved atom moves (like unsaved color/representation edits) revert to the last keyframe when scrubbing the timeline; capture a keyframe to keep the new positions
+
+### Notes
+
+- Requires **gatewizard** API **>= 1.0.53**
 
 ## [1.0.12] - 2026-07-22
 
