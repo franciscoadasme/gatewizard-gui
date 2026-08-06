@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Analysis:** membrane thickness / APL headgroup picking, energetic compare layouts (by property / by set / overlay), and PlotSpec-style PNG export
 - **Tools:** Fix PBC job UI (engine detect, per-file stride, center selection, job cards)
 - **Equilibration protocol:** explicit Minimization stage; per-stage CPU/GPU on protocol cards with bulk **Apply to MD stages**
+- **Equilibration:** temporary banner that current protocols are for testing only (not production) while engine protocols are still changing
 - **Equilibration Progress:** Order filter (Newest / Oldest) — cards default to newest generated job folder first
 - **Equilibration (NAMD):** GPU-resident mode toggle (default on with GPU) — writes `GPUresident` on the production stage only; equilibration keeps `reassignFreq`/`reassignTemp`
 - **Equilibration Progress:** job cards for local and remote runs — Watch, Pull, sync ring, expandable Stages/Details with log viewer, location/status filters, shared cluster **Connect** in the toolbar

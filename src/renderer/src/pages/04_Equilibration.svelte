@@ -3251,6 +3251,14 @@
     style={paneBackgroundStyle}
   >
     <div class="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 pt-4 pb-6">
+      <div class="gw-notice gw-notice-warning">
+        <p class="font-semibold">TESTING PROTOCOLS, NOT FOR PRODUCTION</p>
+        <p class="mt-1">
+          Equilibration protocols for all engines are still under active testing and will change
+          substantially. Use them for development and validation only; do not rely on these inputs
+          for production simulations yet.
+        </p>
+      </div>
       <h1 id="eq-protocol-panel" class="text-xl font-semibold">Equilibration protocol</h1>
       <div>
         {#if isProtocolValid}
