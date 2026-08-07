@@ -42,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Analysis:** multi-set progress and live chart updates; energetic compare follows set visibility (no ghost plot / wrong colors); slim sessions hydrate after load
+- **Equilibration:** protocol stage strip shows a horizontal scrollbar at top and bottom (kept in sync), plus left/right nav buttons when stages overflow; mouse wheel still scrolls the page
+- **Equilibration (OpenMM):** default protocol resources are CPU×1 + GPU×1 for minimization, equilibration, and production
 - **Status bar History:** filter is Info / All only — Detail matched All because the unused `verbose` level was never logged; secondary `detail` events still show under All
 - **Visualize:** View settings and Scene rendering settings dialogs follow app light/dark theme (body-mounted dialogs now sync the `.dark` class)
 - **Visualize:** chain delete no longer blacks out the canvas; **Clear scene** vs status-bar **Clear chips**; bond-loading spinner sits next to the visibility toggle

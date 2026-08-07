@@ -94,10 +94,11 @@
       production: { cpu_cores: 1, gpu_id: 0, num_gpus: 1, use_gpu: true }
     },
     openmm: {
-      sidebar: { totalCpus: 6, totalGpus: 0, gpuId: 0, computeTarget: /** @type {const} */ ('auto') },
-      minimization: { cpu_cores: 6, gpu_id: 0, num_gpus: 0, use_gpu: false },
-      md: { cpu_cores: 6, gpu_id: 0, num_gpus: 0, use_gpu: false },
-      production: { cpu_cores: 6, gpu_id: 0, num_gpus: 0, use_gpu: false }
+      // OpenMM uses a single host thread; GPU for minimization + all MD stages.
+      sidebar: { totalCpus: 1, totalGpus: 1, gpuId: 0, computeTarget: /** @type {const} */ ('auto') },
+      minimization: { cpu_cores: 1, gpu_id: 0, num_gpus: 1, use_gpu: true },
+      md: { cpu_cores: 1, gpu_id: 0, num_gpus: 1, use_gpu: true },
+      production: { cpu_cores: 1, gpu_id: 0, num_gpus: 1, use_gpu: true }
     }
   }
 
@@ -1733,6 +1734,14 @@
       const isMini =
         kind === 'minimization' || name === 'minimization' || name === 'energy minimization'
       if (isMini) {
+        if (engine === 'openmm') {
+          if (stage.cpu_cores == null) stage.cpu_cores = 1
+          if (stage.use_gpu == null) stage.use_gpu = true
+          if (stage.num_gpus == null) stage.num_gpus = stage.use_gpu ? 1 : 0
+          if (stage.gpu_id == null) stage.gpu_id = 0
+          stage.resources_inherit = false
+          continue
+        }
         if (stage.cpu_cores == null) stage.cpu_cores = 6
         stage.use_gpu = false
         stage.num_gpus = 0
@@ -1770,6 +1779,111 @@
     }
     protocolFormKey += 1
   }
+
+  /** @type {HTMLDivElement | null} */
+  let protocolStagesScrollEl = $state(null)
+  /** @type {HTMLDivElement | null} */
+  let protocolStagesTopScrollEl = $state(null)
+  let protocolStagesScrollWidth = $state(0)
+  let protocolCanScrollLeft = $state(false)
+  let protocolCanScrollRight = $state(false)
+  let protocolScrollSyncLock = false
+
+  function updateProtocolScrollButtons() {
+    const el = protocolStagesScrollEl
+    if (!el) {
+      protocolCanScrollLeft = false
+      protocolCanScrollRight = false
+      return
+    }
+    const max = el.scrollWidth - el.clientWidth
+    protocolCanScrollLeft = max > 1 && el.scrollLeft > 1
+    protocolCanScrollRight = max > 1 && el.scrollLeft < max - 1
+  }
+
+  function syncProtocolScrollWidth() {
+    const el = protocolStagesScrollEl
+    if (!el) {
+      protocolStagesScrollWidth = 0
+      return
+    }
+    protocolStagesScrollWidth = el.scrollWidth
+    updateProtocolScrollButtons()
+  }
+
+  /**
+   * Keep the top and bottom horizontal scrollbars in sync.
+   * Writing scrollLeft on the peer fires a scroll event; keep the lock through that
+   * microtask so we do not ping-pong and cancel in-progress scroll animations.
+   * @param {'top' | 'bottom'} source
+   */
+  function syncProtocolScrollbars(source) {
+    if (protocolScrollSyncLock) return
+    const top = protocolStagesTopScrollEl
+    const bottom = protocolStagesScrollEl
+    if (!top || !bottom) return
+    protocolScrollSyncLock = true
+    if (source === 'top') bottom.scrollLeft = top.scrollLeft
+    else top.scrollLeft = bottom.scrollLeft
+    updateProtocolScrollButtons()
+    queueMicrotask(() => {
+      protocolScrollSyncLock = false
+    })
+  }
+
+  /**
+   * @param {-1 | 1} dir
+   */
+  function scrollProtocolStages(dir) {
+    const el = protocolStagesScrollEl
+    const top = protocolStagesTopScrollEl
+    if (!el) return
+    // One stage card + flex gap-4 (16px).
+    const card = el.firstElementChild
+    const gapPx = 16
+    const cardWidth =
+      card instanceof HTMLElement ? Math.round(card.getBoundingClientRect().width) : 320
+    const step = Math.max(cardWidth + gapPx, 320)
+    const max = Math.max(0, el.scrollWidth - el.clientWidth)
+    const next = Math.max(0, Math.min(max, el.scrollLeft + dir * step))
+    // Set both rails under the sync lock so peer scroll events cannot cancel the jump.
+    protocolScrollSyncLock = true
+    el.scrollTo({ left: next, behavior: 'smooth' })
+    top?.scrollTo({ left: next, behavior: 'smooth' })
+    updateProtocolScrollButtons()
+    const unlock = () => {
+      protocolScrollSyncLock = false
+      updateProtocolScrollButtons()
+      el.removeEventListener('scrollend', unlock)
+      top?.removeEventListener('scrollend', unlock)
+    }
+    el.addEventListener('scrollend', unlock, { once: true })
+    top?.addEventListener('scrollend', unlock, { once: true })
+    // Fallback if scrollend is unavailable / already at target.
+    setTimeout(unlock, 400)
+  }
+
+  $effect(() => {
+    // Refresh overflow / dual-scrollbar width when stages remount or count changes.
+    void protocolFormKey
+    void (protocol.stages?.length ?? 0)
+    const el = protocolStagesScrollEl
+    const top = protocolStagesTopScrollEl
+    if (!el) return
+    const onBottomScroll = () => syncProtocolScrollbars('bottom')
+    const onTopScroll = () => syncProtocolScrollbars('top')
+    el.addEventListener('scroll', onBottomScroll, { passive: true })
+    top?.addEventListener('scroll', onTopScroll, { passive: true })
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(syncProtocolScrollWidth) : null
+    ro?.observe(el)
+    const frame = requestAnimationFrame(syncProtocolScrollWidth)
+    return () => {
+      cancelAnimationFrame(frame)
+      el.removeEventListener('scroll', onBottomScroll)
+      top?.removeEventListener('scroll', onTopScroll)
+      ro?.disconnect()
+    }
+  })
 
   /**
    * Ensure recovered protocol stages have fields the stage editor expects.
@@ -3283,17 +3397,59 @@
         </div>
       </div>
       {#if isProtocolValid}
-        <div class="flex w-full items-start gap-4 overflow-x-auto pb-2">
-          {#key protocolFormKey}
-            {#each protocol.stages as _, i (protocol.stages[i].name + '-' + i)}
-              <EquilibrationStage
-                bind:stage={protocol.stages[i]}
-                {ensemble}
-                onAddConstraint={() => openConstraintEditorForAdd(i)}
-                onEditConstraint={(ci) => openConstraintEditorForEdit(i, ci)}
-              />
-            {/each}
-          {/key}
+        {@const protocolStagesOverflow = protocolCanScrollLeft || protocolCanScrollRight}
+        <div class="relative {protocolStagesOverflow ? 'px-10' : ''}">
+          {#if protocolCanScrollLeft}
+            <button
+              type="button"
+              class="absolute left-0 top-1/2 z-10 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full border border-neutral-300 bg-white/95 text-neutral-800 shadow-md hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900/95 dark:text-neutral-100 dark:hover:bg-neutral-800"
+              title="Scroll stages left"
+              aria-label="Scroll stages left"
+              onclick={() => scrollProtocolStages(-1)}
+            >
+              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M15 18l-6-6 6-6" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+          {/if}
+          {#if protocolCanScrollRight}
+            <button
+              type="button"
+              class="absolute right-0 top-1/2 z-10 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full border border-neutral-300 bg-white/95 text-neutral-800 shadow-md hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900/95 dark:text-neutral-100 dark:hover:bg-neutral-800"
+              title="Scroll stages right"
+              aria-label="Scroll stages right"
+              onclick={() => scrollProtocolStages(1)}
+            >
+              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M9 18l6-6-6-6" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+          {/if}
+          <!-- Top horizontal scrollbar (synced with the stage strip below). -->
+          <div
+            bind:this={protocolStagesTopScrollEl}
+            class="mb-1 overflow-x-auto overflow-y-hidden {protocolStagesOverflow
+              ? ''
+              : 'invisible mb-0 h-0'}"
+            aria-hidden="true"
+          >
+            <div style="width: {protocolStagesScrollWidth}px; height: 1px;"></div>
+          </div>
+          <div
+            bind:this={protocolStagesScrollEl}
+            class="flex w-full items-start gap-4 overflow-x-auto pb-2"
+          >
+            {#key protocolFormKey}
+              {#each protocol.stages as _, i (protocol.stages[i].name + '-' + i)}
+                <EquilibrationStage
+                  bind:stage={protocol.stages[i]}
+                  {ensemble}
+                  onAddConstraint={() => openConstraintEditorForAdd(i)}
+                  onEditConstraint={(ci) => openConstraintEditorForEdit(i, ci)}
+                />
+              {/each}
+            {/key}
+          </div>
         </div>
       {:else}
         <Empty message="No protocol loaded" />

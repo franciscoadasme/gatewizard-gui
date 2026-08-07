@@ -101,7 +101,7 @@
   })
 </script>
 
-<div class="rounded-md border border-neutral-200 bg-neutral-50 p-4 text-neutral-900 dark:border-transparent dark:bg-neutral-900 dark:text-inherit">
+<div class="min-w-80 shrink-0 rounded-md border border-neutral-200 bg-neutral-50 p-4 text-neutral-900 dark:border-transparent dark:bg-neutral-900 dark:text-inherit">
   <div class="mb-2 flex items-start justify-between gap-2">
     <div>
       <h3>{stage.name}</h3>
