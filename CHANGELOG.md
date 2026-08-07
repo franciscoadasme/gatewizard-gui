@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Analysis:** optional session name (alongside output folder name) for saved sessions — shown in the picker, load/save notices, and “Current:” identity under Saved analysis
+- **Analysis:** Save when already up to date shows a short “Latest changes are already saved” notice under Saved analysis, then hides it (uses a save fingerprint so the message still appears after load/hydrate)
+- **Analysis:** Clear resets left-panel settings and empties all plotted charts; mode/type/set/property view changes show a Visualize-style blur + spinner on the plot panel while charts update
+- **Analysis:** energetic CSV/session stores all analyzed properties (not only checked ones); property checkboxes only show/hide plots from that full data; Run analyzes every detected property
 - **Analysis:** simulation sets for structural and energetic runs — overlays, per-file stride/time, save/load sessions, chart tools (pan, zoom, range stats), and mixed structural+energetic sessions
 - **Analysis:** membrane thickness / APL headgroup picking, energetic compare layouts (by property / by set / overlay), and PlotSpec-style PNG export
 - **Tools:** Fix PBC job UI (engine detect, per-file stride, center selection, job cards)
@@ -41,7 +45,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Analysis:** structural selections are stored per analysis type (RMSD vs area-per-lipid / membrane thickness), so protein/backbone and lipid headgroup choices no longer overwrite each other; bilayer runs auto-detect headgroups when the selection is empty or still protein-like; warn when a non-lipid selection is used for bilayer analyses
+- **Analysis:** “Saved session…” notice clears after further edits; also shows a job toast when the window is unfocused or another tab is open (same pattern as analysis-finished)
 - **Analysis:** multi-set progress and live chart updates; energetic compare follows set visibility (no ghost plot / wrong colors); slim sessions hydrate after load
+- **Analysis:** axis unit dropdowns convert plotted values immediately (structural X/Y and energetic time/energy/pressure/temperature/volume), including multi-set compare; stats follow display units
+- **Analysis:** “Saved session…” notice appears under Saved analysis (not at the bottom of the left panel)
+- **Analysis:** loading a session while on Energetic shows plots immediately (no Structural↔Energetic toggle); unchecking all properties hides every plot
+- **Analysis:** energetic stats table follows visible sets/properties (unique Set · Property rows; hides when unchecked)
 - **Equilibration:** protocol stage strip shows a horizontal scrollbar at top and bottom (kept in sync), plus left/right nav buttons when stages overflow; mouse wheel still scrolls the page
 - **Equilibration (OpenMM):** default protocol resources are CPU×1 + GPU×1 for minimization, equilibration, and production
 - **Status bar History:** filter is Info / All only — Detail matched All because the unused `verbose` level was never logged; secondary `detail` events still show under All

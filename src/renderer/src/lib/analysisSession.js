@@ -378,6 +378,7 @@ export async function hydrateAnalysisSetsFromCsv(sets, sessionDir, readText, mod
  * @property {'overlay' | 'grid'} compareLayout structural multi-set layout
  * @property {EnergeticCompareLayout} [energeticCompareLayout] energetic multi-set layout
  * @property {string} outputFolderName
+ * @property {string} [sessionName] Optional human label (independent of folder name)
  * @property {string} activeSetId
  * @property {AnalysisSet[]} sets
  */
@@ -399,6 +400,7 @@ export function normalizeEnergeticCompareLayout(raw) {
  *   compareLayout: 'overlay' | 'grid',
  *   energeticCompareLayout?: EnergeticCompareLayout,
  *   outputFolderName: string,
+ *   sessionName?: string,
  *   activeSetId: string,
  *   sets: AnalysisSet[],
  * }} state
@@ -414,6 +416,7 @@ export function serializeAnalysisSession(state) {
       state.energeticCompareLayout ?? 'by_property'
     ),
     outputFolderName: state.outputFolderName,
+    sessionName: String(state.sessionName || '').trim(),
     activeSetId: state.activeSetId,
     sets: clonePlainAnalysisData(state.sets)
   }
@@ -463,9 +466,24 @@ export function deserializeAnalysisSession(raw) {
     compareLayout,
     energeticCompareLayout,
     outputFolderName: String(obj.outputFolderName || ''),
+    sessionName: String(obj.sessionName || obj.session_name || '').trim(),
     activeSetId: String(obj.activeSetId || obj.sets[0]?.id || ''),
     sets: /** @type {AnalysisSet[]} */ (obj.sets)
   })
+}
+
+/**
+ * Label for pickers / logs: optional session name + folder name.
+ * @param {{ sessionName?: string, session_name?: string, outputFolderName?: string, name?: string, folder_name?: string }} session
+ * @returns {string}
+ */
+export function formatAnalysisSessionIdentity(session) {
+  const folder = String(
+    session.outputFolderName || session.folder_name || session.name || ''
+  ).trim()
+  const title = String(session.sessionName || session.session_name || '').trim()
+  if (title && folder && title !== folder) return `${title} · ${folder}`
+  return title || folder || 'session'
 }
 
 /**

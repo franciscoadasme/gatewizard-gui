@@ -4350,11 +4350,16 @@ def _scan_analysis_sessions(directory: str) -> list[dict]:
         sets = data.get("sets")
         if not isinstance(sets, list) or not sets:
             continue
+        session_name = str(
+            data.get("sessionName") or data.get("session_name") or ""
+        ).strip()
         found.append(
             {
                 "session_path": str(session_path),
                 "output_dir": str(out_dir),
                 "name": out_dir.name,
+                "folder_name": out_dir.name,
+                "session_name": session_name,
                 "saved_at": data.get("savedAt") or "",
                 "mode": data.get("mode") or "",
                 "set_count": len(sets),

@@ -3,6 +3,22 @@
 import { clonePlainAnalysisData } from './analysisSession.js'
 
 /**
+ * Per-analysis-type selection snapshot so RMSD protein selections never overwrite
+ * bilayer headgroup selections (and vice versa).
+ * @typedef {Object} StructuralTypeSelection
+ * @property {string} selection
+ * @property {string} selection2
+ * @property {string} [referenceFrame]
+ * @property {boolean} [align]
+ * @property {string} [rmsfXaxisType]
+ * @property {string} [leafletLipidSel]
+ * @property {string} [leafletFilterSel]
+ * @property {string} [nBins]
+ * @property {boolean} [interpolate]
+ * @property {Array<{ name: string, atomCount: number, enabled: boolean }>} [lipidHeadgroupAtoms]
+ */
+
+/**
  * @typedef {Object} StructuralOptions
  * @property {string} structuralType
  * @property {string} selection
@@ -14,7 +30,128 @@ import { clonePlainAnalysisData } from './analysisSession.js'
  * @property {string} leafletFilterSel
  * @property {string} nBins
  * @property {boolean} interpolate
+ * @property {Record<string, StructuralTypeSelection>} [selectionsByType]
  */
+
+export const BILAYER_STRUCTURAL_TYPES = new Set(['area_per_lipid', 'membrane_thickness'])
+
+/** @param {string} type */
+export function isBilayerStructuralType(type) {
+  return BILAYER_STRUCTURAL_TYPES.has(type)
+}
+
+/**
+ * True when a selection looks like a protein/RMSD-style MDAnalysis string.
+ * @param {string} sel
+ */
+export function looksLikeProteinSelection(sel) {
+  const s = String(sel || '')
+    .trim()
+    .toLowerCase()
+  if (!s) return false
+  if (/\bprotein\b/.test(s)) return true
+  if (/\bbackbone\b/.test(s)) return true
+  if (/\bname\s+ca\b/.test(s)) return true
+  if (/\band\s+name\s+ca\b/.test(s)) return true
+  return false
+}
+
+/**
+ * True when a selection looks like lipid headgroup / phosphate atoms.
+ * @param {string} sel
+ */
+export function looksLikeBilayerHeadgroupSelection(sel) {
+  const s = String(sel || '')
+    .trim()
+    .toLowerCase()
+  if (!s) return false
+  if (looksLikeProteinSelection(s)) return false
+  // Typical headgroup detect output: "name P" / "name P P1 PO4"
+  if (/^name\s+[\w*]+(?:\s+[\w*]+)*$/.test(s)) return true
+  if (/\b(popc|pope|dopc|dppc|dppe|chol|cholesterol|lipid)\b/.test(s)) return true
+  return false
+}
+
+/**
+ * Default MDAnalysis selections when a type has no saved snapshot yet.
+ * @param {string} type
+ * @returns {{ selection: string, selection2: string }}
+ */
+export function defaultSelectionForStructuralType(type) {
+  switch (type) {
+    case 'rmsf':
+      return { selection: 'protein and name CA', selection2: 'protein and resid 50' }
+    case 'distance':
+      return { selection: 'protein and backbone', selection2: 'protein and resid 50' }
+    case 'radius_of_gyration':
+      return { selection: 'protein', selection2: 'protein and resid 50' }
+    case 'area_per_lipid':
+    case 'membrane_thickness':
+      return { selection: '', selection2: 'protein and resid 50' }
+    case 'rmsd':
+    default:
+      return { selection: 'protein and backbone', selection2: 'protein and resid 50' }
+  }
+}
+
+/**
+ * Resolve flat selection fields for a structural type from the per-type map,
+ * falling back to sibling bilayer type, then defaults.
+ * @param {StructuralOptions | null | undefined} opts
+ * @param {string} type
+ * @returns {StructuralTypeSelection}
+ */
+export function resolveStructuralTypeSelection(opts, type) {
+  const map = opts?.selectionsByType || {}
+  const saved = map[type]
+  if (saved && typeof saved.selection === 'string') {
+    return { ...saved }
+  }
+  if (isBilayerStructuralType(type)) {
+    const sibling = type === 'area_per_lipid' ? 'membrane_thickness' : 'area_per_lipid'
+    const sib = map[sibling]
+    if (
+      sib &&
+      typeof sib.selection === 'string' &&
+      sib.selection.trim() &&
+      !looksLikeProteinSelection(sib.selection)
+    ) {
+      return { ...sib }
+    }
+  }
+  // Migrate legacy flat fields when they already match the requested type.
+  if (opts?.structuralType === type && typeof opts.selection === 'string') {
+    const legacyOk =
+      !isBilayerStructuralType(type) ||
+      (!looksLikeProteinSelection(opts.selection) && Boolean(opts.selection.trim()))
+    if (legacyOk) {
+      return {
+        selection: opts.selection,
+        selection2: opts.selection2 || 'protein and resid 50',
+        referenceFrame: opts.referenceFrame,
+        align: opts.align,
+        rmsfXaxisType: opts.rmsfXaxisType,
+        leafletLipidSel: opts.leafletLipidSel,
+        leafletFilterSel: opts.leafletFilterSel,
+        nBins: opts.nBins,
+        interpolate: opts.interpolate
+      }
+    }
+  }
+  const defaults = defaultSelectionForStructuralType(type)
+  return {
+    selection: defaults.selection,
+    selection2: defaults.selection2,
+    referenceFrame: opts?.referenceFrame ?? '0',
+    align: opts?.align ?? true,
+    rmsfXaxisType: opts?.rmsfXaxisType ?? 'residue_number',
+    leafletLipidSel: '',
+    leafletFilterSel: '',
+    nBins: opts?.nBins ?? '1',
+    interpolate: opts?.interpolate ?? false,
+    lipidHeadgroupAtoms: []
+  }
+}
 
 /**
  * @typedef {Object} EnergeticOptions
@@ -79,17 +216,32 @@ let _setCounter = 1
 
 /** @returns {StructuralOptions} */
 export function defaultStructuralOptions() {
+  const defaults = defaultSelectionForStructuralType('rmsd')
   return {
     structuralType: 'rmsd',
-    selection: 'protein and backbone',
-    selection2: 'protein and resid 50',
+    selection: defaults.selection,
+    selection2: defaults.selection2,
     referenceFrame: '0',
     align: true,
     rmsfXaxisType: 'residue_number',
     leafletLipidSel: '',
     leafletFilterSel: '',
     nBins: '1',
-    interpolate: false
+    interpolate: false,
+    selectionsByType: {
+      rmsd: {
+        selection: defaults.selection,
+        selection2: defaults.selection2,
+        referenceFrame: '0',
+        align: true,
+        rmsfXaxisType: 'residue_number',
+        leafletLipidSel: '',
+        leafletFilterSel: '',
+        nBins: '1',
+        interpolate: false,
+        lipidHeadgroupAtoms: []
+      }
+    }
   }
 }
 

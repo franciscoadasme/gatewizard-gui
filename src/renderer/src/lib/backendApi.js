@@ -307,7 +307,7 @@ export function scanToolsJobs(directory) {
 /**
  * Scan for saved analysis sessions (analysis_session.json) under a working directory.
  * @param {string} directory
- * @returns {Promise<{ sessions: Array<{ session_path: string, output_dir: string, name: string, saved_at: string, mode: string, set_count: number, analysis_summary: string }> }>}
+ * @returns {Promise<{ sessions: Array<{ session_path: string, output_dir: string, name: string, folder_name?: string, session_name?: string, saved_at: string, mode: string, set_count: number, analysis_summary: string }> }>}
  */
 export function scanAnalysisSessions(directory) {
   return backendJson('/scan-analysis-sessions', { directory })

@@ -25,18 +25,25 @@
   import { computeMultiSeriesStats, computeSeriesStats } from '../lib/chartStats.js'
   import {
     createAnalysisSet,
+    defaultSelectionForStructuralType,
     duplicateAnalysisSet,
     getSetStructuralResult,
     getSetStructuralResultTypes,
+    isBilayerStructuralType,
+    looksLikeBilayerHeadgroupSelection,
+    looksLikeProteinSelection,
     normalizeAnalysisSetStructuralResults,
     newSetId,
+    resolveStructuralTypeSelection,
     setHasResult,
     structuralSetHasPlottableResult
   } from '../lib/analysisSets.js'
+  import { notifyJobFinishedIfUnfocused } from '../lib/jobNotifications.svelte.js'
   import {
     ANALYSIS_SESSION_FILENAME,
     clonePlainAnalysisData,
     deserializeAnalysisSession,
+    formatAnalysisSessionIdentity,
     hydrateAnalysisSessionFromCsv,
     hydrateAnalysisSetsFromCsv,
     csvFileNameForEnergeticSet,
@@ -88,6 +95,8 @@
   /** Separate from analysis run — Detect Properties must not freeze the Run button. */
   let detectingProperties = $state(false)
   let outputFolderName = $state('')
+  /** Optional human label for the analysis session (saved in analysis_session.json). */
+  let sessionName = $state('')
 
   function resolveOutputFolderName() {
     if (outputFolderName.trim()) return outputFolderName.trim()
@@ -152,6 +161,10 @@
   )
   /** Bumped when plot arrays change so chart view rebuilds. */
   let plotDataRevision = $state(0)
+  /** Right-panel plot update overlay (mode/type/set/property changes). */
+  let plotViewBusy = $state(false)
+  let plotViewBusyLabel = $state('Updating plot…')
+  let plotViewBusyGeneration = 0
   /**
    * Explicit chart snapshot — avoids Svelte nested-proxy derived staleness after session load.
    * @type {{ mode: 'empty' | 'overlay' | 'grid', series: Array<{ name: string, x: number[], y: number[], color?: string }>, panels: Array<{ key: string, title: string, series: Array<{ name: string, x: number[], y: number[], color?: string }> }> }}
@@ -164,11 +177,21 @@
   let runAnalysisMenuOpen = $state(false)
   /** @type {HTMLDivElement | null} */
   let runAnalysisMenuEl = $state(null)
-  /** @type {Array<{ session_path: string, output_dir: string, name: string, saved_at: string, mode: string, set_count: number, analysis_summary: string }>} */
+  /** @type {Array<{ session_path: string, output_dir: string, name: string, folder_name?: string, session_name?: string, saved_at: string, mode: string, set_count: number, analysis_summary: string }>} */
   let savedSessions = $state([])
   let selectedSessionPath = $state('')
   let sessionScanHint = $state('')
   let analysisActionNotice = $state('')
+  /** Shown under Saved analysis (session save/load), not at the panel footer. */
+  let sessionActionNotice = $state('')
+  /** True after a successful session save until the user edits the session. */
+  let sessionSavedClean = $state(false)
+  /** Fingerprint of last successful save — used so “already saved” still works if dirty flags flap. */
+  let lastSavedSessionFingerprint = ''
+  /** Skip dirty-tracking while save/load rewrites set fields. */
+  let suppressSessionDirty = false
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let sessionActionNoticeTimer = null
   /** @type {Array<{ id: string, label: string, status: 'pending' | 'running' | 'done' | 'error' }>} */
   let runProgressStages = $state([])
 
@@ -300,6 +323,27 @@
   function bumpPlotData() {
     plotDataRevision += 1
     syncChartViewFromSets()
+  }
+
+  /**
+   * Show a blur/spinner overlay on the plot panel while a view rebuild runs.
+   * Awaits a paint frame first so the overlay is visible before heavy work.
+   * @param {string} label
+   * @param {() => (void | Promise<void>)} work
+   */
+  async function withPlotViewBusy(label, work) {
+    const gen = ++plotViewBusyGeneration
+    plotViewBusyLabel = label || 'Updating plot…'
+    plotViewBusy = true
+    try {
+      await tick()
+      await work()
+      await tick()
+      // Keep overlay through LineChart remount / layout.
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    } finally {
+      if (gen === plotViewBusyGeneration) plotViewBusy = false
+    }
   }
 
   /** Line dash pattern from plot style name. */
@@ -482,17 +526,14 @@
       return out
     }
     if (csvMode === 'energetic' && set.energeticResult) {
-      // Full-resolution, stable baseName headers (not unit-converted display names).
+      // Persist every analyzed series — property checkboxes only control plot visibility.
       const res = set.energeticResult
-      const props =
-        res.selectedProperties ?? set.energeticOptions.selectedProperties ?? []
       const xs = res.rawX || []
       /** @type {Array<{ name: string, x: number[], y: number[] }>} */
       const out = []
-      for (const prop of props) {
-        const s = res.rawSeries?.find((r) => r.baseName === prop)
-        if (!s?.y?.length) continue
-        out.push({ name: prop, x: xs, y: s.y })
+      for (const s of res.rawSeries || []) {
+        if (!s?.baseName || !s?.y?.length) continue
+        out.push({ name: s.baseName, x: xs, y: s.y })
       }
       return out
     }
@@ -534,6 +575,7 @@
       session.energeticCompareLayout ?? 'by_property'
     )
     outputFolderName = session.outputFolderName || defaultAnalysisFolderName('')
+    sessionName = String(session.sessionName || '').trim()
     analysisSets = clonePlainAnalysisData(session.sets).map(normalizeAnalysisSetStructuralResults)
     activeSetId =
       session.activeSetId && analysisSets.some((s) => s.id === session.activeSetId)
@@ -548,15 +590,41 @@
     panelRangeStats = {}
     lastError = ''
     warnMissingSessionPaths(session)
-    bumpPlotData()
+    // Energetic charts read live set data; rebuild so the open energetic tab shows
+    // immediately without toggling Structural → Energetic.
+    if (mode === 'energetic') {
+      rebuildEnergeticViewAfterLoad()
+    } else {
+      bumpPlotData()
+    }
     logEvent('info', 'analysis', 'Loaded analysis session', sessionAnalysisLabel(session))
+    showSessionActionNotice(`Loaded ${sessionAnalysisLabel(session)}`)
   }
 
   /** @param {import('../lib/analysisSession.js').AnalysisSessionV1} session */
   function sessionAnalysisLabel(session) {
+    const identity = formatAnalysisSessionIdentity(session)
     const date = session.savedAt ? new Date(session.savedAt).toLocaleString() : ''
-    return `${session.mode} · ${session.sets.length} set(s)${date ? ` · ${date}` : ''}`
+    return `${identity} · ${session.mode} · ${session.sets.length} set(s)${date ? ` · ${date}` : ''}`
   }
+
+  /**
+   * @param {{ session_path: string, name: string, folder_name?: string, session_name?: string, mode: string, set_count: number, analysis_summary: string }} session
+   */
+  function formatSavedSessionOption(session) {
+    const identity = formatAnalysisSessionIdentity({
+      sessionName: session.session_name,
+      folder_name: session.folder_name || session.name
+    })
+    return `${identity} · ${session.mode} · ${session.set_count} set(s) · ${session.analysis_summary}`
+  }
+
+  const currentSessionIdentity = $derived(
+    formatAnalysisSessionIdentity({
+      sessionName,
+      outputFolderName: outputFolderName || defaultAnalysisFolderName(topologyPath)
+    })
+  )
 
   async function loadSelectedSavedSession() {
     if (!selectedSessionPath) return
@@ -655,6 +723,13 @@
           await tick()
           bumpPlotData()
         }
+      }
+      suppressSessionDirty = true
+      try {
+        persistActiveSetFields()
+        rememberSessionSaveFingerprint()
+      } finally {
+        suppressSessionDirty = false
       }
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error)
@@ -889,22 +964,138 @@
     analysisStatus.error = lastError || ''
   })
 
-  const BILAYER_TYPES = new Set(['area_per_lipid', 'membrane_thickness'])
-  const isBilayerType = (type) => BILAYER_TYPES.has(type)
+  const isBilayerType = (type) => isBilayerStructuralType(type)
 
-  /** Default MDAnalysis selections when switching structural analysis type. */
-  function defaultSelectionForStructuralType(type) {
-    switch (type) {
-      case 'rmsf':
-        return { selection: 'protein and name CA', selection2: 'protein and resid 50' }
-      case 'distance':
-        return { selection: 'protein and backbone', selection2: 'protein and resid 50' }
-      case 'radius_of_gyration':
-        return { selection: 'protein', selection2: 'protein and resid 50' }
-      case 'rmsd':
-      default:
-        return { selection: 'protein and backbone', selection2: 'protein and resid 50' }
+  /** Warning when bilayer analyses use a protein-like selection. */
+  const bilayerSelectionWarning = $derived.by(() => {
+    if (!isBilayerType(structuralType)) return ''
+    const sel = selection.trim()
+    if (!sel) return ''
+    if (looksLikeProteinSelection(sel)) {
+      return 'This selection looks like protein/backbone. Area per lipid and membrane thickness need lipid headgroup atoms (e.g. phosphates), not protein.'
     }
+    if (!looksLikeBilayerHeadgroupSelection(sel) && lipidHeadgroupAtoms.length === 0) {
+      return 'Selection may not be lipid headgroups. Prefer detected phosphate/headgroup atom names for reliable bilayer analysis.'
+    }
+    return ''
+  })
+
+  function clearSessionActionNoticeTimer() {
+    if (sessionActionNoticeTimer != null) {
+      clearTimeout(sessionActionNoticeTimer)
+      sessionActionNoticeTimer = null
+    }
+  }
+
+  /**
+   * Stable summary of session content for “already saved?” checks.
+   * Uses shapes/lengths rather than full plot arrays.
+   */
+  function computeSessionFingerprint() {
+    return JSON.stringify({
+      mode,
+      sessionName: sessionName.trim(),
+      outputFolderName: resolveOutputFolderName(),
+      activeSetId,
+      compareLayout,
+      energeticCompareLayout,
+      structuralType,
+      selection,
+      selection2,
+      selectedProperties,
+      availableProperties,
+      sets: analysisSets.map((s) => {
+        const normalized = normalizeAnalysisSetStructuralResults(s)
+        const types = getSetStructuralResultTypes(normalized)
+        return {
+          id: s.id,
+          label: s.label,
+          visible: s.visible,
+          topologyPath: s.topologyPath,
+          trajectoryFiles: s.trajectoryFiles,
+          structuralOptions: s.structuralOptions,
+          energeticOptions: s.energeticOptions,
+          structTypes: types,
+          structPoints: Object.fromEntries(
+            types.map((t) => {
+              const r = getSetStructuralResult(normalized, t)
+              return [t, r?.rawX?.length ?? 0]
+            })
+          ),
+          energeticProps: (s.energeticResult?.rawSeries || []).map((r) => ({
+            name: r.baseName,
+            n: r.y?.length ?? 0
+          })),
+          energeticSelected: s.energeticResult?.selectedProperties ?? [],
+          energeticPoints: s.energeticResult?.rawX?.length ?? 0
+        }
+      })
+    })
+  }
+
+  function rememberSessionSaveFingerprint() {
+    lastSavedSessionFingerprint = computeSessionFingerprint()
+    sessionSavedClean = true
+  }
+
+  function isSessionSaveUpToDate() {
+    if (!lastSavedSessionFingerprint) return false
+    try {
+      return lastSavedSessionFingerprint === computeSessionFingerprint()
+    } catch {
+      return false
+    }
+  }
+
+  function markSessionDirty() {
+    if (suppressSessionDirty) return
+    if (!sessionActionNotice && !sessionSavedClean && !lastSavedSessionFingerprint) return
+    // Do not dismiss the transient “already saved” toast while its timer is running.
+    const keepingAlreadySavedToast =
+      sessionActionNoticeTimer != null &&
+      sessionActionNotice.startsWith('Latest changes are already saved')
+    if (!keepingAlreadySavedToast) {
+      clearSessionActionNoticeTimer()
+      sessionActionNotice = ''
+    }
+    sessionSavedClean = false
+  }
+
+  /** Snapshot of the UI fields that belong to the current structural type. */
+  function snapshotCurrentTypeSelection() {
+    return {
+      selection,
+      selection2,
+      referenceFrame,
+      align,
+      rmsfXaxisType,
+      leafletLipidSel,
+      leafletFilterSel,
+      nBins,
+      interpolate,
+      lipidHeadgroupAtoms: lipidHeadgroupAtoms.map((a) => ({ ...a }))
+    }
+  }
+
+  /**
+   * Apply a per-type selection snapshot to page UI state.
+   * @param {import('../lib/analysisSets.js').StructuralTypeSelection} snap
+   * @param {string} type
+   */
+  function applyTypeSelectionSnapshot(snap, type) {
+    const defaults = defaultSelectionForStructuralType(type)
+    selection = snap.selection ?? defaults.selection
+    selection2 = snap.selection2 ?? defaults.selection2
+    if (snap.referenceFrame != null) referenceFrame = String(snap.referenceFrame)
+    if (snap.align != null) align = Boolean(snap.align)
+    if (snap.rmsfXaxisType != null) rmsfXaxisType = snap.rmsfXaxisType
+    leafletLipidSel = snap.leafletLipidSel ?? ''
+    leafletFilterSel = snap.leafletFilterSel ?? ''
+    if (snap.nBins != null) nBins = String(snap.nBins)
+    if (snap.interpolate != null) interpolate = Boolean(snap.interpolate)
+    lipidHeadgroupAtoms = Array.isArray(snap.lipidHeadgroupAtoms)
+      ? snap.lipidHeadgroupAtoms.map((a) => ({ ...a }))
+      : []
   }
   function convertX(xs, fromUnit, toUnit) {
     if (fromUnit === toUnit) return xs
@@ -1048,10 +1239,6 @@
     if (ps.residueCodeFormat !== 'one') return activeXLabels
     return activeXLabels.map(toOneLetterResidueLabel)
   })
-  const activePrimaryStats = $derived(
-    mode === 'structural' ? (activeStructRes?.primaryStats ?? null) : primaryStats
-  )
-
   const visibleCompareSets = $derived.by(() => {
     plotDataRevision
     chartView.series.length
@@ -1090,31 +1277,17 @@
 
   /**
    * Properties shown on energetic charts.
-   * Uses the Properties checkboxes (selectedProperties), restricted in compare mode
-   * to props that exist in every visible set's result data.
+   * Uses the Properties checkboxes (selectedProperties) only — empty means hide all plots.
+   * In compare mode, restricted to props that exist in every visible set's result data.
    */
   const compareEnergeticProperties = $derived.by(() => {
     if (mode !== 'energetic') return selectedProperties
-    const sourceSets = energeticMultiSetSession
-      ? visibleCompareSets.length
-        ? visibleCompareSets
-        : []
-      : analysisSets.filter((s) => s.id === activeSetId)
+    // Unchecking every property must clear the chart (no fallback to all props).
+    if (selectedProperties.length === 0) return []
     if (energeticMultiSetSession && visibleCompareSets.length === 0) return []
-    const fallbackProps = [
-      ...new Set(
-        sourceSets.flatMap((s) => {
-          const res = s.energeticResult
-          if (!res) return []
-          if (res.selectedProperties?.length) return res.selectedProperties
-          return (res.rawSeries || []).map((r) => r.baseName).filter(Boolean)
-        })
-      )
-    ]
-    const base = selectedProperties.length ? selectedProperties : fallbackProps
-    if (!energeticMultiSetSession) return base
+    if (!energeticMultiSetSession) return selectedProperties
     // Keep props that exist on every currently visible set.
-    return base.filter((prop) =>
+    return selectedProperties.filter((prop) =>
       visibleCompareSets.every((set) =>
         (set.energeticResult?.rawSeries || []).some((s) => s.baseName === prop)
       )
@@ -1161,7 +1334,7 @@
     const maxPoints = opts.maxPoints ?? 0
     const colorBySet = opts.colorBySet === true
     const nameMode = opts.nameMode ?? (colorBySet ? 'set_prop' : 'prop')
-    const eo = set.energeticOptions
+    // Display conversion always follows live sidebar unit prefs (not stale per-set options).
     const rawXs = res.rawX || []
     const props = properties ?? res.selectedProperties ?? []
     /** @type {Array<{ name: string, x: number[], y: number[], color?: string, baseName?: string, propLabel?: string }>} */
@@ -1173,9 +1346,9 @@
       const idx = maxPoints > 0 ? downsampleIndices(n, maxPoints) : null
       const xSample = idx ? idx.map((i) => rawXs[i]) : rawXs
       const ySample = idx ? idx.map((i) => s.y[i]) : s.y
-      const xs = convertX(xSample, res.rawXTimeUnit, eo.timeUnits)
-      const ys = convertEnergeticYForSet(ySample, s.unit, eo)
-      const tUnit = getTargetUnitForSet(s.unit, eo)
+      const xs = convertX(xSample, res.rawXTimeUnit, timeUnits)
+      const ys = convertEnergeticYArr(ySample, s.unit)
+      const tUnit = getTargetUnit(s.unit)
       const propLabel = tUnit ? `${prop} (${tUnit})` : prop
       const name =
         nameMode === 'set'
@@ -1201,8 +1374,7 @@
     for (const set of visibleCompareSets.length ? visibleCompareSets : analysisSets) {
       const s = set.energeticResult?.rawSeries?.find((r) => r.baseName === baseName)
       if (!s) continue
-      const eo = set.energeticOptions
-      const tUnit = getTargetUnitForSet(s.unit, eo)
+      const tUnit = getTargetUnit(s.unit)
       return tUnit ? `${baseName} (${tUnit})` : baseName
     }
     const local = rawSeries.find((r) => r.baseName === baseName)
@@ -1211,6 +1383,26 @@
       return tUnit ? `${baseName} (${tUnit})` : baseName
     }
     return baseName
+  }
+
+  /** Persist current energetic unit prefs onto every set so sessions stay aligned with the sidebar. */
+  function syncEnergeticUnitPrefsToAllSets() {
+    const units = {
+      timeUnits,
+      energyUnits,
+      pressureUnits,
+      temperatureUnits,
+      volumeUnits
+    }
+    analysisSets = analysisSets.map((s) => ({
+      ...s,
+      energeticOptions: { ...s.energeticOptions, ...units }
+    }))
+  }
+
+  function onEnergeticUnitChange() {
+    syncEnergeticUnitPrefsToAllSets()
+    persistActiveSetFields()
   }
 
   /** Y-axis label for an energetic panel (property + units; not set names). */
@@ -1282,9 +1474,11 @@
     if (mode === 'structural') {
       return chartView.series
     }
+    // Empty property selection → hide all energetic plots.
+    if (selectedProperties.length === 0 || compareEnergeticProperties.length === 0) return []
     // Multi-set energetic sessions: always build from visible sets only (never active rawSeries).
     if (energeticMultiSetSession) {
-      if (visibleCompareSets.length === 0 || compareEnergeticProperties.length === 0) return []
+      if (visibleCompareSets.length === 0) return []
       const colorBySet = energeticCompareLayout !== 'by_set'
       const nameMode =
         energeticCompareLayout === 'by_property'
@@ -1300,7 +1494,16 @@
         })
       )
     }
-    // Single-set energetic: active set rawSeries
+    // Single-set: build from live set result so session load refreshes without a mode toggle.
+    const activeSet = analysisSets.find((s) => s.id === activeSetId)
+    if (activeSet && energeticResultHasPlotData(activeSet.energeticResult)) {
+      return seriesFromEnergeticSet(activeSet, compareEnergeticProperties, {
+        maxPoints: DEFAULT_CHART_MAX_POINTS,
+        colorBySet: false,
+        nameMode: 'prop'
+      })
+    }
+    // Fallback while a run is in progress (result not yet written to the set).
     if (rawSeries.length === 0) return []
     const visible = rawSeries.filter((s) => selectedProperties.includes(s.baseName))
     return visible.map((s) => {
@@ -1324,48 +1527,52 @@
     })
   })
 
+  /**
+   * Series used for the stats table — always mirrors what is currently plotted,
+   * with unambiguous labels (set · property) so unchecking sets/props updates rows.
+   */
+  const statsSourceSeries = $derived.by(() => {
+    plotDataRevision
+    if (mode === 'structural') return displaySeries
+    if (selectedProperties.length === 0 || compareEnergeticProperties.length === 0) return []
+    if (energeticMultiSetSession) {
+      if (visibleCompareSets.length === 0) return []
+      // Always label as "Set · Property" so every visible curve has a unique stats row.
+      return visibleCompareSets.flatMap((set) =>
+        seriesFromEnergeticSet(set, compareEnergeticProperties, {
+          maxPoints: DEFAULT_CHART_MAX_POINTS,
+          colorBySet: true,
+          nameMode: 'set_prop'
+        })
+      )
+    }
+    const activeSet = analysisSets.find((s) => s.id === activeSetId)
+    if (activeSet && energeticResultHasPlotData(activeSet.energeticResult)) {
+      return seriesFromEnergeticSet(activeSet, compareEnergeticProperties, {
+        maxPoints: DEFAULT_CHART_MAX_POINTS,
+        colorBySet: false,
+        nameMode: 'prop'
+      })
+    }
+    return displaySeries
+  })
+
   const chartStatsRows = $derived.by(() => {
-    if (displaySeries.length === 0) return []
+    if (statsSourceSeries.length === 0) return []
     const t0 = statsRange ? Math.min(statsRange.t0, statsRange.t1) : null
     const t1 = statsRange ? Math.max(statsRange.t0, statsRange.t1) : null
-    return displaySeries.map((s) => {
-      let stats
-      if (t0 != null && t1 != null && hasChartTimeAxis) {
-        stats = computeSeriesStats(s, t0, t1)
-      } else if (
-        !statsRange &&
-        mode === 'structural' &&
-        !showStructuralSetOverlay &&
-        !isCompareOverlay &&
-        s.name === activeStructRes?.seriesName &&
-        activePrimaryStats
-      ) {
-        stats = {
-          count: s.y?.length ?? 0,
-          mean: activePrimaryStats.mean,
-          std: activePrimaryStats.std,
-          min: activePrimaryStats.min,
-          max: activePrimaryStats.max
-        }
-      } else if (
-        !statsRange &&
-        mode === 'energetic' &&
-        !energeticMultiSetSession &&
-        primaryStats &&
-        displaySeries.length === 1
-      ) {
-        // Only reuse active-set primaryStats in single-set mode (visible set may ≠ active).
-        stats = {
-          count: s.y?.length ?? 0,
-          mean: primaryStats.mean,
-          std: primaryStats.std,
-          min: primaryStats.min,
-          max: primaryStats.max
-        }
-      } else {
-        stats = computeSeriesStats(s)
+    return statsSourceSeries.map((s, i) => {
+      // Always compute from converted display series so stats match selected units.
+      const stats =
+        t0 != null && t1 != null && hasChartTimeAxis
+          ? computeSeriesStats(s, t0, t1)
+          : computeSeriesStats(s)
+      return {
+        id: `${s.baseName || s.key || s.name || 'series'}-${i}`,
+        name: s.name,
+        color: s.color || '#f59e0b',
+        stats
       }
-      return { name: s.name, color: s.color || '#f59e0b', stats }
     })
   })
 
@@ -1533,6 +1740,11 @@
   }
 
   function captureStructuralOptions() {
+    const active = analysisSets.find((s) => s.id === activeSetId)
+    const selectionsByType = {
+      ...(active?.structuralOptions?.selectionsByType || {})
+    }
+    selectionsByType[structuralType] = snapshotCurrentTypeSelection()
     return {
       structuralType,
       selection,
@@ -1543,7 +1755,8 @@
       leafletLipidSel,
       leafletFilterSel,
       nBins,
-      interpolate
+      interpolate,
+      selectionsByType
     }
   }
 
@@ -1562,16 +1775,28 @@
   }
 
   function applyStructuralOptions(/** @type {import('../lib/analysisSets.js').StructuralOptions} */ opts) {
-    structuralType = opts.structuralType
-    selection = opts.selection
-    selection2 = opts.selection2
-    referenceFrame = opts.referenceFrame
-    align = opts.align
-    rmsfXaxisType = opts.rmsfXaxisType
-    leafletLipidSel = opts.leafletLipidSel
-    leafletFilterSel = opts.leafletFilterSel
-    nBins = opts.nBins
-    interpolate = opts.interpolate
+    const type = opts.structuralType || 'rmsd'
+    structuralType = type
+    const snap = resolveStructuralTypeSelection(opts, type)
+    applyTypeSelectionSnapshot(snap, type)
+    // Prefer explicit flat fields when they match the active type and are usable
+    // (keeps session loads / persist round-trips exact).
+    if (opts.structuralType === type && typeof opts.selection === 'string') {
+      const flatOk =
+        !isBilayerType(type) ||
+        (!looksLikeProteinSelection(opts.selection) && Boolean(opts.selection.trim()))
+      if (flatOk) {
+        selection = opts.selection
+        selection2 = opts.selection2
+        referenceFrame = opts.referenceFrame
+        align = opts.align
+        rmsfXaxisType = opts.rmsfXaxisType
+        leafletLipidSel = opts.leafletLipidSel
+        leafletFilterSel = opts.leafletFilterSel
+        nBins = opts.nBins
+        interpolate = opts.interpolate
+      }
+    }
   }
 
   function applyEnergeticOptions(/** @type {import('../lib/analysisSets.js').EnergeticOptions} */ opts) {
@@ -1608,15 +1833,16 @@
     }))
     chartTitle = res.chartTitle || chartTitle || 'Energetic Analysis'
     chartXLabel = res.chartXLabel || 'Time'
-    // Keep property checkboxes aligned with stored result (session load / set switch).
+    // All series names stay available for checkboxes; selectedProperties is visibility only.
+    const allNames = rawSeries.map((s) => s.baseName).filter(Boolean)
+    if (allNames.length) {
+      availableProperties = [...new Set([...availableProperties, ...allNames])]
+    }
     const fromResult = res.selectedProperties?.length
       ? [...res.selectedProperties]
-      : rawSeries.map((s) => s.baseName).filter(Boolean)
+      : allNames
     if (fromResult.length && selectedProperties.length === 0) {
       selectedProperties = fromResult
-    }
-    if (fromResult.length && availableProperties.length === 0) {
-      availableProperties = [...fromResult]
     }
     for (const p of selectedProperties) ensureEPlotPanel(p)
     const first = rawSeries?.[0]?.key ?? res.selectedProperties?.[0]
@@ -1644,8 +1870,21 @@
     const set = analysisSets.find((s) => s.id === activeSetId) || visibleWithData[0]
     if (!set) return
     applyEnergeticOptions(set.energeticOptions || defaultEnergeticOptionsFallback())
-    // Merge selected props from all sets that have energetic results (compare UX).
-    const unionProps = [
+    // All analyzed series stay listed; selectedProperties restores visibility from the session.
+    const allSeriesProps = [
+      ...new Set(
+        analysisSets.flatMap((s) =>
+          (s.energeticResult?.rawSeries || []).map((r) => r.baseName).filter(Boolean)
+        )
+      )
+    ]
+    const fromOptions = [
+      ...new Set(
+        analysisSets.flatMap((s) => s.energeticOptions?.availableProperties || [])
+      )
+    ]
+    availableProperties = [...new Set([...fromOptions, ...allSeriesProps, ...availableProperties])]
+    const savedVisible = [
       ...new Set(
         analysisSets.flatMap((s) => {
           const res = s.energeticResult
@@ -1655,19 +1894,20 @@
         })
       )
     ]
-    if (unionProps.length) {
-      selectedProperties = unionProps.filter(
+    if (savedVisible.length) {
+      selectedProperties = savedVisible.filter(
         (p) =>
           !availableProperties.length ||
           availableProperties.includes(p) ||
-          analysisSets.some((s) =>
-            (s.energeticResult?.rawSeries || []).some((r) => r.baseName === p)
-          )
+          allSeriesProps.includes(p)
       )
-      if (selectedProperties.length === 0) selectedProperties = [...unionProps]
+      if (selectedProperties.length === 0) selectedProperties = [...savedVisible]
+    } else if (allSeriesProps.length && selectedProperties.length === 0) {
+      selectedProperties = [...allSeriesProps]
     }
     applyEnergeticResultToView(set.energeticResult)
     for (const p of selectedProperties) ensureEPlotPanel(p)
+    focusedPanelKey = selectedProperties[0] ?? focusedPanelKey
     // Touch analysisSets so $derived charts re-subscribe after async hydrate.
     analysisSets = analysisSets.map((s) => ({ ...s }))
     bumpPlotData()
@@ -1704,38 +1944,74 @@
   function loadActiveSetFields() {
     const set = analysisSets.find((s) => s.id === activeSetId)
     if (!set) return
-    topologyPath = set.topologyPath
-    trajectoryFiles = [...set.trajectoryFiles]
-    applyStructuralOptions(set.structuralOptions)
-    applyEnergeticOptions(set.energeticOptions)
-    if (!outputFolderName.trim()) {
-      outputFolderName = defaultAnalysisFolderName(topologyPath)
-    }
-    lipidHeadgroupAtoms = []
-    headgroupDetectAttempted = false
-    if (set.structuralResult || set.structuralResults) {
-      rebuildStructResultsFromSets()
-    }
-    if (mode === 'energetic') {
-      applyEnergeticResultToView(set.energeticResult)
+    suppressSessionDirty = true
+    try {
+      topologyPath = set.topologyPath
+      trajectoryFiles = [...set.trajectoryFiles]
+      applyStructuralOptions(set.structuralOptions)
+      applyEnergeticOptions(set.energeticOptions)
+      if (!outputFolderName.trim()) {
+        outputFolderName = defaultAnalysisFolderName(topologyPath)
+      }
+      headgroupDetectAttempted = lipidHeadgroupAtoms.length > 0
+      if (set.structuralResult || set.structuralResults) {
+        rebuildStructResultsFromSets()
+      }
+      if (mode === 'energetic') {
+        applyEnergeticResultToView(set.energeticResult)
+      }
+    } finally {
+      suppressSessionDirty = false
     }
   }
 
   function updateSetLabel(id, label) {
+    markSessionDirty()
     analysisSets = analysisSets.map((s) => (s.id === id ? { ...s, label } : s))
   }
 
-  function onModeChange(/** @type {'structural' | 'energetic'} */ next) {
+  // Clear "session saved" notice once the user edits analysis inputs again.
+  // Do not track analysisSets here — post-save CSV hydrate reassigns sets and would
+  // clear the notice immediately.
+  $effect(() => {
+    void selection
+    void selection2
+    void structuralType
+    void topologyPath
+    void trajectoryFiles
+    void mode
+    void referenceFrame
+    void align
+    void rmsfXaxisType
+    void leafletLipidSel
+    void leafletFilterSel
+    void nBins
+    void interpolate
+    void lipidHeadgroupAtoms
+    void energeticEngine
+    void logFiles
+    void selectedProperties
+    void sessionName
+    void outputFolderName
+    markSessionDirty()
+  })
+
+  async function onModeChange(/** @type {'structural' | 'energetic'} */ next) {
     if (next === mode) return
-    persistActiveSetFields()
-    mode = next
-    loadActiveSetFields()
-    if (next === 'energetic') {
-      rebuildEnergeticViewAfterLoad()
-    } else {
-      rebuildStructResultsFromSets()
-      bumpPlotData()
-    }
+    await withPlotViewBusy(
+      next === 'energetic' ? 'Switching to energetic…' : 'Switching to structural…',
+      async () => {
+        persistActiveSetFields()
+        mode = next
+        loadActiveSetFields()
+        if (next === 'energetic') {
+          rebuildEnergeticViewAfterLoad()
+        } else {
+          rebuildStructResultsFromSets()
+          bumpPlotData()
+        }
+      }
+    )
   }
 
   function selectAnalysisSet(id) {
@@ -1747,6 +2023,7 @@
 
   function addAnalysisSet() {
     persistActiveSetFields()
+    markSessionDirty()
     const id = newSetId()
     analysisSets = [...analysisSets, createAnalysisSet(analysisSets.length, id)]
     activeSetId = id
@@ -1755,6 +2032,7 @@
 
   function duplicateActiveSet() {
     persistActiveSetFields()
+    markSessionDirty()
     const current = analysisSets.find((s) => s.id === activeSetId)
     if (!current) return
     const copy = duplicateAnalysisSet(current, analysisSets.length)
@@ -1765,6 +2043,7 @@
 
   function removeAnalysisSet(id) {
     if (analysisSets.length <= 1) return
+    markSessionDirty()
     analysisSets = analysisSets.filter((s) => s.id !== id)
     if (activeSetId === id) {
       activeSetId = analysisSets[0].id
@@ -1773,20 +2052,26 @@
   }
 
   function toggleSetVisible(id, visible) {
-    analysisSets = analysisSets.map((s) => (s.id === id ? { ...s, visible } : s))
-    bumpPlotData()
+    void withPlotViewBusy(visible ? 'Showing set…' : 'Hiding set…', async () => {
+      analysisSets = analysisSets.map((s) => (s.id === id ? { ...s, visible } : s))
+      bumpPlotData()
+    })
   }
 
   /** @param {'overlay' | 'grid'} layout */
   function setCompareLayout(layout) {
-    compareLayout = layout === 'grid' ? 'grid' : 'overlay'
-    bumpPlotData()
+    void withPlotViewBusy('Updating layout…', async () => {
+      compareLayout = layout === 'grid' ? 'grid' : 'overlay'
+      bumpPlotData()
+    })
   }
 
   /** @param {import('../lib/analysisSession.js').EnergeticCompareLayout | string} layout */
   function setEnergeticCompareLayout(layout) {
-    energeticCompareLayout = normalizeEnergeticCompareLayout(layout)
-    bumpPlotData()
+    void withPlotViewBusy('Updating layout…', async () => {
+      energeticCompareLayout = normalizeEnergeticCompareLayout(layout)
+      bumpPlotData()
+    })
   }
 
   /** @param {string} type @param {object} resultPayload */
@@ -1841,11 +2126,7 @@
     if (structuralType === 'distance' && (!selection || !selection2))
       throw new Error('Distance analysis requires two atom selections.')
     if (isBilayerType(structuralType)) {
-      if (!selection.trim() && topologyPath) {
-        await refreshHeadgroupAtoms()
-      }
-      if (!selection.trim())
-        throw new Error('Enable at least one phosphate/headgroup atom name.')
+      await ensureBilayerSelectionReady()
     }
 
     const result = await runStructuralAnalysis({
@@ -1897,11 +2178,21 @@
   async function runEnergeticForActiveSet() {
     const setLabel = analysisSets.find((s) => s.id === activeSetId)?.label ?? 'Set'
     if (logFiles.length === 0) throw new Error(`Set "${setLabel}": add at least one log file.`)
-    if (selectedProperties.length === 0) throw new Error(`Set "${setLabel}": select at least one property.`)
+    // Analyze every detected property so CSV/session keep full data; checkboxes only control plots.
+    const propsToAnalyze =
+      availableProperties.length > 0 ? [...availableProperties] : [...selectedProperties]
+    if (propsToAnalyze.length === 0) {
+      throw new Error(
+        `Set "${setLabel}": detect properties first (or select at least one property).`
+      )
+    }
+    if (selectedProperties.length === 0) {
+      selectedProperties = [...propsToAnalyze]
+    }
 
     const result = await runEnergeticAnalysis({
       logPaths: logFiles.map((f) => f.path),
-      properties: selectedProperties,
+      properties: propsToAnalyze,
       fileTimes: makeFileTimes(logFiles),
       fileStrides: makeFileStrides(logFiles),
       timeUnits,
@@ -1919,6 +2210,11 @@
       y: s.y || [],
       key: s.key
     }))
+    const analyzedNames = rawSeriesLocal.map((s) => s.baseName).filter(Boolean)
+    availableProperties = [...new Set([...availableProperties, ...analyzedNames])]
+    // Keep visibility selection; drop names that were not returned.
+    selectedProperties = selectedProperties.filter((p) => analyzedNames.includes(p))
+    if (selectedProperties.length === 0) selectedProperties = [...analyzedNames]
 
     storeEnergeticResult({
       rawX: result.x || [],
@@ -2275,55 +2571,129 @@
 
   async function onStructuralTypeChange(nextType) {
     if (nextType === structuralType) return
-    const activeSet = analysisSets.find((s) => s.id === activeSetId)
-    const prevType = activeSet?.structuralOptions?.structuralType ?? structuralType
+    await withPlotViewBusy('Switching analysis type…', async () => {
+      await applyStructuralTypeChange(nextType)
+    })
+  }
+
+  /** @param {string} nextType */
+  async function applyStructuralTypeChange(nextType) {
+    const prevType = structuralType
+    markSessionDirty()
 
     if (isBilayerType(prevType) && !isBilayerType(nextType)) {
       headgroupDetectGeneration += 1
     }
 
-    structuralType = nextType
-    analysisSets = analysisSets.map((s) =>
-      s.id === activeSetId
-        ? {
-            ...s,
-            structuralOptions: {
-              ...s.structuralOptions,
-              structuralType: nextType,
-              ...(isBilayerType(prevType) && !isBilayerType(nextType)
-                ? defaultSelectionForStructuralType(nextType)
-                : nextType === 'rmsf' &&
-                    (!s.structuralOptions?.selection ||
-                      s.structuralOptions.selection === 'protein and backbone')
-                  ? { selection: 'protein and name CA' }
-                  : {})
-            }
+    // Freeze the leaving type's selection into every set's map (active set from UI).
+    const prevSnapshot = snapshotCurrentTypeSelection()
+    analysisSets = analysisSets.map((s) => {
+      const map = { ...(s.structuralOptions?.selectionsByType || {}) }
+      if (s.id === activeSetId) {
+        map[prevType] = prevSnapshot
+      } else if (!map[prevType] && s.structuralOptions) {
+        // Preserve whatever flat fields that set last had for the previous type.
+        map[prevType] = {
+          selection: s.structuralOptions.selection,
+          selection2: s.structuralOptions.selection2,
+          referenceFrame: s.structuralOptions.referenceFrame,
+          align: s.structuralOptions.align,
+          rmsfXaxisType: s.structuralOptions.rmsfXaxisType,
+          leafletLipidSel: s.structuralOptions.leafletLipidSel,
+          leafletFilterSel: s.structuralOptions.leafletFilterSel,
+          nBins: s.structuralOptions.nBins,
+          interpolate: s.structuralOptions.interpolate,
+          lipidHeadgroupAtoms: []
+        }
+      }
+      const nextSnap = resolveStructuralTypeSelection(
+        { ...s.structuralOptions, selectionsByType: map, structuralType: prevType },
+        nextType
+      )
+      // First visit to a bilayer type: do not carry protein/RMSD selection forward.
+      const nextSelection =
+        isBilayerType(nextType) && looksLikeProteinSelection(nextSnap.selection)
+          ? ''
+          : nextSnap.selection
+      return {
+        ...s,
+        structuralOptions: {
+          ...s.structuralOptions,
+          structuralType: nextType,
+          selection: nextSelection,
+          selection2: nextSnap.selection2,
+          referenceFrame: nextSnap.referenceFrame ?? s.structuralOptions.referenceFrame,
+          align: nextSnap.align ?? s.structuralOptions.align,
+          rmsfXaxisType: nextSnap.rmsfXaxisType ?? s.structuralOptions.rmsfXaxisType,
+          leafletLipidSel: nextSnap.leafletLipidSel ?? '',
+          leafletFilterSel: nextSnap.leafletFilterSel ?? '',
+          nBins: nextSnap.nBins ?? s.structuralOptions.nBins,
+          interpolate: nextSnap.interpolate ?? s.structuralOptions.interpolate,
+          selectionsByType: {
+            ...map,
+            [nextType]: { ...nextSnap, selection: nextSelection }
           }
-        : { ...s, structuralOptions: { ...s.structuralOptions, structuralType: nextType } }
-    )
+        }
+      }
+    })
+
+    structuralType = nextType
+    const active = analysisSets.find((s) => s.id === activeSetId)
+    if (active) {
+      applyTypeSelectionSnapshot(
+        resolveStructuralTypeSelection(active.structuralOptions, nextType),
+        nextType
+      )
+      // Keep UI selection empty when resolve still yielded protein for bilayer.
+      if (isBilayerType(nextType) && looksLikeProteinSelection(selection)) {
+        selection = ''
+        lipidHeadgroupAtoms = []
+      }
+    }
+
     rebuildStructResultsFromSets()
 
     if (isBilayerType(nextType)) {
-      lipidHeadgroupAtoms = []
       headgroupDetectAttempted = false
-      if (topologyPath) {
+      const needsDetect =
+        !selection.trim() ||
+        looksLikeProteinSelection(selection) ||
+        lipidHeadgroupAtoms.length === 0
+      if (needsDetect && topologyPath) {
         await refreshHeadgroupAtoms()
+      } else if (lipidHeadgroupAtoms.length > 0) {
+        syncHeadgroupSelection()
       }
-    } else if (isBilayerType(prevType)) {
-      const defs = defaultSelectionForStructuralType(nextType)
-      selection = defs.selection
-      selection2 = defs.selection2
-      lipidHeadgroupAtoms = []
+    } else {
       headgroupDetectAttempted = false
-      leafletLipidSel = ''
-      leafletFilterSel = ''
-    } else if (nextType === 'rmsf' && (!selection || selection === 'protein and backbone')) {
-      selection = 'protein and name CA'
     }
 
     persistActiveSetFields()
     await hydratePlotDataFromOutputFolder()
     bumpPlotData()
+  }
+
+  /**
+   * Ensure the active set has a usable lipid headgroup selection before bilayer runs.
+   * Auto-detects when empty or still carrying a protein/RMSD selection.
+   */
+  async function ensureBilayerSelectionReady() {
+    if (!isBilayerType(structuralType)) return
+    const needsDetect =
+      !selection.trim() ||
+      looksLikeProteinSelection(selection) ||
+      (lipidHeadgroupAtoms.length === 0 && !looksLikeBilayerHeadgroupSelection(selection))
+    if (needsDetect && topologyPath) {
+      await refreshHeadgroupAtoms()
+    }
+    if (!selection.trim()) {
+      throw new Error('Enable at least one phosphate/headgroup atom name.')
+    }
+    if (looksLikeProteinSelection(selection)) {
+      throw new Error(
+        'Bilayer analysis requires lipid headgroup atoms (e.g. phosphates), not a protein/backbone selection. Click Refresh under Headgroup atoms or pick phosphate names.'
+      )
+    }
   }
 
   /** File picker filters for energetic logs — Amber uses mdout, others use .log. */
@@ -2407,6 +2777,33 @@
     lastError = ''
   }
 
+  /**
+   * @param {string} message
+   * @param {{ autoHideMs?: number, markClean?: boolean }} [opts]
+   */
+  function showSessionActionNotice(message, opts = {}) {
+    clearSessionActionNoticeTimer()
+    sessionActionNotice = message
+    if (opts.markClean !== false) sessionSavedClean = true
+    lastError = ''
+    const ms = opts.autoHideMs
+    if (ms != null && ms > 0) {
+      sessionActionNoticeTimer = setTimeout(() => {
+        if (sessionActionNotice === message) sessionActionNotice = ''
+        sessionActionNoticeTimer = null
+      }, ms)
+    }
+  }
+
+  function showSessionAlreadySavedNotice() {
+    // Keep fingerprint; only refresh the toast.
+    showSessionActionNotice('Latest changes are already saved.', {
+      autoHideMs: 3500,
+      markClean: true
+    })
+    sessionSavedClean = true
+  }
+
   function onDropTrajectory(e, index) {
     e.preventDefault()
     if (dragIdx === -1 || dragIdx === index) {
@@ -2465,14 +2862,27 @@
   }
 
   function onClear() {
+    plotViewBusyGeneration += 1
+    plotViewBusy = false
     mode = 'structural'
     running = false
+    detectingProperties = false
     outputFolderName = ''
+    sessionName = ''
+    clearSessionActionNoticeTimer()
+    sessionActionNotice = ''
+    sessionSavedClean = false
+    lastSavedSessionFingerprint = ''
+    selectedSessionPath = ''
+    analysisActionNotice = ''
     topologyPath = ''
     trajectoryFiles = []
     structuralType = 'rmsd'
     selection = 'protein and backbone'
     selection2 = 'protein and resid 50'
+    selectionAtomCount = null
+    selection2AtomCount = null
+    selectionCountError = ''
     referenceFrame = '0'
     align = true
     rmsfXaxisType = 'residue_number'
@@ -2534,6 +2944,12 @@
       area_per_lipid: null,
       membrane_thickness: null
     }
+    chartView = { mode: 'empty', series: [], panels: [] }
+    plotDataRevision += 1
+    svgEl = null
+    runProgressStages = []
+    runAnalysisScope = 'current'
+    runAnalysisMenuOpen = false
     showSelectionHelp = false
     showTopoInfo = false
     topoInfo = null
@@ -2544,6 +2960,7 @@
     analysisStatus.resultAvailable = false
     analysisStatus.error = ''
     resetAnalysisProgress()
+    bumpPlotData()
     if (workingDir) {
       void refreshSavedSessions()
     }
@@ -2641,18 +3058,28 @@
   }
 
   function toggleProperty(prop, checked) {
-    const nextProps = checked
-      ? selectedProperties.includes(prop)
-        ? [...selectedProperties]
-        : [...selectedProperties, prop]
-      : selectedProperties.filter((p) => p !== prop)
-    selectedProperties = nextProps
-    if (checked) ensureEPlotPanel(prop)
-    // Keep stored set metadata aligned so save/compare stay consistent with checkboxes.
-    analysisSets = analysisSets.map((s) => {
-      if (isCompareOverlay) {
-        // While comparing, property visibility is shared across sets.
-        if (!s.energeticResult && s.id !== activeSetId) return s
+    void withPlotViewBusy(checked ? 'Showing property…' : 'Hiding property…', async () => {
+      const nextProps = checked
+        ? selectedProperties.includes(prop)
+          ? [...selectedProperties]
+          : [...selectedProperties, prop]
+        : selectedProperties.filter((p) => p !== prop)
+      selectedProperties = nextProps
+      if (checked) ensureEPlotPanel(prop)
+      // Keep stored set metadata aligned so save/compare stay consistent with checkboxes.
+      analysisSets = analysisSets.map((s) => {
+        if (isCompareOverlay) {
+          // While comparing, property visibility is shared across sets.
+          if (!s.energeticResult && s.id !== activeSetId) return s
+          return {
+            ...s,
+            energeticOptions: { ...s.energeticOptions, selectedProperties: [...nextProps] },
+            energeticResult: s.energeticResult
+              ? { ...s.energeticResult, selectedProperties: [...nextProps] }
+              : s.energeticResult
+          }
+        }
+        if (s.id !== activeSetId) return s
         return {
           ...s,
           energeticOptions: { ...s.energeticOptions, selectedProperties: [...nextProps] },
@@ -2660,18 +3087,10 @@
             ? { ...s.energeticResult, selectedProperties: [...nextProps] }
             : s.energeticResult
         }
-      }
-      if (s.id !== activeSetId) return s
-      return {
-        ...s,
-        energeticOptions: { ...s.energeticOptions, selectedProperties: [...nextProps] },
-        energeticResult: s.energeticResult
-          ? { ...s.energeticResult, selectedProperties: [...nextProps] }
-          : s.energeticResult
-      }
+      })
+      if (checked && !focusedPanelKey) focusedPanelKey = prop
+      bumpPlotData()
     })
-    if (checked && !focusedPanelKey) focusedPanelKey = prop
-    bumpPlotData()
   }
 
   // ---- Run analysis ----
@@ -2715,6 +3134,8 @@
       // Save both structural + energetic results present on sets (mixed sessions).
       await saveAnalysisSessionToOutputFolder()
       await hydratePlotDataFromOutputFolder()
+      // Hydrate can rewrite set arrays — refresh fingerprint after it settles.
+      rememberSessionSaveFingerprint()
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
       lastError = lastError || msg
@@ -2746,6 +3167,26 @@
         activeSetId = set.id
         loadActiveSetFields()
         structuralType = runStructuralType
+        // Re-apply per-type selection for this set (do not keep another set's UI selection).
+        {
+          const loaded = analysisSets.find((s) => s.id === set.id)
+          if (loaded) {
+            applyTypeSelectionSnapshot(
+              resolveStructuralTypeSelection(loaded.structuralOptions, runStructuralType),
+              runStructuralType
+            )
+            if (
+              isBilayerType(runStructuralType) &&
+              looksLikeProteinSelection(selection)
+            ) {
+              selection = ''
+              lipidHeadgroupAtoms = []
+            }
+          }
+        }
+        if (mode === 'structural' && isBilayerType(runStructuralType)) {
+          await ensureBilayerSelectionReady()
+        }
         persistActiveSetFields()
         runProgressStages = runProgressStages.map((stage, idx) =>
           idx === i ? { ...stage, status: 'running' } : stage
@@ -2804,6 +3245,7 @@
       activeSetId = savedId
       loadActiveSetFields()
       await hydratePlotDataFromOutputFolder()
+      rememberSessionSaveFingerprint()
       running = false
       analysisStatus.progress.phase = errors.length > 0 && completed > 0 ? 'error' : 'done'
       if (completed === total && errors.length === 0) {
@@ -2895,61 +3337,94 @@
     }
   }
 
-  async function saveAnalysisSessionToOutputFolder() {
+  /**
+   * @param {{ manual?: boolean }} [opts] `manual: true` for the Save button (skip rewrite when clean).
+   */
+  async function saveAnalysisSessionToOutputFolder(opts = {}) {
+    if (opts.manual) {
+      // Align set snapshots with the sidebar before comparing fingerprints.
+      suppressSessionDirty = true
+      try {
+        persistActiveSetFields()
+      } finally {
+        suppressSessionDirty = false
+      }
+      if (isSessionSaveUpToDate()) {
+        showSessionAlreadySavedNotice()
+        return true
+      }
+    }
     if (!canRunAnalysis) {
       lastError = 'Set a working directory in the top bar before saving.'
       return false
     }
-    syncResultsToSetsBeforeSave()
-    syncOutputFolderName()
-    const folderName = resolveOutputFolderName()
-    if (!folderName) {
-      lastError = 'Set an output folder name before saving.'
-      return false
-    }
-    if (!setsHaveAnyPlottableResults(analysisSets)) {
-      lastError = 'No analysis results to save. Run analysis first.'
-      return false
-    }
+    suppressSessionDirty = true
     try {
-      // Write CSVs for both result types without flipping the open tab (mode).
-      for (const set of analysisSets) {
-        if (set.energeticResult) {
-          await saveAnalysisCsvToOutputFolder(set, { mode: 'energetic' })
-        }
-        if (structuralSetHasPlottableResult(set)) {
-          const types = getSetStructuralResultTypes(normalizeAnalysisSetStructuralResults(set))
-          for (const type of types) {
-            const res = getSetStructuralResult(set, type)
-            if (!res || !structuralResultHasPlotData(res)) continue
-            await saveAnalysisCsvToOutputFolder(set, {
-              mode: 'structural',
-              structuralType: type
-            })
+      syncResultsToSetsBeforeSave()
+      syncOutputFolderName()
+      const folderName = resolveOutputFolderName()
+      if (!folderName) {
+        lastError = 'Set an output folder name before saving.'
+        return false
+      }
+      if (!setsHaveAnyPlottableResults(analysisSets)) {
+        lastError = 'No analysis results to save. Run analysis first.'
+        return false
+      }
+      try {
+        // Write CSVs for both result types without flipping the open tab (mode).
+        for (const set of analysisSets) {
+          if (set.energeticResult) {
+            await saveAnalysisCsvToOutputFolder(set, { mode: 'energetic' })
+          }
+          if (structuralSetHasPlottableResult(set)) {
+            const types = getSetStructuralResultTypes(normalizeAnalysisSetStructuralResults(set))
+            for (const type of types) {
+              const res = getSetStructuralResult(set, type)
+              if (!res || !structuralResultHasPlotData(res)) continue
+              await saveAnalysisCsvToOutputFolder(set, {
+                mode: 'structural',
+                structuralType: type
+              })
+            }
           }
         }
+        const { output_dir } = await ensureOutputFolder(workingDir, folderName)
+        const session = serializeAnalysisSession({
+          mode,
+          compareLayout,
+          energeticCompareLayout,
+          outputFolderName: folderName,
+          sessionName,
+          activeSetId,
+          sets: slimSetsForSessionSave(analysisSets, 'all')
+        })
+        const filePath = `${output_dir}/${ANALYSIS_SESSION_FILENAME}`.replace(/\\/g, '/')
+        await window.api.writeJson(filePath, session)
+        const identity = formatAnalysisSessionIdentity({
+          sessionName,
+          outputFolderName: folderName
+        })
+        logEvent('info', 'analysis', 'Saved analysis session', `${identity} → ${filePath}`)
+        selectedSessionPath = filePath
+        lastError = ''
+        await refreshSavedSessions()
+        showSessionActionNotice(`Saved “${identity}” to ${filePath}`)
+        rememberSessionSaveFingerprint()
+        void notifyJobFinishedIfUnfocused({
+          id: `analysis-session:${filePath}`,
+          title: 'Analysis session saved',
+          body: `Saved “${identity}” to ${filePath}`,
+          sourcePage: 'analysis'
+        })
+        return true
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error)
+        logEvent('error', 'analysis', 'Failed to save analysis session', lastError)
+        return false
       }
-      const { output_dir } = await ensureOutputFolder(workingDir, folderName)
-      const session = serializeAnalysisSession({
-        mode,
-        compareLayout,
-        energeticCompareLayout,
-        outputFolderName: folderName,
-        activeSetId,
-        sets: slimSetsForSessionSave(analysisSets, 'all')
-      })
-      const filePath = `${output_dir}/${ANALYSIS_SESSION_FILENAME}`.replace(/\\/g, '/')
-      await window.api.writeJson(filePath, session)
-      logEvent('info', 'analysis', 'Saved analysis session', filePath)
-      selectedSessionPath = filePath
-      lastError = ''
-      await refreshSavedSessions()
-      showAnalysisActionNotice(`Saved session to ${filePath}`)
-      return true
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error)
-      logEvent('error', 'analysis', 'Failed to save analysis session', lastError)
-      return false
+    } finally {
+      suppressSessionDirty = false
     }
   }
 
@@ -3178,12 +3653,28 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           </span>
         {/if}
       </div>
+      <div class="space-y-1">
+        <p class="sidebar-label">Session name</p>
+        <Input
+          type="text"
+          size="sm"
+          bind:value={sessionName}
+          className="w-full"
+          placeholder="e.g. POPC APL vs thickness"
+          title="Optional label to identify this analysis (saved with the session; folder name stays separate)"
+        />
+        {#if currentSessionIdentity}
+          <p class="sidebar-hint" title="Session name · output folder">
+            Current: <span class="font-medium text-neutral-700 dark:text-neutral-300">{currentSessionIdentity}</span>
+          </p>
+        {/if}
+      </div>
       {#if savedSessions.length > 0}
         <Select size="sm" className="w-full" bind:value={selectedSessionPath}>
           <option value="">Select a saved session…</option>
           {#each savedSessions as session (session.session_path)}
             <option value={session.session_path}>
-              {session.name} · {session.mode} · {session.set_count} set(s) · {session.analysis_summary}
+              {formatSavedSessionOption(session)}
             </option>
           {/each}
         </Select>
@@ -3193,7 +3684,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           size="sm"
           variant="outline"
           className="min-w-0 flex-1"
-          onclick={() => void saveAnalysisSessionToOutputFolder()}
+          onclick={() => void saveAnalysisSessionToOutputFolder({ manual: true })}
           disabled={!canSaveSession || running}
           title="Write analysis_session.json to the output folder"
         >
@@ -3218,6 +3709,9 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           Browse…
         </Button>
       </div>
+      {#if sessionActionNotice}
+        <p class="gw-notice gw-notice-success text-[11px] leading-snug">{sessionActionNotice}</p>
+      {/if}
     </div>
 
     <Divider />
@@ -3470,6 +3964,11 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
         {#if isBilayerType(structuralType)}
           <div class="space-y-2">
+            {#if bilayerSelectionWarning}
+              <p class="gw-notice gw-notice-warning text-[11px] leading-snug">
+                {bilayerSelectionWarning}
+              </p>
+            {/if}
             <div class="flex items-center justify-between gap-2">
               <div class="flex min-w-0 items-center gap-1">
                 <p class="sidebar-label">Headgroup atoms</p>
@@ -3819,7 +4318,12 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
         <div class="grid grid-cols-2 gap-x-2 gap-y-1.5">
           <div>
             <p class="sidebar-label mb-0.5">Time</p>
-            <Select size="sm" bind:value={timeUnits} className="w-full">
+            <Select
+              size="sm"
+              bind:value={timeUnits}
+              className="w-full"
+              onchange={() => onEnergeticUnitChange()}
+            >
               <option value="ns">ns</option>
               <option value="ps">ps</option>
               <option value="µs">µs</option>
@@ -3827,14 +4331,24 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           </div>
           <div>
             <p class="sidebar-label mb-0.5">Energy</p>
-            <Select size="sm" bind:value={energyUnits} className="w-full">
+            <Select
+              size="sm"
+              bind:value={energyUnits}
+              className="w-full"
+              onchange={() => onEnergeticUnitChange()}
+            >
               <option value="kcal/mol">kcal/mol</option>
               <option value="kJ/mol">kJ/mol</option>
             </Select>
           </div>
           <div>
             <p class="sidebar-label mb-0.5">Pressure</p>
-            <Select size="sm" bind:value={pressureUnits} className="w-full">
+            <Select
+              size="sm"
+              bind:value={pressureUnits}
+              className="w-full"
+              onchange={() => onEnergeticUnitChange()}
+            >
               <option value="atm">atm</option>
               <option value="bar">bar</option>
               <option value="kPa">kPa</option>
@@ -3843,7 +4357,12 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           </div>
           <div>
             <p class="sidebar-label mb-0.5">Temperature</p>
-            <Select size="sm" bind:value={temperatureUnits} className="w-full">
+            <Select
+              size="sm"
+              bind:value={temperatureUnits}
+              className="w-full"
+              onchange={() => onEnergeticUnitChange()}
+            >
               <option value="K">K</option>
               <option value="°C">°C</option>
               <option value="°F">°F</option>
@@ -3851,7 +4370,12 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           </div>
           <div class="col-span-2">
             <p class="sidebar-label mb-0.5">Volume</p>
-            <Select size="sm" bind:value={volumeUnits} className="w-full">
+            <Select
+              size="sm"
+              bind:value={volumeUnits}
+              className="w-full"
+              onchange={() => onEnergeticUnitChange()}
+            >
               <option value="Å³">Å³</option>
               <option value="nm³">nm³</option>
               <option value="mL">mL</option>
@@ -3865,6 +4389,9 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           {#if availableProperties.length === 0}
             <p class="sidebar-hint">Detect properties after adding log files.</p>
           {:else}
+            <p class="sidebar-hint">
+              Checkboxes show/hide plots only. Run analyzes all detected properties; CSV keeps the full data.
+            </p>
             {#each availableProperties as prop (prop)}
               {@const checked = selectedProperties.includes(prop)}
               <label class="flex items-center gap-2">
@@ -4025,7 +4552,15 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             {#if mode === 'structural' && (activeStructRes?.lastAnalysisHasTimeX ?? false)}
               <div>
                 <p class="sidebar-label mb-0.5">X units</p>
-                <Select size="sm" bind:value={ps.xUnit} className="w-full">
+                <Select
+                  size="sm"
+                  bind:value={ps.xUnit}
+                  className="w-full"
+                  onchange={() => {
+                    bumpPlotData()
+                    persistActiveSetFields()
+                  }}
+                >
                   <option value="ns">ns</option>
                   <option value="ps">ps</option>
                   <option value="µs">µs</option>
@@ -4035,7 +4570,15 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             {#if mode === 'structural'}
               <div>
                 <p class="sidebar-label mb-0.5">Y units</p>
-                <Select size="sm" bind:value={ps.yUnit} className="w-full">
+                <Select
+                  size="sm"
+                  bind:value={ps.yUnit}
+                  className="w-full"
+                  onchange={() => {
+                    bumpPlotData()
+                    persistActiveSetFields()
+                  }}
+                >
                   {#if structuralType === 'area_per_lipid'}
                     <option value="Å²">Å²</option>
                     <option value="nm²">nm²</option>
@@ -4654,10 +5197,6 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
       </Button>
     {/if}
 
-    {#if analysisActionNotice}
-      <p class="gw-notice gw-notice-success text-[11px] leading-snug">{analysisActionNotice}</p>
-    {/if}
-
     <div class="space-y-1">
       <p class="sidebar-label">Export chart</p>
       <div class="flex flex-wrap gap-1">
@@ -4702,6 +5241,10 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
       </div>
     </div>
 
+    {#if analysisActionNotice}
+      <p class="gw-notice gw-notice-success text-[11px] leading-snug">{analysisActionNotice}</p>
+    {/if}
+
     <Button className="w-full" variant="ghost" onclick={onClear}>Clear</Button>
   </aside>
 
@@ -4710,6 +5253,21 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
     class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
     style={paneBackgroundStyle}
   >
+    {#if plotViewBusy}
+      <div
+        class="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-neutral-950/35"
+        style="backdrop-filter:blur(1px)"
+        aria-live="polite"
+        aria-busy="true"
+      >
+        <div
+          class="flex items-center gap-2 rounded-lg border border-neutral-600/50 bg-neutral-900/90 px-4 py-2 text-sm text-neutral-100 shadow-lg"
+        >
+          <Spinner className="size-5 text-blue-400" />
+          <span>{plotViewBusyLabel}</span>
+        </div>
+      </div>
+    {/if}
     <h1 class="m-4 mb-2 text-xl font-semibold">{displayTitle || 'Analysis'}</h1>
 
     {#if lastError}
@@ -4733,7 +5291,9 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
       <p
         class="mx-4 mb-4 flex flex-1 items-center justify-center rounded-lg border border-dashed border-neutral-300 text-neutral-500 dark:border-neutral-800 dark:text-neutral-700"
       >
-        {#if mode === 'energetic' && energeticMultiSetSession && visibleCompareSets.length === 0 && analysisSets.some((s) => s.energeticResult)}
+        {#if mode === 'energetic' && selectedProperties.length === 0 && analysisSets.some((s) => s.energeticResult)}
+          No properties checked — mark a property to show it on the chart.
+        {:else if mode === 'energetic' && energeticMultiSetSession && visibleCompareSets.length === 0 && analysisSets.some((s) => s.energeticResult)}
           No sets checked — mark a set to show it on the chart.
         {:else if mode === 'structural' && analysisSets.length > 1 && visibleCompareSets.length === 0 && analysisSets.some((s) => structuralSetHasPlottableResult(s, structuralType))}
           No sets checked — mark a set to show it on the chart.
@@ -4794,7 +5354,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           </div>
         {/if}
 
-        {#key `${compareLayout}-${energeticCompareLayout}-${plotDataRevision}-${structuralType}-${mode}-${chartView.mode}-${chartView.series.length}-${energeticLayout}-${compareEnergeticProperties.join('|')}`}
+        {#key `${compareLayout}-${energeticCompareLayout}-${plotDataRevision}-${structuralType}-${mode}-${chartView.mode}-${chartView.series.length}-${energeticLayout}-${energeticPanels.length}-${selectedProperties.join('|')}-${compareEnergeticProperties.join('|')}`}
         {#if mode === 'structural' && chartView.mode === 'grid'}
           <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
             {#each chartView.panels as panel (panel.key)}
@@ -4834,7 +5394,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           </div>
         {:else if mode === 'structural'}
           <LineChart
-            series={chartView.series}
+            series={displaySeries}
             xLabel={displayXLabel}
             yLabel={displayYLabel}
             plotBg={ps.plotBg}
@@ -5000,7 +5560,15 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               <table class="w-full min-w-[28rem] border-collapse text-[11px] tabular-nums">
                 <thead>
                   <tr class="border-b border-neutral-200 text-left text-neutral-500 dark:border-neutral-800">
-                    <th class="px-2 py-1 font-medium">Set</th>
+                    <th class="px-2 py-1 font-medium"
+                      >{mode === 'energetic'
+                        ? energeticMultiSetSession
+                          ? 'Set · Property'
+                          : 'Property'
+                        : analysisSets.length > 1
+                          ? 'Set'
+                          : 'Series'}</th
+                    >
                     <th class="px-2 py-1 font-medium">Mean</th>
                     <th class="px-2 py-1 font-medium">Std</th>
                     <th class="px-2 py-1 font-medium">Min</th>
@@ -5008,7 +5576,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   </tr>
                 </thead>
                 <tbody>
-                  {#each chartStatsRows as row (row.name)}
+                  {#each chartStatsRows as row (row.id)}
                     {#if row.stats && row.stats.count > 0}
                       <tr class="border-b border-neutral-200/70 last:border-0 dark:border-neutral-800/70">
                         <td class="px-2 py-1">
@@ -5017,7 +5585,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                               class="inline-block h-2 w-2 shrink-0 rounded-full"
                               style={`background:${row.color}`}
                             ></span>
-                            <span class="truncate text-neutral-300">{row.name}</span>
+                            <span class="truncate text-neutral-300" title={row.name}>{row.name}</span>
                           </span>
                         </td>
                         <td class="px-2 py-1">{Number(row.stats.mean).toFixed(4)}</td>
