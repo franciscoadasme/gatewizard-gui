@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Analysis:** Amber energetic engine option (mdout parsing)
 - **Equilibration:** **Use in form** loads the job’s protocol stages into the right-hand protocol editor (from `equilibration_job.json` / `protocol_summary.json`), not only the left-panel settings
 - **Visualize — Animation:** keyframe timeline with playback, per-track fades/easing, safe-area guide, and export to video (ffmpeg) or frame sequence
+- **Visualize — Animation:** Cancel button while rendering/encoding an export (stops between frames and kills FFmpeg if encoding)
 - **Visualize — Viewpoints:** save/open a full view snapshot (structure, camera, representations, lights, labels, measurements)
 - **Visualize — Labels:** background color/opacity, padding, corner radius, and lift distance/direction (works in live view and animation)
 - **Visualize — Labels:** show/hide all labels from the Labels panel header (does not delete labels)

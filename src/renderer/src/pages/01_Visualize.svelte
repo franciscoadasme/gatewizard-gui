@@ -237,6 +237,8 @@
   let animExportPhase = $state('')
   let animExportFrame = $state(0)
   let animExportTotal = $state(0)
+  /** Set true by Cancel during export; checked between frames / before encode. */
+  let animExportCancelRequested = false
   /** @type {(() => void) | null} */
   let animStopPlayback = null
 
@@ -1481,6 +1483,10 @@
     coordsGeneration = 0
     coordUndoStack.clear()
     stopAnimPlayback()
+    if (animExporting) {
+      animExportCancelRequested = true
+      void window.api.animationCancelEncode?.()
+    }
     animateMode = false
     animProject = createEmptyProject()
     animPlayhead = 0
@@ -1488,6 +1494,7 @@
     animExportPhase = ''
     animExportFrame = 0
     animExportTotal = 0
+    animExportCancelRequested = false
   }
 
   async function onSaveViewpoint() {
@@ -3191,9 +3198,23 @@
     }
   }
 
+  function throwIfAnimExportCancelled() {
+    if (animExportCancelRequested) {
+      throw new Error('cancelled')
+    }
+  }
+
+  function cancelAnimExport() {
+    if (!animExporting) return
+    animExportCancelRequested = true
+    animExportPhase = 'Cancelling…'
+    void window.api.animationCancelEncode?.()
+  }
+
   async function onAnimExportVideo() {
     if (!animProject.keyframes.length) return
     if (!confirmProceedWithoutWorkingDir('animation')) return
+    animExportCancelRequested = false
     animExporting = true
     animExportPhase = 'Preparing export…'
     animExportFrame = 0
@@ -3201,6 +3222,7 @@
     stopAnimPlayback()
     try {
       const base = await prepareAnimationOutputDir()
+      throwIfAnimExportCancelled()
       const framesDir = `${base}/frames`
       const fps = animProject.fps
       const frameCount = Math.max(1, Math.ceil(animProject.duration_s * fps))
@@ -3218,12 +3240,15 @@
       const encodedOutputPath = encodedFileName ? `${base}/${encodedFileName}` : ''
       const canvas = viewerEl?.querySelector('canvas')
       for (let i = 0; i < frameCount; i++) {
+        throwIfAnimExportCancelled()
         const t = Math.min(animProject.duration_s, i / fps)
         animPlayhead = t
         animExportFrame = i + 1
         animExportPhase = `Rendering frame ${i + 1} of ${frameCount}…`
         await tick()
+        throwIfAnimExportCancelled()
         await renderFrame(() => applyAnimFrame(t))
+        throwIfAnimExportCancelled()
         const sourceRect = computeSafeAreaForCanvas(
           /** @type {HTMLCanvasElement} */ (canvas),
           exportFrame.width,
@@ -3239,24 +3264,31 @@
           measurements,
           atomLabels
         })
+        throwIfAnimExportCancelled()
         await window.api.writeBinary(`${framesDir}/${frameFileName(i)}`, png)
       }
+      throwIfAnimExportCancelled()
       if (exportFormat === 'png') {
         logEvent('info', 'view', 'Exported animation frames', framesDir)
         animExportPhase = 'Done'
         alert(`PNG frames saved to:\n${framesDir}`)
       } else {
         const ffmpeg = await window.api.animationCheckFfmpeg()
+        throwIfAnimExportCancelled()
         if (ffmpeg.available && encodedOutputPath) {
           animExportPhase = `Encoding ${formatMeta?.label ?? exportFormat} with FFmpeg…`
           animExportFrame = frameCount
           await tick()
+          throwIfAnimExportCancelled()
           const enc = await window.api.animationEncodeVideo({
             framesDir,
             outputPath: encodedOutputPath,
             fps,
             format: exportFormat
           })
+          if (animExportCancelRequested || enc?.cancelled) {
+            throw new Error('cancelled')
+          }
           if (!enc?.ok) {
             throw new Error(enc?.error || 'FFmpeg failed to encode animation')
           }
@@ -3271,6 +3303,7 @@
           )
         }
       }
+      throwIfAnimExportCancelled()
       animExportPhase = 'Saving project…'
       await tick()
       await window.api.writeJson(
@@ -3281,9 +3314,13 @@
         })
       )
     } catch (ex) {
-      if (ex instanceof Error && ex.message.includes('cancelled')) return
+      if (ex instanceof Error && ex.message.includes('cancelled')) {
+        logEvent('info', 'view', 'Animation export cancelled')
+        return
+      }
       alert(ex instanceof Error ? ex.message : String(ex))
     } finally {
+      animExportCancelRequested = false
       animExporting = false
       animExportPhase = ''
       animExportFrame = 0
@@ -3768,7 +3805,7 @@
         {/if}
         {#if animExporting}
           <div
-            class="pointer-events-none absolute inset-0 z-40 flex items-center justify-center bg-neutral-950/55"
+            class="absolute inset-0 z-40 flex items-center justify-center bg-neutral-950/55"
             style="backdrop-filter:blur(2px)"
             aria-live="polite"
             aria-busy="true"
@@ -3795,6 +3832,14 @@
                   </div>
                 </div>
               {/if}
+              <button
+                type="button"
+                class="mt-1 rounded-md border border-neutral-500/60 bg-neutral-800 px-3 py-1.5 text-xs font-medium text-neutral-100 hover:bg-neutral-700 disabled:opacity-50"
+                onclick={cancelAnimExport}
+                disabled={animExportPhase === 'Cancelling…'}
+              >
+                {animExportPhase === 'Cancelling…' ? 'Cancelling…' : 'Cancel'}
+              </button>
             </div>
           </div>
         {/if}

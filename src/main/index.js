@@ -1327,6 +1327,36 @@ ipcMain.handle('animation:checkFfmpeg', async () => {
   }
 })
 
+/** @type {import('child_process').ChildProcess | null} */
+let animationEncodeChild = null
+
+function killAnimationEncodeChild() {
+  const child = animationEncodeChild
+  if (!child || child.killed || child.exitCode != null) return false
+  try {
+    if (process.platform === 'win32' && child.pid) {
+      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+    } else {
+      child.kill('SIGTERM')
+      setTimeout(() => {
+        try {
+          if (child.exitCode == null && !child.killed) child.kill('SIGKILL')
+        } catch {
+          /* ignore */
+        }
+      }, 1500)
+    }
+  } catch {
+    /* ignore */
+  }
+  return true
+}
+
+ipcMain.handle('animation:cancelEncode', async () => {
+  const killed = killAnimationEncodeChild()
+  return { ok: true, killed }
+})
+
 ipcMain.handle('animation:encodeVideo', async (_event, payload) => {
   const framesDir = String(payload?.framesDir ?? '')
   const outputPath = String(payload?.outputPath ?? '')
@@ -1335,16 +1365,62 @@ ipcMain.handle('animation:encodeVideo', async (_event, payload) => {
   if (!framesDir || !outputPath) {
     return { ok: false, error: 'animation:encodeVideo requires framesDir and outputPath' }
   }
+  if (animationEncodeChild && animationEncodeChild.exitCode == null) {
+    killAnimationEncodeChild()
+    animationEncodeChild = null
+  }
   const bin = resolveFfmpegBinary()
   const args = buildFfmpegEncodeArgs({ framesDir, outputPath, fps, format })
-  const result = spawnSync(bin, args, { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
-  if (result.status !== 0) {
-    const msg = formatFfmpegError(
-      result.stderr || result.stdout || result.error?.message || 'ffmpeg failed to encode video'
-    )
-    return { ok: false, error: msg }
-  }
-  return { ok: true, outputPath, ffmpeg: bin }
+  return await new Promise((resolve) => {
+    /** @type {string[]} */
+    const stderrChunks = []
+    /** @type {string[]} */
+    const stdoutChunks = []
+    let settled = false
+    /** @type {import('child_process').ChildProcess | null} */
+    let child = null
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      if (animationEncodeChild === child) animationEncodeChild = null
+      resolve(result)
+    }
+    child = spawn(bin, args, { windowsHide: true })
+    animationEncodeChild = child
+    child.stderr?.setEncoding('utf8')
+    child.stdout?.setEncoding('utf8')
+    child.stderr?.on('data', (chunk) => {
+      stderrChunks.push(String(chunk))
+    })
+    child.stdout?.on('data', (chunk) => {
+      stdoutChunks.push(String(chunk))
+    })
+    child.on('error', (err) => {
+      finish({
+        ok: false,
+        error: formatFfmpegError(err?.message || 'failed to start ffmpeg'),
+        cancelled: false
+      })
+    })
+    child.on('close', (code, signal) => {
+      if (signal || code === null) {
+        finish({
+          ok: false,
+          cancelled: true,
+          error: 'Encoding cancelled'
+        })
+        return
+      }
+      if (code !== 0) {
+        const msg = formatFfmpegError(
+          stderrChunks.join('') || stdoutChunks.join('') || `ffmpeg exited with code ${code}`
+        )
+        finish({ ok: false, error: msg, cancelled: false })
+        return
+      }
+      finish({ ok: true, outputPath, ffmpeg: bin })
+    })
+  })
 })
 
 async function fetchGatewizardVersion() {

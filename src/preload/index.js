@@ -27,6 +27,7 @@ const api = {
   animationInspectOutputDir: (dirPath) => ipcRenderer.invoke('animation:inspectOutputDir', dirPath),
   animationCheckFfmpeg: () => ipcRenderer.invoke('animation:checkFfmpeg'),
   animationEncodeVideo: (payload) => ipcRenderer.invoke('animation:encodeVideo', payload),
+  animationCancelEncode: () => ipcRenderer.invoke('animation:cancelEncode'),
 
   checkForUpdates: () => ipcRenderer.invoke('updates:check'),
   getUpdateManifestUrl: () => ipcRenderer.invoke('updates:get-manifest-url'),
