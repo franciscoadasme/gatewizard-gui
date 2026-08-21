@@ -13,7 +13,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Analysis PNG/SVG export:** wait for chart SVGs to mount after plot remounts (spinner from click, notice if not ready) instead of failing silently.
 - **Analysis structural Pub PNG:** full trajectory x-range per set in grid mode (no shared zoom x-limits); y-axis min/max from plot settings still apply.
 - **Analysis energetic Pub PNG:** respects Compare layout (overlay / one panel per property / one panel per set), matching on-screen panels and set colors.
+- **Equilibration cluster Connect / Run on cluster:** wait for inventory probe before Watching/runtime log sync; dialog reacts when probe finishes and can seed Resources from cached `last_probe`. Prevents empty partitions/nodes for 1–2 minutes when many remote jobs compete for SSH.
+- **Analysis output folder:** clearing the left-panel name no longer forces `04_analysis` back into the field; the default stays as placeholder ghost text so any name can be typed. Run/Save still resolve an empty field to the default. Adding or switching simulation sets (and picking a topology) no longer overwrites a custom output folder name.
+- **Equilibration Progress Reload:** If the job folder was deleted, Reload removes the stale card instead of showing an error alert (same outcome as a full Progress rescan).
+- **Equilibration Use in form:** After loading a job, switching **Engine** or **Ensemble** updates Production to follow the sidebar again, and fills engine-specific stage fields (e.g. NAMD margin, barostat pressure/γ). Heat/scaffold/packing (Eq1–6) stay NVT/NPgT. No longer requires Clear form.
+- **Equilibration Edit constraint:** light-mode Name / force-constant contrast; selection count uses the builder input directory (no longer always “Invalid selection”).
+- **Equilibration Use in form (recovered jobs):** sticky “all NPT” protocols from older OpenMM metadata heal are corrected from on-disk inputs (packing → NPgT, finals → real ensemble). Requires updated `gatewizard` job-metadata inference.
+- **Equilibration Progress:** Cluster Connect stays visible with only local jobs or an empty list (no longer requires the Remote location filter).
+- **Remote job dialog:** Time-limit ± controls use tight hit targets (no nested labels) so nearby taps on touchscreens no longer change the value; time limit sits on its own row under Partition (days / hours / minutes + Slurm time on one line).
+- **Equilibration (Amber resources):** GUI defaults match the API — MD stages use GPU (`pmemd.cuda`, CPU×1); only the first packing barostat stage stays CPU×6. Sidebar compute target is no longer forced to CPU-only.
+- **Equilibration Stages/Details on running jobs:** merging live log stages with the protocol outline no longer falls back by index (Minimization + OpenMM Eq1… misaligned and duplicated stage names, which broke the Stages/Details panel). Match by stage name only.
+
+### Added
+
+- **Equilibration progress cards:** each stage row shows its planned simulation time from the protocol (e.g. `(0.125 ns)` on pending stages, `(0.233 / 0.125 ns · …)` while running). The stages summary uses two lines — **Simulated** (accumulated so far) and **Protocol total** (full planned MD time for all stages).
 - **Analysis export:** optional file name for CSV / SVG / PNG. PNG/SVG save every on-screen panel (overlay or separate sets). Pub PNG (matplotlib style) is on both Structural and Energetic and includes every visible set in the legend. Buttons show a spinner while writing.
+- **Equilibration Run on cluster:** opening the remote dialog from a progress card now seeds CPU/GPU from that job's protocol and saved resources (e.g. 1 CPU + 1 GPU) instead of the left-panel sidebar defaults (often 6 CPU).
+- **Analysis Save / Load:** Saving… / Loading… spinners and in-progress notices while the session CSV/JSON is written or read; Save, Load, and Browse stay disabled until it finishes.
+- **Equilibration protocol cards:** hide settings the selected engine does not wire (e.g. NAMD-only margin). Trajectory frequency is shown for all engines and labeled by engine (DCD / XTC / NetCDF). Pressure and surface tension are shown when the stage ensemble uses a barostat / membrane tension path. Stage descriptions moved to an info-hover control with clearer wording.
+- **Equilibration default protocol (`base.json`):** universal membrane packing for all engines — Minimization → NVT heat → NVT scaffold (Eq2) → NPgT packing (Eq3–6, 20 ns MD) → production uses the sidebar ensemble.
+- **Equilibration banner:** heat/scaffold under NVT, pack under NPgT for 20 ns of MD, then production in the selected ensemble.
 ## [1.0.13] - 2026-08-06
 
 ### Added

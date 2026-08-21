@@ -57,6 +57,7 @@
   import { themeState } from '../lib/theme.svelte.js'
   import { themeBackgroundHex } from '../lib/viewerSettings.svelte.js'
   import { formEnsembleValue } from '../lib/ensemble.js'
+  import { syncProtocolToSidebarEnsemble } from '../lib/equilibrationStageFields.js'
 
   const clusterSession = getClusterSession()
 
@@ -82,16 +83,17 @@
       production: { cpu_cores: 6, gpu_id: 0, num_gpus: 1, use_gpu: true }
     },
     amber: {
-      sidebar: { totalCpus: 6, totalGpus: 1, gpuId: 0, computeTarget: /** @type {const} */ ('CPU') },
+      // MD/production on GPU (pmemd.cuda); first packing barostat forced to CPU below.
+      sidebar: { totalCpus: 6, totalGpus: 1, gpuId: 0, computeTarget: /** @type {const} */ ('auto') },
       minimization: { cpu_cores: 6, gpu_id: 0, num_gpus: 0, use_gpu: false },
-      md: { cpu_cores: 6, gpu_id: 0, num_gpus: 0, use_gpu: false },
+      md: { cpu_cores: 1, gpu_id: 0, num_gpus: 1, use_gpu: true },
       production: { cpu_cores: 1, gpu_id: 0, num_gpus: 1, use_gpu: true }
     },
     namd: {
       sidebar: { totalCpus: 6, totalGpus: 1, gpuId: 0, computeTarget: /** @type {const} */ ('auto') },
       minimization: { cpu_cores: 6, gpu_id: 0, num_gpus: 0, use_gpu: false },
       md: { cpu_cores: 6, gpu_id: 0, num_gpus: 1, use_gpu: true },
-      production: { cpu_cores: 1, gpu_id: 0, num_gpus: 1, use_gpu: true }
+      production: { cpu_cores: 6, gpu_id: 0, num_gpus: 1, use_gpu: true }
     },
     openmm: {
       // OpenMM uses a single host thread; GPU for minimization + all MD stages.
@@ -99,6 +101,28 @@
       minimization: { cpu_cores: 1, gpu_id: 0, num_gpus: 1, use_gpu: true },
       md: { cpu_cores: 1, gpu_id: 0, num_gpus: 1, use_gpu: true },
       production: { cpu_cores: 1, gpu_id: 0, num_gpus: 1, use_gpu: true }
+    }
+  }
+
+  /**
+   * Amber: first packing barostat (NPT/NPAT/NPgT) defaults to CPU×6 pmemd;
+   * later MD stages stay on GPU. Matches API resolve_all_stage_resources.
+   * @param {object} p
+   */
+  function applyAmberFirstBarostatCpuDefault(p) {
+    if (!p?.stages) return
+    for (const stage of p.stages) {
+      const kind = String(stage.stage_kind || '').toLowerCase()
+      const name = String(stage.name || '').toLowerCase()
+      if (kind === 'minimization' || name === 'minimization') continue
+      if (kind === 'production' || name === 'production') continue
+      const ens = String(stage.ensemble || '').trim().toLowerCase()
+      if (!['npt', 'npat', 'npgt'].includes(ens)) continue
+      stage.cpu_cores = Math.max(Number(stage.cpu_cores) || 1, 6)
+      stage.use_gpu = false
+      stage.num_gpus = 0
+      stage.resources_inherit = false
+      break
     }
   }
 
@@ -110,7 +134,7 @@
     gpuDevice = profile.sidebar.gpuId ?? 0
     computeTarget = profile.sidebar.computeTarget
     protocol.compute_defaults = {
-      cpu_cores: profile.sidebar.totalCpus,
+      cpu_cores: eng === 'amber' ? profile.md.cpu_cores : profile.sidebar.totalCpus,
       gpu_id: gpuDevice,
       num_gpus: profile.sidebar.totalGpus,
       use_gpu: profile.sidebar.computeTarget !== 'CPU',
@@ -129,6 +153,17 @@
       stage.use_gpu = res.use_gpu
       stage.resources_inherit = false
     }
+    if (eng === 'amber') applyAmberFirstBarostatCpuDefault(protocol)
+    // After Use in form, Production must re-bind to the sidebar ensemble
+    // and engine-specific fields (margin, γ, …) must be available for the new engine.
+    syncProtocolToSidebarEnsemble(protocol, ensemble, eng)
+    protocolFormKey += 1
+  }
+
+  /** Re-bind production stages to the sidebar ensemble and remount cards. */
+  function onSidebarEnsembleChange() {
+    syncProtocolToSidebarEnsemble(protocol, ensemble, engine)
+    // Remount so Ensemble fields and pressure/γ visibility refresh for the new target
     protocolFormKey += 1
   }
 
@@ -136,8 +171,28 @@
     applyEngineResourceDefaults(engine)
   })
 
-  /** @type {{ workingDir?: string }} */
-  let { workingDir = '' } = $props()
+  /** @type {{ workingDir?: string, pageActive?: boolean }} */
+  let { workingDir = '', pageActive = false } = $props()
+
+  /** Max parallel equilibration-job API calls after a directory scan. */
+  const JOBS_PREFETCH_CONCURRENCY = 3
+
+  /**
+   * Run async tasks with a concurrency limit.
+   * @param {Array<() => Promise<unknown>>} tasks
+   * @param {number} [limit]
+   */
+  async function runWithConcurrency(tasks, limit = JOBS_PREFETCH_CONCURRENCY) {
+    if (!tasks.length) return
+    const queue = [...tasks]
+    const workers = Array.from({ length: Math.min(limit, queue.length) }, async () => {
+      while (queue.length) {
+        const task = queue.shift()
+        if (task) await task()
+      }
+    })
+    await Promise.all(workers)
+  }
 
   // form fields
   let autoMonitor = $state(false)
@@ -309,7 +364,7 @@
       ? candidatesSupportingTarget(computeTarget)
       : []
   )
-  /** @typedef {{ name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, elapsed_time_seconds: number|null, is_minimization?: boolean, steps_completed?: number|null, total_steps?: number|null, minimization_converged_early?: boolean, output: string }} EqStageInfo */
+  /** @typedef {{ name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, elapsed_time_seconds: number|null, is_minimization?: boolean, steps_completed?: number|null, total_steps?: number|null, minimization_converged_early?: boolean, output: string, cpu_cores?: number|null, num_gpus?: number|null }} EqStageInfo */
   /** @typedef {{ jobDir: string, name: string, engine: string, variant: string|null, status: string, startTime: string, dirMtime?: number, elapsed: string, stagesDone: number, stagesTotal: number, error: string|null, canRun: boolean, canResume: boolean, resumeReason: string, resumeStageName: string, resources: import('../lib/backendApi.js').EquilibrationJobResources | null, inputDir: string|null, ensemble: string|null, protocol: { name: string, description?: string, stages: object[] }|null, gpuResident?: boolean|null, execution: object|null, stages: EqStageInfo[], watched: boolean, showStages: boolean, showInfo: boolean, processInfo: { pid: number|null, running: boolean, command: string|null, start_time: string|null, working_dir: string, engine: string } | null, loadingProcessInfo: boolean, stopping: boolean, continuing: boolean, running: boolean, reloading: boolean, pulling: boolean, pullProgress: { percent: number|null, message: string, phase: string } | null, syncSizes: { localBytes: number|null, remoteBytes: number|null, localFormatted: string, remoteFormatted: string, loading: boolean } | null, selectedLog: string|null, logMode: 'head'|'tail', logLines: number, logLinesEditing: boolean, logFiles: string[], logView: { lines: string[], exists: boolean, loading: boolean, mode: string, lineCount: number } | null, loadingStages: boolean, syncingRemoteStages: boolean, equilibrationOutput: string }} EquilibrationJob */
 
   // state
@@ -532,24 +587,254 @@
   function protocolPlaceholderStages(job) {
     const defs = job.protocol?.stages
     if (!Array.isArray(defs) || !defs.length) return []
-    return defs.map((s) => ({
-      name: String(s.name || 'Stage'),
-      status: /** @type {'not_started'} */ ('not_started'),
-      simulated_time: null,
-      total_simulation_time:
-        Number.isFinite(Number(s.time_ns)) ? Number(s.time_ns) : null,
-      performance: null,
-      elapsed_time_seconds: null,
-      is_minimization: false,
-      output: ''
-    }))
+    return defs.map((s, i) => {
+      const res = resolveStageResourceChips(job, String(s.name || 'Stage'), i)
+      const kind = inferProtocolStageKind(s)
+      const isMin = kind === 'minimization'
+      const minSteps = isMin ? Number(s.minimize_steps) || Number(s.steps) || null : null
+      const timeNs = Number(s.time_ns)
+      return {
+        name: String(s.name || 'Stage'),
+        status: /** @type {'not_started'} */ ('not_started'),
+        simulated_time: null,
+        total_simulation_time:
+          !isMin && Number.isFinite(timeNs) && timeNs > 0 ? timeNs : null,
+        performance: null,
+        elapsed_time_seconds: null,
+        is_minimization: isMin,
+        steps_completed: null,
+        total_steps: isMin && minSteps > 0 ? minSteps : null,
+        output: '',
+        cpu_cores: res?.cpu_cores ?? null,
+        num_gpus: res?.num_gpus ?? null
+      }
+    })
+  }
+
+  /** @param {EquilibrationJob} job @param {string} stageName @param {number} [_index] */
+  function findProtocolStageDef(job, stageName, _index = -1) {
+    const defs = job.protocol?.stages
+    if (!Array.isArray(defs) || !defs.length) return null
+    const key = normalizeStageKey(stageName)
+    return defs.find((s) => normalizeStageKey(s?.name) === key) ?? null
+  }
+
+  /** Sum of planned MD time (ns) across all non-minimization protocol stages. */
+  /** @param {EquilibrationJob} job */
+  function protocolPlannedMdNs(job) {
+    const defs = job.protocol?.stages
+    if (!Array.isArray(defs) || !defs.length) return null
+    let total = 0
+    let any = false
+    for (const def of defs) {
+      if (inferProtocolStageKind(def) === 'minimization') continue
+      const timeNs = Number(def.time_ns)
+      if (Number.isFinite(timeNs) && timeNs > 0) {
+        total += timeNs
+        any = true
+      }
+    }
+    return any ? total : null
+  }
+
+  /** Merge live log stages with the full protocol outline (intended times for pending stages). */
+  /** @param {EquilibrationJob} job @param {EqStageInfo[]} liveStages */
+  function mergeLiveStagesWithProtocolOutline(job, liveStages) {
+    const outline = protocolPlaceholderStages(job)
+    if (!outline.length) return liveStages
+    if (!liveStages?.length) return outline
+    const liveByKey = new Map()
+    for (const s of liveStages) {
+      if (!s) continue
+      liveByKey.set(normalizeStageKey(s.name), s)
+    }
+    /** @type {EqStageInfo[]} */
+    const merged = []
+    const usedLiveKeys = new Set()
+    for (const placeholder of outline) {
+      const key = normalizeStageKey(placeholder.name)
+      // Match by name only — never by index. Protocol often starts with Minimization
+      // while OpenMM/NAMD live progress starts at Equilibration 1; index fallback
+      // duplicated Eq1 and broke the keyed {#each} on stage name.
+      const live = liveByKey.get(key) ?? null
+      if (!live) {
+        merged.push(placeholder)
+        continue
+      }
+      usedLiveKeys.add(key)
+      merged.push({
+        ...placeholder,
+        ...live,
+        // Keep protocol display name so keys stay unique and match the outline.
+        name: placeholder.name,
+        total_simulation_time:
+          live.total_simulation_time ?? placeholder.total_simulation_time,
+        total_steps: live.total_steps ?? placeholder.total_steps,
+        is_minimization: live.is_minimization ?? placeholder.is_minimization,
+        cpu_cores: live.cpu_cores ?? placeholder.cpu_cores,
+        num_gpus: live.num_gpus ?? placeholder.num_gpus
+      })
+    }
+    // Append any live stages that are not in the protocol outline.
+    for (const s of liveStages) {
+      if (!s) continue
+      const key = normalizeStageKey(s.name)
+      if (usedLiveKeys.has(key)) continue
+      merged.push(s)
+    }
+    return merged
+  }
+
+  /** Fill protocol planned time/steps and resource chips on stage rows for display. */
+  /** @param {EquilibrationJob} job @param {EqStageInfo[]} stages */
+  function enrichStagesForDisplay(job, stages) {
+    return stages.map((s, i) => {
+      let next = { ...s }
+      const def = findProtocolStageDef(job, s.name, i)
+      if (next.cpu_cores == null || next.num_gpus == null) {
+        const res = resolveStageResourceChips(job, s.name, i)
+        if (res) {
+          if (next.cpu_cores == null) next.cpu_cores = res.cpu_cores
+          if (next.num_gpus == null) next.num_gpus = res.num_gpus
+        }
+      }
+      if (def) {
+        const kind = inferProtocolStageKind(def)
+        if (kind === 'minimization') {
+          next.is_minimization = true
+          if (next.total_steps == null) {
+            const steps = Number(def.minimize_steps) || Number(def.steps)
+            if (steps > 0) next.total_steps = steps
+          }
+        } else if (next.total_simulation_time == null) {
+          const timeNs = Number(def.time_ns)
+          if (Number.isFinite(timeNs) && timeNs > 0) next.total_simulation_time = timeNs
+        }
+      }
+      return next
+    })
+  }
+
+  /** @param {string|null|undefined} name */
+  function normalizeStageKey(name) {
+    return String(name || '')
+      .toLowerCase()
+      .replace(/[_\s-]+/g, ' ')
+      .trim()
+  }
+
+  /** @param {Record<string, any>} stage */
+  function inferProtocolStageKind(stage) {
+    const explicit = String(stage?.stage_kind || '')
+      .trim()
+      .toLowerCase()
+    if (explicit === 'minimization' || explicit === 'production' || explicit === 'equilibration') {
+      return explicit
+    }
+    const name = normalizeStageKey(stage?.name)
+    if (name === 'minimization' || name === 'energy minimization') return 'minimization'
+    if (name === 'production') return 'production'
+    return 'equilibration'
+  }
+
+  /**
+   * Planned CPU/GPU for a stage from the job protocol (not live Slurm use).
+   * Resolves ``resources_inherit`` from protocol.compute_defaults — equilibration
+   * stages in base.json omit cpu_cores/num_gpus on purpose.
+   * @param {EquilibrationJob} job
+   * @param {string} stageName
+   * @param {number} index
+   * @returns {{ cpu_cores: number, num_gpus: number } | null}
+   */
+  function resolveStageResourceChips(job, stageName, index) {
+    const defs = job.protocol?.stages
+    if (!Array.isArray(defs) || !defs.length) return null
+    const key = normalizeStageKey(stageName)
+    const def =
+      defs.find((s) => normalizeStageKey(s?.name) === key) ||
+      (index >= 0 && index < defs.length ? defs[index] : null)
+    if (!def || typeof def !== 'object') return null
+
+    const defaults =
+      job.protocol?.compute_defaults && typeof job.protocol.compute_defaults === 'object'
+        ? job.protocol.compute_defaults
+        : {}
+    const kind = inferProtocolStageKind(def)
+    const hasExplicit = ['cpu_cores', 'gpu_id', 'num_gpus', 'use_gpu'].some(
+      (k) => def[k] != null
+    )
+    let inherit = def.resources_inherit
+    if (inherit == null) {
+      inherit = kind === 'equilibration' && !hasExplicit
+    }
+
+    let cpus =
+      def.cpu_cores != null && Number.isFinite(Number(def.cpu_cores))
+        ? Math.max(0, Math.round(Number(def.cpu_cores)))
+        : null
+    let useGpu = typeof def.use_gpu === 'boolean' ? def.use_gpu : null
+    let gpus =
+      def.num_gpus != null && Number.isFinite(Number(def.num_gpus))
+        ? Math.max(0, Math.round(Number(def.num_gpus)))
+        : null
+
+    if (kind === 'minimization') {
+      // Non-OpenMM minimization is CPU-only in GateWizard.
+      if ((job.engine || '').toLowerCase() !== 'openmm') {
+        useGpu = false
+        gpus = 0
+      }
+      if (cpus == null) {
+        cpus =
+          Number(defaults.cpu_cores) > 0
+            ? Math.round(Number(defaults.cpu_cores))
+            : Number(job.resources?.cpu_cores_max) > 0
+              ? Math.round(Number(job.resources.cpu_cores_max))
+              : 6
+      }
+    } else if (inherit || cpus == null || useGpu == null || gpus == null) {
+      if (cpus == null) {
+        cpus =
+          Number(defaults.cpu_cores) > 0
+            ? Math.round(Number(defaults.cpu_cores))
+            : Number(job.resources?.cpu_cores_max) > 0
+              ? Math.round(Number(job.resources.cpu_cores_max))
+              : Number(job.resources?.cpu_cores_min) > 0
+                ? Math.round(Number(job.resources.cpu_cores_min))
+                : 1
+      }
+      if (useGpu == null) {
+        useGpu =
+          typeof defaults.use_gpu === 'boolean'
+            ? defaults.use_gpu
+            : typeof job.resources?.use_gpu === 'boolean'
+              ? job.resources.use_gpu
+              : true
+      }
+      if (gpus == null) {
+        if (!useGpu) gpus = 0
+        else if (Number(defaults.num_gpus) > 0) gpus = Math.round(Number(defaults.num_gpus))
+        else if (Number(job.resources?.num_gpus) > 0) gpus = Math.round(Number(job.resources.num_gpus))
+        else gpus = 1
+      }
+    }
+
+    if (useGpu === false) gpus = 0
+    else if (gpus == null) gpus = 1
+
+    return {
+      cpu_cores: cpus ?? 0,
+      num_gpus: gpus ?? 0
+    }
   }
 
   /** Stages from logs when present; otherwise protocol outline for remote cards. */
   /** @param {EquilibrationJob} job @returns {EqStageInfo[]} */
   function jobDisplayStages(job) {
-    if (job.stages?.length) return job.stages
-    return protocolPlaceholderStages(job)
+    const merged = job.stages?.length
+      ? mergeLiveStagesWithProtocolOutline(job, job.stages)
+      : protocolPlaceholderStages(job)
+    return enrichStagesForDisplay(job, merged)
   }
 
   /**
@@ -598,6 +883,26 @@
     return parts.length ? parts.join(' · ') : 'matching'
   }
 
+  /** Max CPU/GPU across protocol stages (Slurm allocation). */
+  /** @param {EquilibrationJob} job */
+  function jobProtocolSlurmAllocation(job) {
+    const defs = job.protocol?.stages
+    if (!Array.isArray(defs) || !defs.length) return null
+    let maxCpus = 0
+    let maxGpus = 0
+    for (let i = 0; i < defs.length; i++) {
+      const res = resolveStageResourceChips(job, defs[i]?.name, i)
+      if (!res) continue
+      if (res.cpu_cores > 0) maxCpus = Math.max(maxCpus, res.cpu_cores)
+      if (res.num_gpus > 0) maxGpus = Math.max(maxGpus, res.num_gpus)
+    }
+    if (maxCpus <= 0 && maxGpus <= 0) return null
+    return {
+      cpus: Math.max(1, maxCpus || 1),
+      gpus: Math.max(0, maxGpus)
+    }
+  }
+
   /** @param {EquilibrationJob} job */
   function jobClusterCpus(job) {
     const fromExec =
@@ -608,6 +913,8 @@
     const r = job.resources
     if (r?.cpu_cores_max != null) return Number(r.cpu_cores_max) || totalCpus
     if (r?.cpu_cores_min != null) return Number(r.cpu_cores_min) || totalCpus
+    const fromProtocol = jobProtocolSlurmAllocation(job)
+    if (fromProtocol?.cpus) return fromProtocol.cpus
     return totalCpus
   }
 
@@ -622,6 +929,8 @@
     const r = job.resources
     if (r?.use_gpu === false) return 0
     if (r?.num_gpus != null) return Number(r.num_gpus) || 0
+    const fromProtocol = jobProtocolSlurmAllocation(job)
+    if (fromProtocol) return fromProtocol.gpus
     return useGpu ? totalGpus : 0
   }
 
@@ -630,6 +939,19 @@
     return (
       job.execution?.mode === 'remote' &&
       canonicalizeSlurmState(job.execution?.last_remote_state) === 'COMPLETED'
+    )
+  }
+
+  /**
+   * Slurm COMPLETED but local stage logs still incomplete (typical after a partial Pull).
+   * Watching must keep light-syncing until local stages catch up.
+   * @param {EquilibrationJob} job
+   */
+  function remoteNeedsLogCatchUp(job) {
+    return (
+      job.execution?.mode === 'remote' &&
+      remoteJobFinishedLocally(job) &&
+      !localStagesComplete(job)
     )
   }
 
@@ -644,26 +966,46 @@
     return job.stages.every((s) => s.status === 'completed')
   }
 
+  /** @param {string} jobDir */
+  function jobIndexByDir(jobDir) {
+    return jobs.findIndex((j) => j.jobDir === jobDir)
+  }
+
   /** @param {EquilibrationJob} job @param {EqStageInfo[]} stages @param {string} rawStatus */
   function mergeJobStages(job, stages, rawStatus) {
     let status = rawStatus
     let displayStages = stages.length > 0 ? stages : job.stages
-    if (status === 'running' && job.execution?.mode === 'remote') {
+    const remoteActive =
+      job.execution?.mode === 'remote' &&
+      Boolean(job.execution?.last_remote_state) &&
+      isSlurmActiveState(job.execution.last_remote_state)
+    if (remoteActive) {
+      // Live remote: do not show a previous attempt's red stage errors.
       displayStages = displayStages.map((s) =>
         s.status === 'error' ? { ...s, status: 'not_started', output: '' } : s
       )
-    }
-    if (
-      job.execution?.mode === 'remote' &&
-      job.execution?.last_remote_state &&
-      isSlurmActiveState(job.execution.last_remote_state)
-    ) {
       status = 'running'
-    } else if (
-      remoteJobFinishedLocally(job) &&
-      (displayStages.length === 0 || displayStages.every((s) => s.status === 'completed'))
-    ) {
-      status = 'completed'
+    } else if (remoteJobFinishedLocally(job)) {
+      // COMPLETED remotely but local logs may still be catching up. NAMD mid-run
+      // "WRITING … RESTART/DCD" lines are not failures.
+      displayStages = displayStages.map((s) => {
+        if (s.status !== 'error') return s
+        const fail =
+          /fatal error|error in stage|stub library|cuda driver:\s*0\.0|gpu detection failed/i.test(
+            s.output || ''
+          )
+        return fail ? s : { ...s, status: 'running' }
+      })
+      if (
+        displayStages.length === 0 ||
+        displayStages.every((s) => s.status === 'completed')
+      ) {
+        status = 'completed'
+      } else if (displayStages.some((s) => s.status === 'error')) {
+        status = 'error'
+      } else {
+        status = 'running'
+      }
     }
     return {
       status,
@@ -725,13 +1067,15 @@
     // One-shot: skip if already loading, already have stage payload, or runtime known.
     if (job.loadingStages || job.stages?.length || formatStagesMdElapsed(job.stages)) return
     const remote = job.execution?.mode === 'remote'
-    if (remote && !clusterSession.sessionId) return
+    // Wait until cluster inventory probe finishes — log sync contends with sinfo.
+    if (remote && !clusterSession.inventoryReady) return
     if (
       remote &&
       !remoteJobFinishedLocally(job) &&
       job.execution?.scheduler_job_id
     ) {
-      await refreshJobDetail(index)
+      // Prefetch: Slurm state only. Watching poll pulls logs later.
+      await refreshJobDetail(index, { pullLogs: false })
       return
     }
     await loadJobStages(index)
@@ -739,22 +1083,33 @@
 
   /** Prefetch runtimes for every card that is allowed to load them now. */
   function prefetchJobRuntimes() {
+    const tasks = []
     for (let i = 0; i < jobs.length; i++) {
-      void ensureJobRuntimeLoaded(i)
+      const index = i
+      tasks.push(() => ensureJobRuntimeLoaded(index))
     }
+    void runWithConcurrency(tasks)
+  }
+
+  /** List log files for every job card (capped parallelism). */
+  function prefetchJobLogFiles() {
+    const tasks = []
+    for (let i = 0; i < jobs.length; i++) {
+      const index = i
+      tasks.push(() => refreshJobLogFiles(index))
+    }
+    void runWithConcurrency(tasks)
   }
 
   /** @param {EquilibrationJob} job */
   function openClusterDialog(job) {
-    // Prefer the left-panel CPU/GPU controls so Cluster matches the form.
+    // Prefer this card's protocol / saved resources; fall back to left-panel defaults.
     clusterDialogJob = {
       jobDir: job.jobDir,
       jobName: job.name,
       engine: job.engine || engine,
-      cpus: Math.max(1, Number(totalCpus) || jobClusterCpus(job) || 1),
-      gpus: useGpu
-        ? Math.max(0, Number(totalGpus) || jobClusterGpus(job) || 0)
-        : 0,
+      cpus: Math.max(1, jobClusterCpus(job) || 1),
+      gpus: Math.max(0, jobClusterGpus(job)),
       execution: job.execution || null
     }
   }
@@ -770,6 +1125,7 @@
     jobs[i] = {
       ...current,
       execution: nextExec,
+      submitting: Boolean(execution.submitting),
       error: remoteActive ? null : current.error,
       status: remoteActive ? 'running' : current.status,
       canResume: remoteActive ? false : current.canResume,
@@ -1022,10 +1378,19 @@
     const remotePath = job.execution.remote_path
     if (!remotePath) return
     if (job.pulling) return
+    const jobDir = job.jobDir
 
     const remoteState = job.execution?.last_remote_state
     if (isSlurmActiveState(remoteState) && !confirm(partialPullConfirmMessage(remoteState))) {
       return
+    }
+
+    /** @param {(cur: EquilibrationJob) => EquilibrationJob} updater */
+    const patchByDir = (updater) => {
+      const i = jobIndexByDir(jobDir)
+      if (i < 0) return -1
+      jobs[i] = updater(jobs[i])
+      return i
     }
 
     jobs[index] = {
@@ -1049,7 +1414,7 @@
         profiles[0]
       if (!sessionId) {
         if (!profile?.identity_file && !profile?.host) {
-          jobs[index] = { ...jobs[index], pulling: false, pullProgress: null }
+          patchByDir((cur) => ({ ...cur, pulling: false, pullProgress: null }))
           openClusterDialog(job)
           return
         }
@@ -1057,50 +1422,53 @@
         sessionId = clusterSession.sessionId
       }
       if (!sessionId) {
-        jobs[index] = { ...jobs[index], pulling: false, pullProgress: null }
+        patchByDir((cur) => ({ ...cur, pulling: false, pullProgress: null }))
         openClusterDialog(job)
         return
       }
       const res = await clusterPullJobStream(
         {
           session_id: sessionId,
-          local_dir: job.jobDir,
+          local_dir: jobDir,
           remote_dir: remotePath,
           full: true,
           profile: sharedProfilePlain() || (profile ? JSON.parse(JSON.stringify(profile)) : null),
           job_id: job.execution.scheduler_job_id || null
         },
         (evt) => {
-          const current = jobs[index]
-          if (!current || current.jobDir !== job.jobDir) return
+          const i = jobIndexByDir(jobDir)
+          if (i < 0) return
+          const current = jobs[i]
+          const done = evt.phase === 'done'
           const pct =
             typeof evt.percent === 'number' && Number.isFinite(evt.percent)
               ? Math.max(0, Math.min(100, evt.percent))
               : current.pullProgress?.percent ?? null
-          const msg =
-            evt.message ||
-            current.pullProgress?.message ||
-            'Pulling…'
-          const nextSync = { ...(current.syncSizes || {
-            localBytes: null,
-            remoteBytes: null,
-            localFormatted: '—',
-            remoteFormatted: '—',
-            loading: false
-          }) }
+          const msg = evt.message || current.pullProgress?.message || 'Pulling…'
+          const nextSync = {
+            ...(current.syncSizes || {
+              localBytes: null,
+              remoteBytes: null,
+              localFormatted: '—',
+              remoteFormatted: '—',
+              loading: false
+            })
+          }
           if (typeof evt.total_bytes === 'number' && evt.total_bytes > 0) {
             nextSync.remoteBytes = evt.total_bytes
             nextSync.remoteFormatted = formatBytesLabel(evt.total_bytes)
           }
           if (typeof evt.bytes === 'number' && evt.bytes >= 0 && evt.phase === 'sync') {
-            // Prefer local folder growth when the event reports on-disk bytes.
             nextSync.localBytes = evt.bytes
             nextSync.localFormatted = formatBytesLabel(evt.bytes)
           }
-          jobs[index] = {
+          // Unlock Pull as soon as the transfer reports done — do not wait for
+          // stream close / stage reload, which can stall behind another card's rsync.
+          jobs[i] = {
             ...current,
+            pulling: done ? false : current.pulling,
             pullProgress: {
-              percent: pct,
+              percent: done ? 100 : pct,
               message: msg,
               phase: evt.phase || current.pullProgress?.phase || 'sync'
             },
@@ -1108,8 +1476,9 @@
           }
         }
       )
-      const current = jobs[index]
-      if (!current || current.jobDir !== job.jobDir) return
+      const i = jobIndexByDir(jobDir)
+      if (i < 0) return
+      const current = jobs[i]
       const stillActive = isSlurmActiveState(
         res.remote_state || res.execution?.last_remote_state || remoteState
       )
@@ -1119,8 +1488,9 @@
         typeof res.remote_bytes === 'number' && res.remote_bytes > 0
           ? res.remote_bytes
           : current.syncSizes?.remoteBytes
-      jobs[index] = {
+      jobs[i] = {
         ...current,
+        pulling: false,
         execution: {
           ...(current.execution || {}),
           ...(res.execution || {}),
@@ -1150,27 +1520,32 @@
             ? 'Partial pull complete — pull again when the job finishes for full results'
             : 'Pull complete',
           phase: 'done'
-        }
+        },
+        showStages: true
       }
-      await reloadJobCard(index)
-      jobs[index] = { ...jobs[index], showStages: true }
-      await loadJobStages(index)
-      void refreshJobSyncSizes(index, { measureRemote: true })
-      void refreshJobLogFiles(index)
+      // Local refresh for this card; kick Watching so other cards do not wait
+      // for the next poll interval after a long Pull.
+      const refreshIndex = i
+      void loadJobStages(refreshIndex)
+      void refreshJobSyncSizes(refreshIndex, { measureRemote: false })
+      void refreshJobLogFiles(refreshIndex)
+      void pollWatchedJobs({ scheduleNext: false })
+      window.setTimeout(() => {
+        const later = jobIndexByDir(jobDir)
+        if (later < 0) return
+        if (!jobs[later].pulling && jobs[later].pullProgress?.phase === 'done') {
+          jobs[later] = { ...jobs[later], pullProgress: null }
+        }
+      }, 1600)
     } catch (err) {
-      const current = jobs[index]
-      if (current?.jobDir === job.jobDir) {
-        jobs[index] = {
-          ...current,
-          error: err instanceof Error ? err.message : String(err),
-          pullProgress: null
-        }
-      }
+      patchByDir((cur) => ({
+        ...cur,
+        error: err instanceof Error ? err.message : String(err),
+        pulling: false,
+        pullProgress: null
+      }))
     } finally {
-      const current = jobs[index]
-      if (current?.jobDir === job.jobDir && current.pulling) {
-        jobs[index] = { ...current, pulling: false, pullProgress: null }
-      }
+      patchByDir((cur) => (cur.pulling ? { ...cur, pulling: false } : cur))
     }
   }
 
@@ -1194,24 +1569,37 @@
       })
   )
 
-  /** @param {EqStageInfo[]} stages */
-  function jobSimulatedTotals(stages) {
+  /**
+   * @param {EqStageInfo[]} stages
+   * @param {EquilibrationJob} [job]
+   */
+  function jobSimulatedTotals(stages, job) {
     let sim = 0
-    let total = 0
     let hasSim = false
-    let hasTotal = false
     for (const s of stages) {
       if (s.is_minimization) continue
       if (Number.isFinite(s.simulated_time)) {
         sim += /** @type {number} */ (s.simulated_time)
         hasSim = true
       }
+    }
+    const protocolTotal = job ? protocolPlannedMdNs(job) : null
+    if (protocolTotal != null) {
+      return { sim: hasSim ? sim : null, total: protocolTotal }
+    }
+    let fallbackTotal = 0
+    let hasFallback = false
+    for (const s of stages) {
+      if (s.is_minimization) continue
       if (Number.isFinite(s.total_simulation_time)) {
-        total += /** @type {number} */ (s.total_simulation_time)
-        hasTotal = true
+        fallbackTotal += /** @type {number} */ (s.total_simulation_time)
+        hasFallback = true
       }
     }
-    return { sim: hasSim ? sim : null, total: hasTotal ? total : null }
+    return {
+      sim: hasSim ? sim : null,
+      total: hasFallback ? fallbackTotal : null
+    }
   }
 
   /** @param {import('../lib/backendApi.js').EquilibrationJobSummary} summary */
@@ -1264,6 +1652,7 @@
       logView: existing?.logView ?? null,
       loadingStages: existing?.loadingStages ?? false,
       syncingRemoteStages: existing?.syncingRemoteStages ?? false,
+      submitting: existing?.submitting ?? false,
       // Only keep stage error output while the job is still in error; Continue/resume
       // must not resurrect a stale failure log under a running card.
       equilibrationOutput:
@@ -1328,9 +1717,7 @@
       statusSynced = true
       void refreshRemoteCardSizes()
       prefetchJobRuntimes()
-      for (let i = 0; i < jobs.length; i++) {
-        void refreshJobLogFiles(i)
-      }
+      prefetchJobLogFiles()
       if (autoMonitor && jobs.some((j) => j.watched)) {
         restartPolling()
         await pollWatchedJobs({ scheduleNext: false })
@@ -1369,11 +1756,26 @@
   }
 
   async function pollWatchedJobs({ scheduleNext = true } = {}) {
+    // Progress Connect (probe/connect) still contends with sinfo; skip remote
+    // I/O then. Pull uses a separate SSH ControlMaster, so other cards keep
+    // Watching — local parse always, log sync on the watch mux.
+    const pauseRemoteSync = clusterSession.connecting || clusterSession.probing
     for (let i = 0; i < jobs.length; i++) {
       if (!jobs[i].watched) continue
-      // Finished remote: re-read local logs only (no cluster transfer).
+      // Do not poll/pull while Cluster → Submit is uploading (avoids a second sbatch race).
+      if (jobs[i].submitting) continue
+      if (jobs[i].pulling) continue
+      // Slurm COMPLETED + local stages caught up: re-read local only.
+      // COMPLETED but stale local logs (partial Pull): keep light remote sync.
       // Live remote: refreshJobDetail polls Slurm + light log sync.
-      if (remoteJobFinishedLocally(jobs[i])) {
+      if (remoteJobFinishedLocally(jobs[i]) && !remoteNeedsLogCatchUp(jobs[i])) {
+        await loadJobStages(i)
+        if (jobs[i].logMode === 'tail' && jobs[i].selectedLog) {
+          await refreshJobLogView(i)
+        }
+        continue
+      }
+      if (pauseRemoteSync && jobs[i].execution?.mode === 'remote') {
         await loadJobStages(i)
         if (jobs[i].logMode === 'tail' && jobs[i].selectedLog) {
           await refreshJobLogView(i)
@@ -1396,34 +1798,35 @@
     }
   }
 
-  /** @param {number} index @param {{ localOnly?: boolean }} [opts] */
-  async function refreshJobDetail(index, { localOnly = false } = {}) {
+  /** @param {number} index @param {{ localOnly?: boolean, pullLogs?: boolean }} [opts] */
+  async function refreshJobDetail(index, { localOnly = false, pullLogs = true } = {}) {
     const job = jobs[index]
     if (!job) return
     const prevStatus = job.status
     const jobDir = job.jobDir
     const jobName = job.name
     const finishedRemote = remoteJobFinishedLocally(job)
-    const syncRemoteStages =
+    const needsCatchUp = remoteNeedsLogCatchUp(job)
+    const pollCluster =
       !localOnly &&
-      !finishedRemote &&
+      (!finishedRemote || needsCatchUp) &&
       job.execution?.mode === 'remote' &&
-      job.watched &&
-      job.stages.length === 0 &&
-      !isSlurmPendingState(job.execution?.last_remote_state)
+      Boolean(job.execution?.scheduler_job_id)
+    const willPullLogs =
+      pollCluster &&
+      pullLogs &&
+      (job.watched || needsCatchUp) &&
+      !isSlurmPendingState(job.execution?.last_remote_state) &&
+      !job.pulling
 
-    if (syncRemoteStages) {
+    if (willPullLogs) {
       jobs[index] = { ...jobs[index], syncingRemoteStages: true }
     }
 
     try {
     // Remote Watching: poll Slurm (auto-connect via SSH key on the profile).
-    if (
-      !localOnly &&
-      !finishedRemote &&
-      job.execution?.mode === 'remote' &&
-      job.execution?.scheduler_job_id
-    ) {
+    // Also catch-up after COMPLETED when local stage logs are still incomplete.
+    if (pollCluster) {
       try {
         const profiles = await loadClusterProfiles()
         const profile =
@@ -1441,8 +1844,8 @@
             job_id: schedulerJobId,
             local_dir: job.jobDir,
             remote_dir: job.execution.remote_path || null,
-            // Watching: light log sync only (step*.log etc.) — not full Pull.
-            pull_logs: true
+            // Watching / catch-up: light log sync. Prefetch may pass pullLogs:false.
+            pull_logs: willPullLogs
           })
           const current0 = jobs[index]
           if (!current0 || current0.jobDir !== jobDir) return
@@ -1509,18 +1912,17 @@
       const stageErr =
         stages.find((s) => s.status === 'error')?.output ||
         stages.map((s) => s.output || '').join('\n')
+      const failLine =
+        stageErr
+          .split('\n')
+          .find((l) =>
+            /fatal error|error in stage|stub library|cuda driver:\s*0\.0|gpu detection failed/i.test(
+              l
+            )
+          ) || ''
       let error =
         status === 'error'
-          ? (current.error ||
-              stageErr
-                .split('\n')
-                .find((l) =>
-                  /fatal error|error in stage|stub library|cuda driver:\s*0\.0|gpu detection failed/i.test(
-                    l
-                  )
-                ) ||
-              stageErr.trim() ||
-              null)
+          ? (current.error || failLine || null)
           : null
       if (current.execution?.mode === 'remote' && current.execution?.last_remote_state) {
         const rs = String(current.execution.last_remote_state)
@@ -1539,7 +1941,7 @@
           if (status === 'completed') error = null
         }
       }
-      const equilibrationOutput = status === 'error' ? stageErr || error || '' : ''
+      const equilibrationOutput = status === 'error' && failLine ? stageErr || error || '' : ''
       jobs[index] = {
         ...current,
         status,
@@ -1642,10 +2044,37 @@
     }
   }
 
+  /** True when Reload/summary fails because the job folder was deleted or emptied. */
+  function isMissingJobFolderError(error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    return (
+      /Not a directory:/i.test(msg) ||
+      /Not an equilibration job folder:/i.test(msg) ||
+      /Job directory not found/i.test(msg) ||
+      /Directory not found:/i.test(msg)
+    )
+  }
+
+  /** Drop a stale Progress card (folder removed from disk). */
+  function dismissMissingJobCard(jobDir, jobName) {
+    if (formSourceJobDir === jobDir) formSourceJobDir = null
+    if (clusterDialogJob?.jobDir === jobDir) clusterDialogJob = null
+    const wasWatched = jobs.some((j) => j.jobDir === jobDir && j.watched)
+    jobs = jobs.filter((j) => j.jobDir !== jobDir)
+    if (wasWatched && !jobs.some((j) => j.watched)) stopPollingIfDone()
+    logEvent(
+      'warn',
+      'eq',
+      `Removed "${jobName || 'job'}" from Progress`,
+      'Folder no longer exists on disk'
+    )
+  }
+
   async function reloadJobCard(/** @type {number} */ index) {
     const job = jobs[index]
     if (!job || job.reloading) return
     const jobDir = job.jobDir
+    const jobName = job.name
     jobs[index] = { ...job, reloading: true }
     try {
       if (job.execution?.mode === 'remote') {
@@ -1657,7 +2086,7 @@
       jobs[index] = { ...jobFromScan(summary, existing), reloading: true }
       const finishedRemote = remoteJobFinishedLocally(jobs[index])
       if (jobs[index].watched || jobs[index].showStages || finishedRemote) {
-        if (finishedRemote) {
+        if (finishedRemote && !remoteNeedsLogCatchUp(jobs[index])) {
           await loadJobStages(index)
         } else {
           await refreshJobDetail(index)
@@ -1676,6 +2105,10 @@
         }
       }
     } catch (error) {
+      if (isMissingJobFolderError(error)) {
+        dismissMissingJobCard(jobDir, jobName)
+        return
+      }
       alert(error instanceof Error ? error.message : String(error))
     } finally {
       if (jobs[index]?.jobDir === jobDir) {
@@ -1777,6 +2210,7 @@
       stage.use_gpu = defaults.use_gpu ?? true
       stage.resources_inherit = false
     }
+    if (engine === 'amber') applyAmberFirstBarostatCpuDefault(protocol)
     protocolFormKey += 1
   }
 
@@ -2045,6 +2479,9 @@
 
     const applied = protocolFromJobMetadata(fields.protocol ?? null)
     if (applied) {
+      // Job metadata may store a concrete Production ensemble; bind that
+      // stage back to the sidebar so later engine/ensemble switches stay in sync.
+      syncProtocolToSidebarEnsemble(applied, ensemble, nextEngine || engine)
       protocol = applied
       protocolFormKey += 1
       logEvent(
@@ -2327,9 +2764,12 @@
 
   /** Last workingDir we scanned — avoid wiping Use-in-form state on spurious effect re-runs. */
   let lastScannedWorkingDir = ''
+  /** True when workingDir changed while another tab was active; scan runs on first visit. */
+  let jobsScanPending = false
 
   $effect(() => {
     const dir = workingDir || ''
+    const active = pageActive
     if (!dir) {
       jobs = []
       loadingJobs = false
@@ -2337,9 +2777,23 @@
       formSourceJobDir = null
       jobsScanGeneration += 1
       lastScannedWorkingDir = ''
+      jobsScanPending = false
       return
     }
-    if (dir === lastScannedWorkingDir) return
+    if (!active) {
+      if (dir !== lastScannedWorkingDir) {
+        jobsScanPending = true
+        jobsScanGeneration += 1
+        if (lastScannedWorkingDir) {
+          jobs = []
+          formSourceJobDir = null
+          usingInFormDir = null
+        }
+      }
+      return
+    }
+    if (dir === lastScannedWorkingDir && !jobsScanPending) return
+    jobsScanPending = false
     lastScannedWorkingDir = dir
     // Clear previous directory cards immediately so the Progress pane shows Loading…
     jobs = []
@@ -2414,23 +2868,30 @@
     logEvent('info', 'eq', 'Cluster disconnected')
   }
 
-  // When a shared session appears (Progress Connect, Pull auto-connect, or cluster dialog),
-  // load remote card runtimes without requiring Stages to be opened.
+  // When inventory probe finishes (Progress Connect, Pull auto-connect, or cluster dialog),
+  // load remote card runtimes without requiring Stages to be opened. Wait for probe so
+  // per-job log sync does not contend with sinfo / module avail.
   let remoteRuntimePrefetchKey = ''
   $effect(() => {
+    const ready = clusterSession.inventoryReady
     const sid = clusterSession.sessionId || ''
     const remoteDirs = jobs
       .filter((j) => j.execution?.mode === 'remote')
       .map((j) => j.jobDir)
       .join('|')
-    if (!sid || !remoteDirs) return
+    if (!ready || !sid || !remoteDirs) return
     const key = `${sid}:${remoteDirs}`
     if (key === remoteRuntimePrefetchKey) return
     remoteRuntimePrefetchKey = key
     untrack(() => {
+      const tasks = []
       for (let i = 0; i < jobs.length; i++) {
-        if (jobs[i].execution?.mode === 'remote') void ensureJobRuntimeLoaded(i)
+        if (jobs[i].execution?.mode === 'remote') {
+          const index = i
+          tasks.push(() => ensureJobRuntimeLoaded(index))
+        }
       }
+      void runWithConcurrency(tasks)
     })
   })
 
@@ -2997,6 +3458,8 @@
               availableCompute = []
               engineCandidateId = 'custom'
               selectedGmxrc = null
+              // Re-applies engine resource defaults, re-binds Production to
+              // sidebar ensemble, and fills engine-specific stage fields.
               applyEngineResourceDefaults(engine)
             }}
           >
@@ -3368,9 +3831,9 @@
       <div class="gw-notice gw-notice-warning">
         <p class="font-semibold">TESTING PROTOCOLS, NOT FOR PRODUCTION</p>
         <p class="mt-1">
-          Equilibration protocols for all engines are still under active testing and will change
-          substantially. Use them for development and validation only; do not rely on these inputs
-          for production simulations yet.
+          Equilibration heats under NVT, scaffolds under NVT, then packs under NPgT (γ=0) for 20 ns of MD (Eq1–6).
+          Production is the first stage that uses the selected ensemble. Protocols are still under active testing. Use for
+          development and validation only.
         </p>
       </div>
       <h1 id="eq-protocol-panel" class="text-xl font-semibold">Equilibration protocol</h1>
@@ -3386,7 +3849,7 @@
         </p>
         <div class="flex items-center gap-2">
           <p class="text-sm">Ensemble:</p>
-          <Select bind:value={ensemble}>
+          <Select bind:value={ensemble} onchange={onSidebarEnsembleChange}>
             <option value="npt">NPT</option>
             <option value="nvt">NVT</option>
             <option value="npat">NPAT</option>
@@ -3444,6 +3907,7 @@
                 <EquilibrationStage
                   bind:stage={protocol.stages[i]}
                   {ensemble}
+                  {engine}
                   onAddConstraint={() => openConstraintEditorForAdd(i)}
                   onEditConstraint={(ci) => openConstraintEditorForEdit(i, ci)}
                 />
@@ -3538,7 +4002,7 @@
             <option value="ready">Ready</option>
           </select>
 
-          {#if progressClusterProfiles.length > 0 && (progressFilter === 'remote' || jobs.some((j) => j.execution?.mode === 'remote'))}
+          {#if progressClusterProfiles.length > 0}
             <span class="hidden h-4 w-px shrink-0 bg-neutral-300 sm:inline dark:bg-neutral-700" aria-hidden="true"></span>
             <span class="font-medium text-neutral-600 dark:text-neutral-400">Cluster</span>
             <select
@@ -3584,7 +4048,7 @@
             {/if}
           {/if}
 
-          {#if clusterSession.statusMessage && (progressFilter === 'remote' || jobs.some((j) => j.execution?.mode === 'remote'))}
+          {#if clusterSession.statusMessage && progressClusterProfiles.length > 0}
             <p
               class="basis-full truncate text-[11px] leading-snug {clusterSession.statusError
                 ? 'text-amber-600 dark:text-amber-400'
@@ -3842,6 +4306,8 @@
                       {job.stagesDone}/{job.stagesTotal} · running
                     {:else if job.status === 'not_started' && job.stagesDone === 0 && !job.canResume}
                       {job.stagesTotal} stages · ready
+                    {:else if remoteNeedsLogCatchUp(job)}
+                      {job.stagesDone}/{job.stagesTotal} · catching up logs
                     {:else if job.canResume || job.status === 'error'}
                       {job.stagesDone}/{job.stagesTotal} · interrupted
                     {:else}
@@ -3874,25 +4340,36 @@
                                 the protocol outline.
                               </span>
                             </p>
-                          {:else if job.syncingRemoteStages && job.execution?.mode === 'remote' && job.watched}
+                          {/if}
+                          {#if job.syncingRemoteStages && job.execution?.mode === 'remote'}
                             <p class="mb-2 flex items-center gap-1.5 text-xs text-neutral-500">
                               <Spinner className="size-3.5 shrink-0" label="Syncing stage logs" />
-                              Syncing stage logs from the cluster (lightweight)… keep Watching on,
-                              or click Pull for a full download.
+                              {#if remoteNeedsLogCatchUp(job)}
+                                Catching up stage logs after remote COMPLETED (lightweight sync)…
+                              {:else}
+                                Syncing stage logs from the cluster (lightweight)… keep Watching on,
+                                or click Pull for a full download.
+                              {/if}
                             </p>
-                          {/if}
-                          {#if job.loadingStages}
-                            <p class="flex items-center gap-1.5 text-neutral-500">
+                          {:else if job.loadingStages && displayStages.length === 0}
+                            <p class="mb-2 flex items-center gap-1.5 text-xs text-neutral-500">
                               <Spinner className="size-3" />
                               Loading stage detail from local files…
                             </p>
-                          {:else if displayStages.length > 0}
-                            {@const totals = jobSimulatedTotals(displayStages)}
-                            <p class="mb-1.5 text-neutral-500">
-                              Simulated: {formatNs(totals.sim)} / {formatNs(totals.total)} ns
+                          {:else if job.loadingStages && displayStages.length > 0}
+                            <p class="mb-2 flex items-center gap-1.5 text-xs text-neutral-500">
+                              <Spinner className="size-3" label="Refreshing stages" />
+                              Refreshing stage progress…
                             </p>
+                          {/if}
+                          {#if displayStages.length > 0}
+                            {@const totals = jobSimulatedTotals(displayStages, job)}
+                            <div class="mb-1.5 space-y-0.5 text-neutral-500">
+                              <p>Simulated: {formatNs(totals.sim)} ns</p>
+                              <p>Protocol total: {formatNs(totals.total)} ns</p>
+                            </div>
                             <div class="flex flex-col gap-1">
-                              {#each displayStages as stage_info (stage_info.name)}
+                              {#each displayStages as stage_info, stageIdx (`${stageIdx}-${stage_info.name}`)}
                                 <EquilibrationStageStatus
                                   {stage_info}
                                   compact
@@ -3910,6 +4387,8 @@
                                 >{job.equilibrationOutput}</pre
                               >
                             {/if}
+                          {:else if job.loadingStages || job.syncingRemoteStages}
+                            <!-- spinner already shown above -->
                           {:else if job.status === 'not_started'}
                             <p class="text-neutral-500">Inputs ready — not started yet.</p>
                           {:else if remoteJobFinishedLocally(job) || job.status === 'completed'}
@@ -4180,7 +4659,7 @@
                   </div>
                 {/if}
 
-                {#if job.pulling && job.pullProgress}
+                {#if job.pullProgress}
                   <div class="mt-2 space-y-1">
                     <div class="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
                       <span class="truncate" title={job.pullProgress.message}
@@ -4373,7 +4852,8 @@
         onDismiss={dismissConstraintEditor}
         onAccept={acceptConstraint}
         onDelete={constraintEditor.constraintIndex >= 0 ? deleteConstraintFromEditor : undefined}
-        onSelect={countMatchingAtoms}
+        onSelect={(sel) => countMatchingAtoms(inputDir, sel)}
+        hasInputDir={Boolean(inputDir)}
       />
     {/key}
   {/if}

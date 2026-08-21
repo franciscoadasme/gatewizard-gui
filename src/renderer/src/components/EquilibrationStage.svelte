@@ -3,8 +3,10 @@
   import Checkbox from './ui/Checkbox.svelte'
   import Divider from './ui/Divider.svelte'
   import Gear from './icons/Gear.svelte'
+  import Info from './icons/Info.svelte'
   import Input from './ui/Input.svelte'
-  import { canonicalEnsemble, formEnsembleValue } from '../lib/ensemble.js'
+  import { canonicalEnsemble } from '../lib/ensemble.js'
+  import { stageFieldVisibility } from '../lib/equilibrationStageFields.js'
 
   /** @typedef {{ id: string, name: string, force_constant: number, selection: string }} Constraint */
 
@@ -15,7 +17,7 @@
    *     description: string,
    *     time_ns: number,
    *     steps: number,
-   *     ensemble: string,
+   *     ensemble: string|null,
    *     temperature: number,
    *     pressure: number,
    *     constraints: Array<Constraint>,
@@ -32,11 +34,18 @@
    *     resources_inherit?: boolean
    *   },
    *   ensemble: string,
+   *   engine?: string,
    *   onAddConstraint: () => void,
    *   onEditConstraint: (constraintIndex: number) => void
    * }}
    */
-  let { stage = $bindable(), ensemble, onAddConstraint, onEditConstraint } = $props()
+  let {
+    stage = $bindable(),
+    ensemble,
+    engine = 'namd',
+    onAddConstraint,
+    onEditConstraint
+  } = $props()
 
   const uid = $props.id()
 
@@ -51,6 +60,11 @@
 
   const isMinimization = $derived(stageKind === 'minimization')
   const useGpu = $derived(isMinimization ? false : stage.use_gpu !== false)
+
+  // Only expose fields the selected engine actually writes into inputs.
+  const fields = $derived(
+    stageFieldVisibility(engine, stage.ensemble, ensemble, { isMinimization })
+  )
 
   const resourceChip = $derived.by(() => {
     const cpu = stage.cpu_cores ?? (isMinimization ? 4 : 1)
@@ -98,14 +112,36 @@
         stage.num_gpus = 1
       }
     }
+    // NAMD templates always accept margin; seed a default when the field is shown.
+    if (fields.margin && (stage.margin == null || stage.margin === undefined)) {
+      stage.margin = 5
+    }
   })
 </script>
 
 <div class="min-w-80 shrink-0 rounded-md border border-neutral-200 bg-neutral-50 p-4 text-neutral-900 dark:border-transparent dark:bg-neutral-900 dark:text-inherit">
-  <div class="mb-2 flex items-start justify-between gap-2">
-    <div>
-      <h3>{stage.name}</h3>
-      <p class="text-xs text-neutral-500">{stage.description}</p>
+  <div class="mb-2 flex items-center justify-between gap-2">
+    <div class="flex min-w-0 items-center gap-1.5">
+      <h3 class="truncate">{stage.name}</h3>
+      {#if stage.description}
+        <div class="group relative shrink-0">
+          <button
+            type="button"
+            class="rounded p-0.5 text-neutral-400 transition-colors hover:bg-neutral-200 hover:text-neutral-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+            aria-label="About {stage.name}"
+            aria-describedby="{uid}-stage-info"
+          >
+            <Info className="h-4 w-4" />
+          </button>
+          <div
+            id="{uid}-stage-info"
+            role="tooltip"
+            class="pointer-events-none absolute left-1/2 top-full z-20 mt-1.5 w-56 -translate-x-1/2 rounded-md border border-neutral-200 bg-white px-2.5 py-2 text-left text-xs leading-snug text-neutral-700 opacity-0 shadow-md transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-200"
+          >
+            {stage.description}
+          </div>
+        </div>
+      {/if}
     </div>
     <span
       class="shrink-0 rounded bg-neutral-200 px-2 py-0.5 font-mono text-xs text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"
@@ -240,7 +276,7 @@
     />
     <p class="text-xs text-neutral-500">K</p>
 
-    {#if (stage.ensemble || ensemble).includes('P')}
+    {#if fields.pressure}
       <label for="{uid}-pressure">Pressure:</label>
       <Input
         id="{uid}-pressure"
@@ -251,10 +287,10 @@
         step="0.1"
         bind:value={stage.pressure}
       />
-      <p class="text-xs text-neutral-500">atm</p>
+      <p class="text-xs text-neutral-500">bar</p>
     {/if}
 
-    {#if ['npat', 'npgt'].includes(formEnsembleValue(stage.ensemble || ensemble))}
+    {#if fields.surfaceTension}
       <label for="{uid}-surface-tension">Surface Tension:</label>
       <Input
         id="{uid}-surface-tension"
@@ -263,7 +299,11 @@
         min="0"
         max="100"
         step="1"
-        bind:value={stage.surface_tension}
+        value={stage.surface_tension ?? 0}
+        oninput={(e) => {
+          const v = e.currentTarget.valueAsNumber
+          stage.surface_tension = Number.isFinite(v) ? v : 0
+        }}
       />
       <p class="text-xs text-neutral-500">dyn/cm</p>
     {/if}
@@ -284,8 +324,10 @@
         }}
       />
       <p class="text-xs text-neutral-500">fs</p>
+    {/if}
 
-      <label for="{uid}-dcd_freq">DCD Frequency:</label>
+    {#if fields.trajFreq}
+      <label for="{uid}-dcd_freq">{fields.trajFreqLabel}:</label>
       <Input
         id="{uid}-dcd_freq"
         size="sm"
@@ -295,10 +337,10 @@
         step="1"
         bind:value={stage.dcd_freq}
       />
-      <p class="text-xs text-neutral-500">steps</p>
+      <p class="text-xs text-neutral-500">{fields.trajFreqHint}</p>
     {/if}
 
-    {#if stage.margin != null && !isMinimization}
+    {#if fields.margin}
       <label for="{uid}-margin">Margin:</label>
       <Input
         id="{uid}-margin"
@@ -307,7 +349,11 @@
         min="1"
         max="10"
         step="0.1"
-        bind:value={stage.margin}
+        value={stage.margin ?? 5}
+        oninput={(e) => {
+          const v = e.currentTarget.valueAsNumber
+          stage.margin = Number.isFinite(v) ? v : 5
+        }}
       />
       <p class="text-xs text-neutral-500">Å</p>
     {/if}
