@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Analysis export:** optional file name for CSV / SVG / PNG. PNG/SVG save every on-screen panel (overlay or separate sets). Pub PNG (matplotlib style) is on both Structural and Energetic and includes every visible set in the legend. Buttons show a spinner while writing.
 - **Builder job cards:** Cancel while a preparation job is running (same pattern as Tools Fix PBC).
 - **Builder job cards:** **Start** on generated (`not_started`) cards so older input folders can be run later; sidebar Start Preparation still targets the newest pending job.
+- **Tools Fix PBC (GROMACS):** multi-check center/output index groups (merged server-side), Lipids preset, skip-cluster toggle, and job-card labels for effective center/output (`GW_CENTER = PA+PC+OL`).
 - **Remote job dialog:** optional **GPU type** select from probed node/partition GRES. Writes `#SBATCH --gres=gpu:TYPE:N` when set; Any keeps `#SBATCH --gpus=N`. Stored in `execution.resources.gpu_type`.
 - **Cluster profiles:** optional **Default job time limit** (`default_time_limit`, Slurm `#SBATCH -t`) used when opening Remote job for a new submit.
 

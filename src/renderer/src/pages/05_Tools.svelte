@@ -3,7 +3,9 @@
   import Beaker from '../components/icons/Beaker.svelte'
   import Protein from '../components/icons/Protein.svelte'
   import TopologyInfoModal from '../components/TopologyInfoModal.svelte'
+  import OutputPathFields from '../components/OutputPathFields.svelte'
   import Button from '../components/ui/Button.svelte'
+  import Checkbox from '../components/ui/Checkbox.svelte'
   import Divider from '../components/ui/Divider.svelte'
   import FollowLog from '../components/FollowLog.svelte'
   import Input from '../components/ui/Input.svelte'
@@ -21,8 +23,11 @@
     scanToolsJobs
   } from '../lib/backendApi'
   import {
+    compactDirPath,
     defaultToolsFolderName,
-    outputFolderPath
+    normalizeDirPath,
+    parentDirPath,
+    uniqueDirList
   } from '../lib/outputFolders.js'
   import { logEvent, toolsStatus } from '../lib/pageStatus.svelte.js'
   import { themeState } from '../lib/theme.svelte.js'
@@ -74,13 +79,49 @@
    *   logLines: string[]
    *   showLog: boolean
    *   stopping?: boolean
+   *   centerLabel?: string|null
+   *   outputLabel?: string|null
+   *   skipCluster?: boolean
    * }} ToolsJob
    */
+
+  const LIPID_PRESET_NAMES = [
+    'PA',
+    'PC',
+    'OL',
+    'PE',
+    'PS',
+    'PG',
+    'PI',
+    'SM',
+    'CHL',
+    'CHOL',
+    'POPC',
+    'POPE',
+    'POPS',
+    'POPG',
+    'DOPC',
+    'DOPE',
+    'DPPC',
+    'DPPE',
+    'MEMB',
+    'Membrane',
+    'membrane',
+    'Lipid',
+    'lipid',
+    'LIPID',
+    'Lipids',
+    'lipids'
+  ]
 
   let toolCategory = $state('structural')
   let tool = $state('fix_pbc')
   let launching = $state(false)
   let outputFolderName = $state('')
+  /** Parent directory for tool jobs; defaults to the top-bar working directory. */
+  let outputParentDir = $state('')
+  /** Extra folders to scan (job parents outside the working directory). */
+  let extraScanRoots = $state(/** @type {string[]} */ ([]))
   let formError = $state('')
   let showTopoInfo = $state(false)
   let topoLoading = $state(false)
@@ -91,6 +132,8 @@
   let jobs = $state([])
   /** @type {any} */
   let pollIntervalId = $state(null)
+  /** @type {any} */
+  let pruneIntervalId = $state(null)
 
   // Drag-to-reorder
   let dragIdx = $state(-1)
@@ -102,8 +145,11 @@
    *   tprPath: string
    *   ndxPath: string
    *   centerSelection: string
-   *   centerGroup: string
-   *   outputGroup: string
+   *   selectedCenterGroups: string[]
+   *   selectedOutputGroups: string[]
+   *   centerGroupText: string
+   *   outputGroupText: string
+   *   skipCluster: boolean
    *   outputFormat: string
    *   trajectoryFiles: TrajRow[]
    *   detectInfo: null | {
@@ -113,12 +159,15 @@
    *     tpr: string|null
    *     ndx: string|null
    *     warnings: string[]
-   *     center_groups?: Array<{ name: string, index: number, n_atoms: number, recommended?: boolean }>
+   *     center_groups?: Array<{ name: string, index: number, n_atoms: number, recommended?: boolean, lipid_like?: boolean }>
    *     recommended_center?: string|null
+   *     recommended_center_groups?: string[]
    *     recommended_output?: string|null
+   *     recommended_center_selection?: string
+   *     lipid_resnames?: string[]
    *     supported_output_formats?: string[]
    *   }
-   *   centerGroups: Array<{ name: string, index: number, n_atoms: number, recommended?: boolean }>
+   *   centerGroups: Array<{ name: string, index: number, n_atoms: number, recommended?: boolean, lipid_like?: boolean }>
    * }} */
   let fixPbc = $state({
     engine: 'auto',
@@ -126,12 +175,15 @@
     tprPath: '',
     ndxPath: '',
     centerSelection: 'protein',
-    centerGroup: '',
-    outputGroup: '',
+    selectedCenterGroups: /** @type {string[]} */ ([]),
+    selectedOutputGroups: /** @type {string[]} */ ([]),
+    centerGroupText: '',
+    outputGroupText: '',
+    skipCluster: false,
     outputFormat: 'same',
     trajectoryFiles: /** @type {TrajRow[]} */ ([]),
     detectInfo: null,
-    centerGroups: /** @type {Array<{ name: string, index: number, n_atoms: number, recommended?: boolean }>} */ ([])
+    centerGroups: /** @type {Array<{ name: string, index: number, n_atoms: number, recommended?: boolean, lipid_like?: boolean }>} */ ([])
   })
   /** @type {number | null} */
   let centerSelectionAtomCount = $state(null)
@@ -149,6 +201,91 @@
     fixPbc.engine === 'auto' ? fixPbc.detectInfo?.engine || 'auto' : fixPbc.engine
   )
   const isGromacs = $derived(resolvedEngine === 'gromacs')
+  const centerSummary = $derived(
+    fixPbc.centerGroups.length > 0
+      ? formatGroupSummary(fixPbc.selectedCenterGroups)
+      : fixPbc.centerGroupText.trim()
+  )
+  const outputSummary = $derived(
+    fixPbc.centerGroups.length > 0
+      ? formatGroupSummary(fixPbc.selectedOutputGroups)
+      : fixPbc.outputGroupText.trim()
+  )
+  const lipidPresetNames = $derived(
+    fixPbc.centerGroups
+      .filter(
+        (g) =>
+          g.lipid_like ||
+          LIPID_PRESET_NAMES.includes(g.name) ||
+          /^[A-Z]{2,4}$/.test(g.name)
+      )
+      .map((g) => g.name)
+      .filter((n) => !['SOL', 'WAT', 'HOH', 'ION', 'NA', 'CL'].includes(n))
+  )
+
+  /** @param {string[]} names */
+  function formatGroupSummary(names) {
+    if (!names?.length) return ''
+    return names.join(' + ')
+  }
+
+  /** True when the field still has the auto default (protein, or protein + detected lipids). */
+  function isAutoCenterSelection(sel) {
+    const s = String(sel || '').trim()
+    if (!s || s.toLowerCase() === 'protein') return true
+    return /^protein or resname /i.test(s)
+  }
+
+  function applyDetectedProteinMembraneSelection() {
+    const rec = fixPbc.detectInfo?.recommended_center_selection
+    const lipids = fixPbc.detectInfo?.lipid_resnames
+    if (rec && rec !== 'protein') {
+      fixPbc.centerSelection = rec
+      return
+    }
+    if (lipids?.length) {
+      fixPbc.centerSelection = `protein or resname ${lipids.join(' ')}`
+      return
+    }
+    fixPbc.centerSelection = 'protein or resname PA PC OL'
+  }
+
+  /**
+   * @param {'center'|'output'} which
+   * @param {string} name
+   * @param {boolean} on
+   */
+  function toggleIndexGroup(which, name, on) {
+    const key = which === 'center' ? 'selectedCenterGroups' : 'selectedOutputGroups'
+    const cur = fixPbc[key]
+    if (on) {
+      if (!cur.includes(name)) fixPbc[key] = [...cur, name]
+    } else {
+      fixPbc[key] = cur.filter((n) => n !== name)
+    }
+  }
+
+  function applyLipidsCenterPreset() {
+    const lipids = lipidPresetNames
+    if (!lipids.length) return
+    const protein = fixPbc.centerGroups.find((g) =>
+      ['Protein', 'Protein-H', 'SOLU'].includes(g.name)
+    )?.name
+    // Prefer split lipid parts over a lone MEMB if both exist
+    const split = lipids.filter(
+      (n) => !['MEMB', 'Membrane', 'membrane', 'Lipid', 'lipid', 'LIPID', 'Lipids', 'lipids'].includes(n)
+    )
+    const pick = split.length >= 2 ? split : lipids
+    fixPbc.selectedCenterGroups = protein ? [protein, ...pick] : [...pick]
+  }
+
+  /** @param {string[]} names */
+  function applyCenterDefaults(names) {
+    if (!names?.length) return
+    if (fixPbc.selectedCenterGroups.length === 0) {
+      fixPbc.selectedCenterGroups = [...names]
+    }
+  }
 
   /** @param {string} categoryId */
   function selectToolCategory(categoryId) {
@@ -172,8 +309,8 @@
     return defaultToolsFolderName()
   }
 
-  const outputDir = $derived(outputFolderPath(workingDir, resolveOutputFolderName()))
-  const canLaunch = $derived(workingDir !== '' && toolEnabled && !launching)
+  const resolvedOutputParent = $derived((outputParentDir.trim() || workingDir).trim())
+  const canLaunch = $derived(resolvedOutputParent !== '' && toolEnabled && !launching)
 
   // Seed default once when a working directory first appears — do not refill
   // while the user clears/edits the field.
@@ -198,12 +335,12 @@
     }
   })
 
-  // Re-detect engine when inputs or engine override change
+  // Re-detect engine (and Amber lipid center selection) when inputs change
   $effect(() => {
     const _eng = fixPbc.engine
     const _top = fixPbc.topologyPath
     const _trajs = trajectoryPaths
-    if (_top && _trajs.length > 0) {
+    if (_top) {
       void refreshDetect()
     }
   })
@@ -222,24 +359,21 @@
     toolsStatus.error = latest?.status === 'error' ? latest.error || '' : formError
   })
 
-  // Reload Tools jobs from the working directory (not only the current
-  // Output folder field) so jobs reappear after app restart.
+  // Reload Tools jobs when the working directory or output path changes.
+  // Merge into the live list — never replace it, or a job started outside the
+  // working directory is wiped by an in-flight scan that started before launch.
   $effect(() => {
-    const dir = workingDir || ''
-    if (!dir) {
-      jobs = []
-      return
-    }
+    const roots = jobScanRoots()
+    if (roots.length === 0) return
     let cancelled = false
-    scanToolsJobs(dir)
-      .then(({ jobs: found }) => {
+    scanMergedToolsJobs()
+      .then((found) => {
         if (cancelled) return
-        const mapped = found.map((j) => mapScannedJob(j)).sort(
-          (a, b) => new Date(b.startTime || 0) - new Date(a.startTime || 0)
-        )
-        jobs = mapped
-        if (mapped.some((j) => j.status === 'running')) startPolling()
+        jobs = mergeJobsFromScan(found, { dropMissing: false })
+        if (jobs.some((j) => jobNeedsPoll(j))) startPolling()
         else stopPollingIfDone()
+        if (jobs.length > 0) startPrunePolling()
+        else stopPrunePolling()
       })
       .catch(() => {})
     return () => {
@@ -249,12 +383,13 @@
 
   onDestroy(() => {
     if (pollIntervalId) clearInterval(pollIntervalId)
+    if (pruneIntervalId) clearInterval(pruneIntervalId)
   })
 
   /** @param {any} j */
   function mapScannedJob(j) {
     return {
-      jobDir: j.job_dir,
+      jobDir: jobDirKey(j.job_dir),
       name: j.name,
       type: j.type || 'fix_pbc',
       engine: j.engine || '',
@@ -269,7 +404,10 @@
       elapsed: formatElapsed(j.start_time, j.end_time),
       outputs: j.outputs || [],
       logLines: [],
-      showLog: false
+      showLog: false,
+      centerLabel: j.center_label || null,
+      outputLabel: j.output_label || null,
+      skipCluster: Boolean(j.skip_cluster)
     }
   }
 
@@ -303,22 +441,192 @@
 
   function startPolling() {
     if (pollIntervalId) return
-    pollIntervalId = setInterval(pollAllJobs, 2000)
+    pollIntervalId = setInterval(() => {
+      void pollAllJobs()
+    }, 2000)
   }
 
   function stopPollingIfDone() {
-    if (jobs.every((j) => j.status !== 'running')) {
+    if (!jobs.some((j) => jobNeedsPoll(j))) {
       if (pollIntervalId) {
         clearInterval(pollIntervalId)
         pollIntervalId = null
       }
+    }
+    // Keep a slow prune loop while any cards remain (catch deleted folders).
+    if (jobs.length > 0) startPrunePolling()
+    else stopPrunePolling()
+  }
+
+  function startPrunePolling() {
+    if (pruneIntervalId) return
+    pruneIntervalId = setInterval(() => {
+      void pruneMissingJobCards()
+    }, 5000)
+  }
+
+  function stopPrunePolling() {
+    if (pruneIntervalId) {
+      clearInterval(pruneIntervalId)
+      pruneIntervalId = null
+    }
+  }
+
+  function jobDirKey(dir) {
+    return normalizeDirPath(dir)
+  }
+
+  function jobLooksInterrupted(job) {
+    return (
+      job?.status === 'error' &&
+      /worker process exited unexpectedly/i.test(String(job.error || ''))
+    )
+  }
+
+  function jobNeedsPoll(job) {
+    return job?.status === 'running' || jobLooksInterrupted(job)
+  }
+
+  function jobScanRoots() {
+    return uniqueDirList(workingDir, outputParentDir, ...extraScanRoots)
+  }
+
+  function jobPathLabel(job) {
+    const full = jobDirKey(job.jobDir)
+    if (!full) return ''
+    const compact = compactDirPath(full, workingDir)
+    return compact && compact !== '.' ? compact : full
+  }
+
+  /**
+   * Merge a disk scan into the live card list. Running jobs that the scan has
+   * not seen yet (typical for output outside the working directory) stay put.
+   * @param {any[]} found
+   * @param {{ dropMissing?: boolean }} [opts]
+   */
+  function mergeJobsFromScan(found, { dropMissing = false } = {}) {
+    const scanned = found.map((j) => mapScannedJob(j))
+    const liveByKey = new Map(jobs.map((j) => [jobDirKey(j.jobDir), j]))
+    const seen = new Set()
+    /** @type {ToolsJob[]} */
+    const next = []
+    for (const s of scanned) {
+      const key = jobDirKey(s.jobDir)
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+      const live = liveByKey.get(key)
+      if (!live) {
+        next.push({ ...s, jobDir: key })
+        continue
+      }
+      const interruptScan =
+        s.status === 'error' &&
+        /worker process exited unexpectedly/i.test(String(s.error || ''))
+      const scanAhead =
+        (s.stepsCompleted?.length || 0) > (live.stepsCompleted?.length || 0) ||
+        (s.status === 'running' && live.status !== 'running') ||
+        s.status === 'completed' ||
+        s.status === 'cancelled' ||
+        (s.status === 'error' && !interruptScan)
+      next.push({
+        ...(scanAhead && !(interruptScan && live.status === 'running') ? { ...live, ...s } : live),
+        jobDir: key,
+        logLines: live.logLines,
+        showLog: live.showLog,
+        stopping: live.stopping
+      })
+    }
+    for (const live of jobs) {
+      const key = jobDirKey(live.jobDir)
+      if (seen.has(key)) continue
+      if (live.status === 'running' || !dropMissing) {
+        seen.add(key)
+        next.push(live)
+      }
+    }
+    next.sort((a, b) => new Date(b.startTime || 0) - new Date(a.startTime || 0))
+    return next
+  }
+
+  async function scanMergedToolsJobs() {
+    const roots = jobScanRoots()
+    const lists = await Promise.all(
+      roots.map((dir) =>
+        scanToolsJobs(dir)
+          .then((r) => r.jobs || [])
+          .catch(() => [])
+      )
+    )
+    const byDir = new Map()
+    for (const j of lists.flat()) {
+      const key = jobDirKey(j?.job_dir)
+      if (key && !byDir.has(key)) byDir.set(key, { ...j, job_dir: key })
+    }
+    return [...byDir.values()]
+  }
+
+  /**
+   * Drop Tools cards whose job folder was deleted on disk, and revive cards when
+   * the same path is reused for a new running job (stale completed overlay).
+   * Never drop a still-running card just because a scan missed its parent folder.
+   */
+  async function pruneMissingJobCards() {
+    if (jobScanRoots().length === 0 || jobs.length === 0) return
+    try {
+      const found = await scanMergedToolsJobs()
+      const byDir = new Map(found.map((j) => [jobDirKey(j.job_dir), j]))
+      const kept = []
+      let changed = false
+      for (const job of jobs) {
+        const key = jobDirKey(job.jobDir)
+        const disk = byDir.get(key)
+        if (!disk) {
+          if (job.status === 'running') {
+            kept.push(job)
+            continue
+          }
+          logEvent(
+            'warn',
+            'tools',
+            `Removed "${job.name}" from Tools`,
+            job.jobDir || 'Folder no longer exists on disk'
+          )
+          changed = true
+          continue
+        }
+        // Same path restarted, or a false "Interrupted" while the worker is still going.
+        const diskRunning = disk.status === 'running'
+        const diskSteps = disk.steps_completed || []
+        const liveSteps = job.stepsCompleted || []
+        const diskAhead = diskSteps.length > liveSteps.length || diskRunning && job.status !== 'running'
+        if (diskAhead) {
+          kept.push({
+            ...job,
+            ...mapScannedJob(disk),
+            showLog: job.showLog,
+            logLines: job.logLines,
+            stopping: job.stopping
+          })
+          changed = true
+          if (diskRunning || jobNeedsPoll(job)) startPolling()
+          continue
+        }
+        kept.push(job)
+      }
+      if (changed) {
+        jobs = kept
+        stopPollingIfDone()
+      }
+    } catch {
+      /* ignore scan failures */
     }
   }
 
   /** @param {number} index */
   async function cancelJob(index) {
     const job = jobs[index]
-    if (!job || job.status !== 'running' || job.stopping) return
+    if (!job || job.stopping) return
+    if (!jobNeedsPoll(job)) return
     if (!confirm(`Cancel Fix PBC job "${job.name}"? This cannot be undone.`)) return
     try {
       jobs[index] = { ...job, stopping: true }
@@ -356,24 +664,34 @@
 
   async function pollAllJobs() {
     let changed = false
-    for (let i = 0; i < jobs.length; i++) {
-      const job = jobs[i]
-      if (job.status !== 'running') continue
+    const running = jobs.filter((j) => jobNeedsPoll(j))
+    for (const job of running) {
+      const key = jobDirKey(job.jobDir)
       try {
         const st = await getJobStatus(job.jobDir)
+        const i = jobs.findIndex((j) => jobDirKey(j.jobDir) === key)
+        if (i < 0) continue
+        const current = jobs[i]
+        const outs = st.outputs || current.outputs
+        const firstOk = (outs || []).find((o) => o?.center_label || o?.output_label)
         jobs[i] = {
-          ...job,
-          status: st.status || job.status,
-          currentStep: st.current_step ?? job.currentStep,
-          steps: st.steps?.length ? st.steps : job.steps,
-          stepsCompleted: st.steps_completed || job.stepsCompleted,
-          error: st.error ?? job.error,
-          startTime: st.start_time || job.startTime,
-          endTime: st.end_time ?? job.endTime,
-          elapsed: formatElapsed(st.start_time || job.startTime, st.end_time),
-          outputs: st.outputs || job.outputs,
-          engine: st.engine || job.engine,
-          method: st.method || job.method
+          ...current,
+          status: st.status || current.status,
+          currentStep: st.current_step ?? current.currentStep,
+          steps: st.steps?.length ? st.steps : current.steps,
+          stepsCompleted:
+            (st.steps_completed || []).length >= (current.stepsCompleted || []).length
+              ? st.steps_completed || current.stepsCompleted
+              : current.stepsCompleted,
+          error: st.error !== undefined ? st.error : current.error,
+          startTime: st.start_time || current.startTime,
+          endTime: st.end_time ?? current.endTime,
+          elapsed: formatElapsed(st.start_time || current.startTime, st.end_time),
+          outputs: outs,
+          engine: st.engine || current.engine,
+          method: st.method || current.method,
+          centerLabel: firstOk?.center_label || current.centerLabel || null,
+          outputLabel: firstOk?.output_label || current.outputLabel || null
         }
         changed = true
         if (jobs[i].showLog) {
@@ -385,6 +703,7 @@
       }
     }
     if (changed) jobs = [...jobs]
+    void pruneMissingJobCards()
     stopPollingIfDone()
   }
 
@@ -401,12 +720,18 @@
         tprPath: tpr || null
       })
       fixPbc.centerGroups = res.groups || []
-      if (!fixPbc.centerGroup && res.recommended) {
-        fixPbc.centerGroup = res.recommended
-      }
-      if (!fixPbc.outputGroup) {
+      const rec =
+        res.recommended_groups?.length
+          ? res.recommended_groups
+          : res.recommended
+            ? [res.recommended]
+            : []
+      applyCenterDefaults(rec)
+      if (fixPbc.selectedOutputGroups.length === 0) {
         const hasSystem = fixPbc.centerGroups.some((g) => g.name === 'System')
-        fixPbc.outputGroup = hasSystem ? 'System' : fixPbc.centerGroups[0]?.name || 'System'
+        fixPbc.selectedOutputGroups = [
+          hasSystem ? 'System' : fixPbc.centerGroups[0]?.name || 'System'
+        ]
       }
     } catch {
       /* keep previous groups */
@@ -464,7 +789,7 @@
   }
 
   async function refreshDetect() {
-    if (!fixPbc.topologyPath || fixPbc.trajectoryFiles.length === 0) {
+    if (!fixPbc.topologyPath) {
       fixPbc.detectInfo = null
       return
     }
@@ -477,16 +802,31 @@
       fixPbc.detectInfo = info
       if (!fixPbc.tprPath && info.tpr) fixPbc.tprPath = info.tpr
       if (!fixPbc.ndxPath && info.ndx) fixPbc.ndxPath = info.ndx
+      if (
+        info.engine !== 'gromacs' &&
+        info.recommended_center_selection &&
+        isAutoCenterSelection(fixPbc.centerSelection)
+      ) {
+        fixPbc.centerSelection = info.recommended_center_selection
+      }
       if (info.center_groups?.length) {
         fixPbc.centerGroups = info.center_groups
-        if (!fixPbc.centerGroup && info.recommended_center) {
-          fixPbc.centerGroup = info.recommended_center
-        }
-        if (!fixPbc.outputGroup && info.recommended_output) {
-          fixPbc.outputGroup = info.recommended_output
-        } else if (!fixPbc.outputGroup) {
-          const hasSystem = fixPbc.centerGroups.some((g) => g.name === 'System')
-          fixPbc.outputGroup = hasSystem ? 'System' : fixPbc.centerGroups[0]?.name || 'System'
+        const rec =
+          info.recommended_center_groups?.length
+            ? info.recommended_center_groups
+            : info.recommended_center
+              ? [info.recommended_center]
+              : []
+        applyCenterDefaults(rec)
+        if (fixPbc.selectedOutputGroups.length === 0) {
+          if (info.recommended_output) {
+            fixPbc.selectedOutputGroups = [info.recommended_output]
+          } else {
+            const hasSystem = fixPbc.centerGroups.some((g) => g.name === 'System')
+            fixPbc.selectedOutputGroups = [
+              hasSystem ? 'System' : fixPbc.centerGroups[0]?.name || 'System'
+            ]
+          }
         }
       } else if (info.engine === 'gromacs') {
         await refreshCenterGroups()
@@ -621,8 +961,11 @@
       tprPath: '',
       ndxPath: '',
       centerSelection: 'protein',
-      centerGroup: '',
-      outputGroup: '',
+      selectedCenterGroups: [],
+      selectedOutputGroups: [],
+      centerGroupText: '',
+      outputGroupText: '',
+      skipCluster: false,
       outputFormat: 'same',
       trajectoryFiles: [],
       detectInfo: null,
@@ -637,6 +980,8 @@
     if (job?.status === 'running') return
     jobs = jobs.filter((_, i) => i !== index)
     stopPollingIfDone()
+    // Also drop any other cards whose folders vanished while we were idle.
+    void pruneMissingJobCards()
   }
 
   /** @param {number} index */
@@ -667,7 +1012,7 @@
       if (fixPbc.trajectoryFiles.length === 0) {
         throw new Error('Add at least one trajectory file.')
       }
-      if (!workingDir) throw new Error('Set a working directory in the top bar.')
+      if (!resolvedOutputParent) throw new Error('Set a working directory or choose an output path.')
 
       await refreshDetect()
       const eng =
@@ -685,15 +1030,43 @@
       const paths = trajectoryPaths
       const fileStrides = makeFileStrides()
 
+      const centerGroups =
+        eng === 'gromacs'
+          ? fixPbc.centerGroups.length > 0
+            ? [...fixPbc.selectedCenterGroups]
+            : fixPbc.centerGroupText.trim()
+              ? [fixPbc.centerGroupText.trim()]
+              : []
+          : []
+      const outputGroups =
+        eng === 'gromacs'
+          ? fixPbc.centerGroups.length > 0
+            ? [...fixPbc.selectedOutputGroups]
+            : fixPbc.outputGroupText.trim()
+              ? [fixPbc.outputGroupText.trim()]
+              : []
+          : []
+      const centerLabel =
+        centerGroups.length > 1
+          ? `GW_CENTER = ${centerGroups.join('+')}`
+          : centerGroups[0] || null
+      const outputLabel =
+        outputGroups.length > 1
+          ? `GW_OUTPUT = ${outputGroups.join('+')}`
+          : outputGroups[0] || null
+
       const result = await runFixPbc({
         topologyPath: fixPbc.topologyPath,
         trajectoryPaths: paths,
-        outputDir: workingDir,
+        outputDir: resolvedOutputParent,
         jobName: folderName,
         engine: fixPbc.engine,
         centerSelection: fixPbc.centerSelection.trim() || 'protein',
-        centerGroup: fixPbc.centerGroup.trim() || null,
-        outputGroup: fixPbc.outputGroup.trim() || null,
+        centerGroup: centerGroups.length === 1 ? centerGroups[0] : null,
+        outputGroup: outputGroups.length === 1 ? outputGroups[0] : null,
+        centerGroups: centerGroups.length ? centerGroups : null,
+        outputGroups: outputGroups.length ? outputGroups : null,
+        skipCluster: eng === 'gromacs' ? fixPbc.skipCluster : false,
         tprPath: fixPbc.tprPath || null,
         ndxPath: fixPbc.ndxPath || null,
         stride: 1,
@@ -705,10 +1078,13 @@
         )
       })
 
+      const jobDir = jobDirKey(result.job_dir)
+      const parent = parentDirPath(jobDir) || jobDirKey(resolvedOutputParent)
+      if (parent) extraScanRoots = uniqueDirList(...extraScanRoots, parent)
       /** @type {ToolsJob} */
       const newJob = {
-        jobDir: result.job_dir,
-        name: basename(result.job_dir),
+        jobDir,
+        name: basename(jobDir),
         type: 'fix_pbc',
         engine: result.engine || eng,
         method: result.method || '',
@@ -722,10 +1098,16 @@
         elapsed: '0s',
         outputs: [],
         logLines: [],
-        showLog: false
+        showLog: false,
+        centerLabel,
+        outputLabel,
+        skipCluster: eng === 'gromacs' ? fixPbc.skipCluster : false
       }
-      jobs = [newJob, ...jobs]
+      // Replace any stale card for the same path (folder deleted + recreated).
+      // Duplicate jobDir keys break Svelte keyed {#each} and freeze progress UI.
+      jobs = [newJob, ...jobs.filter((j) => jobDirKey(j.jobDir) !== jobDir)]
       startPolling()
+      startPrunePolling()
       logEvent(
         'info',
         'tools',
@@ -935,57 +1317,130 @@
       <div class="space-y-2">
         <h2 class="sidebar-heading">Options</h2>
         {#if isGromacs}
-          <div class="space-y-1">
-            <div class="flex items-center justify-between gap-1">
-              <p class="sidebar-label">Center group</p>
-              <Button size="sm" variant="ghost" onclick={refreshCenterGroups}>Refresh</Button>
-            </div>
-            {#if fixPbc.centerGroups.length > 0}
-              <Select size="sm" className="w-full" bind:value={fixPbc.centerGroup}>
-                {#each fixPbc.centerGroups as g (g.name + String(g.index))}
-                  <option value={g.name}>
-                    {g.index}: {g.name}
-                    {g.n_atoms ? ` (${g.n_atoms.toLocaleString()} atoms)` : ''}
-                    {g.recommended || g.name === 'SOLU_MEMB' || g.name === 'Protein'
-                      ? ' ★'
-                      : ''}
-                  </option>
-                {/each}
-              </Select>
-              <p class="sidebar-hint">
-                ★ recommended: SOLU_MEMB (protein+membrane) when present, else Protein.
-              </p>
-            {:else}
-              <Input
-                size="sm"
-                bind:value={fixPbc.centerGroup}
-                className="w-full"
-                placeholder="SOLU_MEMB or Protein"
-              />
-              <p class="sidebar-hint">
-                Select a TPR / index.ndx to load groups, or type a group name.
-              </p>
-            {/if}
-
-            <div class="space-y-1 pt-1">
-              <p class="sidebar-label">Output group</p>
+          <div class="space-y-2">
+            <div class="space-y-1">
+              <div class="flex items-center justify-between gap-1">
+                <p class="sidebar-label">Center group(s)</p>
+                <Button size="sm" variant="ghost" onclick={refreshCenterGroups}>Refresh</Button>
+              </div>
               {#if fixPbc.centerGroups.length > 0}
-                <Select size="sm" className="w-full" bind:value={fixPbc.outputGroup}>
-                  {#each fixPbc.centerGroups as g (g.name + String(g.index) + '-out')}
-                    <option value={g.name}>
-                      {g.index}: {g.name}
-                      {g.n_atoms ? ` (${g.n_atoms.toLocaleString()} atoms)` : ''}
-                      {g.name === 'System' ? ' ★' : ''}
-                    </option>
+                {#if centerSummary}
+                  <p
+                    class="rounded border border-neutral-200 px-2 py-1 text-[11px] text-neutral-700 dark:border-neutral-800 dark:text-neutral-300"
+                    title={centerSummary}
+                  >
+                    {centerSummary}
+                    {#if fixPbc.selectedCenterGroups.length > 1}
+                      <span class="text-neutral-500"> → GW_CENTER</span>
+                    {/if}
+                  </p>
+                {/if}
+                <div
+                  class="max-h-40 space-y-1 overflow-y-auto rounded border p-2 dark:border-neutral-800"
+                >
+                  {#each fixPbc.centerGroups as g (g.name + String(g.index))}
+                    {@const checked = fixPbc.selectedCenterGroups.includes(g.name)}
+                    <label class="flex items-center gap-2 text-[11px]">
+                      <Checkbox
+                        size="sm"
+                        name={`center-${g.name}`}
+                        {checked}
+                        onchange={(e) =>
+                          toggleIndexGroup('center', g.name, e.currentTarget.checked)}
+                      />
+                      <span class="min-w-0 flex-1 truncate font-mono text-neutral-800 dark:text-neutral-300">
+                        {g.index}: {g.name}
+                      </span>
+                      {#if g.n_atoms}
+                        <span class="shrink-0 text-neutral-500">{g.n_atoms.toLocaleString()}</span>
+                      {/if}
+                      {#if g.recommended || g.name === 'SOLU_MEMB'}
+                        <span class="shrink-0 text-amber-600 dark:text-amber-400">★</span>
+                      {/if}
+                    </label>
                   {/each}
-                </Select>
+                </div>
+                <div class="flex flex-wrap gap-1">
+                  {#if lipidPresetNames.length >= 2}
+                    <Button size="sm" variant="outline" onclick={applyLipidsCenterPreset}>
+                      Lipids ({lipidPresetNames.slice(0, 4).join('+')}{lipidPresetNames.length > 4
+                        ? '…'
+                        : ''})
+                    </Button>
+                  {/if}
+                  {#if fixPbc.detectInfo?.recommended_center_groups?.length}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onclick={() =>
+                        (fixPbc.selectedCenterGroups = [
+                          ...(fixPbc.detectInfo?.recommended_center_groups || [])
+                        ])}
+                    >
+                      Recommended
+                    </Button>
+                  {/if}
+                </div>
+                <p class="sidebar-hint">
+                  Prefer SOLU_MEMB when present. Otherwise check all lipid groups (+ Protein) for
+                  thickness / APL. Multi-select merges into a temporary GW_CENTER index group.
+                </p>
+              {:else}
+                <Input
+                  size="sm"
+                  bind:value={fixPbc.centerGroupText}
+                  className="w-full"
+                  placeholder="SOLU_MEMB or Protein"
+                />
+                <p class="sidebar-hint">
+                  Select a TPR / index.ndx to multi-select groups, or type a group name.
+                </p>
+              {/if}
+            </div>
+
+            <div class="space-y-1">
+              <p class="sidebar-label">Output group(s)</p>
+              {#if fixPbc.centerGroups.length > 0}
+                {#if outputSummary}
+                  <p
+                    class="rounded border border-neutral-200 px-2 py-1 text-[11px] text-neutral-700 dark:border-neutral-800 dark:text-neutral-300"
+                    title={outputSummary}
+                  >
+                    {outputSummary}
+                    {#if fixPbc.selectedOutputGroups.length > 1}
+                      <span class="text-neutral-500"> → GW_OUTPUT</span>
+                    {/if}
+                  </p>
+                {/if}
+                <div
+                  class="max-h-32 space-y-1 overflow-y-auto rounded border p-2 dark:border-neutral-800"
+                >
+                  {#each fixPbc.centerGroups as g (g.name + String(g.index) + '-out')}
+                    {@const checked = fixPbc.selectedOutputGroups.includes(g.name)}
+                    <label class="flex items-center gap-2 text-[11px]">
+                      <Checkbox
+                        size="sm"
+                        name={`output-${g.name}`}
+                        {checked}
+                        onchange={(e) =>
+                          toggleIndexGroup('output', g.name, e.currentTarget.checked)}
+                      />
+                      <span class="min-w-0 flex-1 truncate font-mono text-neutral-800 dark:text-neutral-300">
+                        {g.index}: {g.name}
+                      </span>
+                      {#if g.name === 'System'}
+                        <span class="shrink-0 text-amber-600 dark:text-amber-400">★</span>
+                      {/if}
+                    </label>
+                  {/each}
+                </div>
                 <p class="sidebar-hint">
                   Atoms written to the fixed trajectory. ★ System keeps the full system.
                 </p>
               {:else}
                 <Input
                   size="sm"
-                  bind:value={fixPbc.outputGroup}
+                  bind:value={fixPbc.outputGroupText}
                   className="w-full"
                   placeholder="System"
                 />
@@ -995,8 +1450,15 @@
               {/if}
             </div>
 
+            <label class="flex items-center gap-2 text-[11px] text-neutral-700 dark:text-neutral-300">
+              <Checkbox size="sm" name="skip-cluster" bind:checked={fixPbc.skipCluster} />
+              Skip cluster step
+            </label>
             <p class="sidebar-hint">
-              Pipeline: whole → nojump → cluster → mol -center -ur compact
+              Pipeline: whole → nojump
+              {fixPbc.skipCluster ? '' : ' → cluster'}
+              → mol -center -ur compact. Cluster helps many membranes but can amplify jumps when the
+              center group is incomplete.
             </p>
           </div>
         {:else}
@@ -1016,7 +1478,7 @@
                 size="sm"
                 bind:value={fixPbc.centerSelection}
                 className="min-w-0 flex-1"
-                placeholder="protein"
+                placeholder={fixPbc.detectInfo?.recommended_center_selection || 'protein'}
               />
               <button
                 type="button"
@@ -1077,25 +1539,39 @@
                   </li>
                 </ul>
                 <p>
+                  GateWizard converts MDA selections to cpptraj masks and uses membrane-safe
+                  <code class="text-neutral-300">autoimage mode byvec moveanchor</code> (no
+                  <code class="text-neutral-300">origin</code> — that parks the system on the box
+                  corner). For protein + membrane, the protein half is the autoimage anchor; lipids
+                  are kept whole with byvec/moveanchor, then
+                  <code class="text-neutral-300">center</code>/<code class="text-neutral-300"
+                    >image</code
+                  >.
+                </p>
+                <p>
                   If the log shows
                   <code class="text-neutral-300">Not all arguments handled: [ PA PC OL ]</code>, the
-                  anchor mask was wrong and cpptraj fell back to anchoring on the
-                  <span class="text-neutral-300">first molecule</span> — that often breaks membrane
-                  APL/thickness. Re-run after updating GateWizard (auto-conversion) or use
-                  <code class="text-neutral-300">:PA,PC,OL</code>.
+                  mask was not converted — use <code class="text-neutral-300">:PA,PC,OL</code> or
+                  update GateWizard and re-run.
                 </p>
                 <div class="flex flex-wrap gap-1 pt-1">
                   <Button
                     size="sm"
                     variant="outline"
-                    onclick={() => (fixPbc.centerSelection = 'resname PA PC OL')}
+                    onclick={() =>
+                      (fixPbc.centerSelection = fixPbc.detectInfo?.lipid_resnames?.length
+                        ? `resname ${fixPbc.detectInfo.lipid_resnames.join(' ')}`
+                        : 'resname PA PC OL')}
                   >
                     Amber POPC parts
                   </Button>
                   <Button
                     size="sm"
                     variant="outline"
-                    onclick={() => (fixPbc.centerSelection = ':PA,PC,OL')}
+                    onclick={() =>
+                      (fixPbc.centerSelection = fixPbc.detectInfo?.lipid_resnames?.length
+                        ? `:${fixPbc.detectInfo.lipid_resnames.join(',')}`
+                        : ':PA,PC,OL')}
                   >
                     :PA,PC,OL
                   </Button>
@@ -1109,7 +1585,7 @@
                   <Button
                     size="sm"
                     variant="outline"
-                    onclick={() => (fixPbc.centerSelection = 'protein or resname PA PC OL')}
+                    onclick={applyDetectedProteinMembraneSelection}
                   >
                     Protein + membrane
                   </Button>
@@ -1124,9 +1600,15 @@
               </div>
             {:else}
               <p class="sidebar-hint">
-                Use MDAnalysis-style selections (e.g. <code>resname PA PC OL</code>); they are
-                converted to cpptraj masks for Amber/OpenMM. Open
-                <span class="text-neutral-300">Membrane tips</span> for examples.
+                {#if fixPbc.detectInfo?.lipid_resnames?.length}
+                  Default for Amber: protein + detected lipids
+                  (<code>resname {fixPbc.detectInfo.lipid_resnames.join(' ')}</code>). Open
+                  <span class="text-neutral-300">Membrane tips</span> for other masks.
+                {:else}
+                  Use MDAnalysis-style selections (e.g. <code>resname PA PC OL</code>); they are
+                  converted to cpptraj masks for Amber/OpenMM. Open
+                  <span class="text-neutral-300">Membrane tips</span> for examples.
+                {/if}
               </p>
             {/if}
           </div>
@@ -1140,8 +1622,7 @@
               <option value="same">Same as input (xtc/trr)</option>
             </Select>
             <p class="gw-notice gw-notice-warning">
-              GROMACS <code>trjconv</code> cannot write DCD or NetCDF. Use XTC
-              (or TRR). Your earlier failures were from requesting <code>.dcd</code>.
+              GROMACS <code>trjconv</code> cannot write DCD or NetCDF. Use XTC or TRR.
             </p>
           {:else}
             <Select size="sm" className="w-full" bind:value={fixPbc.outputFormat}>
@@ -1156,26 +1637,15 @@
 
       <Divider />
 
-      <div class="space-y-2">
-        <h2 class="sidebar-heading">Job folder name</h2>
-        <Input
-          type="text"
-          size="sm"
-          bind:value={outputFolderName}
-          className="w-full"
-          placeholder="05_tools"
-        />
-        <p
-          class="rounded-md border border-neutral-200 p-2 wrap-break-word sidebar-label dark:border-neutral-800"
-        >
-          {#if workingDir && resolveOutputFolderName()}
-            Job → {workingDir}/{resolveOutputFolderName()}
-            <span class="sidebar-hint"> (uses _2, _3… if the name already exists)</span>
-          {:else}
-            Set a working directory in the top bar
-          {/if}
-        </p>
-      </div>
+      <OutputPathFields
+        bind:parentDir={outputParentDir}
+        bind:folderName={outputFolderName}
+        workingDir={workingDir}
+        folderPlaceholder="05_tools"
+        folderLabel="Job folder name"
+        extraHint=" (uses _2, _3… if the name already exists)"
+        resolvedFolderName={resolveOutputFolderName()}
+      />
     {:else}
       <p class="sidebar-hint">
         This utility is reserved for a future release. Choose Fix PBC to rewrite
@@ -1183,9 +1653,9 @@
       </p>
     {/if}
 
-    {#if workingDir === ''}
+    {#if resolvedOutputParent === ''}
       <p class="gw-notice gw-notice-warning">
-        Set a <strong>Working Directory</strong> in the top bar to write tool output.
+        Set a <strong>Working Directory</strong> in the top bar, or browse an output path, to write tool output.
       </p>
     {/if}
 
@@ -1238,10 +1708,20 @@
                 {:else}
                   <span class="inline-block h-2 w-2 rounded-full bg-neutral-500"></span>
                 {/if}
-                <span
-                  class="truncate font-semibold text-neutral-900 dark:text-neutral-200"
-                  title={job.jobDir}>{job.name}</span
-                >
+                <div class="min-w-0">
+                  <span
+                    class="block truncate font-semibold text-neutral-900 dark:text-neutral-200"
+                    title={job.jobDir}>{job.name}</span
+                  >
+                  {#if job.jobDir}
+                    <p
+                      class="wrap-break-word sidebar-hint leading-snug"
+                      title={job.jobDir}
+                    >
+                      {jobPathLabel(job)}
+                    </p>
+                  {/if}
+                </div>
                 {#if job.engine}
                   <span class="shrink-0 text-[10px] uppercase dark:text-neutral-500"
                     >{job.engine}</span
@@ -1250,7 +1730,7 @@
               </div>
               <div class="flex items-center gap-2">
                 <span class="tabular-nums dark:text-neutral-500">{job.elapsed}</span>
-                {#if job.status === 'running'}
+                {#if jobNeedsPoll(job)}
                   <button
                     class="dark:text-neutral-500 dark:hover:text-red-400"
                     disabled={job.stopping}
@@ -1278,7 +1758,7 @@
                       job.stepsCompleted.includes(step) ||
                       (job.status === 'completed' && si < job.steps.length)}
                     {@const active =
-                      job.status === 'running' &&
+                      jobNeedsPoll(job) &&
                       !done &&
                       (si === 0 || job.stepsCompleted.includes(job.steps[si - 1]))}
                     <div class="min-w-0 flex-1">
@@ -1307,6 +1787,22 @@
 
             {#if job.method}
               <p class="mb-2 text-[11px] dark:text-neutral-500">{job.method}</p>
+            {/if}
+            {#if job.centerLabel || job.outputLabel}
+              <p class="mb-2 text-[11px] dark:text-neutral-500">
+                {#if job.centerLabel}
+                  Center: {job.centerLabel}
+                {/if}
+                {#if job.centerLabel && job.outputLabel}
+                  <span class="dark:text-neutral-700"> · </span>
+                {/if}
+                {#if job.outputLabel}
+                  Output: {job.outputLabel}
+                {/if}
+                {#if job.skipCluster}
+                  <span class="dark:text-neutral-700"> · </span>cluster skipped
+                {/if}
+              </p>
             {/if}
 
             <!-- Error message -->
