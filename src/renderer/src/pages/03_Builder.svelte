@@ -11,6 +11,7 @@
     validateBuilder,
     generatePreparation,
     runPreparation,
+    cancelPreparation,
     detectLigands,
     parametrizeLigand,
     getLigandImage,
@@ -104,7 +105,7 @@
 
   // ── Jobs ──
   /**
-   * @typedef {{ jobDir: string, name: string, status: string, currentStep: number, steps: string[], stepsCompleted: string[], error: string|null, startTime: string, endTime: string|null, elapsed: string, logLines: string[], showLog: boolean }} Job
+   * @typedef {{ jobDir: string, name: string, status: string, currentStep: number, steps: string[], stepsCompleted: string[], error: string|null, startTime: string, endTime: string|null, elapsed: string, logLines: string[], showLog: boolean, stopping?: boolean, starting?: boolean }} Job
    */
   /** @type {Job[]} */
   let jobs = $state([])
@@ -124,16 +125,18 @@
       !generatingInputFiles &&
       !launching
   )
+  /** Newest not_started job (sidebar Start Preparation target). */
   const pendingJob = $derived(jobs.find((j) => j.status === 'not_started'))
+  const pendingJobCount = $derived(jobs.filter((j) => j.status === 'not_started').length)
   const hasGeneratedInputFiles = $derived(
     jobs.some((j) =>
-      ['not_started', 'running', 'completed', 'error'].includes(j.status)
+      ['not_started', 'running', 'completed', 'error', 'cancelled'].includes(j.status)
     )
   )
   const canStartPreparation = $derived(
     workingDir !== '' &&
       pendingJob !== undefined &&
-      !launching &&
+      !pendingJob.starting &&
       !generatingInputFiles
   )
 
@@ -142,7 +145,9 @@
     builderStatus.jobCount = jobs.length
     builderStatus.runningCount = jobs.filter((j) => j.status === 'running').length
     builderStatus.completedCount = jobs.filter((j) => j.status === 'completed').length
-    builderStatus.errorCount = jobs.filter((j) => j.status === 'error').length
+    builderStatus.errorCount = jobs.filter(
+      (j) => j.status === 'error' || j.status === 'cancelled'
+    ).length
     builderStatus.generatingInput = generatingInputFiles
     const latest = jobs[0]
     builderStatus.latestName = latest?.name ?? ''
@@ -634,42 +639,105 @@
     }
   }
 
-  async function onStartPreparation() {
-    const job = pendingJob
-    if (!job) return
+  /**
+   * Launch a generated (not_started) preparation job by directory.
+   * Used by the sidebar button (newest pending) and by each job card.
+   * @param {string} jobDir
+   * @param {{ fromSidebar?: boolean }} [opts]
+   */
+  async function startPreparationForJob(jobDir, { fromSidebar = false } = {}) {
+    const index = jobs.findIndex((j) => j.jobDir === jobDir)
+    if (index < 0) return
+    const job = jobs[index]
+    if (!job || job.status !== 'not_started' || job.starting) return
     try {
-      launching = true
+      jobs[index] = { ...job, starting: true }
+      jobs = [...jobs]
+      if (fromSidebar) launching = true
       const result = await runPreparation(job.jobDir)
+      const liveIndex = jobs.findIndex((j) => j.jobDir === jobDir)
+      if (liveIndex < 0) return
       if (result.success) {
-        const index = jobs.findIndex((j) => j.jobDir === job.jobDir)
-        if (index >= 0) {
-          jobs[index] = {
-            ...jobs[index],
-            status: 'running',
-            startTime: new Date().toISOString(),
-            elapsed: '0s'
-          }
+        jobs[liveIndex] = {
+          ...jobs[liveIndex],
+          status: 'running',
+          starting: false,
+          startTime: new Date().toISOString(),
+          elapsed: '0s'
         }
+        jobs = [...jobs]
         startPolling()
         logEvent(
           'info',
           'build',
-          `Started job: ${job.name}`,
-          `Steps: ${job.steps.join(' → ')}`
+          `Started job: ${jobs[liveIndex].name}`,
+          `Steps: ${jobs[liveIndex].steps.join(' → ')}`
         )
       } else {
+        jobs[liveIndex] = { ...jobs[liveIndex], starting: false }
+        jobs = [...jobs]
         alert(`Failed: ${result.message}`)
       }
     } catch (error) {
+      const liveIndex = jobs.findIndex((j) => j.jobDir === jobDir)
+      if (liveIndex >= 0) {
+        jobs[liveIndex] = { ...jobs[liveIndex], starting: false }
+        jobs = [...jobs]
+      }
       alert(`Error: ${error instanceof Error ? error.message : String(error)}`)
     } finally {
-      launching = false
+      if (fromSidebar) launching = false
     }
   }
 
+  async function onStartPreparation() {
+    if (!pendingJob) return
+    await startPreparationForJob(pendingJob.jobDir, { fromSidebar: true })
+  }
+
   function removeJob(/** @type {number} */ index) {
+    const job = jobs[index]
+    if (job?.status === 'running') return
     jobs = jobs.filter((_, i) => i !== index)
     stopPollingIfDone()
+  }
+
+  /** @param {number} index */
+  async function cancelJob(index) {
+    const job = jobs[index]
+    if (!job || job.status !== 'running' || job.stopping) return
+    if (!confirm(`Cancel preparation job "${job.name}"? This cannot be undone.`)) return
+    try {
+      jobs[index] = { ...job, stopping: true }
+      jobs = [...jobs]
+      await cancelPreparation(job.jobDir)
+      logEvent('info', 'build', `Cancelled job: ${job.name}`, job.jobDir)
+      try {
+        const st = await getJobStatus(job.jobDir)
+        jobs[index] = {
+          ...jobs[index],
+          status: st.status || 'cancelled',
+          error: st.error ?? 'Cancelled by user',
+          endTime: st.end_time ?? new Date().toISOString(),
+          elapsed: formatElapsed(st.start_time || job.startTime, st.end_time),
+          stopping: false
+        }
+      } catch {
+        jobs[index] = {
+          ...jobs[index],
+          status: 'cancelled',
+          error: 'Cancelled by user',
+          endTime: new Date().toISOString(),
+          stopping: false
+        }
+      }
+      jobs = [...jobs]
+      stopPollingIfDone()
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e))
+      jobs[index] = { ...jobs[index], stopping: false }
+      jobs = [...jobs]
+    }
   }
 
   function onLoadDefaults() {
@@ -1310,7 +1378,13 @@
           {#if validationResult.valid && !validationResult.warning}
             <p>✓ All inputs are valid.</p>
             {#if pendingJob}
-              <p class="mt-1">Click <strong>Start Preparation</strong> to proceed.</p>
+              <p class="mt-1">
+                Click <strong>Start Preparation</strong>
+                {#if pendingJobCount > 1}
+                  (newest pending) or <strong>Start</strong> on a job card
+                {/if}
+                to proceed.
+              </p>
             {/if}
           {:else}
             <p class="whitespace-pre-wrap">{validationResult.message}</p>
@@ -1343,13 +1417,22 @@
       </div>
       <div role="group" aria-label="Run preparation action">
         <Button className="w-full" onclick={onStartPreparation} disabled={!canStartPreparation}>
-          {#if launching}
+          {#if launching || pendingJob?.starting}
             <Spinner className="mr-1" />
             Launching...
           {:else}
             Start Preparation
+            {#if pendingJobCount > 1}
+              <span class="ml-1 opacity-70">({pendingJobCount} pending)</span>
+            {/if}
           {/if}
         </Button>
+        {#if pendingJobCount > 1}
+          <p class="sidebar-hint">
+            Starts the newest pending job. Use <strong>Start</strong> on a card to run an older
+            generated folder.
+          </p>
+        {/if}
       </div>
       {#if validationResult === null && workingFile}
         <p class="gw-notice gw-notice-warning">
@@ -1441,7 +1524,7 @@
       <p
         class="mx-4 mb-4 flex flex-1 items-center justify-center rounded-lg border border-dashed border-neutral-300 text-neutral-500 dark:border-neutral-800 dark:text-neutral-700"
       >
-        No builder jobs yet. Configure options, generate input files, then click "Start Preparation".
+        No builder jobs yet. Configure options, generate input files, then start from the sidebar or a job card.
       </p>
     {:else}
       <div class="mx-4 mb-4 min-h-0 flex-1 space-y-3 overflow-y-auto">
@@ -1449,7 +1532,7 @@
         <div
           class="gw-notice rounded-lg p-3 {job.status === 'completed'
             ? 'gw-notice-success'
-            : job.status === 'error'
+            : job.status === 'error' || job.status === 'cancelled'
               ? 'gw-notice-error'
               : job.status === 'running'
                 ? 'gw-notice-warning'
@@ -1459,24 +1542,53 @@
         >
           <!-- Header -->
           <div class="mb-2 flex items-center justify-between">
-            <div class="flex items-center gap-2">
+            <div class="flex min-w-0 items-center gap-2">
               <!-- Status icon -->
               {#if job.status === 'running'}
                 <span class="inline-block h-2 w-2 animate-pulse rounded-full bg-yellow-500"></span>
               {:else if job.status === 'completed'}
                 <span class="inline-block h-2 w-2 rounded-full bg-green-500"></span>
-              {:else if job.status === 'error'}
+              {:else if job.status === 'error' || job.status === 'cancelled'}
                 <span class="inline-block h-2 w-2 rounded-full bg-red-500"></span>
               {:else if job.status === 'not_started'}
                 <span class="inline-block h-2 w-2 rounded-full bg-blue-500"></span>
               {:else}
                 <span class="inline-block h-2 w-2 rounded-full bg-neutral-500"></span>
               {/if}
-              <span class="font-semibold text-neutral-900 dark:text-neutral-200" title={job.jobDir}>{job.name}</span>
+              <span class="truncate font-semibold text-neutral-900 dark:text-neutral-200" title={job.jobDir}>{job.name}</span>
+              {#if job.status === 'not_started'}
+                <span class="shrink-0 text-[10px] uppercase tracking-wide text-blue-600 dark:text-blue-400"
+                  >ready</span
+                >
+              {/if}
             </div>
-            <div class="flex items-center gap-2">
+            <div class="flex shrink-0 items-center gap-2">
               <span class="tabular-nums dark:text-neutral-500">{job.elapsed}</span>
-              {#if job.status !== 'running'}
+              {#if job.status === 'running'}
+                <button
+                  class="dark:text-neutral-500 dark:hover:text-red-400"
+                  disabled={job.stopping}
+                  onclick={() => cancelJob(ji)}
+                  title="Cancel job"
+                >
+                  {job.stopping ? 'Stopping…' : 'Cancel'}
+                </button>
+              {:else if job.status === 'not_started'}
+                <button
+                  class="rounded border border-neutral-400 px-2 py-0.5 text-[11px] font-medium text-neutral-800 hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-600 dark:text-neutral-200 dark:hover:bg-neutral-800"
+                  disabled={job.starting || generatingInputFiles}
+                  onclick={() => startPreparationForJob(job.jobDir)}
+                  title="Run preparation for this generated folder"
+                >
+                  {job.starting ? 'Starting…' : 'Start'}
+                </button>
+                <button
+                  class="dark:text-neutral-600 dark:hover:text-neutral-300"
+                  disabled={job.starting}
+                  onclick={() => removeJob(ji)}
+                  title="Remove">&times;</button
+                >
+              {:else}
                 <button
                   class="dark:text-neutral-600 dark:hover:text-neutral-300"
                   onclick={() => removeJob(ji)}
@@ -1485,6 +1597,13 @@
               {/if}
             </div>
           </div>
+
+          {#if job.status === 'not_started'}
+            <p class="mb-2 text-[11px] dark:text-neutral-500">
+              Input files generated — click Start when ready (or use Start Preparation for the newest
+              pending job).
+            </p>
+          {/if}
 
           <!-- Step progress bar -->
           <div class="mb-2">

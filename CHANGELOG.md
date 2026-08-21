@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
 - **Analysis structural Pub PNG:** overlay y-limits use the full combined range of all series (e.g. area-per-lipid mean + upper/lower leaflets), not only the first series.
 - **Analysis structural type switch:** switching RMSD ↔ membrane thickness / area per lipid shows a chart overlay and sidebar “Switching…” spinner again while headgroup detection and CSV hydrate run; stale plots are cleared immediately so the old chart is not left visible during the wait.
 - **Analysis Pub PNG:** matplotlib export uses the headless Agg backend so backend logs no longer show Tk/Tcl errors on WSL (`main thread is not in main loop`, `Tcl_AsyncDelete`).
@@ -28,8 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Equilibration progress cards:** each stage row shows its planned simulation time from the protocol (e.g. `(0.125 ns)` on pending stages, `(0.233 / 0.125 ns · …)` while running). The stages summary uses two lines — **Simulated** (accumulated so far) and **Protocol total** (full planned MD time for all stages).
 - **Analysis export:** optional file name for CSV / SVG / PNG. PNG/SVG save every on-screen panel (overlay or separate sets). Pub PNG (matplotlib style) is on both Structural and Energetic and includes every visible set in the legend. Buttons show a spinner while writing.
+- **Builder job cards:** Cancel while a preparation job is running (same pattern as Tools Fix PBC).
+- **Builder job cards:** **Start** on generated (`not_started`) cards so older input folders can be run later; sidebar Start Preparation still targets the newest pending job.
 - **Remote job dialog:** optional **GPU type** select from probed node/partition GRES. Writes `#SBATCH --gres=gpu:TYPE:N` when set; Any keeps `#SBATCH --gpus=N`. Stored in `execution.resources.gpu_type`.
 - **Cluster profiles:** optional **Default job time limit** (`default_time_limit`, Slurm `#SBATCH -t`) used when opening Remote job for a new submit.
+
+### Changed
+
 - **Equilibration Run on cluster:** opening the remote dialog from a progress card now seeds CPU/GPU from that job's protocol and saved resources (e.g. 1 CPU + 1 GPU) instead of the left-panel sidebar defaults (often 6 CPU).
 - **Analysis Save / Load:** Saving… / Loading… spinners and in-progress notices while the session CSV/JSON is written or read; Save, Load, and Browse stay disabled until it finishes.
 - **Equilibration protocol cards:** hide settings the selected engine does not wire (e.g. NAMD-only margin). Trajectory frequency is shown for all engines and labeled by engine (DCD / XTC / NetCDF). Pressure and surface tension are shown when the stage ensemble uses a barostat / membrane tension path. Stage descriptions moved to an info-hover control with clearer wording.
