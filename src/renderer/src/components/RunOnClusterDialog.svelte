@@ -17,7 +17,7 @@
     clusterProbe,
     clusterPullJobStream,
     clusterRenderScript,
-    clusterSubmitJob
+    clusterSubmitJobStream
   } from '../lib/backendApi'
   import { isSlurmActiveState, isSlurmTerminalState, partialPullConfirmMessage } from '../lib/slurmState.js'
 
@@ -60,6 +60,10 @@
   /** True when sessionId came from the Progress-strip shared connection. */
   let usingSharedSession = $state(false)
   let busy = $state(false)
+  let submitting = $state(false)
+  /** @type {number|null} */
+  let submitPercent = $state(null)
+  let submitPhase = $state('')
   let pulling = $state(false)
   /** @type {number|null} */
   let pullPercent = $state(null)
@@ -70,6 +74,8 @@
   let timeLimit = $state('24:00:00')
   let dialogCpus = $state(8)
   let dialogGpus = $state(0)
+  /** Slurm GRES GPU type (e.g. 3090); empty = any. */
+  let gpuType = $state('')
   /** @type {string[]} */
   let moduleOptions = $state([])
   /** @type {string[]} */
@@ -119,6 +125,28 @@
   )
   const hasDiscoveredNodes = $derived(nodesForPartition.length > 0)
   const timeLimitHuman = $derived(formatTimeLimitHuman(timeLimit))
+  /** Named GPU types from probed node GRES (selected node, else partition union). */
+  const availableGpuTypes = $derived.by(() => {
+    /** @type {Map<string, number>} */
+    const merged = new Map()
+    const want = String(nodelist || '')
+      .split(',')[0]
+      .trim()
+      .toLowerCase()
+    const nodes = want
+      ? nodesForPartition.filter((n) => String(n.name || '').toLowerCase() === want)
+      : nodesForPartition
+    for (const n of nodes) {
+      for (const item of parseGpuTypesFromGres(n.gres || '')) {
+        const prev = merged.get(item.type) || 0
+        if (item.count > prev) merged.set(item.type, item.count)
+      }
+    }
+    return [...merged.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([type, count]) => ({ type, count }))
+  })
+  const showGpuTypeSelect = $derived(dialogGpus > 0 && availableGpuTypes.length > 0)
 
   // Seed form once when the dialog opens (do not fight path edits on later prop updates).
   $effect(() => {
@@ -127,6 +155,7 @@
       // Always prefer left-panel / caller CPUs·GPUs (not stale last-submit resources).
       dialogCpus = Math.max(1, Number(cpus) || 8)
       dialogGpus = Math.max(0, Number(gpus) || 0)
+      gpuType = String(execution?.resources?.gpu_type || '').trim()
       remotePathTouched = false
       statusMessage = ''
       statusError = false
@@ -134,6 +163,9 @@
       showDetails = false
       probeErrors = []
       pulling = false
+      submitting = false
+      submitPercent = null
+      submitPhase = ''
       moduleOptions = []
       cudaModuleOptions = []
       partitionOptions = []
@@ -158,7 +190,21 @@
         probe = shared.probe
         applyProbeToForm(shared.probe, dialogGpus > 0)
         probeReady = !!shared.probe
-        setStatus(`Using shared connection to ${shared.profile.name || shared.profile.host}`)
+        if (shared.probe) {
+          setStatus(`Using shared connection to ${shared.profile.name || shared.profile.host}`)
+        } else if (shared.probing || shared.connecting) {
+          setStatus('Progress is probing cluster inventory…')
+        } else {
+          setStatus(`Using shared connection to ${shared.profile.name || shared.profile.host}`)
+        }
+      } else if (shared.connecting || shared.probing) {
+        // Connect in progress: sessionId not published until probe finishes.
+        sessionId = null
+        usingSharedSession = true
+        profileId = shared.profile?.id || profileId
+        probe = null
+        probeReady = false
+        setStatus('Progress is probing cluster inventory…')
       } else {
         sessionId = null
         usingSharedSession = false
@@ -186,7 +232,68 @@
         schedulerJobId = ''
         remoteState = ''
       }
-      void refreshProfiles({ syncPath: !remotePathTouched })
+      void refreshProfiles({
+        syncPath: !remotePathTouched,
+        syncTimeLimit: !(execution?.mode === 'remote' && execution?.time_limit)
+      })
+    })
+  })
+
+  // Drop GPU type when the selected node/partition no longer offers it.
+  $effect(() => {
+    if (!gpuType) return
+    if (dialogGpus <= 0) {
+      gpuType = ''
+      return
+    }
+    if (availableGpuTypes.length && !availableGpuTypes.some((t) => t.type === gpuType)) {
+      gpuType = ''
+    }
+  })
+
+  // When Progress Connect finishes probing (or adopts a session), fill Resources.
+  $effect(() => {
+    if (!open) return
+    const sharedProbe = shared.probe
+    const sharedSid = shared.sessionId
+    const isProbing = shared.probing || shared.connecting
+    untrack(() => {
+      if (sharedSid && shared.profile) {
+        sessionId = sharedSid
+        usingSharedSession = true
+        profileId = shared.profile.id || profileId
+        if (sharedProbe) {
+          probe = sharedProbe
+          applyProbeToForm(sharedProbe, dialogGpus > 0)
+          probeReady = true
+          setStatus(`Using shared connection to ${shared.profile.name || shared.profile.host}`)
+        } else if (isProbing) {
+          probeReady = false
+          setStatus('Progress is probing cluster inventory…')
+        }
+      } else if (isProbing && shared.profile) {
+        usingSharedSession = true
+        profileId = shared.profile.id || profileId
+        probeReady = false
+        setStatus('Progress is probing cluster inventory…')
+      }
+    })
+  })
+
+  // Seed Resources from cached last_probe while a live probe is still running.
+  $effect(() => {
+    if (!open || probeReady) return
+    const cached = selected?.last_probe || shared.profile?.last_probe
+    if (!cached) return
+    untrack(() => {
+      if (probeReady) return
+      applyProbeToForm(cached, dialogGpus > 0)
+      // Cached inventory is good enough to pick partitions; mark ready for dropdowns.
+      probe = cached
+      probeReady = true
+      if (shared.probing || shared.connecting) {
+        setStatus('Using cached inventory — refreshing from cluster…')
+      }
     })
   })
 
@@ -271,20 +378,30 @@
   }
 
   /**
-   * @param {{ syncPath?: boolean }} [opts]
+   * @param {{ syncPath?: boolean, syncTimeLimit?: boolean }} [opts]
    */
   async function refreshProfiles(opts = {}) {
-    const { syncPath = false } = opts
+    const { syncPath = false, syncTimeLimit = false } = opts
     profiles = await loadClusterProfiles()
     if (!profileId && profiles.length) profileId = profiles[0].id
     if (!profiles.some((p) => p.id === profileId) && profiles.length) {
       profileId = profiles[0].id
       remotePathTouched = false
     }
-    if (syncPath && !remotePathTouched) {
-      const profile = profiles.find((p) => p.id === profileId)
-      if (profile) remotePath = buildRemotePath(profile, jobFolderName())
+    const profile = profiles.find((p) => p.id === profileId)
+    if (syncPath && !remotePathTouched && profile) {
+      remotePath = buildRemotePath(profile, jobFolderName())
     }
+    if (syncTimeLimit && profile) {
+      applyProfileDefaultTimeLimit(profile)
+    }
+  }
+
+  /** @param {any} profile */
+  function applyProfileDefaultTimeLimit(profile) {
+    const raw = String(profile?.default_time_limit || '').trim()
+    timeLimit = raw || '24:00:00'
+    syncTimePartsFromLimit()
   }
 
   function onRemotePathInput(value) {
@@ -296,7 +413,11 @@
     profileId = id
     remotePathTouched = false
     const profile = profiles.find((p) => p.id === id)
-    if (profile) remotePath = buildRemotePath(profile, jobFolderName())
+    if (profile) {
+      remotePath = buildRemotePath(profile, jobFolderName())
+      // New submits pick up the profile default; leave managed jobs on their saved limit.
+      if (!isManage) applyProfileDefaultTimeLimit(profile)
+    }
   }
 
   function selectedModules() {
@@ -312,6 +433,35 @@
     return [...nodes]
       .filter((n) => !p || String(n.partition || '').replace(/\*$/, '') === p)
       .sort((a, b) => (b.gpus || 0) - (a.gpus || 0))
+  }
+
+  /**
+   * Named GPU types from a Slurm GRES string (``gpu:2080ti:2,gpu:3090:1``).
+   * Untyped ``gpu:2`` yields no named types.
+   * @param {string} gres
+   * @returns {Array<{ type: string, count: number }>}
+   */
+  function parseGpuTypesFromGres(gres) {
+    const raw = String(gres || '').trim()
+    if (!raw || raw === '(null)' || raw.toLowerCase() === 'n/a') return []
+    /** @type {Array<{ type: string, count: number }>} */
+    const out = []
+    for (const chunk of raw.split(',')) {
+      const bits = chunk
+        .trim()
+        .split(':')
+        .map((b) => b.trim())
+        .filter(Boolean)
+      if (bits.length < 3 || !/^gpu$/i.test(bits[0])) continue
+      const type = bits[1]
+      const count = parseInt(bits[2], 10)
+      // TYPE may be numeric (3090); untyped gpu:N is len===2 and already skipped.
+      if (!type || !/^[A-Za-z0-9_+\-.]+$/.test(type) || !Number.isFinite(count) || count <= 0) {
+        continue
+      }
+      out.push({ type, count })
+    }
+    return out
   }
 
   function setStatus(msg, isError = false) {
@@ -506,6 +656,7 @@
         job_folder_name: jobFolderName(),
         cpus: dialogCpus,
         gpus: dialogGpus,
+        gpu_type: dialogGpus > 0 ? gpuType.trim() : '',
         time_limit: timeLimit,
         partition,
         nodelist: nodelist.trim(),
@@ -566,70 +717,92 @@
   }
 
   async function submit() {
-    await refreshProfiles({ syncPath: false })
-    const profile = profiles.find((p) => p.id === profileId)
-    if (!profile || !sessionId || !jobDir) {
-      setStatus('Connect and ensure the local job folder exists.', true)
-      return
-    }
-    if (!remotePath.trim()) {
-      setStatus('Remote submit path is empty.', true)
-      return
-    }
-    if (!selectedModule.trim()) {
-      setStatus('Select an MD software module (or enter one after Connect & probe).', true)
-      return
-    }
-    if (!partition.trim()) {
-      setStatus('Select or enter a Slurm partition.', true)
-      return
-    }
-    await checkLocalRunScriptPaths()
-    if (localPathWarning) {
-      setStatus(localPathWarning, true)
-      // Still allow submit if user edited around it, but surface the error clearly.
-    }
+    if (submitting || busy) return
+    submitting = true
     busy = true
+    submitPercent = 2
+    submitPhase = 'prepare'
+    onExecutionUpdated({
+      ...(execution || {}),
+      mode: execution?.mode || 'remote',
+      submitting: true
+    })
     try {
-      // Regenerate baseline if user never opened the editor.
+      await refreshProfiles({ syncPath: false })
+      const profile = profiles.find((p) => p.id === profileId)
+      if (!profile || !sessionId || !jobDir) {
+        setStatus('Connect and ensure the local job folder exists.', true)
+        return
+      }
+      if (!remotePath.trim()) {
+        setStatus('Remote submit path is empty.', true)
+        return
+      }
+      if (!selectedModule.trim()) {
+        setStatus('Select an MD software module (or enter one after Connect & probe).', true)
+        return
+      }
+      if (!partition.trim()) {
+        setStatus('Select or enter a Slurm partition.', true)
+        return
+      }
+      await checkLocalRunScriptPaths()
+      if (localPathWarning) {
+        setStatus(localPathWarning, true)
+      }
+      setStatus('Preparing batch script…')
       let scriptText = null
       if (useEditedScript && scriptPreview.trim()) {
         scriptText = scriptPreview
       } else {
-        const res = await clusterRenderScript({
+        const rendered = await clusterRenderScript({
           profile: plainProfile(profile),
           job_name: jobFolderName(),
           job_folder_name: jobFolderName(),
           cpus: dialogCpus,
           gpus: dialogGpus,
+          gpu_type: dialogGpus > 0 ? gpuType.trim() : '',
           time_limit: timeLimit,
           partition,
           nodelist: nodelist.trim(),
           modules: selectedModules()
         })
-        scriptOriginal = res.script
-        scriptPreview = res.script
-        scriptText = res.script
+        scriptOriginal = rendered.script
+        scriptPreview = rendered.script
+        scriptText = rendered.script
       }
-      const res = await clusterSubmitJob({
-        session_id: sessionId,
-        profile: plainProfile(profile),
-        local_dir: jobDir,
-        remote_dir: remotePath.trim(),
-        job_name: jobFolderName(),
-        job_folder_name: jobFolderName(),
-        cpus: dialogCpus,
-        gpus: dialogGpus,
-        time_limit: timeLimit,
-        partition,
-        nodelist: nodelist.trim(),
-        modules: selectedModules(),
-        script_text: scriptText,
-        upload_first: true
-      })
+      submitPercent = 8
+      setStatus('Uploading job folder…')
+      const res = await clusterSubmitJobStream(
+        {
+          session_id: sessionId,
+          profile: plainProfile(profile),
+          local_dir: jobDir,
+          remote_dir: remotePath.trim(),
+          job_name: jobFolderName(),
+          job_folder_name: jobFolderName(),
+          cpus: dialogCpus,
+          gpus: dialogGpus,
+          gpu_type: dialogGpus > 0 ? gpuType.trim() : '',
+          time_limit: timeLimit,
+          partition,
+          nodelist: nodelist.trim(),
+          modules: selectedModules(),
+          script_text: scriptText,
+          upload_first: true
+        },
+        (evt) => {
+          if (typeof evt?.percent === 'number') {
+            submitPercent = Math.max(0, Math.min(100, evt.percent))
+          }
+          if (evt?.phase) submitPhase = String(evt.phase)
+          if (evt?.message) setStatus(String(evt.message), evt.phase === 'error')
+        }
+      )
       schedulerJobId = res.job_id
       remoteState = 'PENDING'
-      onExecutionUpdated(res.execution)
+      submitPercent = 100
+      onExecutionUpdated({ ...(res.execution || {}), submitting: false })
       const resume = res.cluster_resume
       const resumeNote =
         resume?.enabled && resume.stage_name
@@ -642,8 +815,14 @@
       )
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err), true)
+      onExecutionUpdated({
+        ...(execution || {}),
+        mode: execution?.mode || 'remote',
+        submitting: false
+      })
     } finally {
       busy = false
+      submitting = false
     }
   }
 
@@ -868,11 +1047,16 @@
                   className="w-full"
                 />
               </label>
-              {#if usingSharedSession && sessionId}
+              {#if usingSharedSession && (sessionId || shared.connecting || shared.probing)}
                 <p class="text-[11px] text-green-600 dark:text-green-400">
-                  Using Progress-strip connection
-                  {#if shared.profile}
-                    · {shared.profile.name || shared.profile.host}{/if}
+                  {#if shared.probing || shared.connecting}
+                    <Spinner className="mr-1 inline-block" />
+                    Probing cluster inventory…
+                  {:else}
+                    Using Progress-strip connection
+                    {#if shared.profile}
+                      · {shared.profile.name || shared.profile.host}{/if}
+                  {/if}
                 </p>
               {:else}
                 <Button size="sm" disabled={busy || !selected} onclick={connect}>
@@ -908,7 +1092,7 @@
                   </button>
                 {/if}
               </label>
-              <div class="grid grid-cols-2 gap-2">
+              <div class="space-y-2">
                 <label class="block space-y-0.5">
                   <span class="sidebar-label">Partition</span>
                   {#if hasDiscoveredPartitions}
@@ -930,115 +1114,134 @@
                     />
                   {/if}
                 </label>
-                <label class="block space-y-0.5">
+
+                <!-- Time limit: own row (not nested labels) so touch near ± does not misfire -->
+                <div class="space-y-0.5">
                   <span class="sidebar-label">Time limit</span>
-                  <div class="flex flex-wrap items-end gap-1">
-                    <label class="space-y-0.5">
-                      <span class="text-[10px] text-neutral-500">Days</span>
-                      <div class="flex items-center gap-0.5">
-                        <button
-                          type="button"
-                          class="sidebar-control px-1.5"
-                          disabled={busy}
-                          onclick={() => bumpTime('days', -1)}
-                          title="-1 day">−</button
-                        >
-                        <Input
-                          type="number"
-                          size="sm"
-                          min="0"
-                          bind:value={timeDays}
-                          oninput={() => applyTimeParts()}
-                          className="w-14"
-                        />
-                        <button
-                          type="button"
-                          class="sidebar-control px-1.5"
-                          disabled={busy}
-                          onclick={() => bumpTime('days', 1)}
-                          title="+1 day">+</button
-                        >
-                      </div>
-                    </label>
-                    <label class="space-y-0.5">
-                      <span class="text-[10px] text-neutral-500">Hours</span>
-                      <div class="flex items-center gap-0.5">
-                        <button
-                          type="button"
-                          class="sidebar-control px-1.5"
-                          disabled={busy}
-                          onclick={() => bumpTime('hours', -1)}
-                          title="-1 hour">−</button
-                        >
-                        <Input
-                          type="number"
-                          size="sm"
-                          min="0"
-                          max="23"
-                          bind:value={timeHours}
-                          oninput={() => applyTimeParts()}
-                          className="w-14"
-                        />
-                        <button
-                          type="button"
-                          class="sidebar-control px-1.5"
-                          disabled={busy}
-                          onclick={() => bumpTime('hours', 1)}
-                          title="+1 hour">+</button
-                        >
-                      </div>
-                    </label>
-                    <label class="space-y-0.5">
-                      <span class="text-[10px] text-neutral-500">Minutes</span>
-                      <div class="flex items-center gap-0.5">
-                        <button
-                          type="button"
-                          class="sidebar-control px-1.5"
-                          disabled={busy}
-                          onclick={() => bumpTime('minutes', -15)}
-                          title="-15 min">−</button
-                        >
-                        <Input
-                          type="number"
-                          size="sm"
-                          min="0"
-                          max="59"
-                          bind:value={timeMinutes}
-                          oninput={() => applyTimeParts()}
-                          className="w-14"
-                        />
-                        <button
-                          type="button"
-                          class="sidebar-control px-1.5"
-                          disabled={busy}
-                          onclick={() => bumpTime('minutes', 15)}
-                          title="+15 min">+</button
-                        >
-                      </div>
-                    </label>
+                  <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <div class="flex items-center gap-1">
+                      <span class="w-8 shrink-0 text-[10px] text-neutral-500">Days</span>
+                      <button
+                        type="button"
+                        class="inline-flex h-7 w-7 shrink-0 touch-manipulation items-center justify-center rounded-md border border-neutral-300 bg-transparent text-sm leading-none text-neutral-900 disabled:opacity-50 dark:border-neutral-800 dark:text-neutral-200"
+                        disabled={busy}
+                        onclick={() => bumpTime('days', -1)}
+                        aria-label="Decrease days"
+                        title="-1 day">−</button
+                      >
+                      <input
+                        type="text"
+                        inputmode="numeric"
+                        pattern="[0-9]*"
+                        class="sidebar-control h-7 w-12 shrink-0 px-1 text-center tabular-nums"
+                        disabled={busy}
+                        value={timeDays}
+                        oninput={(e) => {
+                          timeDays = Math.max(0, parseInt(e.currentTarget.value, 10) || 0)
+                          applyTimeParts()
+                        }}
+                      />
+                      <button
+                        type="button"
+                        class="inline-flex h-7 w-7 shrink-0 touch-manipulation items-center justify-center rounded-md border border-neutral-300 bg-transparent text-sm leading-none text-neutral-900 disabled:opacity-50 dark:border-neutral-800 dark:text-neutral-200"
+                        disabled={busy}
+                        onclick={() => bumpTime('days', 1)}
+                        aria-label="Increase days"
+                        title="+1 day">+</button
+                      >
+                    </div>
+                    <div class="flex items-center gap-1">
+                      <span class="w-8 shrink-0 text-[10px] text-neutral-500">Hours</span>
+                      <button
+                        type="button"
+                        class="inline-flex h-7 w-7 shrink-0 touch-manipulation items-center justify-center rounded-md border border-neutral-300 bg-transparent text-sm leading-none text-neutral-900 disabled:opacity-50 dark:border-neutral-800 dark:text-neutral-200"
+                        disabled={busy}
+                        onclick={() => bumpTime('hours', -1)}
+                        aria-label="Decrease hours"
+                        title="-1 hour">−</button
+                      >
+                      <input
+                        type="text"
+                        inputmode="numeric"
+                        pattern="[0-9]*"
+                        class="sidebar-control h-7 w-12 shrink-0 px-1 text-center tabular-nums"
+                        disabled={busy}
+                        value={timeHours}
+                        oninput={(e) => {
+                          timeHours = Math.max(
+                            0,
+                            Math.min(23, parseInt(e.currentTarget.value, 10) || 0)
+                          )
+                          applyTimeParts()
+                        }}
+                      />
+                      <button
+                        type="button"
+                        class="inline-flex h-7 w-7 shrink-0 touch-manipulation items-center justify-center rounded-md border border-neutral-300 bg-transparent text-sm leading-none text-neutral-900 disabled:opacity-50 dark:border-neutral-800 dark:text-neutral-200"
+                        disabled={busy}
+                        onclick={() => bumpTime('hours', 1)}
+                        aria-label="Increase hours"
+                        title="+1 hour">+</button
+                      >
+                    </div>
+                    <div class="flex items-center gap-1">
+                      <span class="w-10 shrink-0 text-[10px] text-neutral-500">Minutes</span>
+                      <button
+                        type="button"
+                        class="inline-flex h-7 w-7 shrink-0 touch-manipulation items-center justify-center rounded-md border border-neutral-300 bg-transparent text-sm leading-none text-neutral-900 disabled:opacity-50 dark:border-neutral-800 dark:text-neutral-200"
+                        disabled={busy}
+                        onclick={() => bumpTime('minutes', -15)}
+                        aria-label="Decrease minutes"
+                        title="-15 min">−</button
+                      >
+                      <input
+                        type="text"
+                        inputmode="numeric"
+                        pattern="[0-9]*"
+                        class="sidebar-control h-7 w-12 shrink-0 px-1 text-center tabular-nums"
+                        disabled={busy}
+                        value={timeMinutes}
+                        oninput={(e) => {
+                          timeMinutes = Math.max(
+                            0,
+                            Math.min(59, parseInt(e.currentTarget.value, 10) || 0)
+                          )
+                          applyTimeParts()
+                        }}
+                      />
+                      <button
+                        type="button"
+                        class="inline-flex h-7 w-7 shrink-0 touch-manipulation items-center justify-center rounded-md border border-neutral-300 bg-transparent text-sm leading-none text-neutral-900 disabled:opacity-50 dark:border-neutral-800 dark:text-neutral-200"
+                        disabled={busy}
+                        onclick={() => bumpTime('minutes', 15)}
+                        aria-label="Increase minutes"
+                        title="+15 min">+</button
+                      >
+                    </div>
+                    <input
+                      type="text"
+                      class="sidebar-control ml-auto h-7 min-w-[7.5rem] flex-1 basis-[7.5rem] px-2 font-mono text-[11px] tabular-nums"
+                      bind:value={timeLimit}
+                      oninput={() => syncTimePartsFromLimit()}
+                      disabled={busy}
+                      placeholder="D-HH:MM:SS"
+                      spellcheck="false"
+                      title={timeLimitHuman ? `Slurm · ${timeLimitHuman}` : 'Slurm time limit'}
+                      aria-label="Slurm time limit"
+                    />
                   </div>
-                  <Input
-                    size="sm"
-                    bind:value={timeLimit}
-                    oninput={() => syncTimePartsFromLimit()}
-                    className="mt-1 w-full font-mono text-[11px]"
-                    placeholder="D-HH:MM:SS or HH:MM:SS"
-                    spellcheck="false"
-                  />
-                  <span class="text-[10px] text-neutral-500">
-                    Slurm format <code class="font-mono">{timeLimit}</code>
-                    {#if timeLimitHuman}
-                      · {timeLimitHuman}{/if}
-                  </span>
-                </label>
-                <label class="block space-y-0.5">
-                  <span class="sidebar-label">CPUs (#SBATCH)</span>
-                  <Input type="number" size="sm" bind:value={dialogCpus} className="w-full" />
-                </label>
-                <label class="block space-y-0.5">
-                  <span class="sidebar-label">GPUs (#SBATCH)</span>
-                  <Input type="number" size="sm" bind:value={dialogGpus} className="w-full" />
-                </label>
+                </div>
+
+                <div class="grid grid-cols-2 gap-2">
+                  <label class="block space-y-0.5">
+                    <span class="sidebar-label">CPUs (#SBATCH)</span>
+                    <Input type="number" size="sm" bind:value={dialogCpus} className="w-full" />
+                  </label>
+                  <label class="block space-y-0.5">
+                    <span class="sidebar-label">GPUs (#SBATCH)</span>
+                    <Input type="number" size="sm" bind:value={dialogGpus} className="w-full" />
+                  </label>
+                </div>
               </div>
               <label class="block space-y-0.5">
                 <span class="sidebar-label">Node (optional #SBATCH --nodelist)</span>
@@ -1067,6 +1270,20 @@
                   >?</span
                 >
               </label>
+              {#if showGpuTypeSelect}
+                <label class="block space-y-0.5">
+                  <span class="sidebar-label">GPU type (#SBATCH --gres)</span>
+                  <select class="sidebar-control w-full font-mono text-[11px]" bind:value={gpuType}>
+                    <option value="">Any — scheduler picks</option>
+                    {#each availableGpuTypes as t (t.type)}
+                      <option value={t.type}>{t.type} ×{t.count}</option>
+                    {/each}
+                  </select>
+                  <p class="text-[10px] text-neutral-500 dark:text-neutral-400">
+                    Slurm GRES type (e.g. 3090). Any keeps --gpus=N; a type writes --gres=gpu:TYPE:N.
+                  </p>
+                </label>
+              {/if}
               <label class="block space-y-0.5">
                 <span class="sidebar-label">MD module ({engine})</span>
                 {#if hasDiscoveredModules}
@@ -1178,8 +1395,21 @@
                   </Button>
                 {/if}
                 {#if canSubmit}
-                  <Button size="sm" disabled={busy || !sessionId || !jobDir} onclick={submit}>
-                    {schedulerJobId && remoteTerminal ? 'Upload & resubmit' : 'Upload & submit'}
+                  <Button
+                    size="sm"
+                    disabled={busy || submitting || !sessionId || !jobDir}
+                    onclick={submit}
+                  >
+                    {#if submitting}<Spinner className="mr-1" />{/if}
+                    {#if submitting}
+                      {submitPercent != null
+                        ? `Uploading… ${Math.round(submitPercent)}%`
+                        : 'Uploading…'}
+                    {:else if schedulerJobId && remoteTerminal}
+                      Upload & resubmit
+                    {:else}
+                      Upload & submit
+                    {/if}
                   </Button>
                 {/if}
               </div>
@@ -1249,6 +1479,35 @@
           <p class={statusError ? 'text-xs text-red-500' : 'text-xs text-neutral-500'}>
             {statusMessage}
           </p>
+        {/if}
+        {#if submitting}
+          <div class="space-y-1">
+            <p class="text-[11px] text-neutral-500">
+              {submitPhase === 'sbatch'
+                ? 'Submitting to Slurm…'
+                : submitPhase === 'verify'
+                  ? 'Verifying remote files…'
+                  : submitPhase === 'archive'
+                    ? 'Archiving previous outputs…'
+                    : 'Uploading to the cluster…'}
+              {#if submitPercent != null}
+                <span class="tabular-nums"> {Math.round(submitPercent)}%</span>
+              {/if}
+            </p>
+            <div
+              class="h-1.5 w-full overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-700"
+              role="progressbar"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow={submitPercent ?? 0}
+              aria-label="Submit progress"
+            >
+              <div
+                class="h-full rounded-full bg-sky-500 transition-[width] duration-200 ease-out dark:bg-sky-400"
+                style:width="{Math.max(4, submitPercent ?? 4)}%"
+              ></div>
+            </div>
+          </div>
         {/if}
         {#if pulling && pullPercent != null}
           <div

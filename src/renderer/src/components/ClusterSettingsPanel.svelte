@@ -362,6 +362,19 @@
               </select>
             </label>
             <label class="block space-y-0.5">
+              <span class="sidebar-label">Default job time limit (#SBATCH -t)</span>
+              <input
+                class="{fieldClass} font-mono"
+                value={selected.default_time_limit || '24:00:00'}
+                placeholder="24:00:00 or 10-00:00:00"
+                spellcheck="false"
+                oninput={(e) => patchSelected('default_time_limit', e.currentTarget.value)}
+              />
+              <span class="text-[10px] text-neutral-500">
+                Used as the starting time limit in Remote job (Slurm D-HH:MM:SS or HH:MM:SS).
+              </span>
+            </label>
+            <label class="block space-y-0.5">
               <span class="sidebar-label">Mail user</span>
               <input
                 class={fieldClass}

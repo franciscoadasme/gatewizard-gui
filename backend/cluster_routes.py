@@ -7,6 +7,7 @@ import queue
 import re
 import shlex
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -37,6 +38,7 @@ from gatewizard.utils.cluster import (
     rsync_from_remote,
     rsync_to_remote,
     run_remote,
+    ssh_channel,
     format_byte_size,
     local_dir_byte_size,
     remote_dir_byte_size,
@@ -74,6 +76,7 @@ class ClusterProfilePayload(BaseModel):
     purge_modules: bool = True
     mail_user: str = ""
     mail_type: str = "NONE"
+    default_time_limit: str = "24:00:00"
     extra_sbatch_lines: List[str] = Field(default_factory=list)
     batch_template: Optional[str] = None
     module_hints: Dict[str, List[str]] = Field(default_factory=dict)
@@ -102,6 +105,7 @@ class ClusterRenderScriptRequest(BaseModel):
     job_folder_name: str = ""
     cpus: int = 8
     gpus: int = 0
+    gpu_type: str = ""
     mem: str = ""
     time_limit: str = "24:00:00"
     partition: str = ""
@@ -128,6 +132,7 @@ class ClusterSubmitRequest(BaseModel):
     job_folder_name: str = ""
     cpus: int = 8
     gpus: int = 0
+    gpu_type: str = ""
     mem: str = ""
     time_limit: str = "24:00:00"
     partition: str = ""
@@ -137,6 +142,7 @@ class ClusterSubmitRequest(BaseModel):
     script_text: Optional[str] = None
     run_command: str = "bash run_equilibration_cluster.sh"
     upload_first: bool = True
+    force: bool = False
 
 
 class ClusterJobStatusRequest(BaseModel):
@@ -388,6 +394,7 @@ def cluster_render_script(payload: ClusterRenderScriptRequest) -> dict:
         job_name=payload.job_name,
         cpus=payload.cpus,
         gpus=payload.gpus,
+        gpu_type=payload.gpu_type or "",
         mem=payload.mem,
         time_limit=payload.time_limit,
         partition=payload.partition,
@@ -430,8 +437,90 @@ def cluster_upload_job(payload: ClusterUploadRequest) -> dict:
     return {"ok": True, "remote_dir": payload.remote_dir, "stdout": out}
 
 
-@router.post("/submit-job")
-def cluster_submit_job(payload: ClusterSubmitRequest) -> dict:
+_SUBMIT_IN_FLIGHT: Dict[str, float] = {}
+_SUBMIT_IN_FLIGHT_LOCK = threading.Lock()
+
+
+def _submit_dir_key(local: Path) -> str:
+    try:
+        return str(local.resolve())
+    except OSError:
+        return str(local)
+
+
+def _acquire_submit_lock(local: Path, *, force: bool = False) -> None:
+    """Prevent two sbatch uploads for the same folder (double-click / overlapping polls)."""
+    key = _submit_dir_key(local)
+    now = time.time()
+    with _SUBMIT_IN_FLIGHT_LOCK:
+        stale = [k for k, started in _SUBMIT_IN_FLIGHT.items() if now - started > 600]
+        for k in stale:
+            _SUBMIT_IN_FLIGHT.pop(k, None)
+        started = _SUBMIT_IN_FLIGHT.get(key)
+        if started is not None and not force:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "A submit is already in progress for this job folder. "
+                    "Wait for upload/sbatch to finish — do not click Submit again."
+                ),
+            )
+        _SUBMIT_IN_FLIGHT[key] = now
+
+
+def _release_submit_lock(local: Path) -> None:
+    with _SUBMIT_IN_FLIGHT_LOCK:
+        _SUBMIT_IN_FLIGHT.pop(_submit_dir_key(local), None)
+
+
+def _recent_active_scheduler_job(local: Path, *, window_s: int = 90) -> Optional[str]:
+    """Return a Slurm id if this folder was just submitted and still looks live."""
+    try:
+        execution = read_job_metadata(local).get("execution") or {}
+    except Exception:
+        return None
+    if not isinstance(execution, dict):
+        return None
+    jid = str(execution.get("scheduler_job_id") or "").strip()
+    if not jid:
+        return None
+    state = canonicalize_slurm_state(execution.get("last_remote_state") or "")
+    submitted = str(execution.get("submitted_at") or "").strip()
+    age = 10_000.0
+    if submitted:
+        try:
+            ts = datetime.fromisoformat(submitted.replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age = (datetime.now(timezone.utc) - ts).total_seconds()
+        except ValueError:
+            age = 10_000.0
+    if state in {"PENDING", "CONFIGURING", "RUNNING", "COMPLETING", "REQUEUED"}:
+        if age < max(window_s, 3600):
+            return jid
+    return None
+
+
+def _emit_submit_progress(
+    on_progress: Optional[Callable[[Dict[str, Any]], None]],
+    *,
+    phase: str,
+    percent: Optional[int],
+    message: str,
+    **extra: Any,
+) -> None:
+    if on_progress is None:
+        return
+    evt: Dict[str, Any] = {"phase": phase, "percent": percent, "message": message}
+    evt.update(extra)
+    on_progress(evt)
+
+
+def _execute_cluster_submit(
+    payload: ClusterSubmitRequest,
+    *,
+    on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> dict:
     profile = _profile(payload.profile)
     local = Path(payload.local_dir)
     if not local.is_dir():
@@ -441,6 +530,34 @@ def cluster_submit_job(payload: ClusterSubmitRequest) -> dict:
             status_code=400,
             detail="run_equilibration.sh missing — generate the equilibration job locally first",
         )
+    if not payload.force:
+        recent_jid = _recent_active_scheduler_job(local)
+        if recent_jid:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Slurm job {recent_jid} was just submitted for this folder and still "
+                    "looks active. Cancel it first, or wait — a second Submit would queue "
+                    "a duplicate."
+                ),
+            )
+    _acquire_submit_lock(local, force=payload.force)
+    try:
+        return _execute_cluster_submit_locked(payload, profile, local, on_progress=on_progress)
+    finally:
+        _release_submit_lock(local)
+
+
+def _execute_cluster_submit_locked(
+    payload: ClusterSubmitRequest,
+    profile: ClusterProfile,
+    local: Path,
+    *,
+    on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> dict:
+    _emit_submit_progress(
+        on_progress, phase="prepare", percent=5, message="Preparing batch script…"
+    )
 
     from gatewizard.utils.equilibration_cluster_script import (
         CLUSTER_RUN_SCRIPT,
@@ -493,6 +610,7 @@ def cluster_submit_job(payload: ClusterSubmitRequest) -> dict:
                 job_name=payload.job_name,
                 cpus=payload.cpus,
                 gpus=payload.gpus,
+                gpu_type=payload.gpu_type or "",
                 mem=payload.mem,
                 time_limit=payload.time_limit,
                 partition=payload.partition,
@@ -517,15 +635,25 @@ def cluster_submit_job(payload: ClusterSubmitRequest) -> dict:
         )
 
     # Keep RESUME=1 in edited/previewed .slurm when continuing a prior run.
+    # Must sit *before* stdbuf — stdbuf treats the next token as the program.
     if script and "RESUME=1" in run_command and "RESUME=" not in script:
         script = script.replace(
-            f"bash {CLUSTER_RUN_SCRIPT}",
-            f"RESUME=1 bash {CLUSTER_RUN_SCRIPT}",
+            "stdbuf -oL -eL bash run_equilibration_cluster.sh",
+            "RESUME=1 stdbuf -oL -eL bash run_equilibration_cluster.sh",
         )
         script = script.replace(
-            "bash run_equilibration.sh",
-            "RESUME=1 bash run_equilibration.sh",
+            "stdbuf -oL -eL bash run_equilibration.sh",
+            "RESUME=1 stdbuf -oL -eL bash run_equilibration.sh",
         )
+        if "RESUME=" not in script:
+            script = script.replace(
+                f"bash {CLUSTER_RUN_SCRIPT}",
+                f"RESUME=1 bash {CLUSTER_RUN_SCRIPT}",
+            )
+            script = script.replace(
+                "bash run_equilibration.sh",
+                "RESUME=1 bash run_equilibration.sh",
+            )
 
     script_path = local / "run_equilibration.slurm"
     script_path.write_text(script, encoding="utf-8")
@@ -536,27 +664,61 @@ def cluster_submit_job(payload: ClusterSubmitRequest) -> dict:
 
     from gatewizard.utils.equilibration_failure import archive_previous_run_outputs
 
+    _emit_submit_progress(
+        on_progress, phase="archive", percent=12, message="Archiving previous run outputs…"
+    )
     archived = archive_previous_run_outputs(local, engine=engine)
 
+    upload_excludes = [
+        "equilibration.pid",
+        "__pycache__",
+        "*.pyc",
+        "_previous_cluster_run",
+    ]
     local_file_count = sum(1 for p in local.rglob("*") if p.is_file())
+    local_bytes = local_dir_byte_size(local, excludes=upload_excludes)
     try:
         if payload.upload_first:
+            def _map_upload_progress(evt: Dict[str, Any]) -> None:
+                raw = evt.get("percent")
+                mapped = 18
+                if isinstance(raw, (int, float)):
+                    mapped = 18 + int(max(0, min(100, float(raw))) * 0.62)
+                payload_evt = dict(evt)
+                payload_evt["phase"] = "upload"
+                payload_evt["percent"] = mapped
+                if not payload_evt.get("message"):
+                    payload_evt["message"] = "Uploading job folder…"
+                _emit_submit_progress(on_progress, **payload_evt)
+
+            _emit_submit_progress(
+                on_progress,
+                phase="upload",
+                percent=18,
+                message=(
+                    f"Uploading job folder ({format_byte_size(local_bytes)})…"
+                    if local_bytes > 0
+                    else "Uploading job folder…"
+                ),
+                bytes=0,
+                total_bytes=local_bytes or None,
+            )
             rc, out, err = rsync_to_remote(
                 payload.session_id,
                 str(local),
                 payload.remote_dir,
-                excludes=[
-                    "equilibration.pid",
-                    "__pycache__",
-                    "*.pyc",
-                    "_previous_cluster_run",
-                ],
+                excludes=upload_excludes,
+                on_progress=_map_upload_progress if on_progress else None,
+                expected_bytes=local_bytes or None,
             )
             if rc != 0:
                 raise HTTPException(
                     status_code=400, detail=err or out or "upload failed"
                 )
 
+        _emit_submit_progress(
+            on_progress, phase="verify", percent=84, message="Verifying remote files…"
+        )
         required = [launch_name, "run_equilibration.slurm"]
         ok, verify_msg = verify_remote_files(
             payload.session_id,
@@ -573,6 +735,9 @@ def cluster_submit_job(payload: ClusterSubmitRequest) -> dict:
                 ),
             )
 
+        _emit_submit_progress(
+            on_progress, phase="sbatch", percent=92, message="Submitting with sbatch…"
+        )
         cmd = (
             f"cd {shlex.quote(payload.remote_dir)} && "
             f"sbatch {shlex.quote('run_equilibration.slurm')}"
@@ -605,6 +770,7 @@ def cluster_submit_job(payload: ClusterSubmitRequest) -> dict:
         "resources": {
             "cpus": payload.cpus,
             "gpus": payload.gpus,
+            "gpu_type": (payload.gpu_type or "").strip() or None,
             "mem": payload.mem,
         },
         "workdir_strategy": profile.workdir_strategy,
@@ -638,6 +804,93 @@ def cluster_submit_job(payload: ClusterSubmitRequest) -> dict:
     }
 
 
+@router.post("/submit-job")
+def cluster_submit_job(payload: ClusterSubmitRequest) -> dict:
+    return _execute_cluster_submit(payload)
+
+
+@router.post("/submit-job-stream")
+async def cluster_submit_job_stream(payload: ClusterSubmitRequest) -> StreamingResponse:
+    """NDJSON stream of upload/sbatch progress, ending with ``phase=done|error``."""
+    import asyncio
+
+    async def event_stream():
+        progress_q: queue.Queue = queue.Queue()
+
+        def on_progress(evt: Dict[str, Any]) -> None:
+            progress_q.put(("progress", evt))
+
+        def worker() -> None:
+            try:
+                on_progress(
+                    {
+                        "phase": "prepare",
+                        "percent": 2,
+                        "message": "Starting upload & submit…",
+                    }
+                )
+                result = _execute_cluster_submit(payload, on_progress=on_progress)
+                progress_q.put(("done", result))
+            except HTTPException as ex:
+                detail = ex.detail
+                msg = detail if isinstance(detail, str) else str(detail)
+                progress_q.put(
+                    ("error", {"message": msg, "status_code": ex.status_code})
+                )
+            except ClusterSSHError as ex:
+                progress_q.put(("error", {"message": str(ex)}))
+            except Exception as ex:
+                progress_q.put(("error", {"message": str(ex)}))
+            finally:
+                progress_q.put(None)
+
+        threading.Thread(target=worker, daemon=True).start()
+        loop = asyncio.get_running_loop()
+        while True:
+            item = await loop.run_in_executor(None, progress_q.get)
+            if item is None:
+                break
+            kind, payload_evt = item
+            if kind == "progress":
+                yield json.dumps(payload_evt, ensure_ascii=False) + "\n"
+            elif kind == "done":
+                job_id = ""
+                if isinstance(payload_evt, dict):
+                    job_id = str(payload_evt.get("job_id") or "")
+                yield json.dumps(
+                    {
+                        "phase": "done",
+                        "percent": 100,
+                        "message": (
+                            f"Submitted Slurm job {job_id}" if job_id else "Submit complete"
+                        ),
+                        "result": payload_evt,
+                    },
+                    ensure_ascii=False,
+                ) + "\n"
+            elif kind == "error":
+                yield json.dumps(
+                    {
+                        "phase": "error",
+                        "percent": None,
+                        "message": payload_evt.get("message") or "Submit failed",
+                        "error": payload_evt.get("message") or "Submit failed",
+                    },
+                    ensure_ascii=False,
+                ) + "\n"
+            await asyncio.sleep(0)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Content-Encoding": "identity",
+        },
+    )
+
+
 def _pull_progress_logs(
     session_id: str,
     remote_dir: str,
@@ -645,6 +898,7 @@ def _pull_progress_logs(
     *,
     profile: Optional[ClusterProfilePayload] = None,
     job_id: Optional[str] = None,
+    append: bool = True,
 ) -> dict:
     """Lightweight Watching sync: stage logs only (not trajectories / full Pull)."""
     local = Path(local_dir)
@@ -691,8 +945,11 @@ def _pull_progress_logs(
             str(local),
             includes=list(PROGRESS_RSYNC_FILTERS),
             excludes=["equilibration.pid", "equilibration_job.json"],
-            ignore_times=True,
-            timeout=180,
+            # Logs only + append/size-only: avoid re-downloading multi-GB mdout /
+            # restart files on every 60s Watching poll (ignore-times was doing that).
+            size_only=True,
+            append=append,
+            timeout=120,
         )
     except ClusterSSHError as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
@@ -967,9 +1224,11 @@ def _pull_job_files(
             pull_source,
             str(local),
             excludes=list(PULL_PRESERVE_EXCLUDES),
-            # Growing step*.log on WSL/OneDrive mounts often keep stale mtimes;
-            # ignore-times forces content refresh so Watching tracks live stages.
-            ignore_times=True,
+            # Live/partial: ignore-times so growing logs with stale WSL mtimes
+            # still refresh. Completed jobs: size-only so a second concurrent
+            # Pull does not re-read multi-GB files that already match.
+            ignore_times=partial_pull,
+            size_only=not partial_pull,
             on_progress=_sync_progress if on_progress else None,
             expected_bytes=remote_bytes or None,
             timeout=1800 if not remote_bytes else 600,
@@ -1153,6 +1412,12 @@ def _pull_job_files(
 
 @router.post("/job-status")
 def cluster_job_status(payload: ClusterJobStatusRequest) -> dict:
+    """Watching uses a separate SSH ControlMaster from Pull/submit."""
+    with ssh_channel("watch"):
+        return _cluster_job_status(payload)
+
+
+def _cluster_job_status(payload: ClusterJobStatusRequest) -> dict:
     session_id = _resolve_session_id(
         payload.session_id, payload.profile, payload.password
     )
@@ -1342,6 +1607,9 @@ def cluster_job_status(payload: ClusterJobStatusRequest) -> dict:
                 Path(payload.local_dir),
                 profile=payload.profile,
                 job_id=effective_jid,
+                # After COMPLETED, rewrite logs that are not a clean prefix
+                # (--append would leave truncated NAMD stage logs stuck).
+                append=state_u not in {"COMPLETED", "COMPLETE"},
             )
             if midrun_note and isinstance(pulled, dict):
                 pulled["midrun"] = midrun_note

@@ -16,6 +16,7 @@
  *   purge_modules?: boolean,
  *   mail_user?: string,
  *   mail_type?: string,
+ *   default_time_limit?: string,
  *   extra_sbatch_lines?: string[],
  *   batch_template?: string|null,
  *   module_hints?: Record<string, string[]>,
@@ -81,6 +82,7 @@ export function emptyClusterProfile(overrides = {}) {
     purge_modules: true,
     mail_user: '',
     mail_type: 'NONE',
+    default_time_limit: '24:00:00',
     extra_sbatch_lines: [],
     batch_template: null,
     module_hints: {
