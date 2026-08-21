@@ -199,8 +199,15 @@ export function resolveStructuralTypeSelection(opts, type) {
  * @typedef {Object} AnalysisSet
  * @property {string} id
  * @property {string} label
+ * @property {string} [legendLabel] custom plot legend; empty follows `label`
+ * @property {string} [csvStem] stable CSV prefix (`set1`, `set2`, …); independent of the display name
  * @property {boolean} visible
  * @property {string} color
+ * @property {string} [aplMeanLabel] area-per-lipid Average legend; empty → "Average"
+ * @property {string} [aplUpperLabel] empty → "Upper leaflet"
+ * @property {string} [aplLowerLabel] empty → "Lower leaflet"
+ * @property {string} [aplUpperColor] empty → set color
+ * @property {string} [aplLowerColor] empty → set color
  * @property {string} topologyPath
  * @property {TrajRow[]} trajectoryFiles
  * @property {StructuralOptions} structuralOptions
@@ -265,13 +272,45 @@ export function newSetId() {
   return `set-${Date.now()}-${_setCounter++}`
 }
 
-/** @param {number} index @param {string} [id] @returns {AnalysisSet} */
-export function createAnalysisSet(index = 0, id = newSetId()) {
+/** Next unused `setN` stem so renaming a set does not create new CSV files. */
+export function nextCsvStem(existingSets = []) {
+  const used = new Set(
+    existingSets.map((s) => String(s?.csvStem || '').trim()).filter(Boolean)
+  )
+  let n = 1
+  while (used.has(`set${n}`)) n++
+  return `set${n}`
+}
+
+/** Fill missing/duplicate csv stems (`set1`, `set2`, …) without renaming existing unique ones. */
+export function assignCsvStems(sets) {
+  const used = new Set()
+  return (sets || []).map((set, index) => {
+    let stem = String(set?.csvStem || '').trim()
+    if (!/^set\d+$/.test(stem) || used.has(stem)) {
+      let n = index + 1
+      while (used.has(`set${n}`)) n++
+      stem = `set${n}`
+    }
+    used.add(stem)
+    return { ...set, csvStem: stem }
+  })
+}
+
+/** @param {number} index @param {string} [id] @param {AnalysisSet[]} [existingSets] @returns {AnalysisSet} */
+export function createAnalysisSet(index = 0, id = newSetId(), existingSets = []) {
   return {
     id,
     label: `Sim ${index + 1}`,
+    legendLabel: '',
+    csvStem: nextCsvStem(existingSets),
     visible: true,
     color: SET_COLORS[index % SET_COLORS.length],
+    aplMeanLabel: '',
+    aplUpperLabel: '',
+    aplLowerLabel: '',
+    aplUpperColor: '',
+    aplLowerColor: '',
     topologyPath: '',
     trajectoryFiles: [],
     structuralOptions: defaultStructuralOptions(),
@@ -357,13 +396,20 @@ export function normalizeAnalysisSetStructuralResults(set) {
   }
 }
 
-/** @param {AnalysisSet} set @param {number} index @returns {AnalysisSet} */
-export function duplicateAnalysisSet(set, index) {
+/** @param {AnalysisSet} set @param {number} index @param {AnalysisSet[]} [existingSets] @returns {AnalysisSet} */
+export function duplicateAnalysisSet(set, index, existingSets = []) {
   return {
     ...clonePlainAnalysisData(set),
     id: newSetId(),
     label: `${set.label} copy`,
+    legendLabel: '',
+    csvStem: nextCsvStem(existingSets),
     color: SET_COLORS[index % SET_COLORS.length],
+    aplMeanLabel: '',
+    aplUpperLabel: '',
+    aplLowerLabel: '',
+    aplUpperColor: '',
+    aplLowerColor: '',
     structuralResults: {},
     structuralResult: null,
     energeticResult: null
@@ -376,6 +422,59 @@ export function setHasResult(set, mode, structuralType) {
   if (mode === 'energetic') return set.energeticResult != null
   if (structuralType) return setHasStructuralResult(set, structuralType)
   return setHasStructuralResult(set)
+}
+
+export const APL_DEFAULT_MEAN_LABEL = 'Average'
+export const APL_DEFAULT_UPPER_LABEL = 'Upper leaflet'
+export const APL_DEFAULT_LOWER_LABEL = 'Lower leaflet'
+
+/** @param {AnalysisSet | null | undefined} set @param {'mean' | 'upper' | 'lower'} role */
+export function aplSeriesLabel(set, role) {
+  if (role === 'upper') return String(set?.aplUpperLabel ?? '').trim() || APL_DEFAULT_UPPER_LABEL
+  if (role === 'lower') return String(set?.aplLowerLabel ?? '').trim() || APL_DEFAULT_LOWER_LABEL
+  return String(set?.aplMeanLabel ?? '').trim() || APL_DEFAULT_MEAN_LABEL
+}
+
+/** @param {AnalysisSet | null | undefined} set @param {'mean' | 'upper' | 'lower'} role */
+export function aplSeriesColor(set, role) {
+  const base = String(set?.color || '').trim() || '#f59e0b'
+  if (role === 'upper') return String(set?.aplUpperColor ?? '').trim() || base
+  if (role === 'lower') return String(set?.aplLowerColor ?? '').trim() || base
+  return base
+}
+
+/** @param {{ name?: string, role?: string } | null | undefined} extra */
+export function extraSeriesRole(extra) {
+  const role = String(extra?.role || '').toLowerCase()
+  if (role === 'upper' || role === 'lower') return role
+  const name = String(extra?.name || '')
+  if (/upper/i.test(name)) return 'upper'
+  if (/lower/i.test(name)) return 'lower'
+  return 'extra'
+}
+
+/**
+ * Mean Y for a structural result. If the Average column was lost, rebuild it
+ * from upper/lower leaflet series.
+ * @param {StructuralSetResult | null | undefined} res
+ * @returns {number[]}
+ */
+export function structuralMeanY(res) {
+  if (Array.isArray(res?.rawY) && res.rawY.length > 0) return res.rawY
+  const extras = res?.extraSeries || []
+  const upper = extras.find((s) => extraSeriesRole(s) === 'upper')?.rawY
+  const lower = extras.find((s) => extraSeriesRole(s) === 'lower')?.rawY
+  if (!Array.isArray(upper) || !Array.isArray(lower) || !upper.length || !lower.length) {
+    return []
+  }
+  const n = Math.min(upper.length, lower.length)
+  const out = []
+  for (let i = 0; i < n; i++) {
+    const a = Number(upper[i])
+    const b = Number(lower[i])
+    out.push(Number.isFinite(a) && Number.isFinite(b) ? (a + b) / 2 : Number.isFinite(a) ? a : b)
+  }
+  return out
 }
 
 export { SET_COLORS }

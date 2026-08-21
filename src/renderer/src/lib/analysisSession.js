@@ -2,6 +2,7 @@
 /** @typedef {import('./analysisSets.js').StructuralSetResult} StructuralSetResult */
 
 import {
+  assignCsvStems,
   getSetStructuralResult,
   getSetStructuralResultTypes,
   normalizeAnalysisSetStructuralResults,
@@ -24,26 +25,24 @@ export function clonePlainAnalysisData(value) {
 }
 
 /**
- * CSV filename for a set's structural result (matches Analysis page export).
+ * Stable CSV filename for a set result. Uses `set.csvStem` (`set1`, `set2`, …)
+ * so renaming a simulation set overwrites the same file instead of creating a new one.
  * @param {AnalysisSet} set
  * @param {string} analysisType
- * @param {number} setCount
+ * @param {number} [setIndex] fallback index when `csvStem` is missing
  */
-export function csvFileNameForAnalysisSet(set, analysisType, setCount) {
-  if (setCount > 1) {
-    const label = set.label.replace(/[^a-z0-9_\-]/gi, '_').toLowerCase() || 'set'
-    return `${label}_${analysisType}.csv`
-  }
-  return `analysis_${analysisType}.csv`
+export function csvFileNameForAnalysisSet(set, analysisType, setIndex = 0) {
+  const stem = String(set?.csvStem || '').trim() || `set${Number(setIndex) + 1}`
+  return `${stem}_${analysisType}.csv`
 }
 
 /**
  * Stable CSV filename for energetic set exports (session hydrate).
  * @param {AnalysisSet} set
- * @param {number} setCount
+ * @param {number} [setIndex]
  */
-export function csvFileNameForEnergeticSet(set, setCount) {
-  return csvFileNameForAnalysisSet(set, 'energetic', setCount)
+export function csvFileNameForEnergeticSet(set, setIndex = 0) {
+  return csvFileNameForAnalysisSet(set, 'energetic', setIndex)
 }
 
 /**
@@ -69,13 +68,31 @@ export function energeticResultNeedsCsvHydration(res) {
  */
 export function computeStatsFromSeries(y) {
   if (!y?.length) return null
-  const mean = y.reduce((a, b) => a + b, 0) / y.length
-  const variance = y.reduce((a, v) => a + (v - mean) ** 2, 0) / y.length
+  let min = Infinity
+  let max = -Infinity
+  let sum = 0
+  let n = 0
+  for (let i = 0; i < y.length; i++) {
+    const v = y[i]
+    if (!Number.isFinite(v)) continue
+    n += 1
+    sum += v
+    if (v < min) min = v
+    if (v > max) max = v
+  }
+  if (n === 0) return null
+  const mean = sum / n
+  let varSum = 0
+  for (let i = 0; i < y.length; i++) {
+    const v = y[i]
+    if (!Number.isFinite(v)) continue
+    varSum += (v - mean) ** 2
+  }
   return {
     mean,
-    std: Math.sqrt(variance),
-    min: Math.min(...y),
-    max: Math.max(...y)
+    std: Math.sqrt(varSum / n),
+    min,
+    max
   }
 }
 
@@ -166,9 +183,8 @@ export function applyCsvToStructuralResult(res, parsed) {
  * @param {'structural' | 'energetic' | 'all'} [_mode] kept for call-site compatibility
  */
 export function slimSetsForSessionSave(sets, _mode = 'all') {
-  const cloned = clonePlainAnalysisData(sets)
-  const setCount = cloned.length
-  return cloned.map((set) => {
+  const cloned = assignCsvStems(clonePlainAnalysisData(sets))
+  return cloned.map((set, setIndex) => {
     let next = set
 
     // Slim structural results (if any)
@@ -185,7 +201,7 @@ export function slimSetsForSessionSave(sets, _mode = 'all') {
           rawX: [],
           rawY: [],
           extraSeries: (res.extraSeries || []).map((s) => ({ name: s.name, rawY: [] })),
-          dataCsv: csvFileNameForAnalysisSet(next, type, setCount)
+          dataCsv: csvFileNameForAnalysisSet(next, type, setIndex)
         }
       }
       const activeType = next.structuralResult?.analysisType
@@ -210,7 +226,7 @@ export function slimSetsForSessionSave(sets, _mode = 'all') {
             key: s.key,
             y: []
           })),
-          dataCsv: eres.dataCsv || csvFileNameForEnergeticSet(next, setCount)
+          dataCsv: csvFileNameForEnergeticSet(next, setIndex)
         }
       }
     }
@@ -283,10 +299,11 @@ export function applyCsvToEnergeticResult(res, parsed) {
 export async function hydrateAnalysisSessionFromCsv(session, sessionDir, readText) {
   if (!sessionDir || !session?.sets?.length) return session
   // Hydrate both modes — sessions may contain structural and energetic results together.
-  for (const set of session.sets) {
+  for (let setIndex = 0; setIndex < session.sets.length; setIndex++) {
+    const set = session.sets[setIndex]
     const res = set.energeticResult
     if (res && energeticResultNeedsCsvHydration(res)) {
-      const csvName = res.dataCsv || csvFileNameForEnergeticSet(set, session.sets.length)
+      const csvName = res.dataCsv || csvFileNameForEnergeticSet(set, setIndex)
       const text = await readCsvFromSessionDirs(sessionDir, csvName, readText)
       if (text) {
         const parsed = parseEnergeticResultCsv(text)
@@ -298,7 +315,7 @@ export async function hydrateAnalysisSessionFromCsv(session, sessionDir, readTex
       const sres = getSetStructuralResult(normalized, type)
       if (!sres || !structuralResultNeedsCsvHydration(sres)) continue
       const csvName =
-        sres.dataCsv || csvFileNameForAnalysisSet(set, type, session.sets.length)
+        sres.dataCsv || csvFileNameForAnalysisSet(set, type, setIndex)
       const text = await readCsvFromSessionDirs(sessionDir, csvName, readText)
       if (!text) continue
       const parsed = parseAnalysisResultCsv(text, type)
@@ -326,10 +343,11 @@ export async function hydrateAnalysisSetsFromCsv(sets, sessionDir, readText, mod
   if (mode === 'energetic') {
     /** @type {AnalysisSet[]} */
     let next = sets
-    for (const set of sets) {
+    for (let setIndex = 0; setIndex < sets.length; setIndex++) {
+      const set = sets[setIndex]
       const res = set.energeticResult
       if (!res || !energeticResultNeedsCsvHydration(res)) continue
-      const csvName = res.dataCsv || csvFileNameForEnergeticSet(set, sets.length)
+      const csvName = res.dataCsv || csvFileNameForEnergeticSet(set, setIndex)
       const text = await readCsvFromSessionDirs(sessionDir, csvName, readText)
       if (!text) continue
       const parsed = parseEnergeticResultCsv(text)
@@ -341,12 +359,13 @@ export async function hydrateAnalysisSetsFromCsv(sets, sessionDir, readText, mod
   }
   /** @type {AnalysisSet[]} */
   let next = sets
-  for (const set of sets) {
+  for (let setIndex = 0; setIndex < sets.length; setIndex++) {
+    const set = sets[setIndex]
     const normalized = normalizeAnalysisSetStructuralResults(set)
     for (const type of getSetStructuralResultTypes(normalized)) {
       const res = getSetStructuralResult(normalized, type)
       if (!res || !structuralResultNeedsCsvHydration(res)) continue
-      const csvName = res.dataCsv || csvFileNameForAnalysisSet(set, type, sets.length)
+      const csvName = res.dataCsv || csvFileNameForAnalysisSet(set, type, setIndex)
       const text = await readCsvFromSessionDirs(sessionDir, csvName, readText)
       if (!text) continue
       const parsed = parseAnalysisResultCsv(text, type)
@@ -381,7 +400,92 @@ export async function hydrateAnalysisSetsFromCsv(sets, sessionDir, readText, mod
  * @property {string} [sessionName] Optional human label (independent of folder name)
  * @property {string} activeSetId
  * @property {AnalysisSet[]} sets
+ * @property {{
+ *   structural?: Record<string, Record<string, unknown>>,
+ *   energeticGlobal?: Record<string, unknown>,
+ *   energeticPanels?: Record<string, unknown>
+ * } | null} [plotSettings]
  */
+
+/** Legacy hardcoded plot colors (treated as “follow theme” when loading old sessions). */
+export const LEGACY_PLOT_BG = '#0a0a0a'
+export const LEGACY_PLOT_TEXT = '#a3a3a3'
+
+/**
+ * @param {'dark' | 'light'} theme
+ */
+export function themePlotBackgroundHex(theme) {
+  return theme === 'light' ? '#ffffff' : '#0a0a0a'
+}
+
+/**
+ * @param {'dark' | 'light'} theme
+ */
+export function themePlotTextHex(theme) {
+  return theme === 'light' ? '#262626' : '#a3a3a3'
+}
+
+/**
+ * @param {unknown} value
+ * @param {string} [fallback]
+ */
+export function normalizeHexColor(value, fallback = '#0a0a0a') {
+  const raw = String(value || '').trim()
+  if (/^#[0-9a-fA-F]{6}$/.test(raw)) return raw.toLowerCase()
+  if (/^#[0-9a-fA-F]{3}$/.test(raw)) {
+    return `#${raw[1]}${raw[1]}${raw[2]}${raw[2]}${raw[3]}${raw[3]}`.toLowerCase()
+  }
+  return fallback
+}
+
+/**
+ * @param {unknown} value
+ * @param {string} legacyDefault
+ */
+export function colorLooksCustomized(value, legacyDefault) {
+  const s = String(value || '').trim().toLowerCase()
+  if (!s) return false
+  return s !== String(legacyDefault || '').trim().toLowerCase()
+}
+
+/**
+ * Fill plotBgCustomized / textColorCustomized for old sessions that only stored hex.
+ * @param {Record<string, unknown> | null | undefined} plot
+ */
+export function hydratePlotColorFlags(plot) {
+  if (!plot || typeof plot !== 'object') return plot
+  const next = { ...plot }
+  if (next.plotBgCustomized == null) {
+    next.plotBgCustomized = colorLooksCustomized(next.plotBg, LEGACY_PLOT_BG)
+    if (!next.plotBgCustomized) next.plotBg = ''
+  } else {
+    next.plotBgCustomized = Boolean(next.plotBgCustomized)
+  }
+  if (next.textColorCustomized == null) {
+    next.textColorCustomized = colorLooksCustomized(next.textColor, LEGACY_PLOT_TEXT)
+    if (!next.textColorCustomized) next.textColor = ''
+  } else {
+    next.textColorCustomized = Boolean(next.textColorCustomized)
+  }
+  return next
+}
+
+/**
+ * @param {Record<string, unknown> | null | undefined} plot
+ * @param {'dark' | 'light'} theme
+ */
+export function resolvePlotColors(plot, theme) {
+  const bgFallback = themePlotBackgroundHex(theme)
+  const textFallback = themePlotTextHex(theme)
+  return {
+    plotBg: plot?.plotBgCustomized
+      ? normalizeHexColor(plot.plotBg, bgFallback)
+      : bgFallback,
+    textColor: plot?.textColorCustomized
+      ? normalizeHexColor(plot.textColor, textFallback)
+      : textFallback
+  }
+}
 
 /**
  * @param {unknown} raw
@@ -403,6 +507,7 @@ export function normalizeEnergeticCompareLayout(raw) {
  *   sessionName?: string,
  *   activeSetId: string,
  *   sets: AnalysisSet[],
+ *   plotSettings?: AnalysisSessionV1['plotSettings'],
  * }} state
  * @returns {AnalysisSessionV1}
  */
@@ -418,7 +523,8 @@ export function serializeAnalysisSession(state) {
     outputFolderName: state.outputFolderName,
     sessionName: String(state.sessionName || '').trim(),
     activeSetId: state.activeSetId,
-    sets: clonePlainAnalysisData(state.sets)
+    sets: clonePlainAnalysisData(state.sets),
+    plotSettings: state.plotSettings ? clonePlainAnalysisData(state.plotSettings) : null
   }
 }
 
@@ -468,7 +574,8 @@ export function deserializeAnalysisSession(raw) {
     outputFolderName: String(obj.outputFolderName || ''),
     sessionName: String(obj.sessionName || obj.session_name || '').trim(),
     activeSetId: String(obj.activeSetId || obj.sets[0]?.id || ''),
-    sets: /** @type {AnalysisSet[]} */ (obj.sets)
+    sets: /** @type {AnalysisSet[]} */ (obj.sets),
+    plotSettings: obj.plotSettings && typeof obj.plotSettings === 'object' ? obj.plotSettings : null
   })
 }
 

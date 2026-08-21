@@ -12,7 +12,6 @@ import sys
 import threading
 import tempfile
 import uuid
-from collections import deque
 from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
@@ -1734,13 +1733,16 @@ def _equilibration_job_summary(
         if remote_state in {"RUNNING", "PENDING", "CONFIGURING", "COMPLETING"}:
             status = "running"
         elif remote_state in {"COMPLETED", "COMPLETE"}:
-            # Slurm COMPLETED means the batch exited; only mark the job done when
-            # every stage finished locally (or was already completed).
-            if not error_msg and total > 0 and n_done >= total:
+            # Slurm COMPLETED means the batch exited 0. Incomplete local logs are
+            # a sync lag (Watching/Pull), not a crash — do not mark interrupted.
+            if error_msg:
+                status = "error"
+            elif total > 0 and n_done >= total:
                 status = "completed"
                 interrupted = False
-            elif status not in {"completed", "error"}:
-                status = "completed"
+            else:
+                status = "running"
+                interrupted = False
         elif remote_state in {"FAILED", "CANCELLED", "TIMEOUT", "NODE_FAIL"}:
             status = "error"
 
@@ -2125,6 +2127,25 @@ def run_preparation(payload: RunPreparationRequest) -> dict:
         builder = Builder()
         success, message = builder.run_preparation(job_dir)
         return {"success": success, "message": message, "job_dir": str(job_dir)}
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+class CancelPreparationRequest(BaseModel):
+    job_dir: str = Field(..., description="Absolute path to the preparation job directory")
+
+
+@app.post("/cancel-preparation")
+def cancel_preparation(payload: CancelPreparationRequest) -> dict:
+    """Cancel a running Builder preparation job (kills process.pid group)."""
+    job_dir = Path(os.path.abspath(os.path.expanduser(payload.job_dir)))
+    if not job_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Job directory not found: {job_dir}")
+    try:
+        builder = Builder()
+        return sanitize_value(builder.cancel_preparation(job_dir))
+    except FileNotFoundError as ex:
+        raise HTTPException(status_code=404, detail=str(ex)) from ex
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
 
@@ -3431,6 +3452,42 @@ class AnalysisRenderPlotRequest(BaseModel):
     plot_spec: dict[str, Any] = Field(..., description="PlotSpec layout + style")
 
 
+def _read_eq_job_execution(workdir: Path) -> dict[str, Any]:
+    """execution block from equilibration_job.json, if present."""
+    meta_path = Path(workdir) / "equilibration_job.json"
+    if not meta_path.is_file():
+        return {}
+    try:
+        raw = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if isinstance(raw, dict) and isinstance(raw.get("execution"), dict):
+        return raw["execution"]
+    return {}
+
+
+def _tail_file_text(path: Path, n_lines: int = 15, max_bytes: int = 65536) -> str:
+    """Last *n_lines* of a file without scanning the whole contents."""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return ""
+    if size <= 0:
+        return ""
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(max(0, size - max_bytes))
+            chunk = handle.read()
+    except OSError:
+        return ""
+    text = chunk.decode("utf-8", errors="replace")
+    if size > max_bytes:
+        nl = text.find("\n")
+        if nl >= 0:
+            text = text[nl + 1 :]
+    return "".join(text.splitlines(True)[-n_lines:])
+
+
 @app.post("/get-equilibration-status")
 def get_equilibration_status(payload: EquilibrationRequest) -> dict:
     workdir = Path(os.path.abspath(os.path.expanduser(payload.working_dir)))
@@ -3534,16 +3591,39 @@ def get_equilibration_status(payload: EquilibrationRequest) -> dict:
                     ) * 86400
 
         if info.log_file:
-            with open(info.log_file, "r") as file:
-                data["output"] = "".join(deque(file, maxlen=15))
+            data["output"] = _tail_file_text(Path(info.log_file), 15)
 
         response["stages"].append(data)
 
     process_running = is_equilibration_process_running(workdir, engine)
-    if process_running:
+    execution = _read_eq_job_execution(workdir)
+    remote_mode = execution.get("mode") == "remote"
+    remote_state = str(execution.get("last_remote_state") or "").upper()
+    remote_alive = remote_mode and remote_state in {
+        "PENDING",
+        "RUNNING",
+        "CONFIGURING",
+        "COMPLETING",
+        "REQUEUED",
+    }
+    remote_completed = remote_mode and remote_state in {"COMPLETED", "COMPLETE"}
+    if process_running or remote_alive:
         response["status"] = "running"
+    elif remote_completed:
+        # No local PID on cluster jobs. In-progress stages mean logs are still
+        # catching up — do not treat NAMD "WRITING … RESTART/DCD" tails as a crash.
+        real_error = any(s.get("status") == "error" for s in response["stages"])
+        if response["stages"] and all(
+            s.get("status") == "completed" for s in response["stages"]
+        ):
+            response["status"] = "completed"
+        elif real_error:
+            response["status"] = "error"
+        else:
+            response["status"] = "running"
     else:
-        # Kill MD / crash: demote stage "running" so the UI does not keep a spinner.
+        # Local run exited: demote leftover "running" stages so the UI does not
+        # keep a spinner after Kill MD / crash.
         for stage in response["stages"]:
             if stage.get("status") == "running":
                 stage["status"] = "error"
@@ -4155,6 +4235,18 @@ class FixPbcRequest(BaseModel):
         None,
         description="GROMACS index group written to the trajectory (default System)",
     )
+    center_groups: list[str] | None = Field(
+        None,
+        description="GROMACS multi-select center groups (merged into GW_CENTER when >1)",
+    )
+    output_groups: list[str] | None = Field(
+        None,
+        description="GROMACS multi-select output groups (merged into GW_OUTPUT when >1)",
+    )
+    skip_cluster: bool = Field(
+        False,
+        description="If true, skip gmx trjconv -pbc cluster (whole→nojump→mol+center)",
+    )
     tpr_path: str | None = Field(
         None, description="Explicit GROMACS .tpr (required for GROMACS)"
     )
@@ -4247,6 +4339,9 @@ def tools_fix_pbc(payload: FixPbcRequest) -> dict:
             center_selection=payload.center_selection,
             center_group=payload.center_group,
             output_group=payload.output_group,
+            center_groups=payload.center_groups,
+            output_groups=payload.output_groups,
+            skip_cluster=payload.skip_cluster,
             tpr_path=str(tpr) if tpr else None,
             ndx_path=str(ndx) if ndx else None,
             gmx_executable=payload.gmx_executable,
@@ -4469,7 +4564,7 @@ def run_energetic_analysis(payload: EnergeticAnalysisRequest) -> dict:
 
 @app.post("/analysis-render-plot")
 def render_analysis_plot(payload: AnalysisRenderPlotRequest):
-    """Render energetic PlotSpec to PNG via shared matplotlib renderer (API-identical export)."""
+    """Render analysis PlotSpec to PNG via shared matplotlib renderer (API-identical export)."""
     from fastapi.responses import Response
 
     from gatewizard.utils.matplotlib_renderer import render_energetic_to_bytes
@@ -5786,4 +5881,4 @@ def packmol_scan_jobs(payload: PackmolScanJobsRequest) -> dict:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8765)
+    uvicorn.run(app, host="127.0.0.1", port=8765, timeout_graceful_shutdown=1)

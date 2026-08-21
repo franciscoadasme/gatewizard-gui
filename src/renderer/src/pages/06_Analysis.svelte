@@ -3,6 +3,7 @@
   import Beaker from '../components/icons/Beaker.svelte'
   import Protein from '../components/icons/Protein.svelte'
   import TopologyInfoModal from '../components/TopologyInfoModal.svelte'
+  import OutputPathFields from '../components/OutputPathFields.svelte'
   import Button from '../components/ui/Button.svelte'
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Divider from '../components/ui/Divider.svelte'
@@ -27,6 +28,10 @@
     createAnalysisSet,
     defaultSelectionForStructuralType,
     duplicateAnalysisSet,
+    assignCsvStems,
+    aplSeriesColor,
+    aplSeriesLabel,
+    extraSeriesRole,
     getSetStructuralResult,
     getSetStructuralResultTypes,
     isBilayerStructuralType,
@@ -36,6 +41,7 @@
     newSetId,
     resolveStructuralTypeSelection,
     setHasResult,
+    structuralMeanY,
     structuralSetHasPlottableResult
   } from '../lib/analysisSets.js'
   import { notifyJobFinishedIfUnfocused } from '../lib/jobNotifications.svelte.js'
@@ -46,9 +52,13 @@
     formatAnalysisSessionIdentity,
     hydrateAnalysisSessionFromCsv,
     hydrateAnalysisSetsFromCsv,
+    hydratePlotColorFlags,
+    csvFileNameForAnalysisSet,
     csvFileNameForEnergeticSet,
     energeticResultHasPlotData,
     normalizeEnergeticCompareLayout,
+    normalizeHexColor,
+    resolvePlotColors,
     serializeAnalysisSession,
     sessionHasPlottableResults,
     setsHaveAnyPlottableResults,
@@ -66,8 +76,12 @@
     energGlobalDefaults
   } from '../lib/plotSpec.js'
   import {
+    compactDirPath,
     defaultAnalysisFolderName,
-    outputFolderPath
+    dirBasename,
+    outputFolderPath,
+    parentDirPath,
+    uniqueDirList
   } from '../lib/outputFolders.js'
   import {
     assignProtocolStageTimes,
@@ -95,8 +109,12 @@
   /** Separate from analysis run — Detect Properties must not freeze the Run button. */
   let detectingProperties = $state(false)
   let outputFolderName = $state('')
+  /** Parent directory for analysis output; defaults to the top-bar working directory. */
+  let outputParentDir = $state('')
   /** Optional human label for the analysis session (saved in analysis_session.json). */
   let sessionName = $state('')
+  /** Optional basename for CSV / SVG / PNG chart exports (no extension). Empty uses the chart title. */
+  let exportFileName = $state('')
 
   function resolveOutputFolderName() {
     if (outputFolderName.trim()) return outputFolderName.trim()
@@ -111,15 +129,11 @@
     return resolved
   }
 
-  const outputDir = $derived(outputFolderPath(workingDir, resolveOutputFolderName()))
+  const suggestedOutputFolderName = $derived(defaultAnalysisFolderName(topologyPath))
+  const resolvedOutputParent = $derived((outputParentDir.trim() || workingDir).trim())
+  const outputDir = $derived(outputFolderPath(resolvedOutputParent, resolveOutputFolderName()))
 
-  $effect(() => {
-    if (workingDir && !outputFolderName.trim()) {
-      outputFolderName = defaultAnalysisFolderName(topologyPath)
-    }
-  })
-
-  const canRunAnalysis = $derived(workingDir !== '')
+  const canRunAnalysis = $derived(resolvedOutputParent !== '')
 
   // --- Structural state ---
   let topologyPath = $state('')
@@ -165,11 +179,17 @@
   let plotViewBusy = $state(false)
   let plotViewBusyLabel = $state('Updating plot…')
   let plotViewBusyGeneration = 0
+  /** True while the Structural Options type dropdown is switching types. */
+  let structuralTypeChanging = $state(false)
+  /** Path waiting on in-app replace confirm (native confirm() crashes Electron/GTK on WSL). */
+  let pendingReplaceSessionPath = $state('')
   /**
    * Explicit chart snapshot — avoids Svelte nested-proxy derived staleness after session load.
    * @type {{ mode: 'empty' | 'overlay' | 'grid', series: Array<{ name: string, x: number[], y: number[], color?: string }>, panels: Array<{ key: string, title: string, series: Array<{ name: string, x: number[], y: number[], color?: string }> }> }}
    */
   let chartView = $state({ mode: 'empty', series: [], panels: [] })
+  /** Energetic x/y snapshot — appearance (name/color) is applied cheaply on top. */
+  let energeticGeom = $state([])
   let statsRangeStartInput = $state('')
   let statsRangeEndInput = $state('')
   /** @type {'current' | 'all'} */
@@ -177,13 +197,27 @@
   let runAnalysisMenuOpen = $state(false)
   /** @type {HTMLDivElement | null} */
   let runAnalysisMenuEl = $state(null)
+  /** @type {'current' | 'all'} */
+  let detectPropertiesScope = $state('current')
+  let detectPropertiesMenuOpen = $state(false)
+  /** @type {HTMLDivElement | null} */
+  let detectPropertiesMenuEl = $state(null)
+  let savingSession = $state(false)
+  let loadingSession = $state(false)
+  /** @type {'' | 'csv' | 'svg' | 'png' | 'pub'} */
+  let exportingKind = $state('')
+  const exportingChart = $derived(exportingKind !== '')
   /** @type {Array<{ session_path: string, output_dir: string, name: string, folder_name?: string, session_name?: string, saved_at: string, mode: string, set_count: number, analysis_summary: string }>} */
   let savedSessions = $state([])
   let selectedSessionPath = $state('')
   let sessionScanHint = $state('')
   let analysisActionNotice = $state('')
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let analysisActionNoticeTimer = null
   /** Shown under Saved analysis (session save/load), not at the panel footer. */
   let sessionActionNotice = $state('')
+  /** @type {'success' | 'info'} */
+  let sessionActionNoticeKind = $state('success')
   /** True after a successful session save until the user edits the session. */
   let sessionSavedClean = $state(false)
   /** Fingerprint of last successful save — used so “already saved” still works if dirty flags flap. */
@@ -208,24 +242,52 @@
   })
 
   $effect(() => {
-    if (workingDir) {
-      void refreshSavedSessions()
-    } else {
+    if (!detectPropertiesMenuOpen) return
+    const onDoc = (/** @type {PointerEvent} */ e) => {
+      const el = detectPropertiesMenuEl
+      if (el && e.target instanceof Node && !el.contains(e.target)) {
+        detectPropertiesMenuOpen = false
+      }
+    }
+    document.addEventListener('pointerdown', onDoc)
+    return () => document.removeEventListener('pointerdown', onDoc)
+  })
+
+  $effect(() => {
+    const roots = uniqueDirList(workingDir, outputParentDir)
+    if (roots.length === 0) {
       savedSessions = []
       selectedSessionPath = ''
       sessionScanHint = ''
+      return
     }
+    void refreshSavedSessions()
   })
 
   async function refreshSavedSessions() {
-    if (!workingDir) {
+    const roots = uniqueDirList(workingDir, outputParentDir)
+    if (roots.length === 0) {
       savedSessions = []
       sessionScanHint = ''
       return
     }
     try {
-      const { sessions } = await scanAnalysisSessions(workingDir)
-      savedSessions = sessions || []
+      const lists = await Promise.all(
+        roots.map((dir) =>
+          scanAnalysisSessions(dir)
+            .then((r) => r.sessions || [])
+            .catch(() => [])
+        )
+      )
+      const byPath = new Map()
+      for (const session of lists.flat()) {
+        if (session?.session_path && !byPath.has(session.session_path)) {
+          byPath.set(session.session_path, session)
+        }
+      }
+      savedSessions = [...byPath.values()].sort((a, b) =>
+        String(b.saved_at || '').localeCompare(String(a.saved_at || ''))
+      )
       sessionScanHint =
         savedSessions.length === 0
           ? 'None found'
@@ -323,6 +385,7 @@
   function bumpPlotData() {
     plotDataRevision += 1
     syncChartViewFromSets()
+    syncEnergeticGeom()
   }
 
   /**
@@ -337,6 +400,8 @@
     plotViewBusy = true
     try {
       await tick()
+      // Paint the overlay before sync chart rebuilds block the main thread.
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
       await work()
       await tick()
       // Keep overlay through LineChart remount / layout.
@@ -386,9 +451,9 @@
           const res = getSetStructuralResult(normalizeAnalysisSetStructuralResults(set), type)
           return {
             key: set.id,
-            title: set.label,
+            title: setLegendName(set),
             series: res
-              ? buildStructuralSeries(set, res, { setPrefix: false, colorBySet: false })
+              ? buildStructuralSeries(set, res, { prefixSetName: false })
               : []
           }
         })
@@ -403,8 +468,7 @@
         const res = getSetStructuralResult(normalizeAnalysisSetStructuralResults(set), type)
         if (!res) return []
         return buildStructuralSeries(set, res, {
-          setPrefix: multi && visible.length >= 1,
-          colorBySet: multi
+          prefixSetName: visible.length > 1
         })
       })
       chartView = { mode: 'overlay', series, panels: [] }
@@ -419,11 +483,132 @@
     }
   }
 
+  /** Display names matching the Structural Options dropdown. */
+  const STRUCTURAL_TYPE_TITLES = {
+    rmsd: 'RMSD',
+    rmsf: 'RMSF',
+    distance: 'Distance',
+    radius_of_gyration: 'Radius of Gyration',
+    membrane_thickness: 'Membrane Thickness',
+    area_per_lipid: 'Area per Lipid'
+  }
+
+  /** @param {string} [type] */
+  function autoStructuralTitle(type = structuralType) {
+    return STRUCTURAL_TYPE_TITLES[type] || String(type || 'Analysis').replace(/_/g, ' ')
+  }
+
+  /** Plot legend for a set: custom text, otherwise the set name. */
+  function setLegendName(set) {
+    const custom = String(set?.legendLabel ?? '').trim()
+    if (custom) return custom
+    return String(set?.label ?? '').trim() || 'Series'
+  }
+
+  /**
+   * Names/colors/styles for a structural series. Does not touch x/y data.
+   * @param {import('../lib/analysisSets.js').AnalysisSet} set
+   * @param {'mean' | 'upper' | 'lower' | 'extra'} role
+   * @param {{ prefixSetName?: boolean, extraName?: string, type?: string }} [opts]
+   */
+  function structuralSeriesAppearance(set, role, opts = {}) {
+    const type = opts.type ?? structuralType
+    const sp = sPlots[type] || structDefaults
+    const isApl = type === 'area_per_lipid'
+    const legend = setLegendName(set)
+    const mainColor = String(set.color || '').trim() || '#f59e0b'
+    const extraName = opts.extraName || 'Series'
+    const label = !isApl ? legend : role === 'extra' ? extraName : aplSeriesLabel(set, role)
+    const name = isApl && opts.prefixSetName ? `${legend} · ${label}` : label
+    let color = mainColor
+    let strokeDasharray = ''
+    let marker = 'none'
+    let markerEvery = 1
+    if (isApl) {
+      if (role === 'mean') {
+        strokeDasharray = strokeDashForStyle(sp.aplMeanLineStyle)
+        marker = sp.aplMeanMarker || 'none'
+        markerEvery = Math.max(1, Math.floor(Number(sp.aplMeanMarkerEvery) || 10))
+      } else if (role === 'upper' || role === 'lower') {
+        color = aplSeriesColor(set, role)
+        strokeDasharray = strokeDashForStyle(
+          role === 'upper' ? sp.aplUpperLineStyle || 'dashed' : sp.aplLowerLineStyle || 'dotted'
+        )
+        marker =
+          role === 'upper' ? sp.aplUpperMarker || 'none' : sp.aplLowerMarker || 'none'
+        markerEvery = Math.max(
+          1,
+          Math.floor(
+            Number(role === 'upper' ? sp.aplUpperMarkerEvery : sp.aplLowerMarkerEvery) || 10
+          )
+        )
+      } else {
+        strokeDasharray = strokeDashForStyle('dashed')
+        markerEvery = 10
+      }
+    }
+    return {
+      name,
+      color,
+      strokeDasharray,
+      strokeWidth: Number(sp.lineWidth) || 2,
+      marker: isApl ? marker : 'none',
+      markerSize: Number(sp.aplMarkerSize) || 3,
+      markerEvery: isApl ? markerEvery : 1
+    }
+  }
+
+  /**
+   * Update legend/colors/line styles on the live chart without cloning x/y data.
+   */
+  function applyChartAppearance() {
+    if (mode !== 'structural') return
+    const lists = [chartView.series, ...chartView.panels.map((p) => p.series)]
+    if (lists.some((list) => list.some((s) => !s.setId))) {
+      syncChartViewFromSets()
+      return
+    }
+    const type = structuralType
+    const visibleCount = analysisSets.filter(
+      (s) => s.visible && structuralSetHasPlottableResult(s, type)
+    ).length
+    const prefix = visibleCount > 1 && chartView.mode !== 'grid'
+    for (const series of chartView.series) {
+      const set = analysisSets.find((s) => s.id === series.setId)
+      if (!set) continue
+      Object.assign(
+        series,
+        structuralSeriesAppearance(set, series.seriesRole || 'mean', {
+          prefixSetName: prefix,
+          extraName: series.extraName || '',
+          type
+        })
+      )
+    }
+    for (const panel of chartView.panels) {
+      const panelSet = analysisSets.find((s) => s.id === panel.key)
+      if (panelSet) panel.title = setLegendName(panelSet)
+      for (const series of panel.series) {
+        const set = analysisSets.find((s) => s.id === series.setId) || panelSet
+        if (!set) continue
+        Object.assign(
+          series,
+          structuralSeriesAppearance(set, series.seriesRole || 'mean', {
+            prefixSetName: false,
+            extraName: series.extraName || '',
+            type
+          })
+        )
+      }
+    }
+  }
+
   /**
    * Chart/CSV series builder that does not depend on overlay derived flags.
+   * Legend is the set name (customizable). Analysis type belongs in the plot title.
    * @param {import('../lib/analysisSets.js').AnalysisSet} set
    * @param {import('../lib/analysisSets.js').StructuralSetResult} res
-   * @param {{ setPrefix?: boolean, colorBySet?: boolean }} [opts]
+   * @param {{ prefixSetName?: boolean }} [opts]
    */
   function buildStructuralSeries(set, res, opts = {}) {
     if (!structuralResultHasPlotData(res)) return []
@@ -432,68 +617,35 @@
     const xUnit = sp.xUnit || 'ns'
     const yUnit = sp.yUnit || 'Å'
     const xs = res.lastAnalysisHasTimeX ? convertX(res.rawX, 'ns', xUnit) : [...(res.rawX || [])]
-    const prefix = opts.setPrefix ? `${set.label} · ` : ''
-    const mainColor = opts.colorBySet ? set.color : sp.lineColor || '#f59e0b'
-    const mainLabel =
-      type === 'area_per_lipid'
-        ? res.seriesName?.trim() || 'Mean'
-        : res.seriesName?.trim() || 'Series'
-    const isApl = type === 'area_per_lipid'
-    /** @type {Array<{ name: string, x: number[], y: number[], color?: string, strokeDasharray?: string, strokeWidth?: number, marker?: string, markerSize?: number, markerEvery?: number, seriesRole?: string }>} */
-    const out = [
-      {
-        name: `${prefix}${mainLabel}`,
+    const prefix = opts.prefixSetName === true
+    /** @type {Array<{ name: string, x: number[], y: number[], color?: string, strokeDasharray?: string, strokeWidth?: number, marker?: string, markerSize?: number, markerEvery?: number, seriesRole?: string, setId?: string, key?: string, extraName?: string }>} */
+    const out = []
+    const meanY = structuralMeanY(res)
+    if (meanY.length > 0) {
+      out.push({
+        ...structuralSeriesAppearance(set, 'mean', { prefixSetName: prefix, type }),
         x: xs,
-        y: convertStructY(res.rawY, yUnit, type),
-        color: mainColor,
-        strokeDasharray: isApl ? strokeDashForStyle(sp.aplMeanLineStyle) : '',
-        strokeWidth: Number(sp.lineWidth) || 2,
-        marker: isApl ? sp.aplMeanMarker || 'none' : 'none',
-        markerSize: Number(sp.aplMarkerSize) || 3,
-        markerEvery: isApl ? Math.max(1, Math.floor(Number(sp.aplMeanMarkerEvery) || 10)) : 1,
-        seriesRole: 'mean'
-      }
-    ]
-    const aplStyles = [
-      {
-        match: /upper/i,
-        dash: sp.aplUpperLineStyle || 'dashed',
-        marker: sp.aplUpperMarker || 'none',
-        color: (sp.aplUpperColor || '').trim() || mainColor,
-        markerEvery: Math.max(1, Math.floor(Number(sp.aplUpperMarkerEvery) || 10))
-      },
-      {
-        match: /lower/i,
-        dash: sp.aplLowerLineStyle || 'dotted',
-        marker: sp.aplLowerMarker || 'none',
-        color: (sp.aplLowerColor || '').trim() || mainColor,
-        markerEvery: Math.max(1, Math.floor(Number(sp.aplLowerMarkerEvery) || 10))
-      }
-    ]
+        y: convertStructY(meanY, yUnit, type),
+        seriesRole: 'mean',
+        setId: set.id,
+        key: `${set.id}:mean`
+      })
+    }
     for (const s of res.extraSeries || []) {
       if (!Array.isArray(s.rawY) || s.rawY.length === 0) continue
-      const style =
-        aplStyles.find((st) => st.match.test(s.name || '')) || {
-          dash: 'dashed',
-          marker: 'none',
-          color: mainColor,
-          markerEvery: 10
-        }
+      const role = extraSeriesRole(s)
       out.push({
-        name: `${prefix}${s.name}`,
+        ...structuralSeriesAppearance(set, role === 'extra' ? 'extra' : role, {
+          prefixSetName: prefix,
+          extraName: s.name,
+          type
+        }),
         x: xs,
         y: convertStructY(s.rawY, yUnit, type),
-        color: isApl ? style.color : mainColor,
-        strokeDasharray: isApl ? strokeDashForStyle(style.dash) : '',
-        strokeWidth: Number(sp.lineWidth) || 2,
-        marker: isApl ? style.marker : 'none',
-        markerSize: Number(sp.aplMarkerSize) || 3,
-        markerEvery: isApl ? style.markerEvery : 1,
-        seriesRole: /upper/i.test(s.name || '')
-          ? 'upper'
-          : /lower/i.test(s.name || '')
-            ? 'lower'
-            : 'extra'
+        seriesRole: role,
+        extraName: s.name,
+        setId: set.id,
+        key: `${set.id}:${role}:${s.name || ''}`
       })
     }
     return out
@@ -547,14 +699,11 @@
   function csvFileNameForSet(set, opts = {}) {
     const csvMode = opts.mode ?? mode
     const type = opts.structuralType ?? structuralType
+    const setIndex = Math.max(0, analysisSets.findIndex((s) => s.id === set.id))
     if (csvMode === 'energetic') {
-      return csvFileNameForEnergeticSet(set, analysisSets.length)
+      return csvFileNameForEnergeticSet(set, setIndex)
     }
-    if (analysisSets.length > 1) {
-      const label = set.label.replace(/[^a-z0-9_\-]/gi, '_').toLowerCase() || 'set'
-      return `${label}_${type}.csv`
-    }
-    return `analysis_${type}.csv`
+    return csvFileNameForAnalysisSet(set, type, setIndex)
   }
 
   /** @param {import('../lib/analysisSession.js').AnalysisSessionV1} session */
@@ -576,7 +725,9 @@
     )
     outputFolderName = session.outputFolderName || defaultAnalysisFolderName('')
     sessionName = String(session.sessionName || '').trim()
-    analysisSets = clonePlainAnalysisData(session.sets).map(normalizeAnalysisSetStructuralResults)
+    analysisSets = assignCsvStems(
+      (session.sets || []).map((s) => normalizeAnalysisSetStructuralResults(s))
+    )
     activeSetId =
       session.activeSetId && analysisSets.some((s) => s.id === session.activeSetId)
         ? session.activeSetId
@@ -589,6 +740,7 @@
     statsRange = null
     panelRangeStats = {}
     lastError = ''
+    applyPlotSettingsFromSession(session.plotSettings)
     warnMissingSessionPaths(session)
     // Energetic charts read live set data; rebuild so the open energetic tab shows
     // immediately without toggling Structural → Energetic.
@@ -609,14 +761,17 @@
   }
 
   /**
-   * @param {{ session_path: string, name: string, folder_name?: string, session_name?: string, mode: string, set_count: number, analysis_summary: string }} session
+   * @param {{ session_path: string, output_dir?: string, name: string, folder_name?: string, session_name?: string, mode: string, set_count: number, analysis_summary: string }} session
    */
   function formatSavedSessionOption(session) {
     const identity = formatAnalysisSessionIdentity({
       sessionName: session.session_name,
       folder_name: session.folder_name || session.name
     })
-    return `${identity} · ${session.mode} · ${session.set_count} set(s) · ${session.analysis_summary}`
+    const where = compactDirPath(session.output_dir || '', workingDir || outputParentDir)
+    return where
+      ? `${identity} · ${where} · ${session.mode} · ${session.set_count} set(s) · ${session.analysis_summary}`
+      : `${identity} · ${session.mode} · ${session.set_count} set(s) · ${session.analysis_summary}`
   }
 
   const currentSessionIdentity = $derived(
@@ -626,35 +781,71 @@
     })
   )
 
+  const selectedSavedSession = $derived(
+    savedSessions.find((s) => s.session_path === selectedSessionPath) ?? null
+  )
+
+  /** Point output path + folder name at the directory that holds this session file. */
+  function applyOutputLocationFromSessionDir(sessionDir) {
+    const folder = dirBasename(sessionDir)
+    const parent = parentDirPath(sessionDir)
+    if (folder) outputFolderName = folder
+    if (parent) outputParentDir = parent
+  }
+
   async function loadSelectedSavedSession() {
     if (!selectedSessionPath) return
-    await loadAnalysisSessionFromPath(selectedSessionPath)
+    await requestLoadAnalysisSession(selectedSessionPath)
+  }
+
+  const sessionBusy = $derived(savingSession || loadingSession)
+
+  function sessionHasLoadedPlots() {
+    return (
+      setsHavePlottableResults(analysisSets, mode) ||
+      setsHavePlottableResults(analysisSets, 'energetic')
+    )
+  }
+
+  /** Ask before replacing an open session; never use window.confirm (GTK crash on WSL). */
+  async function requestLoadAnalysisSession(sessionPath) {
+    if (!sessionPath) return
+    if (sessionHasLoadedPlots()) {
+      pendingReplaceSessionPath = sessionPath
+      return
+    }
+    await loadAnalysisSessionFromPath(sessionPath)
+  }
+
+  function cancelReplaceSession() {
+    pendingReplaceSessionPath = ''
+  }
+
+  function confirmReplaceSession() {
+    const path = pendingReplaceSessionPath
+    pendingReplaceSessionPath = ''
+    if (path) void loadAnalysisSessionFromPath(path)
   }
 
   /** @param {string} sessionPath */
   async function loadAnalysisSessionFromPath(sessionPath) {
-    if (
-      setsHavePlottableResults(analysisSets, mode) ||
-      setsHavePlottableResults(analysisSets, 'energetic')
-    ) {
-      const ok = confirm('Replace the current analysis session with the saved one?')
-      if (!ok) return
-    }
+    loadingSession = true
+    showSessionActionNotice('Loading session…', { kind: 'info', markClean: false })
+    const gen = ++plotViewBusyGeneration
+    plotViewBusyLabel = 'Loading session…'
+    plotViewBusy = true
     try {
+      await tick()
       const raw = await window.api.readJson(sessionPath)
       let session = deserializeAnalysisSession(raw)
       const sessionDir = sessionPath.replace(/\\/g, '/').replace(/\/[^/]+$/, '')
-      const hydrationDirs = sessionHydrationDirs(
-        sessionDir,
-        session.outputFolderName ? outputFolderPath(workingDir, session.outputFolderName) : '',
-        outputDir
-      )
-      session = await hydrateAnalysisSessionFromCsv(session, hydrationDirs, async (path) => {
+      // Only this session’s folder. The previous outputDir often still points at the
+      // last job (e.g. OpenMM v2_confs) and would mix CSVs.
+      session = await hydrateAnalysisSessionFromCsv(session, sessionDir, async (path) => {
         try {
           return await window.api.readText(path)
         } catch (err) {
           logEvent('warn', 'analysis', 'Failed to read analysis CSV', `${path}: ${err}`)
-          // Let readCsvFromSessionDirs try the next directory (do not abort hydrate).
           throw err
         }
       })
@@ -681,9 +872,10 @@
         )
       }
       applyAnalysisSession(session)
-      await hydratePlotDataFromOutputFolder([sessionDir])
-      // Force a clean chart rebuild after async load (avoids stale empty view).
-      await tick()
+      applyOutputLocationFromSessionDir(sessionDir)
+      if (!hydratedAny) {
+        await hydratePlotDataFromOutputFolder([sessionDir])
+      }
       await tick()
       if (mode === 'energetic') {
         rebuildEnergeticViewAfterLoad()
@@ -703,7 +895,7 @@
             (hydratedEnergetic ? '' : ' · CSV hydrate missed energetic arrays')
         )
         if (nPanels === 0 && hydratedEnergetic) {
-          analysisSets = clonePlainAnalysisData(analysisSets)
+          analysisSets = analysisSets.map((s) => ({ ...s }))
           rebuildEnergeticViewAfterLoad()
           await tick()
           bumpPlotData()
@@ -719,7 +911,7 @@
           `${chartView.mode} · ${nSeries} series · ${nPoints} points`
         )
         if (nSeries === 0 && hydratedAny) {
-          analysisSets = clonePlainAnalysisData(analysisSets)
+          analysisSets = analysisSets.map((s) => ({ ...s }))
           await tick()
           bumpPlotData()
         }
@@ -734,6 +926,10 @@
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error)
       logEvent('error', 'analysis', 'Failed to load analysis session', lastError)
+      if (sessionActionNotice === 'Loading session…') sessionActionNotice = ''
+    } finally {
+      loadingSession = false
+      if (gen === plotViewBusyGeneration) plotViewBusy = false
     }
   }
 
@@ -741,10 +937,10 @@
     const result = await window.api.openFileDialog(
       'Open Analysis Session',
       [{ name: 'Analysis session', extensions: ['json'] }],
-      workingDir || outputDir || undefined
+      workingDir || outputParentDir || outputDir || undefined
     )
     if (result.canceled || !result.filePath) return
-    await loadAnalysisSessionFromPath(result.filePath)
+    await requestLoadAnalysisSession(result.filePath)
     selectedSessionPath = result.filePath
   }
 
@@ -793,12 +989,16 @@
   // Structural plot settings defaults
   const structDefaults = {
     title: '',
+    /** When false, title follows the analysis type. Empty + customized hides the title. */
+    titleCustomized: false,
     xLabel: '',
     yLabel: '',
     lineColor: '#f59e0b',
     lineWidth: '2',
-    plotBg: '#0a0a0a',
-    textColor: '#a3a3a3',
+    plotBg: '',
+    textColor: '',
+    plotBgCustomized: false,
+    textColorCustomized: false,
     showGrid: true,
     xMin: '',
     xMax: '',
@@ -813,8 +1013,15 @@
     extraLeftMargin: '0',
     extraBottomMargin: '0',
     legendPosition: 'top-left',
+    legendSwatchSize: '12',
+    legendFontSize: '10',
+    axisFontSize: '12',
+    titleFontSize: '13',
     xTickCount: '5',
     yTickCount: '5',
+    /** Empty = auto tick decimals; 0–8 = fixed places on axis ticks */
+    xTickDecimals: '',
+    yTickDecimals: '',
     residueCodeFormat: 'three',
     /** Show atom/residue selection under the plot title */
     showSelectionSubtitle: true,
@@ -840,8 +1047,10 @@
     xLabel: '',
     yLabel: '',
     lineColor: '#f59e0b',
-    plotBg: '#0a0a0a',
-    textColor: '#a3a3a3',
+    plotBg: '',
+    textColor: '',
+    plotBgCustomized: false,
+    textColorCustomized: false,
     showGrid: true,
     xMin: '',
     xMax: '',
@@ -857,6 +1066,8 @@
     legendPosition: 'top-left',
     xTickCount: '5',
     yTickCount: '5',
+    xTickDecimals: '',
+    yTickDecimals: '',
     residueCodeFormat: 'three'
   }
 
@@ -874,8 +1085,14 @@
     aspectRatio: '2.5',
     transparentBg: false,
     legendPosition: 'top-left',
+    legendSwatchSize: '12',
+    legendFontSize: '10',
+    axisFontSize: '12',
+    titleFontSize: '13',
     xTickCount: '5',
     yTickCount: '5',
+    xTickDecimals: '',
+    yTickDecimals: '',
     extraLeftMargin: '20',
     extraBottomMargin: '0',
     residueCodeFormat: 'three'
@@ -945,6 +1162,17 @@
 
   // Derived: active plot settings for structural mode
   const ps = $derived(mode === 'structural' ? sPlots[structuralType] : sPlots.rmsd)
+  const resolvedStructColors = $derived(resolvePlotColors(ps, themeState.current))
+  const resolvedEnergColors = $derived(resolvePlotColors(ePlotGlobal, themeState.current))
+  const displayPlotBg = $derived(
+    mode === 'structural' ? resolvedStructColors.plotBg : resolvedEnergColors.plotBg
+  )
+  const displayTextColor = $derived(
+    mode === 'structural' ? resolvedStructColors.textColor : resolvedEnergColors.textColor
+  )
+  const activeAnalysisSet = $derived(
+    analysisSets.find((s) => s.id === activeSetId) ?? analysisSets[0] ?? null
+  )
   // Derived: active structural result for current type (null = not run yet)
   const activeStructRes = $derived.by(() => {
     if (mode !== 'structural') return null
@@ -1004,13 +1232,39 @@
       selection2,
       selectedProperties,
       availableProperties,
+      plotSettings: {
+        structural: Object.fromEntries(
+          Object.entries(sPlots).map(([k, v]) => [
+            k,
+            {
+              plotBg: v.plotBg || '',
+              textColor: v.textColor || '',
+              plotBgCustomized: Boolean(v.plotBgCustomized),
+              textColorCustomized: Boolean(v.textColorCustomized)
+            }
+          ])
+        ),
+        energetic: {
+          plotBg: ePlotGlobal.plotBg || '',
+          textColor: ePlotGlobal.textColor || '',
+          plotBgCustomized: Boolean(ePlotGlobal.plotBgCustomized),
+          textColorCustomized: Boolean(ePlotGlobal.textColorCustomized)
+        }
+      },
       sets: analysisSets.map((s) => {
         const normalized = normalizeAnalysisSetStructuralResults(s)
         const types = getSetStructuralResultTypes(normalized)
         return {
           id: s.id,
           label: s.label,
+          legendLabel: s.legendLabel || '',
           visible: s.visible,
+          color: s.color,
+          aplMeanLabel: s.aplMeanLabel || '',
+          aplUpperLabel: s.aplUpperLabel || '',
+          aplLowerLabel: s.aplLowerLabel || '',
+          aplUpperColor: s.aplUpperColor || '',
+          aplLowerColor: s.aplLowerColor || '',
           topologyPath: s.topologyPath,
           trajectoryFiles: s.trajectoryFiles,
           structuralOptions: s.structuralOptions,
@@ -1050,6 +1304,9 @@
   function markSessionDirty() {
     if (suppressSessionDirty) return
     if (!sessionActionNotice && !sessionSavedClean && !lastSavedSessionFingerprint) return
+    // A successful save is followed by UI flushes (folder name sync, persist).
+    // Those must not wipe the confirmation or the fingerprint-based "already saved" state.
+    if (lastSavedSessionFingerprint && isSessionSaveUpToDate()) return
     // Do not dismiss the transient “already saved” toast while its timer is running.
     const keepingAlreadySavedToast =
       sessionActionNoticeTimer != null &&
@@ -1310,11 +1567,11 @@
 
   /** Build chart series from a stored structural set result. */
   function seriesFromSetResult(set, res) {
-    const overlay = showStructuralSetOverlay
-    const useSetPrefix = overlay && !(isCompareOverlay && compareLayout === 'grid')
+    const visibleCount = analysisSets.filter(
+      (s) => s.visible && structuralSetHasPlottableResult(s, structuralType)
+    ).length
     return buildStructuralSeries(set, res, {
-      setPrefix: useSetPrefix,
-      colorBySet: overlay
+      prefixSetName: visibleCount > 1
     })
   }
 
@@ -1350,11 +1607,12 @@
       const ys = convertEnergeticYArr(ySample, s.unit)
       const tUnit = getTargetUnit(s.unit)
       const propLabel = tUnit ? `${prop} (${tUnit})` : prop
+      const setName = setLegendName(set)
       const name =
         nameMode === 'set'
-          ? set.label
+          ? setName
           : nameMode === 'set_prop'
-            ? `${set.label} · ${propLabel}`
+            ? `${setName} · ${propLabel}`
             : propLabel
       out.push({
         name,
@@ -1362,10 +1620,88 @@
         propLabel,
         x: xs,
         y: ys,
+        key: `${set.id}:${prop}`,
+        setId: set.id,
         color: colorBySet ? set.color : ePlotPanels[s.baseName]?.lineColor || set.color
       })
     }
     return out
+  }
+
+  /** @param {object} s @param {import('../lib/analysisSets.js').AnalysisSet | undefined} set @param {'set' | 'prop' | 'set_prop'} nameMode */
+  function energeticSeriesAppearance(s, set, nameMode) {
+    const setName = set ? setLegendName(set) : 'Series'
+    const propLabel = s.propLabel || s.baseName || 'Series'
+    const name =
+      nameMode === 'set' ? setName : nameMode === 'set_prop' ? `${setName} · ${propLabel}` : propLabel
+    const colorBySet = energeticMultiSetSession && energeticCompareLayout !== 'by_set'
+    const color = colorBySet
+      ? set?.color
+      : ePlotPanels[s.baseName]?.lineColor || set?.color
+    return { name, color: color || '#f59e0b' }
+  }
+
+  function energeticNameMode() {
+    if (!energeticMultiSetSession) return 'prop'
+    if (energeticCompareLayout === 'by_property') return 'set'
+    if (energeticCompareLayout === 'by_set') return 'prop'
+    return 'set_prop'
+  }
+
+  /** Heavy downsample/unit conversion for energetic plots. Call on data/unit/visibility changes only. */
+  function syncEnergeticGeom() {
+    if (mode !== 'energetic') {
+      energeticGeom = []
+      return
+    }
+    if (selectedProperties.length === 0 || compareEnergeticProperties.length === 0) {
+      energeticGeom = []
+      return
+    }
+    if (energeticMultiSetSession) {
+      const visible = analysisSets.filter((s) => s.visible && s.energeticResult)
+      energeticGeom = visible.flatMap((set) =>
+        seriesFromEnergeticSet(set, compareEnergeticProperties, {
+          maxPoints: DEFAULT_CHART_MAX_POINTS,
+          colorBySet: false,
+          nameMode: 'prop'
+        })
+      )
+      return
+    }
+    const activeSet = analysisSets.find((s) => s.id === activeSetId)
+    if (activeSet && energeticResultHasPlotData(activeSet.energeticResult)) {
+      energeticGeom = seriesFromEnergeticSet(activeSet, compareEnergeticProperties, {
+        maxPoints: DEFAULT_CHART_MAX_POINTS,
+        colorBySet: false,
+        nameMode: 'prop'
+      })
+      return
+    }
+    if (rawSeries.length === 0) {
+      energeticGeom = []
+      return
+    }
+    const visible = rawSeries.filter((s) => selectedProperties.includes(s.baseName))
+    energeticGeom = visible.map((s) => {
+      const n = Math.min(rawX.length, s.y?.length ?? 0)
+      const idx = downsampleIndices(n, DEFAULT_CHART_MAX_POINTS)
+      const xSample = idx ? idx.map((i) => rawX[i]) : rawX
+      const ySample = idx ? idx.map((i) => s.y[i]) : s.y
+      const xs = convertX(xSample, rawXTimeUnit, timeUnits)
+      const ys = convertEnergeticYArr(ySample, s.unit)
+      const tUnit = getTargetUnit(s.unit)
+      const displayName = tUnit ? `${s.baseName} (${tUnit})` : s.baseName
+      return {
+        name: displayName,
+        propLabel: displayName,
+        x: xs,
+        y: ys,
+        key: s.key || `${activeSetId}:${s.baseName}`,
+        setId: activeSetId,
+        baseName: s.baseName
+      }
+    })
   }
 
   /** Default Y-axis label for a property (name + units), never includes set label. */
@@ -1403,6 +1739,7 @@
   function onEnergeticUnitChange() {
     syncEnergeticUnitPrefsToAllSets()
     persistActiveSetFields()
+    bumpPlotData()
   }
 
   /** Y-axis label for an energetic panel (property + units; not set names). */
@@ -1470,60 +1807,13 @@
 
   // Build displayed chart series applying unit conversions
   const displaySeries = $derived.by(() => {
-    plotDataRevision
     if (mode === 'structural') {
       return chartView.series
     }
-    // Empty property selection → hide all energetic plots.
-    if (selectedProperties.length === 0 || compareEnergeticProperties.length === 0) return []
-    // Multi-set energetic sessions: always build from visible sets only (never active rawSeries).
-    if (energeticMultiSetSession) {
-      if (visibleCompareSets.length === 0) return []
-      const colorBySet = energeticCompareLayout !== 'by_set'
-      const nameMode =
-        energeticCompareLayout === 'by_property'
-          ? 'set'
-          : energeticCompareLayout === 'by_set'
-            ? 'prop'
-            : 'set_prop'
-      return visibleCompareSets.flatMap((set) =>
-        seriesFromEnergeticSet(set, compareEnergeticProperties, {
-          maxPoints: DEFAULT_CHART_MAX_POINTS,
-          colorBySet,
-          nameMode
-        })
-      )
-    }
-    // Single-set: build from live set result so session load refreshes without a mode toggle.
-    const activeSet = analysisSets.find((s) => s.id === activeSetId)
-    if (activeSet && energeticResultHasPlotData(activeSet.energeticResult)) {
-      return seriesFromEnergeticSet(activeSet, compareEnergeticProperties, {
-        maxPoints: DEFAULT_CHART_MAX_POINTS,
-        colorBySet: false,
-        nameMode: 'prop'
-      })
-    }
-    // Fallback while a run is in progress (result not yet written to the set).
-    if (rawSeries.length === 0) return []
-    const visible = rawSeries.filter((s) => selectedProperties.includes(s.baseName))
-    return visible.map((s) => {
-      const n = Math.min(rawX.length, s.y?.length ?? 0)
-      const idx = downsampleIndices(n, DEFAULT_CHART_MAX_POINTS)
-      const xSample = idx ? idx.map((i) => rawX[i]) : rawX
-      const ySample = idx ? idx.map((i) => s.y[i]) : s.y
-      const xs = convertX(xSample, rawXTimeUnit, timeUnits)
-      const ys = convertEnergeticYArr(ySample, s.unit)
-      const tUnit = getTargetUnit(s.unit)
-      const displayName = tUnit ? `${s.baseName} (${tUnit})` : s.baseName
-      return {
-        name: displayName,
-        propLabel: displayName,
-        x: xs,
-        y: ys,
-        key: s.key,
-        baseName: s.baseName,
-        color: ePlotPanels[s.baseName]?.lineColor
-      }
+    const nameMode = energeticNameMode()
+    return energeticGeom.map((s) => {
+      const set = analysisSets.find((x) => x.id === s.setId)
+      return { ...s, ...energeticSeriesAppearance(s, set, nameMode) }
     })
   })
 
@@ -1532,29 +1822,16 @@
    * with unambiguous labels (set · property) so unchecking sets/props updates rows.
    */
   const statsSourceSeries = $derived.by(() => {
-    plotDataRevision
     if (mode === 'structural') return displaySeries
-    if (selectedProperties.length === 0 || compareEnergeticProperties.length === 0) return []
-    if (energeticMultiSetSession) {
-      if (visibleCompareSets.length === 0) return []
-      // Always label as "Set · Property" so every visible curve has a unique stats row.
-      return visibleCompareSets.flatMap((set) =>
-        seriesFromEnergeticSet(set, compareEnergeticProperties, {
-          maxPoints: DEFAULT_CHART_MAX_POINTS,
-          colorBySet: true,
-          nameMode: 'set_prop'
-        })
+    return energeticGeom.map((s) => {
+      const set = analysisSets.find((x) => x.id === s.setId)
+      const appearance = energeticSeriesAppearance(
+        s,
+        set,
+        energeticMultiSetSession ? 'set_prop' : 'prop'
       )
-    }
-    const activeSet = analysisSets.find((s) => s.id === activeSetId)
-    if (activeSet && energeticResultHasPlotData(activeSet.energeticResult)) {
-      return seriesFromEnergeticSet(activeSet, compareEnergeticProperties, {
-        maxPoints: DEFAULT_CHART_MAX_POINTS,
-        colorBySet: false,
-        nameMode: 'prop'
-      })
-    }
-    return displaySeries
+      return { ...s, ...appearance }
+    })
   })
 
   const chartStatsRows = $derived.by(() => {
@@ -1577,13 +1854,11 @@
   })
 
   const energeticPanels = $derived.by(() => {
-    plotDataRevision
     if (mode !== 'energetic') return []
     // Multi-set session: panels always follow checked (visible) sets only.
     if (energeticMultiSetSession) {
-      if (visibleCompareSets.length === 0 || compareEnergeticProperties.length === 0) return []
+      if (displaySeries.length === 0) return []
       if (energeticCompareLayout === 'overlay') {
-        if (displaySeries.length === 0) return []
         return [{ key: '__compare__', title: displayTitle || chartTitle, series: displaySeries }]
       }
       if (energeticCompareLayout === 'by_set') {
@@ -1591,11 +1866,7 @@
           .map((set) => ({
             key: set.id,
             title: set.label,
-            series: seriesFromEnergeticSet(set, compareEnergeticProperties, {
-              maxPoints: DEFAULT_CHART_MAX_POINTS,
-              colorBySet: false,
-              nameMode: 'prop'
-            })
+            series: displaySeries.filter((s) => s.setId === set.id)
           }))
           .filter((p) => p.series.length > 0)
       }
@@ -1604,13 +1875,7 @@
         .map((prop) => ({
           key: prop,
           title: prop,
-          series: visibleCompareSets.flatMap((set) =>
-            seriesFromEnergeticSet(set, [prop], {
-              maxPoints: DEFAULT_CHART_MAX_POINTS,
-              colorBySet: true,
-              nameMode: 'set'
-            })
-          )
+          series: displaySeries.filter((s) => s.baseName === prop)
         }))
         .filter((p) => p.series.length > 0)
     }
@@ -1847,6 +2112,7 @@
     for (const p of selectedProperties) ensureEPlotPanel(p)
     const first = rawSeries?.[0]?.key ?? res.selectedProperties?.[0]
     primaryStats = first && res.statistics ? res.statistics[first] || null : null
+    if (mode === 'energetic') syncEnergeticGeom()
   }
 
   /**
@@ -1950,9 +2216,7 @@
       trajectoryFiles = [...set.trajectoryFiles]
       applyStructuralOptions(set.structuralOptions)
       applyEnergeticOptions(set.energeticOptions)
-      if (!outputFolderName.trim()) {
-        outputFolderName = defaultAnalysisFolderName(topologyPath)
-      }
+      // outputFolderName is session-level — never reset when switching/adding sets
       headgroupDetectAttempted = lipidHeadgroupAtoms.length > 0
       if (set.structuralResult || set.structuralResults) {
         rebuildStructResultsFromSets()
@@ -1968,6 +2232,148 @@
   function updateSetLabel(id, label) {
     markSessionDirty()
     analysisSets = analysisSets.map((s) => (s.id === id ? { ...s, label } : s))
+    applyChartAppearance()
+  }
+
+  function updateSetLegend(id, legendLabel) {
+    markSessionDirty()
+    analysisSets = analysisSets.map((s) => (s.id === id ? { ...s, legendLabel } : s))
+    applyChartAppearance()
+  }
+
+  /**
+   * @param {string} id
+   * @param {Record<string, string>} patch
+   */
+  function patchAnalysisSet(id, patch) {
+    markSessionDirty()
+    analysisSets = analysisSets.map((s) => (s.id === id ? { ...s, ...patch } : s))
+    applyChartAppearance()
+  }
+
+  function patchStructuralPlot(patch) {
+    const type = structuralType
+    sPlots = { ...sPlots, [type]: { ...sPlots[type], ...patch } }
+  }
+
+  function setStructuralPlotBg(hex) {
+    const raw = String(hex || '').trim()
+    markSessionDirty()
+    if (!raw) {
+      patchStructuralPlot({ plotBg: '', plotBgCustomized: false })
+      return
+    }
+    patchStructuralPlot({
+      plotBg: normalizeHexColor(raw, raw),
+      plotBgCustomized: true
+    })
+  }
+
+  function setStructuralTextColor(hex) {
+    const raw = String(hex || '').trim()
+    markSessionDirty()
+    if (!raw) {
+      patchStructuralPlot({ textColor: '', textColorCustomized: false })
+      return
+    }
+    patchStructuralPlot({
+      textColor: normalizeHexColor(raw, raw),
+      textColorCustomized: true
+    })
+  }
+
+  function clearStructuralPlotBgCustom() {
+    markSessionDirty()
+    patchStructuralPlot({ plotBg: '', plotBgCustomized: false })
+  }
+
+  function clearStructuralTextColorCustom() {
+    markSessionDirty()
+    patchStructuralPlot({ textColor: '', textColorCustomized: false })
+  }
+
+  function applyStructuralPlotColorsToAllTypes() {
+    markSessionDirty()
+    const colors = {
+      plotBg: ps.plotBgCustomized ? ps.plotBg : '',
+      textColor: ps.textColorCustomized ? ps.textColor : '',
+      plotBgCustomized: Boolean(ps.plotBgCustomized),
+      textColorCustomized: Boolean(ps.textColorCustomized)
+    }
+    sPlots = Object.fromEntries(
+      Object.entries(sPlots).map(([k, v]) => [k, { ...v, ...colors }])
+    )
+  }
+
+  function setEnergeticPlotBg(hex) {
+    const raw = String(hex || '').trim()
+    markSessionDirty()
+    if (!raw) {
+      ePlotGlobal = { ...ePlotGlobal, plotBg: '', plotBgCustomized: false }
+      return
+    }
+    ePlotGlobal = {
+      ...ePlotGlobal,
+      plotBg: normalizeHexColor(raw, raw),
+      plotBgCustomized: true
+    }
+  }
+
+  function setEnergeticTextColor(hex) {
+    const raw = String(hex || '').trim()
+    markSessionDirty()
+    if (!raw) {
+      ePlotGlobal = { ...ePlotGlobal, textColor: '', textColorCustomized: false }
+      return
+    }
+    ePlotGlobal = {
+      ...ePlotGlobal,
+      textColor: normalizeHexColor(raw, raw),
+      textColorCustomized: true
+    }
+  }
+
+  function emptyStructuralPlots() {
+    return {
+      rmsd: { ...structDefaults },
+      rmsf: { ...structDefaults },
+      distance: { ...structDefaults },
+      radius_of_gyration: { ...structDefaults },
+      area_per_lipid: { ...structDefaults, yUnit: 'Å²' },
+      membrane_thickness: { ...structDefaults }
+    }
+  }
+
+  /** @param {import('../lib/analysisSession.js').AnalysisSessionV1['plotSettings']} plotSettings */
+  function applyPlotSettingsFromSession(plotSettings) {
+    sPlots = emptyStructuralPlots()
+    ePlotGlobal = { ...energGlobalDefaults, ...energPanelShell }
+    ePlotPanels = {}
+    if (!plotSettings || typeof plotSettings !== 'object') return
+    if (plotSettings.structural && typeof plotSettings.structural === 'object') {
+      const next = emptyStructuralPlots()
+      for (const type of Object.keys(next)) {
+        next[type] = hydratePlotColorFlags({
+          ...next[type],
+          ...(plotSettings.structural[type] || {})
+        })
+      }
+      sPlots = next
+    }
+    if (plotSettings.energeticGlobal && typeof plotSettings.energeticGlobal === 'object') {
+      ePlotGlobal = hydratePlotColorFlags({
+        ...energGlobalDefaults,
+        ...energPanelShell,
+        ...plotSettings.energeticGlobal
+      })
+    }
+    if (plotSettings.energeticPanels && typeof plotSettings.energeticPanels === 'object') {
+      ePlotPanels = clonePlainAnalysisData(plotSettings.energeticPanels)
+    }
+  }
+
+  function restoreAutoStructuralTitle() {
+    patchStructuralPlot({ title: '', titleCustomized: false })
   }
 
   // Clear "session saved" notice once the user edits analysis inputs again.
@@ -1998,6 +2404,8 @@
 
   async function onModeChange(/** @type {'structural' | 'energetic'} */ next) {
     if (next === mode) return
+    clearAnalysisActionNotice()
+    lastError = ''
     await withPlotViewBusy(
       next === 'energetic' ? 'Switching to energetic…' : 'Switching to structural…',
       async () => {
@@ -2025,7 +2433,7 @@
     persistActiveSetFields()
     markSessionDirty()
     const id = newSetId()
-    analysisSets = [...analysisSets, createAnalysisSet(analysisSets.length, id)]
+    analysisSets = [...analysisSets, createAnalysisSet(analysisSets.length, id, analysisSets)]
     activeSetId = id
     loadActiveSetFields()
   }
@@ -2035,7 +2443,7 @@
     markSessionDirty()
     const current = analysisSets.find((s) => s.id === activeSetId)
     if (!current) return
-    const copy = duplicateAnalysisSet(current, analysisSets.length)
+    const copy = duplicateAnalysisSet(current, analysisSets.length, analysisSets)
     analysisSets = [...analysisSets, copy]
     activeSetId = copy.id
     loadActiveSetFields()
@@ -2108,11 +2516,11 @@
   /** @param {import('../lib/analysisSets.js').EnergeticSetResult} resultPayload */
   function storeEnergeticResult(resultPayload) {
     const set = analysisSets.find((s) => s.id === activeSetId)
+    const setIndex = Math.max(0, analysisSets.findIndex((s) => s.id === activeSetId))
     const withCsv = {
       ...resultPayload,
       dataCsv:
-        resultPayload.dataCsv ||
-        csvFileNameForEnergeticSet(set || { label: 'set' }, analysisSets.length)
+        resultPayload.dataCsv || csvFileNameForEnergeticSet(set || { csvStem: 'set1' }, setIndex)
     }
     analysisSets = analysisSets.map((s) =>
       s.id === activeSetId ? { ...s, energeticResult: withCsv } : s
@@ -2150,8 +2558,8 @@
     const extraSeries =
       structuralType === 'area_per_lipid'
         ? [
-            { name: 'Upper leaflet', rawY: result.mean_upper_leaflet || [] },
-            { name: 'Lower leaflet', rawY: result.mean_lower_leaflet || [] }
+            { name: 'Upper leaflet', role: 'upper', rawY: result.mean_upper_leaflet || [] },
+            { name: 'Lower leaflet', role: 'lower', rawY: result.mean_lower_leaflet || [] }
           ]
         : []
     storeStructuralResult(structuralType, {
@@ -2236,7 +2644,166 @@
     }
   }
 
+  function energeticPlotPanelSettingsKey(panel) {
+    if (panel.key === '__compare__' || panel.key === '__overlay__') {
+      return focusedPanelKey || selectedProperties[0] || panel.key
+    }
+    const propKey =
+      panel.series?.[0]?.baseName ||
+      (selectedProperties.includes(panel.key) ? panel.key : focusedPanelKey || selectedProperties[0] || '')
+    return energeticCompareLayout === 'by_property' ? panel.key : propKey || panel.key
+  }
+
+  function resolveEnergeticPanelPset(panel) {
+    const pk = energeticPlotPanelSettingsKey(panel)
+    const pset = ePlotPanels[pk] ?? defaultPanelSettings()
+    const propKey =
+      panel.series?.[0]?.baseName ||
+      (selectedProperties.includes(panel.key) ? panel.key : focusedPanelKey || selectedProperties[0] || '')
+    const propPset = propKey ? ePlotPanels[propKey] ?? defaultPanelSettings() : pset
+    return { pk, pset, propPset, propKey }
+  }
+
+  function energeticPublicationLimits(panel) {
+    const { pset, propPset } = resolveEnergeticPanelPset(panel)
+    const series = (panel.series || []).filter((s) => (s.y?.length ?? 0) > 0)
+    const ext = dataExtentsFromSeries(series)
+    if (!ext) return { xlim: null, ylim: null }
+    const xMinStr = pset.xMin !== '' ? pset.xMin : propPset.xMin
+    const xMaxStr = pset.xMax !== '' ? pset.xMax : propPset.xMax
+    const yMinStr = pset.yMin !== '' ? pset.yMin : propPset.yMin
+    const yMaxStr = pset.yMax !== '' ? pset.yMax : propPset.yMax
+    const xMinEff =
+      xMinStr !== '' && Number.isFinite(Number(xMinStr)) ? Number(xMinStr) : ext.xMin
+    const xMaxEff =
+      xMaxStr !== '' && Number.isFinite(Number(xMaxStr)) ? Number(xMaxStr) : ext.xMax
+    const yMinEff =
+      yMinStr !== '' && Number.isFinite(Number(yMinStr)) ? Number(yMinStr) : ext.yMin
+    const yMaxEff =
+      yMaxStr !== '' && Number.isFinite(Number(yMaxStr)) ? Number(yMaxStr) : ext.yMax
+    return {
+      xlim: [Math.min(xMinEff, xMaxEff), Math.max(xMinEff, xMaxEff)],
+      ylim: [Math.min(yMinEff, yMaxEff), Math.max(yMinEff, yMaxEff)]
+    }
+  }
+
+  function energeticPublicationGlobalStyle() {
+    return {
+      time_units: timeUnits,
+      energy_units: energyUnits,
+      plot_bg: resolvedEnergColors.plotBg,
+      fig_bg: resolvedEnergColors.plotBg,
+      text_color: resolvedEnergColors.textColor,
+      grid_color: ePlotGlobal.gridColor || '#262626',
+      show_grid: ePlotGlobal.showGrid !== false,
+      figsize: [10, 6],
+      dpi: Number(ePlotGlobal.dpi) || 300,
+      font_family: ePlotGlobal.fontFamily || 'Roboto, sans-serif',
+      xlabel: displayXLabel,
+      title: displayTitle || ePlotGlobal.title || 'Energetic Analysis'
+    }
+  }
+
+  function seriesToPublicationData(series) {
+    return (series || [])
+      .filter((s) => (s.y?.length ?? 0) > 0)
+      .map((s) => ({
+        key: s.key || s.name,
+        name: s.name,
+        unit: s.propLabel || (s.baseName ? energeticPropYLabel(s.baseName) : '') || '',
+        y: s.y,
+        x: s.x,
+        color: s.color
+      }))
+  }
+
   function buildEnergeticPlotPayload() {
+    const panels = energeticPanels
+    if (panels.length > 0) {
+      const allDataSeries = panels.flatMap((panel) => seriesToPublicationData(panel.series))
+      if (allDataSeries.length === 0) {
+        // fall through to rawSeries fallback below
+      } else {
+        const layout = panels.length === 1 ? 'overlay' : 'grid'
+        const lineColors = ['#f59e0b', '#22c55e', '#38bdf8', '#f87171', '#a78bfa', '#f472b6']
+
+        if (layout === 'overlay') {
+          const panel = panels[0]
+          const { pset } = resolveEnergeticPanelPset(panel)
+          const { xlim, ylim } = energeticPublicationLimits(panel)
+          const ylabel = energeticPanelYLabel(panel, pset)
+          const title = energeticPanelChartTitle(panel, pset)
+          return {
+            data: {
+              x: allDataSeries[0]?.x || [],
+              series: allDataSeries
+            },
+            plotSpec: {
+              version: 1,
+              layout: 'overlay',
+              cols: 2,
+              sync_x: false,
+              global: {
+                ...energeticPublicationGlobalStyle(),
+                title,
+                ylabel,
+                xlim,
+                ylim
+              },
+              panels: allDataSeries.map((s, i) => ({
+                key: s.key,
+                name: s.name,
+                title: s.name,
+                ylabel,
+                line_color: s.color || lineColors[i % lineColors.length]
+              }))
+            }
+          }
+        }
+
+        const plotPanels = panels
+          .map((panel) => {
+            const series = seriesToPublicationData(panel.series)
+            if (series.length === 0) return null
+            const { pset, propPset, propKey, pk } = resolveEnergeticPanelPset(panel)
+            const ylabel = energeticPanelYLabel(panel, {
+              ...propPset,
+              ylabel: pset.ylabel || propPset.ylabel
+            })
+            const title = energeticPanelChartTitle(panel, {
+              ...pset,
+              title: pset.title || (propKey === pk ? propPset.title : '')
+            })
+            const { xlim, ylim } = energeticPublicationLimits(panel)
+            return {
+              key: panel.key,
+              name: title,
+              title,
+              ylabel,
+              series_keys: series.map((s) => s.key),
+              line_color: series[0]?.color || lineColors[0],
+              xlim,
+              ylim
+            }
+          })
+          .filter(Boolean)
+
+        return {
+          data: {
+            x: allDataSeries[0]?.x || [],
+            series: allDataSeries
+          },
+          plotSpec: {
+            version: 1,
+            layout: 'grid',
+            cols: 2,
+            sync_x: ePlotGlobal.syncX !== false,
+            global: energeticPublicationGlobalStyle(),
+            panels: plotPanels
+          }
+        }
+      }
+    }
     const seriesForSpec = rawSeries.filter((s) => selectedProperties.includes(s.baseName))
     const xs = convertX(rawX, rawXTimeUnit, timeUnits)
     return {
@@ -2251,7 +2818,11 @@
       },
       plotSpec: buildPlotSpecFromGui({
         layout: energeticLayout,
-        globalSettings: ePlotGlobal,
+        globalSettings: {
+          ...ePlotGlobal,
+          plotBg: resolvedEnergColors.plotBg,
+          textColor: resolvedEnergColors.textColor
+        },
         panelSettings: ePlotPanels,
         rawSeries: seriesForSpec,
         selectedKeys: selectedProperties,
@@ -2304,7 +2875,8 @@
     if (mode === 'energetic') {
       return String(ePlotGlobal.title || '').trim() || chartTitle || 'Energetic Analysis'
     }
-    return ps.title || activeStructRes?.chartTitle || ''
+    if (ps.titleCustomized) return String(ps.title || '').trim()
+    return autoStructuralTitle(structuralType)
   })
   const displaySubtitle = $derived.by(() => {
     if (mode !== 'structural') return ''
@@ -2333,8 +2905,8 @@
   let topoInfo = $state(null)
   let topoLoading = $state(false)
 
-  // SVG element ref for export
-  let svgEl = $state(null)
+  // Root of on-screen charts — PNG/SVG collect every panel SVG from here.
+  let plotExportRoot = $state(/** @type {HTMLElement | null} */ (null))
 
   // ---- Helpers ----
   function applyHeadgroupDetection(data) {
@@ -2485,7 +3057,10 @@
     )
     if (!result.canceled) {
       topologyPath = result.filePath
-      outputFolderName = defaultAnalysisFolderName(result.filePath)
+      // Keep a custom session output name; only seed the default when still empty.
+      if (!outputFolderName.trim()) {
+        outputFolderName = defaultAnalysisFolderName(result.filePath)
+      }
       persistActiveSetFields()
       lipidHeadgroupAtoms = []
       headgroupDetectAttempted = false
@@ -2570,10 +3145,15 @@
   }
 
   async function onStructuralTypeChange(nextType) {
-    if (nextType === structuralType) return
-    await withPlotViewBusy('Switching analysis type…', async () => {
-      await applyStructuralTypeChange(nextType)
-    })
+    if (nextType === structuralType || structuralTypeChanging) return
+    structuralTypeChanging = true
+    try {
+      await withPlotViewBusy('Switching analysis type…', async () => {
+        await applyStructuralTypeChange(nextType)
+      })
+    } finally {
+      structuralTypeChanging = false
+    }
   }
 
   /** @param {string} nextType */
@@ -2581,12 +3161,19 @@
     const prevType = structuralType
     markSessionDirty()
 
+    // Freeze the leaving type's selection before switching the active type in UI state.
+    const prevSnapshot = snapshotCurrentTypeSelection()
+    structuralType = nextType
+
     if (isBilayerType(prevType) && !isBilayerType(nextType)) {
       headgroupDetectGeneration += 1
     }
 
-    // Freeze the leaving type's selection into every set's map (active set from UI).
-    const prevSnapshot = snapshotCurrentTypeSelection()
+    // Hide stale chart immediately while the new type loads (CSV hydrate / headgroup detect).
+    chartView = { mode: 'empty', series: [], panels: [] }
+    plotDataRevision += 1
+
+    // Persist per-set selections for the type we are leaving.
     analysisSets = analysisSets.map((s) => {
       const map = { ...(s.structuralOptions?.selectionsByType || {}) }
       if (s.id === activeSetId) {
@@ -2637,7 +3224,6 @@
       }
     })
 
-    structuralType = nextType
     const active = analysisSets.find((s) => s.id === activeSetId)
     if (active) {
       applyTypeSelectionSnapshot(
@@ -2771,19 +3357,33 @@
     dragOverIdx = -1
   }
 
+  function clearAnalysisActionNotice() {
+    if (analysisActionNoticeTimer) {
+      clearTimeout(analysisActionNoticeTimer)
+      analysisActionNoticeTimer = null
+    }
+    analysisActionNotice = ''
+  }
+
   /** @param {string} message */
   function showAnalysisActionNotice(message) {
+    clearAnalysisActionNotice()
     analysisActionNotice = message
     lastError = ''
+    analysisActionNoticeTimer = setTimeout(() => {
+      if (analysisActionNotice === message) analysisActionNotice = ''
+      analysisActionNoticeTimer = null
+    }, 8000)
   }
 
   /**
    * @param {string} message
-   * @param {{ autoHideMs?: number, markClean?: boolean }} [opts]
+   * @param {{ autoHideMs?: number, markClean?: boolean, kind?: 'success' | 'info' }} [opts]
    */
   function showSessionActionNotice(message, opts = {}) {
     clearSessionActionNoticeTimer()
     sessionActionNotice = message
+    sessionActionNoticeKind = opts.kind === 'info' ? 'info' : 'success'
     if (opts.markClean !== false) sessionSavedClean = true
     lastError = ''
     const ms = opts.autoHideMs
@@ -2864,17 +3464,19 @@
   function onClear() {
     plotViewBusyGeneration += 1
     plotViewBusy = false
+    structuralTypeChanging = false
     mode = 'structural'
     running = false
     detectingProperties = false
     outputFolderName = ''
     sessionName = ''
+    exportFileName = ''
     clearSessionActionNoticeTimer()
     sessionActionNotice = ''
     sessionSavedClean = false
     lastSavedSessionFingerprint = ''
     selectedSessionPath = ''
-    analysisActionNotice = ''
+    clearAnalysisActionNotice()
     topologyPath = ''
     trajectoryFiles = []
     structuralType = 'rmsd'
@@ -2946,10 +3548,11 @@
     }
     chartView = { mode: 'empty', series: [], panels: [] }
     plotDataRevision += 1
-    svgEl = null
     runProgressStages = []
     runAnalysisScope = 'current'
     runAnalysisMenuOpen = false
+    detectPropertiesScope = 'current'
+    detectPropertiesMenuOpen = false
     showSelectionHelp = false
     showTopoInfo = false
     topoInfo = null
@@ -2961,9 +3564,27 @@
     analysisStatus.error = ''
     resetAnalysisProgress()
     bumpPlotData()
-    if (workingDir) {
+    if (uniqueDirList(workingDir, outputParentDir).length > 0) {
       void refreshSavedSessions()
     }
+  }
+
+  /** Detect properties for the remembered scope (current set vs all sets). */
+  async function detectEnergeticProperties(scope = detectPropertiesScope) {
+    detectPropertiesMenuOpen = false
+    if (scope === 'all' && analysisSets.length > 1) {
+      await detectEnergeticColumnsAllSets()
+      return
+    }
+    await detectEnergeticColumns()
+  }
+
+  function detectPropertiesButtonLabel() {
+    if (detectingProperties) return null
+    if (analysisSets.length > 1 && detectPropertiesScope === 'all') {
+      return `Detect Properties (all ${analysisSets.length} sets)`
+    }
+    return 'Detect Properties'
   }
 
   // ---- Energetic properties ----
@@ -3266,8 +3887,105 @@
 
   // ---- Export ----
   function exportBaseName() {
-    return (displayTitle || chartTitle || 'analysis').replace(/[^a-z0-9_\-]/gi, '_').toLowerCase()
+    const title =
+      displayTitle ||
+      (mode === 'structural' ? autoStructuralTitle(structuralType) : '') ||
+      chartTitle ||
+      'analysis'
+    return title.replace(/[^a-z0-9_\-]/gi, '_').toLowerCase()
   }
+
+  /** Stem for CSV/SVG/PNG. Custom name keeps the user’s spelling; empty falls back to the chart title. */
+  function exportFileStem() {
+    const raw = exportFileName.trim().replace(/[/\\]/g, '_')
+    if (!raw) return exportBaseName()
+    return raw.replace(/\.(csv|svg|png)$/i, '').trim() || exportBaseName()
+  }
+
+  function slugExportLabel(label) {
+    return String(label || '')
+      .trim()
+      .replace(/[/\\]/g, '_')
+      .replace(/[^\w.\-]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 60)
+  }
+
+  /** On-screen LineChart SVGs (overlay = one, grid/panels = one per figure). */
+  function visibleChartExports() {
+    const root = plotExportRoot
+    if (!root) return []
+    return [...root.querySelectorAll('[data-chart-export]')]
+      .map((el) => ({
+        label: el.getAttribute('data-chart-export') || '',
+        svg: /** @type {SVGSVGElement | null} */ (el.querySelector('svg'))
+      }))
+      .filter((item) => item.svg)
+  }
+
+  /** Wait for LineChart SVG mounts after {#key} remounts (avoids silent no-op export clicks). */
+  async function collectVisibleChartExports(maxAttempts = 6) {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      await tick()
+      await new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve))
+      )
+      const charts = visibleChartExports()
+      if (charts.length > 0) return charts
+      if (attempt < maxAttempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+    }
+    return []
+  }
+
+  /** @param {Array<{ x?: number[], y?: number[] }>} series */
+  function dataExtentsFromSeries(series) {
+    let xMin = Infinity
+    let xMax = -Infinity
+    let yMin = Infinity
+    let yMax = -Infinity
+    for (const s of series) {
+      for (const x of s.x || []) {
+        if (Number.isFinite(x)) {
+          xMin = Math.min(xMin, x)
+          xMax = Math.max(xMax, x)
+        }
+      }
+      for (const y of s.y || []) {
+        if (Number.isFinite(y)) {
+          yMin = Math.min(yMin, y)
+          yMax = Math.max(yMax, y)
+        }
+      }
+    }
+    if (!Number.isFinite(xMin) || !Number.isFinite(yMin)) return null
+    const yPad = Math.max((yMax - yMin) * 0.05, 1e-9)
+    return { xMin, xMax, yMin: yMin - yPad, yMax: yMax + yPad }
+  }
+
+  /** Match LineChart y-axis overrides; x uses full series range for publication. */
+  function publicationYlimFromExtents(ext) {
+    const yMinEff = yMinO != null ? yMinO : ext.yMin
+    const yMaxEff = yMaxO != null ? yMaxO : ext.yMax
+    return [Math.min(yMinEff, yMaxEff), Math.max(yMinEff, yMaxEff)]
+  }
+
+  function seriesForCsvExport() {
+    if (mode === 'structural' && chartView.mode === 'grid' && chartView.panels.length > 0) {
+      return chartView.panels.flatMap((panel) =>
+        (panel.series || []).map((s) => ({
+          ...s,
+          name: panel.title ? `${panel.title} · ${s.name}` : s.name
+        }))
+      )
+    }
+    return displaySeries
+  }
+
+  const canExportOnscreenChart = $derived(
+    mode === 'structural' ? chartView.series.length > 0 : energeticPanels.length > 0
+  )
 
   function buildCsvContent(series) {
     if (series.length === 0) return null
@@ -3278,10 +3996,92 @@
     return [header, ...rows].join('\n')
   }
 
+  function dirOfExportPath(filePath) {
+    return String(filePath || '')
+      .replace(/\\/g, '/')
+      .replace(/\/[^/]+$/, '')
+  }
+
+  /**
+   * @param {SVGSVGElement} svg
+   * @param {number} index
+   */
+  async function rasterizeChartSvgToPng(svg, index = 0) {
+    const vb = svg.viewBox?.baseVal
+    const svgW = vb && vb.width > 0 ? vb.width : 900
+    const svgH = vb && vb.height > 0 ? vb.height : 360
+    const dpi = Math.max(
+      72,
+      Math.min(600, Number(mode === 'energetic' ? ePlotGlobal.dpi : ps.dpi) || 150)
+    )
+    const pixelScale = dpi / 96
+    const clone = svg.cloneNode(true)
+    clone.setAttribute('width', String(svgW))
+    clone.setAttribute('height', String(svgH))
+    const uniqueId = `plot-area-${Date.now()}-${index}`
+    clone.querySelectorAll('[id="plot-area"]').forEach((el) => el.setAttribute('id', uniqueId))
+    clone
+      .querySelectorAll('[clip-path="url(#plot-area)"]')
+      .forEach((el) => el.setAttribute('clip-path', `url(#${uniqueId})`))
+    const svgData = new XMLSerializer().serializeToString(clone)
+    const svgB64 = btoa(unescape(encodeURIComponent(svgData)))
+    const url = `data:image/svg+xml;base64,${svgB64}`
+    const img = new Image()
+    img.width = svgW
+    img.height = svgH
+    await new Promise((resolve, reject) => {
+      img.onload = resolve
+      img.onerror = (e) => reject(new Error('SVG image failed to load: ' + String(e)))
+      img.src = url
+    })
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.round(svgW * pixelScale)
+    canvas.height = Math.round(svgH * pixelScale)
+    const ctx = canvas.getContext('2d')
+    if (!ctx) throw new Error('Could not create canvas for PNG export')
+    const transparent = mode === 'structural' && ps.transparentBg
+    if (!transparent) {
+      ctx.fillStyle =
+        mode === 'energetic' ? resolvedEnergColors.plotBg : displayPlotBg
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+    }
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+    const dataUrl = canvas.toDataURL('image/png')
+    return dataUrl.replace(/^data:image\/png;base64,/, '')
+  }
+
+  /**
+   * @param {string[]} labels
+   * @param {string} ext
+   * @param {string} prompt
+   */
+  async function resolvePanelExportPaths(labels, ext, prompt) {
+    const stem = exportFileStem()
+    const used = new Set()
+    const names =
+      labels.length <= 1
+        ? [`${stem}.${ext}`]
+        : labels.map((label, i) => {
+            let slug = slugExportLabel(label) || `panel${i + 1}`
+            let name = slug
+            let n = 2
+            while (used.has(name)) name = `${slug}_${n++}`
+            used.add(name)
+            return `${stem}_${name}.${ext}`
+          })
+    const first = await resolveExportPath(names[0], prompt, [
+      { name: ext.toUpperCase(), extensions: [ext] }
+    ])
+    if (!first) return null
+    if (names.length === 1) return [first]
+    const dir = dirOfExportPath(first)
+    return names.map((name) => `${dir}/${name}`)
+  }
+
   async function resolveExportPath(fileName, prompt, filters) {
     syncOutputFolderName()
     if (outputDir) {
-      await ensureOutputFolder(workingDir, resolveOutputFolderName())
+      await ensureOutputFolder(resolvedOutputParent, resolveOutputFolderName())
       return `${outputDir}/${fileName}`.replace(/\\/g, '/')
     }
     const result = await window.api.saveFileDialog(prompt, filters, fileName)
@@ -3304,7 +4104,7 @@
     const csv = buildCsvContent(series)
     if (!csv) return
     try {
-      const { output_dir } = await ensureOutputFolder(workingDir, folderName)
+      const { output_dir } = await ensureOutputFolder(resolvedOutputParent, folderName)
       const filePath = `${output_dir}/${csvFileNameForSet(set, opts)}`.replace(/\\/g, '/')
       await window.api.writeText(filePath, csv)
       logEvent('info', 'analysis', 'Saved analysis results', filePath)
@@ -3355,12 +4155,17 @@
       }
     }
     if (!canRunAnalysis) {
-      lastError = 'Set a working directory in the top bar before saving.'
+      lastError = 'Set a working directory or output path before saving.'
       return false
     }
+    savingSession = true
+    showSessionActionNotice('Saving session…', { kind: 'info', markClean: false })
     suppressSessionDirty = true
+    let savedMessage = ''
+    let savedOk = false
     try {
       syncResultsToSetsBeforeSave()
+      analysisSets = assignCsvStems(analysisSets)
       syncOutputFolderName()
       const folderName = resolveOutputFolderName()
       if (!folderName) {
@@ -3389,7 +4194,7 @@
             }
           }
         }
-        const { output_dir } = await ensureOutputFolder(workingDir, folderName)
+        const { output_dir } = await ensureOutputFolder(resolvedOutputParent, folderName)
         const session = serializeAnalysisSession({
           mode,
           compareLayout,
@@ -3397,7 +4202,12 @@
           outputFolderName: folderName,
           sessionName,
           activeSetId,
-          sets: slimSetsForSessionSave(analysisSets, 'all')
+          sets: slimSetsForSessionSave(analysisSets, 'all'),
+          plotSettings: {
+            structural: clonePlainAnalysisData(sPlots),
+            energeticGlobal: clonePlainAnalysisData(ePlotGlobal),
+            energeticPanels: clonePlainAnalysisData(ePlotPanels)
+          }
         })
         const filePath = `${output_dir}/${ANALYSIS_SESSION_FILENAME}`.replace(/\\/g, '/')
         await window.api.writeJson(filePath, session)
@@ -3409,134 +4219,248 @@
         selectedSessionPath = filePath
         lastError = ''
         await refreshSavedSessions()
-        showSessionActionNotice(`Saved “${identity}” to ${filePath}`)
+        savedMessage = `Saved “${identity}” to ${filePath}`
         rememberSessionSaveFingerprint()
+        showSessionActionNotice(savedMessage, { autoHideMs: 10000 })
         void notifyJobFinishedIfUnfocused({
           id: `analysis-session:${filePath}`,
           title: 'Analysis session saved',
           body: `Saved “${identity}” to ${filePath}`,
           sourcePage: 'analysis'
         })
-        return true
+        savedOk = true
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error)
         logEvent('error', 'analysis', 'Failed to save analysis session', lastError)
-        return false
+        savedOk = false
       }
     } finally {
       suppressSessionDirty = false
+      savingSession = false
+      if (!savedOk && sessionActionNotice === 'Saving session…') {
+        sessionActionNotice = ''
+      }
+    }
+    if (savedOk && savedMessage) {
+      await tick()
+      if (!sessionActionNotice && isSessionSaveUpToDate()) {
+        showSessionActionNotice(savedMessage, { autoHideMs: 10000 })
+      }
+    }
+    return savedOk
+  }
+
+  /**
+   * Show a spinner on the export button after the path is known (not during the save dialog).
+   * @param {'' | 'csv' | 'svg' | 'png' | 'pub'} kind
+   * @param {() => Promise<void>} fn
+   */
+  async function withChartExport(kind, fn) {
+    if (exportingKind) return
+    exportingKind = kind
+    await tick()
+    try {
+      await fn()
+    } finally {
+      exportingKind = ''
     }
   }
 
   async function exportCsv() {
-    if (displaySeries.length === 0) return
-    const csv = buildCsvContent(displaySeries)
+    const series = seriesForCsvExport()
+    if (series.length === 0 || exportingKind) return
+    const csv = buildCsvContent(series)
     if (!csv) return
     const filePath = await resolveExportPath(
-      `${exportBaseName()}.csv`,
+      `${exportFileStem()}.csv`,
       'Export CSV — file will be saved as .csv',
       [{ name: 'CSV', extensions: ['csv'] }]
     )
     if (!filePath) return
-    await window.api.writeText(filePath, csv)
-    showAnalysisActionNotice(`Exported CSV to ${filePath}`)
-    logEvent('info', 'analysis', 'Exported CSV', filePath)
+    await withChartExport('csv', async () => {
+      await window.api.writeText(filePath, csv)
+      showAnalysisActionNotice(`Exported CSV to ${filePath}`)
+      logEvent('info', 'analysis', 'Exported CSV', filePath)
+    })
   }
 
   async function exportSvg() {
-    if (!svgEl) return
-    const filePath = await resolveExportPath(
-      `${exportBaseName()}.svg`,
-      'Export SVG — file will be saved as .svg',
-      [{ name: 'SVG', extensions: ['svg'] }]
-    )
-    if (!filePath) return
-    const svgStr = '<?xml version="1.0" encoding="UTF-8"?>\n' + svgEl.outerHTML
-    await window.api.writeText(filePath, svgStr)
-    showAnalysisActionNotice(`Exported SVG to ${filePath}`)
-    logEvent('info', 'analysis', 'Exported SVG', filePath)
+    if (exportingKind || !canExportOnscreenChart) return
+    try {
+      await withChartExport('svg', async () => {
+        const charts = await collectVisibleChartExports()
+        if (charts.length === 0) {
+          showAnalysisActionNotice(
+            'Chart not ready for export — wait for the plot to finish, then try again.'
+          )
+          return
+        }
+        const paths = await resolvePanelExportPaths(
+          charts.map((c) => c.label),
+          'svg',
+          'Export SVG — each on-screen panel is saved as .svg'
+        )
+        if (!paths) return
+        for (let i = 0; i < charts.length; i++) {
+          const svgStr = '<?xml version="1.0" encoding="UTF-8"?>\n' + charts[i].svg.outerHTML
+          await window.api.writeText(paths[i], svgStr)
+        }
+        const notice =
+          paths.length === 1
+            ? `Exported SVG to ${paths[0]}`
+            : `Exported ${paths.length} SVGs to ${dirOfExportPath(paths[0])}`
+        showAnalysisActionNotice(notice)
+        logEvent('info', 'analysis', 'Exported SVG', paths.join(', '))
+      })
+    } catch (err) {
+      lastError = 'SVG export failed: ' + (err instanceof Error ? err.message : String(err))
+    }
   }
 
-  async function exportPublicationPng() {
-    if (mode !== 'energetic' || rawSeries.length === 0) return
-    try {
-      const filePath = await resolveExportPath(
-        `${exportBaseName()}_publication.png`,
-        'Export publication PNG (matplotlib / API style)',
-        [{ name: 'PNG Image', extensions: ['png'] }]
+  function publicationSeries() {
+    if (mode === 'structural' && chartView.mode === 'grid' && chartView.panels.length > 0) {
+      return chartView.panels.flatMap((panel) =>
+        (panel.series || [])
+          .filter((s) => (s.y?.length ?? 0) > 0)
+          .map((s) => ({
+            ...s,
+            name:
+              panel.title && s.name && s.name !== panel.title
+                ? `${panel.title} · ${s.name}`
+                : panel.title || s.name
+          }))
       )
-      if (!filePath) return
-      const blob = await renderAnalysisPlot(buildEnergeticPlotPayload())
-      const buf = await blob.arrayBuffer()
-      const bytes = new Uint8Array(buf)
-      let binary = ''
-      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
-      await window.api.writeBinary(filePath, btoa(binary))
-      showAnalysisActionNotice(`Exported publication PNG to ${filePath}`)
-      logEvent('info', 'analysis', 'Exported publication PNG', filePath)
+    }
+    return displaySeries.filter((s) => (s.y?.length ?? 0) > 0)
+  }
+
+  function buildStructuralPlotPayload() {
+    const shown = publicationSeries()
+    const layout = chartView.mode === 'grid' && shown.length > 1 ? 'grid' : 'overlay'
+    const globalExt = dataExtentsFromSeries(shown)
+    const overlayXlim = globalExt ? [globalExt.xMin, globalExt.xMax] : null
+    const overlayYlim = globalExt ? publicationYlimFromExtents(globalExt) : null
+    return {
+      data: {
+        x: shown[0]?.x || [],
+        series: shown.map((s) => ({
+          key: s.key || s.name,
+          name: s.name,
+          unit: '',
+          y: s.y,
+          x: s.x
+        }))
+      },
+      plotSpec: {
+        version: 1,
+        layout,
+        cols: 2,
+        // Per-set grid panels can have different trajectory lengths — do not force one x window.
+        sync_x: layout === 'overlay',
+        global: {
+          plot_bg: resolvedStructColors.plotBg,
+          fig_bg: resolvedStructColors.plotBg,
+          text_color: resolvedStructColors.textColor,
+          grid_color: resolvedStructColors.textColor,
+          show_grid: ps.showGrid !== false,
+          figsize: [10, 6],
+          dpi: Number(ps.dpi) || 300,
+          font_family: ps.fontFamily || 'Roboto, sans-serif',
+          xlabel: displayXLabel,
+          ylabel: displayYLabel,
+          title: displayTitle || 'Structural Analysis',
+          xlim: layout === 'overlay' ? overlayXlim : null,
+          ylim: layout === 'overlay' ? overlayYlim : null
+        },
+        panels: shown.map((s, i) => {
+          const ext = dataExtentsFromSeries([s])
+          // Overlay shares one axis: use combined extents so APL leaflets (etc.)
+          // are not clipped to the first series (usually Mean).
+          const xlim =
+            layout === 'overlay' ? overlayXlim : ext ? [ext.xMin, ext.xMax] : null
+          const ylim =
+            layout === 'overlay'
+              ? overlayYlim
+              : ext
+                ? publicationYlimFromExtents(ext)
+                : overlayYlim
+          return {
+            key: s.key || s.name,
+            name: s.name,
+            title: s.name,
+            ylabel: displayYLabel,
+            line_color:
+              s.color || ['#f59e0b', '#22c55e', '#38bdf8', '#f87171', '#a78bfa', '#f472b6'][i % 6],
+            xlim,
+            ylim
+          }
+        })
+      }
+    }
+  }
+
+  function buildPublicationPlotPayload() {
+    return mode === 'energetic' ? buildEnergeticPlotPayload() : buildStructuralPlotPayload()
+  }
+
+  const canExportPublicationPng = $derived(
+    mode === 'energetic'
+      ? displaySeries.length > 0 || rawSeries.length > 0
+      : displaySeries.length > 0
+  )
+
+  async function exportPublicationPng() {
+    if (!canExportPublicationPng || exportingKind) return
+    try {
+      await withChartExport('pub', async () => {
+        const filePath = await resolveExportPath(
+          `${exportFileStem()}_publication.png`,
+          'Export publication PNG (matplotlib / API style)',
+          [{ name: 'PNG Image', extensions: ['png'] }]
+        )
+        if (!filePath) return
+        const blob = await renderAnalysisPlot(buildPublicationPlotPayload())
+        const buf = await blob.arrayBuffer()
+        const bytes = new Uint8Array(buf)
+        let binary = ''
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+        await window.api.writeBinary(filePath, btoa(binary))
+        showAnalysisActionNotice(`Exported publication PNG to ${filePath}`)
+        logEvent('info', 'analysis', 'Exported publication PNG', filePath)
+      })
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error)
     }
   }
 
   async function exportPng() {
-    if (!svgEl) return
+    if (exportingKind || !canExportOnscreenChart) return
     try {
-      const filePath = await resolveExportPath(
-        `${exportBaseName()}.png`,
-        'Export PNG — file will be saved as .png',
-        [{ name: 'PNG Image', extensions: ['png'] }]
-      )
-      if (!filePath) return
-
-      // Get intrinsic dimensions from viewBox (SVG may have no width/height attrs)
-      const vb = svgEl.viewBox?.baseVal
-      const svgW = vb && vb.width > 0 ? vb.width : 900
-      const svgH = vb && vb.height > 0 ? vb.height : 360
-
-      // Scale factor from DPI setting (SVG is designed at 96 dpi baseline)
-      const dpi = Math.max(72, Math.min(600, Number(ps.dpi) || 150))
-      const pixelScale = dpi / 96
-
-      // Serialise SVG with explicit dimensions so the browser renders it correctly
-      const clone = svgEl.cloneNode(true)
-      clone.setAttribute('width', svgW)
-      clone.setAttribute('height', svgH)
-      // Remove any clipPath id collisions by making them unique
-      const uniqueId = `plot-area-${Date.now()}`
-      clone.querySelectorAll('[id="plot-area"]').forEach((el) => el.setAttribute('id', uniqueId))
-      clone
-        .querySelectorAll('[clip-path="url(#plot-area)"]')
-        .forEach((el) => el.setAttribute('clip-path', `url(#${uniqueId})`))
-      const svgData = new XMLSerializer().serializeToString(clone)
-      // Use data URI instead of blob URL — more reliable in Electron's sandboxed renderer
-      const svgB64 = btoa(unescape(encodeURIComponent(svgData)))
-      const url = `data:image/svg+xml;base64,${svgB64}`
-
-      const img = new Image()
-      img.width = svgW
-      img.height = svgH
-      await new Promise((resolve, reject) => {
-        img.onload = resolve
-        img.onerror = (e) => reject(new Error('SVG image failed to load: ' + String(e)))
-        img.src = url
+      await withChartExport('png', async () => {
+        const charts = await collectVisibleChartExports()
+        if (charts.length === 0) {
+          showAnalysisActionNotice(
+            'Chart not ready for export — wait for the plot to finish, then try again.'
+          )
+          return
+        }
+        const paths = await resolvePanelExportPaths(
+          charts.map((c) => c.label),
+          'png',
+          'Export PNG — each on-screen panel is saved as .png'
+        )
+        if (!paths) return
+        for (let i = 0; i < charts.length; i++) {
+          const base64 = await rasterizeChartSvgToPng(charts[i].svg, i)
+          await window.api.writeBinary(paths[i], base64)
+        }
+        const notice =
+          paths.length === 1
+            ? `Exported PNG to ${paths[0]}`
+            : `Exported ${paths.length} PNGs to ${dirOfExportPath(paths[0])}`
+        showAnalysisActionNotice(notice)
+        logEvent('info', 'analysis', 'Exported PNG', paths.join(', '))
       })
-
-      const canvas = document.createElement('canvas')
-      canvas.width = Math.round(svgW * pixelScale)
-      canvas.height = Math.round(svgH * pixelScale)
-      const ctx = canvas.getContext('2d')
-      if (!ps.transparentBg) {
-        ctx.fillStyle = ps.plotBg
-        ctx.fillRect(0, 0, canvas.width, canvas.height)
-      }
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
-
-      const dataUrl = canvas.toDataURL('image/png')
-      const base64 = dataUrl.replace(/^data:image\/png;base64,/, '')
-      await window.api.writeBinary(filePath, base64)
-      showAnalysisActionNotice(`Exported PNG to ${filePath}`)
-      logEvent('info', 'analysis', 'Exported PNG', filePath)
     } catch (err) {
       lastError = 'PNG export failed: ' + (err instanceof Error ? err.message : String(err))
     }
@@ -3597,6 +4521,32 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
   </div>
 {/if}
 
+{#if pendingReplaceSessionPath}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+    onmousedown={cancelReplaceSession}
+  >
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="mx-4 w-full max-w-sm rounded-lg border border-neutral-300 bg-white p-5 text-sm text-neutral-900 shadow-xl dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+      onmousedown={(e) => e.stopPropagation()}
+    >
+      <p class="font-semibold">Replace current session?</p>
+      <p class="mt-2 text-xs text-neutral-500 dark:text-neutral-400">
+        The plots you have open will be replaced by the saved session. Unsaved changes in this view
+        are not written to disk.
+      </p>
+      <div class="mt-4 flex gap-2">
+        <Button size="sm" variant="outline" className="flex-1" onclick={cancelReplaceSession}>
+          Cancel
+        </Button>
+        <Button size="sm" className="flex-1" onclick={confirmReplaceSession}>Replace</Button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 {#if showTopoInfo && topoInfo}
   <TopologyInfoModal topoInfo={topoInfo} onClose={() => (showTopoInfo = false)} />
 {/if}
@@ -3644,10 +4594,10 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 ? 'bg-red-500/15 text-red-700 dark:bg-red-500/20 dark:text-red-300'
                 : 'bg-neutral-500/10 text-neutral-500 dark:text-neutral-400'}"
             title={savedSessions.length > 0
-              ? `${savedSessions.length} saved session${savedSessions.length === 1 ? '' : 's'} in working directory`
+              ? `${savedSessions.length} saved session${savedSessions.length === 1 ? '' : 's'} under the working directory and output path`
               : sessionScanHint === 'Scan failed'
                 ? 'Could not scan for saved sessions'
-                : 'No saved sessions in working directory'}
+                : 'No saved sessions under the working directory or output path'}
           >
             {sessionScanHint}
           </span>
@@ -3673,11 +4623,21 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
         <Select size="sm" className="w-full" bind:value={selectedSessionPath}>
           <option value="">Select a saved session…</option>
           {#each savedSessions as session (session.session_path)}
-            <option value={session.session_path}>
+            <option value={session.session_path} title={session.output_dir || session.session_path}>
               {formatSavedSessionOption(session)}
             </option>
           {/each}
         </Select>
+        {#if selectedSavedSession}
+          <p
+            class="rounded-md border border-neutral-200 p-2 wrap-break-word sidebar-label dark:border-neutral-800"
+            title={selectedSavedSession.output_dir || selectedSavedSession.session_path}
+          >
+            {selectedSavedSession.output_dir || selectedSavedSession.session_path}
+          </p>
+        {:else}
+          <p class="sidebar-hint">Select a session to see its folder path.</p>
+        {/if}
       {/if}
       <div class="flex gap-1">
         <Button
@@ -3685,32 +4645,46 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           variant="outline"
           className="min-w-0 flex-1"
           onclick={() => void saveAnalysisSessionToOutputFolder({ manual: true })}
-          disabled={!canSaveSession || running}
+          disabled={!canSaveSession || running || sessionBusy}
           title="Write analysis_session.json to the output folder"
         >
-          Save
+          {#if savingSession}
+            <Spinner className="mr-1" />Saving…
+          {:else}
+            Save
+          {/if}
         </Button>
         <Button
           size="sm"
           variant="outline"
           className="min-w-0 flex-1"
           onclick={loadSelectedSavedSession}
-          disabled={!selectedSessionPath || running}
+          disabled={!selectedSessionPath || running || sessionBusy}
         >
-          Load
+          {#if loadingSession}
+            <Spinner className="mr-1" />Loading…
+          {:else}
+            Load
+          {/if}
         </Button>
         <Button
           size="sm"
           variant="outline"
           className="min-w-0 flex-1"
           onclick={browseAnalysisSessionFile}
-          disabled={running}
+          disabled={running || sessionBusy}
         >
           Browse…
         </Button>
       </div>
       {#if sessionActionNotice}
-        <p class="gw-notice gw-notice-success text-[11px] leading-snug">{sessionActionNotice}</p>
+        <p
+          class="gw-notice text-[11px] leading-snug {sessionActionNoticeKind === 'info'
+            ? 'gw-notice-info'
+            : 'gw-notice-success'}"
+        >
+          {sessionActionNotice}
+        </p>
       {/if}
     </div>
 
@@ -3746,6 +4720,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 blurOnEnter
                 value={set.label}
                 oninput={(e) => updateSetLabel(set.id, e.currentTarget.value)}
+                onblur={applyChartAppearance}
                 className="min-w-0 flex-1 border-amber-300/60 bg-white dark:border-amber-500/40 dark:bg-neutral-950"
                 onclick={(e) => e.stopPropagation()}
               />
@@ -3947,11 +4922,20 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
       <!-- Structural Options -->
       <div class="space-y-2">
-        <h2 class="sidebar-heading">Structural Options</h2>
+        <div class="flex items-center justify-between gap-2">
+          <h2 class="sidebar-heading">Structural Options</h2>
+          {#if structuralTypeChanging || headgroupDetecting}
+            <span class="flex shrink-0 items-center gap-1.5 text-[11px] text-neutral-500 dark:text-neutral-400">
+              <Spinner className="size-3.5" />
+              {structuralTypeChanging ? 'Switching…' : 'Detecting…'}
+            </span>
+          {/if}
+        </div>
         <Select
           size="sm"
           className="w-full"
           value={structuralType}
+          disabled={structuralTypeChanging || headgroupDetecting}
           onchange={(e) => onStructuralTypeChange(e.currentTarget.value)}
         >
           <option value="rmsd">RMSD</option>
@@ -4280,11 +5264,71 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           </div>
         {/if}
 
-        <div class="flex gap-1">
+        {#if analysisSets.length > 1}
+          <div class="relative w-full" bind:this={detectPropertiesMenuEl}>
+            <div class="flex w-full">
+              <Button
+                variant="outline"
+                className="min-w-0 flex-1 rounded-r-none border-r-0"
+                onclick={() => void detectEnergeticProperties(detectPropertiesScope)}
+                disabled={detectingProperties || running || (detectPropertiesScope === 'current' && logFiles.length === 0)}
+              >
+                {#if detectingProperties}
+                  <Spinner className="mr-1" />Detecting…
+                {:else}
+                  {detectPropertiesButtonLabel()}
+                {/if}
+              </Button>
+              <button
+                type="button"
+                class="inline-flex shrink-0 items-center justify-center rounded-r-lg border border-neutral-300 bg-white px-2.5 text-sm text-neutral-900 transition-colors hover:bg-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 disabled:pointer-events-none disabled:opacity-50 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-50 dark:hover:bg-neutral-800 dark:focus-visible:ring-neutral-600"
+                disabled={detectingProperties || running}
+                aria-label="Choose detect scope"
+                aria-expanded={detectPropertiesMenuOpen}
+                onclick={() => (detectPropertiesMenuOpen = !detectPropertiesMenuOpen)}
+              >
+                <svg viewBox="0 0 10 6" class="size-2.5 fill-current opacity-80" aria-hidden="true">
+                  <path d="M0 0l5 6 5-6z" />
+                </svg>
+              </button>
+            </div>
+            {#if detectPropertiesMenuOpen}
+              <div
+                class="absolute top-full left-0 right-0 z-20 mt-1 overflow-hidden rounded-lg border border-neutral-200 bg-white py-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+                role="menu"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-neutral-800 hover:bg-neutral-100 dark:text-neutral-100 dark:hover:bg-neutral-800"
+                  onclick={() => {
+                    detectPropertiesScope = 'current'
+                    detectPropertiesMenuOpen = false
+                  }}
+                >
+                  <span class="w-4 shrink-0 text-center text-xs">{detectPropertiesScope === 'current' ? '✓' : ''}</span>
+                  <span>Current set</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-neutral-800 hover:bg-neutral-100 dark:text-neutral-100 dark:hover:bg-neutral-800"
+                  onclick={() => {
+                    detectPropertiesScope = 'all'
+                    detectPropertiesMenuOpen = false
+                  }}
+                >
+                  <span class="w-4 shrink-0 text-center text-xs">{detectPropertiesScope === 'all' ? '✓' : ''}</span>
+                  <span>All sets ({analysisSets.length})</span>
+                </button>
+              </div>
+            {/if}
+          </div>
+        {:else}
           <Button
             variant="outline"
-            className="min-w-0 flex-1"
-            onclick={() => detectEnergeticColumns()}
+            className="w-full"
+            onclick={() => void detectEnergeticProperties('current')}
             disabled={detectingProperties || running || logFiles.length === 0}
           >
             {#if detectingProperties}
@@ -4293,18 +5337,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               Detect Properties
             {/if}
           </Button>
-          {#if analysisSets.length > 1}
-            <Button
-              variant="outline"
-              className="shrink-0"
-              onclick={() => detectEnergeticColumnsAllSets()}
-              disabled={detectingProperties || running}
-              title="Detect properties on every set that has log files"
-            >
-              All sets
-            </Button>
-          {/if}
-        </div>
+        {/if}
         <p class="sidebar-hint">
           Detect only reads log headers (does not run analysis). Adding logs auto-detects for the active set.
         </p>
@@ -4422,6 +5455,52 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
       {#if plotSettingsOpen}
         <div class="sidebar-panel space-y-2 p-2">
+          {#if mode === 'structural'}
+            <div>
+              <p class="sidebar-label mb-0.5">Title</p>
+              <div class="flex gap-1">
+                <Input
+                  size="sm"
+                  value={ps.titleCustomized ? ps.title : ''}
+                  placeholder={
+                    ps.titleCustomized && !String(ps.title || '').trim()
+                      ? '(no title)'
+                      : autoStructuralTitle(structuralType)
+                  }
+                  className="min-w-0 flex-1"
+                  oninput={(e) =>
+                    patchStructuralPlot({
+                      title: e.currentTarget.value,
+                      titleCustomized: true
+                    })
+                  }
+                />
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={!ps.titleCustomized}
+                  onclick={restoreAutoStructuralTitle}
+                  title="Restore the analysis-type title"
+                >Auto</Button>
+              </div>
+              <p class="sidebar-hint">Follows the analysis type. Edit to customize, or clear to hide.</p>
+            </div>
+            {#if activeAnalysisSet}
+              <div>
+                <p class="sidebar-label mb-0.5">Legend (this set)</p>
+                <Input
+                  size="sm"
+                  blurOnEnter
+                  value={activeAnalysisSet.legendLabel ?? ''}
+                  placeholder={activeAnalysisSet.label}
+                  className="w-full"
+                  oninput={(e) => updateSetLegend(activeAnalysisSet.id, e.currentTarget.value)}
+                  onblur={applyChartAppearance}
+                />
+                <p class="sidebar-hint">Follows the set name. Empty restores it.</p>
+              </div>
+            {/if}
+          {/if}
           {#if mode === 'energetic'}
             <div>
               <p class="sidebar-label mb-0.5">Layout</p>
@@ -4447,6 +5526,60 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               <Checkbox name="sync-x" bind:checked={ePlotGlobal.syncX} />
               <span class="sidebar-label">Sync X limits across panels</span>
             </label>
+            <div class="grid grid-cols-2 gap-1">
+              <div>
+                <p class="sidebar-label mb-0.5">X tick labels</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="2"
+                  max="20"
+                  step="1"
+                  bind:value={ePlotGlobal.xTickCount}
+                  className="w-full"
+                />
+              </div>
+              <div>
+                <p class="sidebar-label mb-0.5">Y tick labels</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="2"
+                  max="20"
+                  step="1"
+                  bind:value={ePlotGlobal.yTickCount}
+                  className="w-full"
+                />
+              </div>
+              <div>
+                <p class="sidebar-label mb-0.5">X decimals</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="0"
+                  max="8"
+                  step="1"
+                  bind:value={ePlotGlobal.xTickDecimals}
+                  placeholder="auto"
+                  className="w-full"
+                  title="Decimal places on X axis ticks. Empty = auto."
+                />
+              </div>
+              <div>
+                <p class="sidebar-label mb-0.5">Y decimals</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="0"
+                  max="8"
+                  step="1"
+                  bind:value={ePlotGlobal.yTickDecimals}
+                  placeholder="auto"
+                  className="w-full"
+                  title="Decimal places on Y axis ticks. Empty = auto."
+                />
+              </div>
+            </div>
             {#if focusedPanelKey || selectedProperties[0]}
               {@const pk = focusedPanelKey || selectedProperties[0]}
               {@const panelPlaceholderTitle = pk}
@@ -4528,11 +5661,57 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             <div class="grid grid-cols-2 gap-1">
               <div>
                 <p class="sidebar-label mb-0.5">Plot bg</p>
-                <Input size="sm" bind:value={ePlotGlobal.plotBg} className="w-full font-mono" />
+                <div class="flex items-center gap-1">
+                  <input
+                    type="color"
+                    value={resolvedEnergColors.plotBg}
+                    class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
+                    oninput={(e) => setEnergeticPlotBg(e.currentTarget.value)}
+                  />
+                  <Input
+                    size="sm"
+                    value={ePlotGlobal.plotBgCustomized ? ePlotGlobal.plotBg : ''}
+                    placeholder={resolvedEnergColors.plotBg}
+                    className="min-w-0 flex-1 font-mono"
+                    oninput={(e) => setEnergeticPlotBg(e.currentTarget.value)}
+                  />
+                </div>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={!ePlotGlobal.plotBgCustomized}
+                  onclick={() => {
+                    markSessionDirty()
+                    ePlotGlobal = { ...ePlotGlobal, plotBg: '', plotBgCustomized: false }
+                  }}
+                >Auto</Button>
               </div>
               <div>
                 <p class="sidebar-label mb-0.5">Text color</p>
-                <Input size="sm" bind:value={ePlotGlobal.textColor} className="w-full font-mono" />
+                <div class="flex items-center gap-1">
+                  <input
+                    type="color"
+                    value={resolvedEnergColors.textColor}
+                    class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
+                    oninput={(e) => setEnergeticTextColor(e.currentTarget.value)}
+                  />
+                  <Input
+                    size="sm"
+                    value={ePlotGlobal.textColorCustomized ? ePlotGlobal.textColor : ''}
+                    placeholder={resolvedEnergColors.textColor}
+                    className="min-w-0 flex-1 font-mono"
+                    oninput={(e) => setEnergeticTextColor(e.currentTarget.value)}
+                  />
+                </div>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={!ePlotGlobal.textColorCustomized}
+                  onclick={() => {
+                    markSessionDirty()
+                    ePlotGlobal = { ...ePlotGlobal, textColor: '', textColorCustomized: false }
+                  }}
+                >Auto</Button>
               </div>
             </div>
             <label class="flex items-center gap-2">
@@ -4636,6 +5815,34 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 className="w-full"
               />
             </div>
+            <div>
+              <p class="sidebar-label mb-0.5">X decimals</p>
+              <Input
+                size="sm"
+                type="number"
+                min="0"
+                max="8"
+                step="1"
+                bind:value={ps.xTickDecimals}
+                placeholder="auto"
+                className="w-full"
+                title="Decimal places on X axis ticks. Empty = auto."
+              />
+            </div>
+            <div>
+              <p class="sidebar-label mb-0.5">Y decimals</p>
+              <Input
+                size="sm"
+                type="number"
+                min="0"
+                max="8"
+                step="1"
+                bind:value={ps.yTickDecimals}
+                placeholder="auto"
+                className="w-full"
+                title="Decimal places on Y axis ticks. Empty = auto."
+              />
+            </div>
           </div>
           <div>
             <p class="sidebar-label mb-0.5">Y min / max</p>
@@ -4649,43 +5856,87 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           {#if mode === 'structural'}
           <div class="grid grid-cols-2 gap-1">
             <div>
-              <p class="sidebar-label mb-0.5">Line color</p>
+              <p class="sidebar-label mb-0.5">Line color (this set)</p>
               <div class="flex items-center gap-1">
                 <input
                   type="color"
-                  bind:value={ps.lineColor}
+                  value={activeAnalysisSet?.color || '#f59e0b'}
                   class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
-                  oninput={() => bumpPlotData()}
+                  oninput={(e) => {
+                    if (!activeAnalysisSet) return
+                    patchAnalysisSet(activeAnalysisSet.id, { color: e.currentTarget.value })
+                  }}
                 />
                 <Input
                   size="sm"
-                  bind:value={ps.lineColor}
+                  blurOnEnter
+                  value={activeAnalysisSet?.color || ''}
                   className="min-w-0 flex-1 font-mono"
-                  onchange={() => bumpPlotData()}
+                  oninput={(e) => {
+                    if (!activeAnalysisSet) return
+                    patchAnalysisSet(activeAnalysisSet.id, { color: e.currentTarget.value })
+                  }}
+                  onblur={applyChartAppearance}
                 />
               </div>
+              <p class="sidebar-hint">Same color as the set. Area per lipid uses it for Average.</p>
             </div>
             <div>
               <p class="sidebar-label mb-0.5">Plot bg</p>
               <div class="flex items-center gap-1">
                 <input
                   type="color"
-                  bind:value={ps.plotBg}
+                  value={resolvedStructColors.plotBg}
                   class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
+                  oninput={(e) => setStructuralPlotBg(e.currentTarget.value)}
                 />
-                <Input size="sm" bind:value={ps.plotBg} className="min-w-0 flex-1 font-mono" />
+                <Input
+                  size="sm"
+                  value={ps.plotBgCustomized ? ps.plotBg : ''}
+                  placeholder={resolvedStructColors.plotBg}
+                  className="min-w-0 flex-1 font-mono"
+                  oninput={(e) => setStructuralPlotBg(e.currentTarget.value)}
+                />
               </div>
+              <div class="mt-0.5 flex gap-1">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={!ps.plotBgCustomized}
+                  onclick={clearStructuralPlotBgCustom}
+                >Auto</Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onclick={applyStructuralPlotColorsToAllTypes}
+                  title="Copy this plot's background and text colors to every structural analysis type"
+                >All types</Button>
+              </div>
+              <p class="sidebar-hint">Auto follows light/dark theme.</p>
             </div>
             <div>
               <p class="sidebar-label mb-0.5">Text/axes color</p>
               <div class="flex items-center gap-1">
                 <input
                   type="color"
-                  bind:value={ps.textColor}
+                  value={resolvedStructColors.textColor}
                   class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
+                  oninput={(e) => setStructuralTextColor(e.currentTarget.value)}
                 />
-                <Input size="sm" bind:value={ps.textColor} className="min-w-0 flex-1 font-mono" />
+                <Input
+                  size="sm"
+                  value={ps.textColorCustomized ? ps.textColor : ''}
+                  placeholder={resolvedStructColors.textColor}
+                  className="min-w-0 flex-1 font-mono"
+                  oninput={(e) => setStructuralTextColor(e.currentTarget.value)}
+                />
               </div>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={!ps.textColorCustomized}
+                onclick={clearStructuralTextColorCustom}
+              >Auto</Button>
             </div>
             <div class="flex items-end pb-1">
               <label class="flex items-center gap-2">
@@ -4696,20 +5947,69 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           </div>
           {#if structuralType === 'area_per_lipid'}
             <div class="space-y-1 rounded border border-neutral-800 p-2">
-              <p class="sidebar-label">Area per lipid series styles</p>
+              <p class="sidebar-label">Area per lipid series (this set)</p>
               <p class="sidebar-hint">
-                Mean uses the plot line color. Set upper/lower colors and marker spacing independently.
+                Average uses the set color. Upper/lower colors and labels apply only to the selected set.
               </p>
+              {#if activeAnalysisSet}
+                <div class="col-span-2 grid grid-cols-1 gap-1">
+                  <div>
+                    <p class="sidebar-label mb-0.5">Average label</p>
+                    <Input
+                      size="sm"
+                      blurOnEnter
+                      value={activeAnalysisSet.aplMeanLabel ?? ''}
+                      placeholder="Average"
+                      className="w-full"
+                      oninput={(e) =>
+                        patchAnalysisSet(activeAnalysisSet.id, {
+                          aplMeanLabel: e.currentTarget.value
+                        })}
+                      onblur={applyChartAppearance}
+                    />
+                  </div>
+                  <div>
+                    <p class="sidebar-label mb-0.5">Upper leaflet label</p>
+                    <Input
+                      size="sm"
+                      blurOnEnter
+                      value={activeAnalysisSet.aplUpperLabel ?? ''}
+                      placeholder="Upper leaflet"
+                      className="w-full"
+                      oninput={(e) =>
+                        patchAnalysisSet(activeAnalysisSet.id, {
+                          aplUpperLabel: e.currentTarget.value
+                        })}
+                      onblur={applyChartAppearance}
+                    />
+                  </div>
+                  <div>
+                    <p class="sidebar-label mb-0.5">Lower leaflet label</p>
+                    <Input
+                      size="sm"
+                      blurOnEnter
+                      value={activeAnalysisSet.aplLowerLabel ?? ''}
+                      placeholder="Lower leaflet"
+                      className="w-full"
+                      oninput={(e) =>
+                        patchAnalysisSet(activeAnalysisSet.id, {
+                          aplLowerLabel: e.currentTarget.value
+                        })}
+                      onblur={applyChartAppearance}
+                    />
+                  </div>
+                </div>
+              {/if}
               <div class="grid grid-cols-2 gap-1">
                 <div>
-                  <p class="sidebar-label mb-0.5">Mean line</p>
+                  <p class="sidebar-label mb-0.5">Average line</p>
                   <Select
                     size="sm"
                     className="w-full"
                     value={ps.aplMeanLineStyle || 'solid'}
                     onchange={(e) => {
                       ps.aplMeanLineStyle = /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                      bumpPlotData()
+                      applyChartAppearance()
                     }}
                   >
                     <option value="solid">Solid</option>
@@ -4719,14 +6019,14 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   </Select>
                 </div>
                 <div>
-                  <p class="sidebar-label mb-0.5">Mean marker</p>
+                  <p class="sidebar-label mb-0.5">Average marker</p>
                   <Select
                     size="sm"
                     className="w-full"
                     value={ps.aplMeanMarker || 'none'}
                     onchange={(e) => {
                       ps.aplMeanMarker = /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                      bumpPlotData()
+                      applyChartAppearance()
                     }}
                   >
                     <option value="none">None</option>
@@ -4737,7 +6037,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   </Select>
                 </div>
                 <div class="col-span-2">
-                  <p class="sidebar-label mb-0.5">Mean marker every N points</p>
+                  <p class="sidebar-label mb-0.5">Average marker every N points</p>
                   <Input
                     size="sm"
                     type="number"
@@ -4746,7 +6046,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     step="1"
                     bind:value={ps.aplMeanMarkerEvery}
                     className="w-full"
-                    onchange={() => bumpPlotData()}
+                    onchange={() => applyChartAppearance()}
                   />
                 </div>
                 <div>
@@ -4757,7 +6057,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     value={ps.aplUpperLineStyle || 'dashed'}
                     onchange={(e) => {
                       ps.aplUpperLineStyle = /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                      bumpPlotData()
+                      applyChartAppearance()
                     }}
                   >
                     <option value="solid">Solid</option>
@@ -4774,7 +6074,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     value={ps.aplUpperMarker || 'none'}
                     onchange={(e) => {
                       ps.aplUpperMarker = /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                      bumpPlotData()
+                      applyChartAppearance()
                     }}
                   >
                     <option value="none">None</option>
@@ -4785,26 +6085,32 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   </Select>
                 </div>
                 <div>
-                  <p class="sidebar-label mb-0.5">Upper color</p>
+                  <p class="sidebar-label mb-0.5">Upper color (this set)</p>
                   <div class="flex items-center gap-1">
                     <input
                       type="color"
-                      value={ps.aplUpperColor || ps.lineColor || '#22c55e'}
+                      value={activeAnalysisSet ? aplSeriesColor(activeAnalysisSet, 'upper') : '#f59e0b'}
                       class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
                       oninput={(e) => {
-                        ps.aplUpperColor = e.currentTarget.value
-                        bumpPlotData()
+                        if (!activeAnalysisSet) return
+                        patchAnalysisSet(activeAnalysisSet.id, {
+                          aplUpperColor: e.currentTarget.value
+                        })
                       }}
                     />
                     <Input
                       size="sm"
-                      value={ps.aplUpperColor || ''}
-                      placeholder={ps.lineColor || '#f59e0b'}
+                      blurOnEnter
+                      value={activeAnalysisSet?.aplUpperColor || ''}
+                      placeholder={activeAnalysisSet?.color || '#f59e0b'}
                       className="min-w-0 flex-1 font-mono"
                       oninput={(e) => {
-                        ps.aplUpperColor = e.currentTarget.value
-                        bumpPlotData()
+                        if (!activeAnalysisSet) return
+                        patchAnalysisSet(activeAnalysisSet.id, {
+                          aplUpperColor: e.currentTarget.value
+                        })
                       }}
+                      onblur={applyChartAppearance}
                     />
                   </div>
                 </div>
@@ -4818,7 +6124,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     step="1"
                     bind:value={ps.aplUpperMarkerEvery}
                     className="w-full"
-                    onchange={() => bumpPlotData()}
+                    onchange={() => applyChartAppearance()}
                   />
                 </div>
                 <div>
@@ -4829,7 +6135,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     value={ps.aplLowerLineStyle || 'dotted'}
                     onchange={(e) => {
                       ps.aplLowerLineStyle = /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                      bumpPlotData()
+                      applyChartAppearance()
                     }}
                   >
                     <option value="solid">Solid</option>
@@ -4846,7 +6152,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     value={ps.aplLowerMarker || 'none'}
                     onchange={(e) => {
                       ps.aplLowerMarker = /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                      bumpPlotData()
+                      applyChartAppearance()
                     }}
                   >
                     <option value="none">None</option>
@@ -4857,26 +6163,32 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   </Select>
                 </div>
                 <div>
-                  <p class="sidebar-label mb-0.5">Lower color</p>
+                  <p class="sidebar-label mb-0.5">Lower color (this set)</p>
                   <div class="flex items-center gap-1">
                     <input
                       type="color"
-                      value={ps.aplLowerColor || ps.lineColor || '#38bdf8'}
+                      value={activeAnalysisSet ? aplSeriesColor(activeAnalysisSet, 'lower') : '#f59e0b'}
                       class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
                       oninput={(e) => {
-                        ps.aplLowerColor = e.currentTarget.value
-                        bumpPlotData()
+                        if (!activeAnalysisSet) return
+                        patchAnalysisSet(activeAnalysisSet.id, {
+                          aplLowerColor: e.currentTarget.value
+                        })
                       }}
                     />
                     <Input
                       size="sm"
-                      value={ps.aplLowerColor || ''}
-                      placeholder={ps.lineColor || '#f59e0b'}
+                      blurOnEnter
+                      value={activeAnalysisSet?.aplLowerColor || ''}
+                      placeholder={activeAnalysisSet?.color || '#f59e0b'}
                       className="min-w-0 flex-1 font-mono"
                       oninput={(e) => {
-                        ps.aplLowerColor = e.currentTarget.value
-                        bumpPlotData()
+                        if (!activeAnalysisSet) return
+                        patchAnalysisSet(activeAnalysisSet.id, {
+                          aplLowerColor: e.currentTarget.value
+                        })
                       }}
+                      onblur={applyChartAppearance}
                     />
                   </div>
                 </div>
@@ -4890,7 +6202,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     step="1"
                     bind:value={ps.aplLowerMarkerEvery}
                     className="w-full"
-                    onchange={() => bumpPlotData()}
+                    onchange={() => applyChartAppearance()}
                   />
                 </div>
                 <div>
@@ -4903,7 +6215,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     step="0.5"
                     bind:value={ps.aplMarkerSize}
                     className="w-full"
-                    onchange={() => bumpPlotData()}
+                    onchange={() => applyChartAppearance()}
                   />
                 </div>
                 <div>
@@ -4916,7 +6228,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     step="0.5"
                     bind:value={ps.lineWidth}
                     className="w-full"
-                    onchange={() => bumpPlotData()}
+                    onchange={() => applyChartAppearance()}
                   />
                 </div>
               </div>
@@ -4998,6 +6310,109 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               <option value="none">Hidden</option>
             </Select>
           </div>
+          <div class="grid grid-cols-2 gap-1">
+            <div>
+              <p class="sidebar-label mb-0.5">Legend square (px)</p>
+              <Input
+                size="sm"
+                type="number"
+                min="6"
+                max="28"
+                step="1"
+                bind:value={ps.legendSwatchSize}
+                className="w-full"
+              />
+            </div>
+            <div>
+              <p class="sidebar-label mb-0.5">Legend font (px)</p>
+              <Input
+                size="sm"
+                type="number"
+                min="7"
+                max="22"
+                step="1"
+                bind:value={ps.legendFontSize}
+                className="w-full"
+              />
+            </div>
+            <div>
+              <p class="sidebar-label mb-0.5">Axis font (px)</p>
+              <Input
+                size="sm"
+                type="number"
+                min="7"
+                max="22"
+                step="1"
+                bind:value={ps.axisFontSize}
+                className="w-full"
+              />
+            </div>
+            <div>
+              <p class="sidebar-label mb-0.5">Title font (px)</p>
+              <Input
+                size="sm"
+                type="number"
+                min="8"
+                max="28"
+                step="1"
+                bind:value={ps.titleFontSize}
+                className="w-full"
+              />
+            </div>
+          </div>
+          {/if}
+
+          {#if mode === 'energetic'}
+          <div class="grid grid-cols-2 gap-1">
+            <div>
+              <p class="sidebar-label mb-0.5">Legend square (px)</p>
+              <Input
+                size="sm"
+                type="number"
+                min="6"
+                max="28"
+                step="1"
+                bind:value={ePlotGlobal.legendSwatchSize}
+                className="w-full"
+              />
+            </div>
+            <div>
+              <p class="sidebar-label mb-0.5">Legend font (px)</p>
+              <Input
+                size="sm"
+                type="number"
+                min="7"
+                max="22"
+                step="1"
+                bind:value={ePlotGlobal.legendFontSize}
+                className="w-full"
+              />
+            </div>
+            <div>
+              <p class="sidebar-label mb-0.5">Axis font (px)</p>
+              <Input
+                size="sm"
+                type="number"
+                min="7"
+                max="22"
+                step="1"
+                bind:value={ePlotGlobal.axisFontSize}
+                className="w-full"
+              />
+            </div>
+            <div>
+              <p class="sidebar-label mb-0.5">Title font (px)</p>
+              <Input
+                size="sm"
+                type="number"
+                min="8"
+                max="28"
+                step="1"
+                bind:value={ePlotGlobal.titleFontSize}
+                className="w-full"
+              />
+            </div>
+          </div>
           {/if}
 
           {#if mode === 'structural'}
@@ -5040,7 +6455,14 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               className="flex-1"
               onclick={() => {
                 if (mode === 'structural') {
-                  sPlots[structuralType] = { ...structDefaults }
+                  sPlots = {
+                    ...sPlots,
+                    [structuralType]: {
+                      ...structDefaults,
+                      ...(structuralType === 'area_per_lipid' ? { yUnit: 'Å²' } : {})
+                    }
+                  }
+                  bumpPlotData()
                 } else {
                   ePlotGlobal = { ...energGlobalDefaults, ...energPanelShell }
                   ePlotPanels = {}
@@ -5057,33 +6479,17 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
     <Divider />
 
-    <div class="space-y-2">
-      <h2 class="sidebar-heading">Output folder</h2>
-      <div class="space-y-1">
-        <Input
-          type="text"
-          size="sm"
-          bind:value={outputFolderName}
-          className="w-full"
-          placeholder="04_analysis"
-        />
-        <p
-          class="rounded-md border border-neutral-200 p-2 wrap-break-word sidebar-label dark:border-neutral-800"
-        >
-          {#if outputDir}
-            {outputDir}
-          {:else if workingDir}
-            Files will be written under the working directory
-          {:else}
-            Set a working directory in the top bar
-          {/if}
-        </p>
-      </div>
-    </div>
+    <OutputPathFields
+      bind:parentDir={outputParentDir}
+      bind:folderName={outputFolderName}
+      workingDir={workingDir}
+      folderPlaceholder={suggestedOutputFolderName}
+      resolvedFolderName={resolveOutputFolderName()}
+    />
 
-    {#if workingDir === ''}
+    {#if resolvedOutputParent === ''}
       <p class="gw-notice gw-notice-warning">
-        Set a <strong>Working Directory</strong> in the top bar to write analysis output.
+        Set a <strong>Working Directory</strong> in the top bar, or browse an output path, to write analysis output.
       </p>
     {/if}
 
@@ -5199,45 +6605,72 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
     <div class="space-y-1">
       <p class="sidebar-label">Export chart</p>
+      <Input
+        type="text"
+        size="sm"
+        bind:value={exportFileName}
+        className="w-full"
+        placeholder={exportBaseName()}
+        disabled={exportingChart}
+        title="File name for CSV, SVG, and PNG (without extension). Empty uses the chart title."
+      />
       <div class="flex flex-wrap gap-1">
         <Button
           size="sm"
           variant="outline"
           className="min-w-0 flex-1"
           onclick={exportCsv}
-          disabled={displaySeries.length === 0}
+          disabled={displaySeries.length === 0 || exportingChart}
+          title="Export plotted series as CSV. Column names include the set when several sets are shown."
         >
-          CSV
+          {#if exportingKind === 'csv'}
+            <Spinner className="mr-1" />Saving…
+          {:else}
+            CSV
+          {/if}
         </Button>
         <Button
           size="sm"
           variant="outline"
           className="min-w-0 flex-1"
           onclick={exportSvg}
-          disabled={!svgEl}
+          disabled={!canExportOnscreenChart || exportingChart}
+          title="Save the on-screen chart as SVG. Separate panels become one file per panel (set name in the file name)."
         >
-          SVG
+          {#if exportingKind === 'svg'}
+            <Spinner className="mr-1" />Saving…
+          {:else}
+            SVG
+          {/if}
         </Button>
         <Button
           size="sm"
           variant="outline"
           className="min-w-0 flex-1"
           onclick={exportPng}
-          disabled={!svgEl}
+          disabled={!canExportOnscreenChart || exportingChart}
+          title="Save the on-screen chart as PNG. Separate panels become one file per panel (set name in the file name)."
         >
-          PNG
+          {#if exportingKind === 'png'}
+            <Spinner className="mr-1" />Saving…
+          {:else}
+            PNG
+          {/if}
         </Button>
-        {#if mode === 'energetic'}
-          <Button
-            size="sm"
-            variant="outline"
-            className="min-w-0 flex-1"
-            onclick={exportPublicationPng}
-            disabled={rawSeries.length === 0}
-          >
+        <Button
+          size="sm"
+          variant="outline"
+          className="min-w-0 flex-1"
+          onclick={exportPublicationPng}
+          disabled={!canExportPublicationPng || exportingChart}
+          title="Matplotlib / API style. Includes every visible set in the legend."
+        >
+          {#if exportingKind === 'pub'}
+            <Spinner className="mr-1" />Saving…
+          {:else}
             Pub PNG
-          </Button>
-        {/if}
+          {/if}
+        </Button>
       </div>
     </div>
 
@@ -5253,7 +6686,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
     class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
     style={paneBackgroundStyle}
   >
-    {#if plotViewBusy}
+    {#if plotViewBusy || structuralTypeChanging}
       <div
         class="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-neutral-950/35"
         style="backdrop-filter:blur(1px)"
@@ -5304,7 +6737,10 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
         {/if}
       </p>
     {:else}
-      <div class="mx-4 mb-4 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+      <div
+        class="mx-4 mb-4 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto"
+        bind:this={plotExportRoot}
+      >
         {#if (mode === 'structural' ? chartView.series.length > 0 : energeticPanels.length > 0 || displaySeries.length > 0)}
           <div class="flex flex-wrap items-center gap-2">
             <span class="text-xs text-neutral-400">Tools:</span>
@@ -5358,28 +6794,34 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
         {#if mode === 'structural' && chartView.mode === 'grid'}
           <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
             {#each chartView.panels as panel (panel.key)}
-              <div class="rounded-lg border border-neutral-800 p-2">
-                <p class="mb-1 text-xs font-medium text-neutral-300">{panel.title}</p>
+              <div class="rounded-lg border border-neutral-800 p-2" data-chart-export={panel.title}>
                 <LineChart
                   series={panel.series}
                   xLabel={displayXLabel}
                   yLabel={displayYLabel}
-                  plotBg={ps.plotBg}
-                  tickColor={ps.textColor}
-                  labelColor={ps.textColor}
-                  axisColor={ps.textColor}
-                  gridColor={ps.textColor + '40'}
+                  plotBg={resolvedStructColors.plotBg}
+                  tickColor={resolvedStructColors.textColor}
+                  labelColor={resolvedStructColors.textColor}
+                  axisColor={resolvedStructColors.textColor}
+                  gridColor={resolvedStructColors.textColor + '40'}
                   showGrid={ps.showGrid}
                   aspectRatio={Number(ps.aspectRatio) || 2.5}
                   transparentBg={ps.transparentBg}
                   fontFamily={ps.fontFamily || 'Roboto, sans-serif'}
                   chartTitle={panel.title}
+                  chartSubtitle={displayTitle}
                   xTickLabels={displayXTickLabels}
                   xTicks={Number(ps.xTickCount) || 5}
                   yTicks={Number(ps.yTickCount) || 5}
+                  xTickDecimals={ps.xTickDecimals}
+                  yTickDecimals={ps.yTickDecimals}
                   extraLeftMargin={Number(ps.extraLeftMargin) || 0}
                   extraBottomMargin={Number(ps.extraBottomMargin) || 0}
                   legendPosition={ps.legendPosition || 'top-left'}
+                  legendSwatchSize={Number(ps.legendSwatchSize) || 12}
+                  legendFontSize={Number(ps.legendFontSize) || 10}
+                  axisFontSize={Number(ps.axisFontSize) || 12}
+                  titleFontSize={Number(ps.titleFontSize) || 13}
                   xMinOverride={xMinO}
                   xMaxOverride={xMaxO}
                   yMinOverride={yMinO}
@@ -5393,15 +6835,16 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             {/each}
           </div>
         {:else if mode === 'structural'}
+          <div data-chart-export="">
           <LineChart
             series={displaySeries}
             xLabel={displayXLabel}
             yLabel={displayYLabel}
-            plotBg={ps.plotBg}
-            tickColor={ps.textColor}
-            labelColor={ps.textColor}
-            axisColor={ps.textColor}
-            gridColor={ps.textColor + '40'}
+            plotBg={resolvedStructColors.plotBg}
+            tickColor={resolvedStructColors.textColor}
+            labelColor={resolvedStructColors.textColor}
+            axisColor={resolvedStructColors.textColor}
+            gridColor={resolvedStructColors.textColor + '40'}
             showGrid={ps.showGrid}
             aspectRatio={Number(ps.aspectRatio) || 2.5}
             transparentBg={ps.transparentBg}
@@ -5411,9 +6854,15 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             xTickLabels={displayXTickLabels}
             xTicks={Number(ps.xTickCount) || 5}
             yTicks={Number(ps.yTickCount) || 5}
+            xTickDecimals={ps.xTickDecimals}
+            yTickDecimals={ps.yTickDecimals}
             extraLeftMargin={Number(ps.extraLeftMargin) || 0}
             extraBottomMargin={Number(ps.extraBottomMargin) || 0}
             legendPosition={ps.legendPosition || 'top-left'}
+            legendSwatchSize={Number(ps.legendSwatchSize) || 12}
+            legendFontSize={Number(ps.legendFontSize) || 10}
+            axisFontSize={Number(ps.axisFontSize) || 12}
+            titleFontSize={Number(ps.titleFontSize) || 13}
             xMinOverride={xMinO}
             xMaxOverride={xMaxO}
             yMinOverride={yMinO}
@@ -5422,8 +6871,8 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             statsRange={hasChartTimeAxis ? statsRange : null}
             onAxisRange={applyStructAxisRange}
             onStatsRange={handleStatsRange}
-            bind:svgEl
           />
+          </div>
         {:else if mode === 'energetic'}
           {#if energeticPanels.length === 1}
             {@const panel = energeticPanels[0]}
@@ -5440,23 +6889,31 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               pset.yMin !== '' && Number.isFinite(Number(pset.yMin)) ? Number(pset.yMin) : null}
             {@const yMaxP =
               pset.yMax !== '' && Number.isFinite(Number(pset.yMax)) ? Number(pset.yMax) : null}
+            {@const titleResolved = energeticPanelChartTitle(panel, pset)}
+            <div data-chart-export={titleResolved || panel.title || ''}>
             <LineChart
               series={panel.series}
               xLabel={displayXLabel}
               yLabel={energeticPanelYLabel(panel, pset)}
-              plotBg={ePlotGlobal.plotBg}
-              tickColor={ePlotGlobal.textColor}
-              labelColor={ePlotGlobal.textColor}
-              axisColor={ePlotGlobal.textColor}
-              gridColor={(ePlotGlobal.gridColor || ePlotGlobal.textColor) + '40'}
+              plotBg={resolvedEnergColors.plotBg}
+              tickColor={resolvedEnergColors.textColor}
+              labelColor={resolvedEnergColors.textColor}
+              axisColor={resolvedEnergColors.textColor}
+              gridColor={(ePlotGlobal.gridColor || resolvedEnergColors.textColor) + '40'}
               showGrid={ePlotGlobal.showGrid !== false}
               aspectRatio={Number(energPanelShell.aspectRatio) || 2.5}
               fontFamily={ePlotGlobal.fontFamily || 'Roboto, sans-serif'}
-              chartTitle={energeticPanelChartTitle(panel, pset)}
-              xTicks={Number(energPanelShell.xTickCount) || 5}
-              yTicks={Number(energPanelShell.yTickCount) || 5}
-              extraLeftMargin={Number(energPanelShell.extraLeftMargin) || 0}
-              legendPosition={energPanelShell.legendPosition || 'top-left'}
+              chartTitle={titleResolved}
+              xTicks={Number(ePlotGlobal.xTickCount) || 5}
+              yTicks={Number(ePlotGlobal.yTickCount) || 5}
+              xTickDecimals={ePlotGlobal.xTickDecimals}
+              yTickDecimals={ePlotGlobal.yTickDecimals}
+              extraLeftMargin={Number(ePlotGlobal.extraLeftMargin) || 0}
+              legendPosition={ePlotGlobal.legendPosition || energPanelShell.legendPosition || 'top-left'}
+              legendSwatchSize={Number(ePlotGlobal.legendSwatchSize) || 12}
+              legendFontSize={Number(ePlotGlobal.legendFontSize) || 10}
+              axisFontSize={Number(ePlotGlobal.axisFontSize) || 12}
+              titleFontSize={Number(ePlotGlobal.titleFontSize) || 13}
               xMinOverride={xMinP}
               xMaxOverride={xMaxP}
               yMinOverride={yMinP}
@@ -5465,8 +6922,8 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               statsRange={statsRange}
               onAxisRange={(r) => applyPanelAxisRange(pk, r)}
               onStatsRange={handleStatsRange}
-              bind:svgEl
             />
+            </div>
           {:else}
             <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
               {#each energeticPanels as panel (panel.key)}
@@ -5512,6 +6969,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   class={`rounded-lg border p-2 ${focusedPanelKey === pk || focusedPanelKey === propKey ? 'border-amber-500/60' : 'border-neutral-800'}`}
                   role="button"
                   tabindex="0"
+                  data-chart-export={titleResolved || panel.title || ''}
                   onclick={() => focusPanel(propKey || pk)}
                   onkeydown={(e) => e.key === 'Enter' && focusPanel(propKey || pk)}
                 >
@@ -5519,19 +6977,25 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     series={panel.series}
                     xLabel={displayXLabel}
                     yLabel={yLabelResolved}
-                    plotBg={ePlotGlobal.plotBg}
-                    tickColor={ePlotGlobal.textColor}
-                    labelColor={ePlotGlobal.textColor}
-                    axisColor={ePlotGlobal.textColor}
-                    gridColor={(ePlotGlobal.gridColor || ePlotGlobal.textColor) + '40'}
+                    plotBg={resolvedEnergColors.plotBg}
+                    tickColor={resolvedEnergColors.textColor}
+                    labelColor={resolvedEnergColors.textColor}
+                    axisColor={resolvedEnergColors.textColor}
+                    gridColor={(ePlotGlobal.gridColor || resolvedEnergColors.textColor) + '40'}
                     showGrid={ePlotGlobal.showGrid !== false}
                     aspectRatio={Number(energPanelShell.aspectRatio) || 2.5}
                     fontFamily={ePlotGlobal.fontFamily || 'Roboto, sans-serif'}
                     chartTitle={titleResolved}
-                    xTicks={Number(energPanelShell.xTickCount) || 5}
-                    yTicks={Number(energPanelShell.yTickCount) || 5}
-                    extraLeftMargin={Number(energPanelShell.extraLeftMargin) || 0}
-                    legendPosition={energPanelShell.legendPosition || 'top-left'}
+                    xTicks={Number(ePlotGlobal.xTickCount) || 5}
+                    yTicks={Number(ePlotGlobal.yTickCount) || 5}
+                    xTickDecimals={ePlotGlobal.xTickDecimals}
+                    yTickDecimals={ePlotGlobal.yTickDecimals}
+                    extraLeftMargin={Number(ePlotGlobal.extraLeftMargin) || 0}
+                    legendPosition={ePlotGlobal.legendPosition || energPanelShell.legendPosition || 'top-left'}
+                    legendSwatchSize={Number(ePlotGlobal.legendSwatchSize) || 12}
+                    legendFontSize={Number(ePlotGlobal.legendFontSize) || 10}
+                    axisFontSize={Number(ePlotGlobal.axisFontSize) || 12}
+                    titleFontSize={Number(ePlotGlobal.titleFontSize) || 13}
                     xMinOverride={xMinP}
                     xMaxOverride={xMaxP}
                     yMinOverride={yMinP}

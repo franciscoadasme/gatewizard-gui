@@ -27,6 +27,17 @@
     legendPosition = 'bottom',
     xTicks = 5,
     yTicks = 5,
+    /** Empty = auto trim; 0–8 fixed decimal places for axis ticks */
+    xTickDecimals = '',
+    yTickDecimals = '',
+    /** Width/height of the legend color square in SVG units */
+    legendSwatchSize = 12,
+    /** Legend text size */
+    legendFontSize = 10,
+    /** Axis tick and axis-title size */
+    axisFontSize = 12,
+    /** Chart title size */
+    titleFontSize = 13,
     /** @type {'pan' | 'boxZoom' | 'rangeSelect'} */
     interactionMode = 'pan',
     /** Highlight band for range stats [t0, t1] in data x units */
@@ -38,6 +49,11 @@
   } = $props()
 
   const palette = ['#f59e0b', '#22c55e', '#38bdf8', '#f87171', '#a78bfa', '#f472b6']
+  const legendSwatch = $derived(Math.max(6, Number(legendSwatchSize) || 12))
+  const legendFs = $derived(Math.max(7, Number(legendFontSize) || 10))
+  const axisFs = $derived(Math.max(7, Number(axisFontSize) || 12))
+  const titleFs = $derived(Math.max(8, Number(titleFontSize) || 13))
+  const tickFs = $derived(Math.max(7, axisFs - 1))
 
   const width = 900
   const height = $derived(Math.round(width / aspectRatio))
@@ -67,60 +83,73 @@
 
   const RANGE_HANDLE_PX = 10
 
+  let lastExtentsRefs = /** @type {Array<{ x: unknown, y: unknown }>} */ ([])
+  let lastExtentsBase = { xMin: 0, xMax: 1, yMin: 0, yMax: 1 }
+
   const extents = $derived.by(() => {
-    let xMin = Infinity,
-      xMax = -Infinity,
-      yMin = Infinity,
-      yMax = -Infinity
-    for (const s of series) {
-      const xs = s.x ?? []
-      const ys = s.y ?? []
-      const n = Math.min(xs.length, ys.length)
-      // Sample extents on large series (full scan of 1e6+ points freezes UI).
-      const step = n > 20000 ? Math.ceil(n / 8000) : 1
-      for (let i = 0; i < n; i += step) {
-        const xv = xs[i]
-        const yv = ys[i]
-        if (Number.isFinite(xv)) {
-          xMin = Math.min(xMin, xv)
-          xMax = Math.max(xMax, xv)
+    const refsChanged =
+      series.length !== lastExtentsRefs.length ||
+      series.some((s, i) => s.x !== lastExtentsRefs[i]?.x || s.y !== lastExtentsRefs[i]?.y)
+    if (refsChanged) {
+      let xMin = Infinity,
+        xMax = -Infinity,
+        yMin = Infinity,
+        yMax = -Infinity
+      for (const s of series) {
+        const xs = s.x ?? []
+        const ys = s.y ?? []
+        const n = Math.min(xs.length, ys.length)
+        // Sample extents on large series (full scan of 1e6+ points freezes UI).
+        const step = n > 20000 ? Math.ceil(n / 8000) : 1
+        for (let i = 0; i < n; i += step) {
+          const xv = xs[i]
+          const yv = ys[i]
+          if (Number.isFinite(xv)) {
+            xMin = Math.min(xMin, xv)
+            xMax = Math.max(xMax, xv)
+          }
+          if (Number.isFinite(yv)) {
+            yMin = Math.min(yMin, yv)
+            yMax = Math.max(yMax, yv)
+          }
         }
-        if (Number.isFinite(yv)) {
-          yMin = Math.min(yMin, yv)
-          yMax = Math.max(yMax, yv)
+        if (n > 0) {
+          const xv = xs[n - 1]
+          const yv = ys[n - 1]
+          if (Number.isFinite(xv)) {
+            xMin = Math.min(xMin, xv)
+            xMax = Math.max(xMax, xv)
+          }
+          if (Number.isFinite(yv)) {
+            yMin = Math.min(yMin, yv)
+            yMax = Math.max(yMax, yv)
+          }
         }
       }
-      if (n > 0) {
-        const xv = xs[n - 1]
-        const yv = ys[n - 1]
-        if (Number.isFinite(xv)) {
-          xMin = Math.min(xMin, xv)
-          xMax = Math.max(xMax, xv)
-        }
-        if (Number.isFinite(yv)) {
-          yMin = Math.min(yMin, yv)
-          yMax = Math.max(yMax, yv)
-        }
+      if (!Number.isFinite(xMin)) {
+        xMin = 0
+        xMax = 1
+      }
+      if (!Number.isFinite(yMin)) {
+        yMin = 0
+        yMax = 1
+      }
+      if (xMin === xMax) xMax = xMin + 1
+      if (yMin === yMax) yMax = yMin + 1
+      const yPad = (yMax - yMin) * 0.05
+      lastExtentsRefs = series.map((s) => ({ x: s.x, y: s.y }))
+      lastExtentsBase = {
+        xMin,
+        xMax,
+        yMin: yMin - yPad,
+        yMax: yMax + yPad
       }
     }
-    if (!Number.isFinite(xMin)) {
-      xMin = 0
-      xMax = 1
-    }
-    if (!Number.isFinite(yMin)) {
-      yMin = 0
-      yMax = 1
-    }
-    if (xMin === xMax) xMax = xMin + 1
-    if (yMin === yMax) yMax = yMin + 1
-    const yPad = (yMax - yMin) * 0.05
-    const baseYMin = yMin - yPad
-    const baseYMax = yMax + yPad
     return {
-      xMin: xMinOverride !== null && Number.isFinite(xMinOverride) ? xMinOverride : xMin,
-      xMax: xMaxOverride !== null && Number.isFinite(xMaxOverride) ? xMaxOverride : xMax,
-      yMin: yMinOverride !== null && Number.isFinite(yMinOverride) ? yMinOverride : baseYMin,
-      yMax: yMaxOverride !== null && Number.isFinite(yMaxOverride) ? yMaxOverride : baseYMax
+      xMin: xMinOverride !== null && Number.isFinite(xMinOverride) ? xMinOverride : lastExtentsBase.xMin,
+      xMax: xMaxOverride !== null && Number.isFinite(xMaxOverride) ? xMaxOverride : lastExtentsBase.xMax,
+      yMin: yMinOverride !== null && Number.isFinite(yMinOverride) ? yMinOverride : lastExtentsBase.yMin,
+      yMax: yMaxOverride !== null && Number.isFinite(yMaxOverride) ? yMaxOverride : lastExtentsBase.yMax
     }
   })
 
@@ -166,6 +195,48 @@
     }
     return path.trim()
   }
+
+  /** Cache path strings by x/y array identity so color/name edits do not rebuild geometry. */
+  /** @type {WeakMap<object, { sig: string, ys: unknown, d: string }>} */
+  const linePathMemo = new WeakMap()
+  /** @type {WeakMap<object, { sig: string, ys: unknown, ds: string[] }>} */
+  const markerMemo = new WeakMap()
+
+  const geomSig = $derived(
+    `${extents.xMin}:${extents.xMax}:${extents.yMin}:${extents.yMax}:${plotWidth}:${plotHeight}:${margin.left}:${margin.top}`
+  )
+
+  const linePaths = $derived.by(() => {
+    const sig = geomSig
+    return series.map((s) => {
+      const xs = s.x
+      const ys = s.y
+      if (xs && typeof xs === 'object') {
+        const hit = linePathMemo.get(xs)
+        if (hit && hit.sig === sig && hit.ys === ys) return hit.d
+        const d = pathFromSeries(s)
+        linePathMemo.set(xs, { sig, ys, d })
+        return d
+      }
+      return pathFromSeries(s)
+    })
+  })
+
+  const markerPaths = $derived.by(() => {
+    const sig = `${geomSig}:${series.map((s) => `${s.marker || 'none'}:${s.markerSize || 0}:${s.markerEvery || 0}`).join('|')}`
+    return series.map((s) => {
+      const xs = s.x
+      const ys = s.y
+      if (xs && typeof xs === 'object') {
+        const hit = markerMemo.get(xs)
+        if (hit && hit.sig === sig && hit.ys === ys) return hit.ds
+        const ds = markersFromSeries(s)
+        markerMemo.set(xs, { sig, ys, ds })
+        return ds
+      }
+      return markersFromSeries(s)
+    })
+  })
 
   /** @param {string | undefined} marker @param {number} cx @param {number} cy @param {number} size */
   function markerPath(marker, cx, cy, size) {
@@ -214,14 +285,32 @@
     return out
   }
 
-  function fmt(v) {
+  function clampTickDecimals(v) {
+    if (v === '' || v == null) return null
+    const n = Math.round(Number(v))
+    if (!Number.isFinite(n)) return null
+    return Math.max(0, Math.min(8, n))
+  }
+
+  /** @param {number} v @param {string | number | null | undefined} decimals */
+  function formatTickValue(v, decimals) {
     if (!Number.isFinite(v)) return ''
+    const d = clampTickDecimals(decimals)
+    if (d != null) return v.toFixed(d)
     const abs = Math.abs(v)
     if (abs >= 1000 || (abs > 0 && abs < 0.01)) return v.toExponential(2)
     return v
       .toFixed(3)
       .replace(/\.0+$/, '')
       .replace(/(\.\d*[1-9])0+$/, '$1')
+  }
+
+  function fmtX(v) {
+    return formatTickValue(v, xTickDecimals)
+  }
+
+  function fmtY(v) {
+    return formatTickValue(v, yTickDecimals)
   }
 
   function clamp(val, lo, hi) {
@@ -490,7 +579,7 @@
     if (xTickLabels.length === 0) {
       return ticks.map((t) => ({
         t,
-        label: fmt(extents.xMin + (extents.xMax - extents.xMin) * t)
+        label: fmtX(extents.xMin + (extents.xMax - extents.xMin) * t)
       }))
     }
     const xs = series[0]?.x ?? []
@@ -505,7 +594,7 @@
           best = i
         }
       }
-      return { t, label: xTickLabels[best] ?? fmt(xVal) }
+      return { t, label: xTickLabels[best] ?? fmtX(xVal) }
     })
   })
 
@@ -569,7 +658,7 @@
               x={margin.left + plotWidth / 2}
               y={chartSubtitle ? 16 : 20}
               text-anchor="middle"
-              font-size="13"
+              font-size={titleFs}
               font-weight="600"
               font-family={fontFamily}
               fill={labelColor}>{chartTitle}</text
@@ -580,7 +669,7 @@
               x={margin.left + plotWidth / 2}
               y={chartTitle ? 30 : 18}
               text-anchor="middle"
-              font-size="10"
+              font-size={Math.max(7, titleFs - 3)}
               font-family={fontFamily}
               fill={labelColor}
               opacity="0.85">{chartSubtitle}</text
@@ -621,9 +710,9 @@
             x={margin.left - 8}
             y={margin.top + plotHeight * t + 4}
             text-anchor="end"
-            font-size="11"
+            font-size={tickFs}
             font-family={fontFamily}
-            fill={tickColor}>{fmt(yVal)}</text
+            fill={tickColor}>{fmtY(yVal)}</text
           >
         {/each}
         {#each xTickData as tick (tick.t)}
@@ -631,7 +720,7 @@
             x={margin.left + plotWidth * tick.t}
             y={margin.top + plotHeight + 18}
             text-anchor="middle"
-            font-size="11"
+            font-size={tickFs}
             font-family={fontFamily}
             fill={tickColor}>{tick.label}</text
           >
@@ -699,10 +788,10 @@
 
         <g clip-path="url(#plot-area)">
           <g transform={plotTransform}>
-            {#each series as s, i (s.name + i)}
+            {#each series as s, i (s.key ?? i)}
               {@const sw = Number(s.strokeWidth) || 2}
               <path
-                d={pathFromSeries(s)}
+                d={linePaths[i] ?? ''}
                 fill="none"
                 stroke={s.color || palette[i % palette.length]}
                 stroke-width={dataDomain ? sw : sw / scale}
@@ -710,7 +799,7 @@
                 stroke-linejoin="round"
                 stroke-linecap="round"
               />
-              {#each markersFromSeries(s) as md, mi (`${s.name}-m${mi}`)}
+              {#each markerPaths[i] ?? [] as md, mi (`${s.key ?? i}-m${mi}`)}
                 <path
                   d={md}
                   fill={s.marker === 'cross' ? 'none' : s.color || palette[i % palette.length]}
@@ -726,7 +815,7 @@
           x={margin.left + plotWidth / 2}
           y={height - 8}
           text-anchor="middle"
-          font-size="12"
+          font-size={axisFs}
           font-family={fontFamily}
           fill={labelColor}>{xLabel}</text
         >
@@ -734,16 +823,16 @@
           x="14"
           y={margin.top + plotHeight / 2}
           text-anchor="middle"
-          font-size="12"
+          font-size={axisFs}
           font-family={fontFamily}
           fill={labelColor}
           transform={`rotate(-90, 14, ${margin.top + plotHeight / 2})`}>{yLabel}</text
         >
 
         {#if legendPosition !== 'bottom' && legendPosition !== 'none' && series.length > 0}
-          {@const itemH = 16}
+          {@const itemH = Math.max(16, legendSwatch + 6)}
           {@const maxLen = Math.max(...series.map((s) => s.name.length), 5)}
-          {@const lw = Math.min(maxLen * 7 + 24, plotWidth - 16)}
+          {@const lw = Math.min(maxLen * legendFs * 0.62 + legendSwatch + 16, plotWidth - 16)}
           {@const lh = series.length * itemH + 10}
           {@const lx = legendPosition.includes('right')
             ? margin.left + plotWidth - lw - 8
@@ -762,22 +851,21 @@
             stroke={axisColor}
             stroke-width="0.5"
           />
-          {#each series as s, i (s.name + i)}
+          {#each series as s, i (s.key ?? i)}
             {@const iy = ly + 5 + itemH * i + itemH / 2}
-            <line
-              x1={lx + 4}
-              y1={iy}
-              x2={lx + 16}
-              y2={iy}
-              stroke={s.color || palette[i % palette.length]}
-              stroke-width="2"
-              stroke-dasharray={s.strokeDasharray || undefined}
+            <rect
+              x={lx + 4}
+              y={iy - legendSwatch / 2}
+              width={legendSwatch}
+              height={legendSwatch}
+              rx="1"
+              fill={s.color || palette[i % palette.length]}
             />
             <text
-              x={lx + 20}
-              y={iy + 4}
+              x={lx + 8 + legendSwatch}
+              y={iy + legendFs * 0.35}
               text-anchor="start"
-              font-size="10"
+              font-size={legendFs}
               font-family={fontFamily}
               fill={labelColor}>{s.name}</text
             >
@@ -788,12 +876,12 @@
   </div>
 
   {#if legendPosition === 'bottom' && series.length > 0}
-    <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
-      {#each series as s, i (s.name + i)}
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-1" style={`font-size:${legendFs}px`}>
+      {#each series as s, i (s.key ?? i)}
         <div class="flex items-center gap-1">
           <span
-            class="inline-block h-2.5 w-2.5 rounded-full"
-            style={`background:${s.color || palette[i % palette.length]}`}
+            class="inline-block shrink-0 rounded-sm"
+            style={`width:${legendSwatch}px;height:${legendSwatch}px;background:${s.color || palette[i % palette.length]}`}
           ></span>
           <span class="text-neutral-300">{s.name}</span>
         </div>

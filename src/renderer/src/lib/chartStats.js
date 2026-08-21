@@ -29,16 +29,27 @@ export function computeSeriesStats(series, t0 = null, t1 = null) {
     return { count: 0, mean: null, std: null, min: null, max: null }
   }
 
-  const mean = values.reduce((a, b) => a + b, 0) / values.length
-  const variance =
-    values.reduce((acc, v) => acc + (v - mean) ** 2, 0) / values.length
-  const std = Math.sqrt(variance)
+  let sum = 0
+  let min = Infinity
+  let max = -Infinity
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i]
+    sum += v
+    if (v < min) min = v
+    if (v > max) max = v
+  }
+  const mean = sum / values.length
+  let varSum = 0
+  for (let i = 0; i < values.length; i++) {
+    varSum += (values[i] - mean) ** 2
+  }
+  const std = Math.sqrt(varSum / values.length)
   return {
     count: values.length,
     mean,
     std,
-    min: Math.min(...values),
-    max: Math.max(...values)
+    min,
+    max
   }
 }
 

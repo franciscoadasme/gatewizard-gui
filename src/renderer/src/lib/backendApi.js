@@ -82,6 +82,15 @@ export function runPreparation(jobDir) {
 }
 
 /**
+ * Cancel a running Builder preparation job.
+ * @param {string} jobDir Absolute path to the job directory
+ * @returns {Promise<{ success: boolean, job_dir: string, stopped: boolean, status: string, message: string, killed_process?: boolean }>}
+ */
+export function cancelPreparation(jobDir) {
+  return backendJson('/cancel-preparation', { jobDir })
+}
+
+/**
  * Poll the status.json for a running/completed job.
  * @param {string} jobDir  Absolute path to the job directory
  * @returns {Promise<{ status: string, current_step: number, steps_completed: string[], error: string|null, start_time: string, end_time: string|null }>}
@@ -271,7 +280,7 @@ export function countAnalysisSelection(payload) {
 /**
  * Detect which engine/tool should fix PBC for the given inputs.
  * @param {{ topologyPath: string, trajectoryPaths?: string[], engine?: string }} payload
- * @returns {Promise<{ engine: string, method: string, reason: string, tpr: string|null, ndx: string|null, topology: string|null, warnings: string[], center_groups?: Array<{ name: string, index: number, n_atoms: number, recommended?: boolean }>, recommended_center?: string|null, recommended_output?: string|null, supported_output_formats?: string[] }>}
+ * @returns {Promise<{ engine: string, method: string, reason: string, tpr: string|null, ndx: string|null, topology: string|null, warnings: string[], center_groups?: Array<{ name: string, index: number, n_atoms: number, recommended?: boolean, lipid_like?: boolean }>, recommended_center?: string|null, recommended_center_groups?: string[], recommended_output?: string|null, lipid_resnames?: string[], recommended_center_selection?: string, supported_output_formats?: string[] }>}
  */
 export function detectPbcEngine(payload) {
   return backendJson('/tools-detect-pbc-engine', payload)
@@ -280,7 +289,7 @@ export function detectPbcEngine(payload) {
 /**
  * List GROMACS index groups for centering.
  * @param {{ ndxPath?: string|null, tprPath?: string|null, gmxExecutable?: string|null }} payload
- * @returns {Promise<{ groups: Array<{ name: string, index: number, n_atoms: number, recommended?: boolean }>, recommended: string, source: string|null, warnings: string[] }>}
+ * @returns {Promise<{ groups: Array<{ name: string, index: number, n_atoms: number, recommended?: boolean, lipid_like?: boolean }>, recommended: string, recommended_groups?: string[], source: string|null, warnings: string[] }>}
  */
 export function listGromacsGroups(payload) {
   return backendJson('/tools-list-gromacs-groups', payload)
@@ -288,7 +297,7 @@ export function listGromacsGroups(payload) {
 
 /**
  * Start an async Fix PBC job (returns immediately with job_dir).
- * @param {{ topologyPath: string, trajectoryPaths: string[], outputDir: string, engine?: string, centerSelection?: string, centerGroup?: string|null, outputGroup?: string|null, tprPath?: string|null, ndxPath?: string|null, gmxExecutable?: string|null, cpptrajExecutable?: string|null, outputFormat?: 'dcd'|'xtc'|'nc'|'same', stride?: number, fileStrides?: Record<string, number>|null, jobName?: string|null }} payload
+ * @param {{ topologyPath: string, trajectoryPaths: string[], outputDir: string, engine?: string, centerSelection?: string, centerGroup?: string|null, outputGroup?: string|null, centerGroups?: string[]|null, outputGroups?: string[]|null, skipCluster?: boolean, tprPath?: string|null, ndxPath?: string|null, gmxExecutable?: string|null, cpptrajExecutable?: string|null, outputFormat?: 'dcd'|'xtc'|'nc'|'same', stride?: number, fileStrides?: Record<string, number>|null, jobName?: string|null }} payload
  * @returns {Promise<{ success: boolean, job_dir: string, engine: string, method: string, message: string, pid?: number, detect?: object }>}
  */
 export function runFixPbc(payload) {
@@ -608,6 +617,103 @@ export async function clusterSubmitJob(props) {
   return backendJson('/cluster/submit-job', props)
 }
 
+/**
+ * Stream upload + sbatch progress (NDJSON).
+ * @param {object} props
+ * @param {(evt: {
+ *   phase?: string,
+ *   percent?: number|null,
+ *   message?: string,
+ *   bytes?: number,
+ *   total_bytes?: number,
+ *   error?: string,
+ *   result?: object
+ * }) => void} [onProgress]
+ * @returns {Promise<object>} final submit result
+ */
+export async function clusterSubmitJobStream(props, onProgress) {
+  const url = `${BACKEND_BASE_URL}/cluster/submit-job-stream`
+  const emit = (evt) => {
+    if (typeof onProgress === 'function') onProgress(evt)
+  }
+
+  let response
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/x-ndjson'
+      },
+      body: JSON.stringify(keysToSnakeCase(props))
+    })
+  } catch (err) {
+    console.error('[backendApi] submit stream failed', { url, err })
+    throw err
+  }
+
+  if (!response.ok) {
+    let data = {}
+    try {
+      data = await response.json()
+    } catch {
+      data = {}
+    }
+    throwFromFastApiBody(data, response)
+  }
+
+  const reader = response.body?.getReader()
+  if (!reader) {
+    throw new Error('Submit stream unavailable (empty response body)')
+  }
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+  /** @type {object|null} */
+  let finalResult = null
+  /** @type {string|null} */
+  let streamError = null
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      let evt
+      try {
+        evt = JSON.parse(trimmed)
+      } catch {
+        continue
+      }
+      emit(evt)
+      if (evt?.phase === 'done') {
+        finalResult = evt.result || { ok: true }
+      } else if (evt?.phase === 'error') {
+        streamError = evt.error || evt.message || 'Submit failed'
+      }
+    }
+  }
+
+  if (buffer.trim()) {
+    try {
+      const evt = JSON.parse(buffer.trim())
+      emit(evt)
+      if (evt?.phase === 'done') finalResult = evt.result || { ok: true }
+      else if (evt?.phase === 'error') streamError = evt.error || evt.message || 'Submit failed'
+    } catch {
+      /* ignore trailing garbage */
+    }
+  }
+
+  if (streamError) throw new Error(streamError)
+  if (!finalResult) throw new Error('Submit finished without a result')
+  return finalResult
+}
+
 /** @param {object} props */
 export async function clusterJobStatus(props) {
   return backendJson('/cluster/job-status', props)
@@ -783,8 +889,20 @@ export async function clusterPullJobStream(props, onProgress) {
         emit(evt)
         if (evt?.phase === 'done') {
           finalResult = evt.result || { ok: true }
+          stopLocalPoll()
+          try {
+            await reader.cancel()
+          } catch {
+            /* stream already closing */
+          }
         } else if (evt?.phase === 'error') {
           streamError = evt.error || evt.message || 'Pull failed'
+          stopLocalPoll()
+          try {
+            await reader.cancel()
+          } catch {
+            /* stream already closing */
+          }
         }
       }
     }

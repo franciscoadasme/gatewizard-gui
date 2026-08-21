@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Analysis structural Pub PNG:** overlay y-limits use the full combined range of all series (e.g. area-per-lipid mean + upper/lower leaflets), not only the first series.
+- **Analysis structural type switch:** switching RMSD ↔ membrane thickness / area per lipid shows a chart overlay and sidebar “Switching…” spinner again while headgroup detection and CSV hydrate run; stale plots are cleared immediately so the old chart is not left visible during the wait.
+- **Analysis Pub PNG:** matplotlib export uses the headless Agg backend so backend logs no longer show Tk/Tcl errors on WSL (`main thread is not in main loop`, `Tcl_AsyncDelete`).
+- **Analysis PNG/SVG export:** wait for chart SVGs to mount after plot remounts (spinner from click, notice if not ready) instead of failing silently.
+- **Analysis structural Pub PNG:** full trajectory x-range per set in grid mode (no shared zoom x-limits); y-axis min/max from plot settings still apply.
+- **Analysis energetic Pub PNG:** respects Compare layout (overlay / one panel per property / one panel per set), matching on-screen panels and set colors.
+- **Analysis export:** optional file name for CSV / SVG / PNG. PNG/SVG save every on-screen panel (overlay or separate sets). Pub PNG (matplotlib style) is on both Structural and Energetic and includes every visible set in the legend. Buttons show a spinner while writing.
 ## [1.0.13] - 2026-08-06
 
 ### Added

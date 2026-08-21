@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
+  computeStatsFromSeries,
   clonePlainAnalysisData,
   csvFileNameForAnalysisSet,
   csvFileNameForEnergeticSet,
@@ -15,7 +16,10 @@ import {
   hydrateAnalysisSetsFromCsv,
   setsHaveAnyPlottableResults,
   normalizeEnergeticCompareLayout,
-  deserializeAnalysisSession
+  deserializeAnalysisSession,
+  hydratePlotColorFlags,
+  resolvePlotColors,
+  themePlotBackgroundHex
 } from './analysisSession.js'
 import { structuralResultHasPlotData } from './analysisSets.js'
 
@@ -35,6 +39,15 @@ test('clonePlainAnalysisData copies nested numeric arrays', () => {
   assert.deepEqual(copy[0].structuralResult.rawY, [0.9, 1.1, 0.8])
   copy[0].structuralResult.rawY.push(99)
   assert.equal(sets[0].structuralResult.rawY.length, 3)
+})
+
+test('computeStatsFromSeries does not spread huge arrays (renderer crash)', () => {
+  const y = new Array(200_000)
+  for (let i = 0; i < y.length; i++) y[i] = i
+  const stats = computeStatsFromSeries(y)
+  assert.equal(stats.min, 0)
+  assert.equal(stats.max, 199_999)
+  assert.ok(Math.abs(stats.mean - 99999.5) < 1e-6)
 })
 
 test('serializeAnalysisSession clones sets without structuredClone', () => {
@@ -100,8 +113,10 @@ test('slimSetsForSessionSave strips coordinate arrays and records csv names', ()
     'structural'
   )
   assert.deepEqual(sets[0].structuralResults.rmsd.rawY, [])
-  assert.equal(sets[0].structuralResults.rmsd.dataCsv, 'nvt_rmsd.csv')
-  assert.equal(sets[1].structuralResults.rmsd.dataCsv, 'npt_rmsd.csv')
+  assert.equal(sets[0].structuralResults.rmsd.dataCsv, 'set1_rmsd.csv')
+  assert.equal(sets[1].structuralResults.rmsd.dataCsv, 'set2_rmsd.csv')
+  assert.equal(sets[0].csvStem, 'set1')
+  assert.equal(sets[1].csvStem, 'set2')
 })
 
 test('slimSetsForSessionSave strips energetic series arrays', () => {
@@ -126,8 +141,8 @@ test('slimSetsForSessionSave strips energetic series arrays', () => {
   assert.deepEqual(sets[0].energeticResult.rawX, [])
   assert.deepEqual(sets[0].energeticResult.rawSeries[0].y, [])
   assert.equal(sets[0].energeticResult.rawSeries[0].baseName, 'Temperature')
-  assert.equal(sets[0].energeticResult.dataCsv, 'analysis_energetic.csv')
-  assert.equal(csvFileNameForEnergeticSet({ label: 'Prod' }, 2), 'prod_energetic.csv')
+  assert.equal(sets[0].energeticResult.dataCsv, 'set1_energetic.csv')
+  assert.equal(csvFileNameForEnergeticSet({ csvStem: 'set2', label: 'Prod' }, 1), 'set2_energetic.csv')
 })
 
 test('normalizeEnergeticCompareLayout maps legacy grid to by_set', () => {
@@ -216,13 +231,46 @@ test('applyCsvToStructuralResult replaces stale embedded arrays', () => {
   assert.ok(Math.abs(updated.primaryStats.mean - 0.15) < 1e-9)
 })
 
-test('csvFileNameForAnalysisSet matches multi-set export naming', () => {
-  assert.equal(csvFileNameForAnalysisSet({ label: 'NPAT' }, 'rmsd', 4), 'npat_rmsd.csv')
+test('csvFileNameForAnalysisSet uses stable setN stems, not labels', () => {
+  assert.equal(csvFileNameForAnalysisSet({ csvStem: 'set1', label: 'NPAT' }, 'rmsd'), 'set1_rmsd.csv')
+  assert.equal(csvFileNameForAnalysisSet({ label: 'NPAT' }, 'rmsd', 0), 'set1_rmsd.csv')
+  assert.equal(csvFileNameForAnalysisSet({ label: 'NPAT' }, 'rmsd', 2), 'set3_rmsd.csv')
 })
 
-test('structuralResultHasPlotData detects empty slim results', () => {
-  assert.equal(structuralResultHasPlotData({ rawY: [] }), false)
-  assert.equal(structuralResultHasPlotData({ rawY: [1] }), true)
+test('slimSetsForSessionSave keeps the same CSV name after a set rename', () => {
+  const result = {
+    analysisType: 'rmsd',
+    rawX: [0, 1],
+    rawY: [1, 2],
+    seriesName: 'RMSD'
+  }
+  const before = slimSetsForSessionSave([
+    { id: 'a', label: 'NVT', csvStem: 'set1', structuralResults: { rmsd: result }, structuralResult: result }
+  ])
+  const after = slimSetsForSessionSave([
+    { id: 'a', label: 'Production NPAT', csvStem: 'set1', structuralResults: { rmsd: result }, structuralResult: result }
+  ])
+  assert.equal(before[0].structuralResults.rmsd.dataCsv, 'set1_rmsd.csv')
+  assert.equal(after[0].structuralResults.rmsd.dataCsv, 'set1_rmsd.csv')
+})
+
+test('structuralMeanY rebuilds average from leaflets when rawY is empty', async () => {
+  const { structuralMeanY, aplSeriesLabel, aplSeriesColor } = await import('./analysisSets.js')
+  assert.deepEqual(
+    structuralMeanY({
+      rawY: [],
+      extraSeries: [
+        { name: 'Upper leaflet', rawY: [2, 4] },
+        { name: 'Lower leaflet', rawY: [4, 6] }
+      ]
+    }),
+    [3, 5]
+  )
+  const set = { color: '#112233', aplMeanLabel: '', aplUpperLabel: 'Top' }
+  assert.equal(aplSeriesLabel(set, 'mean'), 'Average')
+  assert.equal(aplSeriesLabel(set, 'upper'), 'Top')
+  assert.equal(aplSeriesColor(set, 'upper'), '#112233')
+  assert.equal(aplSeriesColor({ ...set, aplUpperColor: '#abcdef' }, 'upper'), '#abcdef')
 })
 
 test('structuralResultNeedsCsvHydration detects stripped bilayer leaflets', async () => {
@@ -262,4 +310,43 @@ test('hydrateAnalysisSetsFromCsv updates in-memory sets', async () => {
     async (path) => readFileSync(path, 'utf8')
   )
   assert.equal(sets[0].structuralResults.rmsd.rawY.length, 475)
+})
+
+test('legacy plot colors follow theme until the user customizes them', () => {
+  const legacy = hydratePlotColorFlags({ plotBg: '#0a0a0a', textColor: '#a3a3a3' })
+  assert.equal(legacy.plotBgCustomized, false)
+  assert.equal(legacy.textColorCustomized, false)
+  const dark = resolvePlotColors(legacy, 'dark')
+  const light = resolvePlotColors(legacy, 'light')
+  assert.equal(dark.plotBg, themePlotBackgroundHex('dark'))
+  assert.equal(light.plotBg, themePlotBackgroundHex('light'))
+  assert.equal(light.plotBg, '#ffffff')
+  assert.notEqual(light.plotBg, dark.plotBg)
+})
+
+test('custom plot colors are kept across themes and saved in the session', () => {
+  const custom = hydratePlotColorFlags({
+    plotBg: '#112233',
+    textColor: '#eeeeee',
+    plotBgCustomized: true,
+    textColorCustomized: true
+  })
+  const dark = resolvePlotColors(custom, 'dark')
+  const light = resolvePlotColors(custom, 'light')
+  assert.equal(dark.plotBg, '#112233')
+  assert.equal(light.plotBg, '#112233')
+  const session = serializeAnalysisSession({
+    mode: 'structural',
+    compareLayout: 'overlay',
+    outputFolderName: '04_analysis',
+    activeSetId: 'set-1',
+    sets: [{ id: 'set-1', label: 'Prod' }],
+    plotSettings: {
+      structural: { rmsd: custom },
+      energeticGlobal: { plotBg: '#abcdef', plotBgCustomized: true }
+    }
+  })
+  const loaded = deserializeAnalysisSession(session)
+  assert.equal(loaded.plotSettings.structural.rmsd.plotBg, '#112233')
+  assert.equal(loaded.plotSettings.energeticGlobal.plotBgCustomized, true)
 })

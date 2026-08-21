@@ -8,9 +8,63 @@ export function pdbStem(filePath) {
   return fileBasename(filePath).replace(/\.pdb$/i, '') || 'structure'
 }
 
+/** Strip trailing slashes and normalize separators. @param {string} [dirPath] */
+export function normalizeDirPath(dirPath) {
+  return String(dirPath || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/\/+$/, '')
+}
+
 /** @param {string} dirPath */
 export function dirBasename(dirPath) {
-  return dirPath.replace(/[/\\]+$/, '').split(/[/\\]/).pop() ?? ''
+  return normalizeDirPath(dirPath).split('/').pop() ?? ''
+}
+
+/** @param {string} [a] @param {string} [b] */
+export function dirsEqual(a, b) {
+  return normalizeDirPath(a) === normalizeDirPath(b)
+}
+
+/** Parent directory of a file or folder path. @param {string} [fileOrDir] */
+export function parentDirPath(fileOrDir) {
+  const n = normalizeDirPath(fileOrDir)
+  if (!n) return ''
+  const i = n.lastIndexOf('/')
+  if (i <= 0) return ''
+  return n.slice(0, i)
+}
+
+/**
+ * Unique non-empty directory list, preserving order.
+ * @param {...string} dirs
+ */
+export function uniqueDirList(...dirs) {
+  const seen = new Set()
+  const out = []
+  for (const d of dirs) {
+    const n = normalizeDirPath(d)
+    if (!n || seen.has(n)) continue
+    seen.add(n)
+    out.push(n)
+  }
+  return out
+}
+
+/**
+ * Compact path for dropdowns: relative to `relativeTo` when nested under it.
+ * @param {string} [dir]
+ * @param {string} [relativeTo]
+ */
+export function compactDirPath(dir, relativeTo = '') {
+  const n = normalizeDirPath(dir)
+  if (!n) return ''
+  const base = normalizeDirPath(relativeTo)
+  if (base && (n === base || n.startsWith(`${base}/`))) {
+    const rel = n.slice(base.length).replace(/^\/+/, '')
+    return rel ? `./${rel}` : '.'
+  }
+  return n
 }
 
 /** @param {string} topologyPath */
@@ -21,8 +75,9 @@ export function topologyStem(topologyPath) {
 /** @param {string} workingDir @param {string} folderName */
 export function outputFolderPath(workingDir, folderName) {
   const name = folderName.trim()
-  if (!workingDir || !name) return ''
-  return `${workingDir.replace(/[/\\]+$/, '')}/${name}`
+  const parent = normalizeDirPath(workingDir)
+  if (!parent || !name) return ''
+  return `${parent}/${name}`
 }
 
 /** @param {string} workingFile */
