@@ -49,6 +49,18 @@ const child = spawn(process.execPath, [electronViteBin, ...args], {
   shell: false
 })
 
+function forwardSignal(signal) {
+  if (child.exitCode != null || child.signalCode) return
+  try {
+    child.kill(signal)
+  } catch {
+    /* already gone */
+  }
+}
+
+process.on('SIGINT', () => forwardSignal('SIGINT'))
+process.on('SIGTERM', () => forwardSignal('SIGTERM'))
+
 child.on('exit', (code, signal) => {
   if (signal) process.kill(process.pid, signal)
   process.exit(code ?? 1)

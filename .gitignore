@@ -12,3 +12,6 @@ backend/__pycache__
 gatewizard-gui.code-workspace
 electron.vite.config.*.mjs
 !electron.vite.config.mjs
+
+# Local protocol archives
+resources/protocols/*.bak

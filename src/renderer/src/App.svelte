@@ -857,7 +857,7 @@
               : 'hidden'};pointer-events:{currentId === stage.id ? 'auto' : 'none'}"
             aria-hidden={currentId !== stage.id}
           >
-            <PageComp {workingDir} />
+            <PageComp {workingDir} pageActive={currentId === stage.id} />
           </div>
         {/if}
       {/each}
