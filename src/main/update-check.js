@@ -1,8 +1,13 @@
-import { app } from 'electron'
-
 /** Public manifest (gatewizard repo). Override with GATEWIZARD_UPDATE_MANIFEST_URL. */
 export const DEFAULT_MANIFEST_URL =
   'https://raw.githubusercontent.com/maurobedoya/gatewizard/main/releases/gui-versions.json'
+
+/**
+ * Fallback when the gatewizard-repo manifest is stale or the CI sync secret
+ * was missing. Every GUI GitHub Release attaches dist/versions.json.
+ */
+export const FALLBACK_MANIFEST_URL =
+  'https://github.com/franciscoadasme/gatewizard-gui/releases/latest/download/versions.json'
 
 export function getManifestUrl() {
   return process.env.GATEWIZARD_UPDATE_MANIFEST_URL || DEFAULT_MANIFEST_URL
@@ -57,13 +62,43 @@ export function pickGuiDownloadUrl(platform, downloads = {}) {
 }
 
 /**
+ * @param {string} url
+ * @returns {Promise<object>}
+ */
+async function fetchManifestJson(url) {
+  const response = await fetch(url, {
+    headers: { Accept: 'application/json', 'User-Agent': 'gatewizard-gui' },
+    redirect: 'follow'
+  })
+  if (!response.ok) {
+    throw new Error(`Manifest HTTP ${response.status} (${url})`)
+  }
+  return response.json()
+}
+
+/**
+ * Prefer the manifest that advertises the newer GUI (then newer API).
+ * @param {object | null} a
+ * @param {object | null} b
+ */
+export function pickNewerManifest(a, b) {
+  if (!a) return b
+  if (!b) return a
+  const guiCmp = compareSemver(a.gui?.latest, b.gui?.latest)
+  if (guiCmp !== 0) return guiCmp > 0 ? a : b
+  const apiCmp = compareSemver(a.gatewizard?.latest, b.gatewizard?.latest)
+  return apiCmp >= 0 ? a : b
+}
+
+/**
  * @param {{ guiVersion: string, gatewizardVersion: string | null, manifestUrl?: string }} options
  */
 export async function checkForUpdates(options) {
-  const manifestUrl = options.manifestUrl || getManifestUrl()
+  const primaryUrl = options.manifestUrl || getManifestUrl()
+  const envOverride = Boolean(process.env.GATEWIZARD_UPDATE_MANIFEST_URL || options.manifestUrl)
   const result = {
     ok: false,
-    manifestUrl,
+    manifestUrl: primaryUrl,
     local: {
       gui: options.guiVersion,
       gatewizard: options.gatewizardVersion
@@ -86,18 +121,42 @@ export async function checkForUpdates(options) {
     error: null
   }
 
-  let manifest
+  /** @type {object | null} */
+  let primary = null
+  /** @type {object | null} */
+  let fallback = null
+  /** @type {string | null} */
+  let primaryError = null
+  /** @type {string | null} */
+  let fallbackError = null
+
   try {
-    const response = await fetch(manifestUrl, {
-      headers: { Accept: 'application/json', 'User-Agent': 'gatewizard-gui' }
-    })
-    if (!response.ok) {
-      throw new Error(`Manifest HTTP ${response.status}`)
-    }
-    manifest = await response.json()
+    primary = await fetchManifestJson(primaryUrl)
   } catch (error) {
-    result.error = error instanceof Error ? error.message : 'Failed to fetch update manifest'
+    primaryError = error instanceof Error ? error.message : 'Failed to fetch primary manifest'
+  }
+
+  // Always try the GUI release asset unless the caller forced a custom URL.
+  // That keeps update banners working when CI forgot to sync gui-versions.json.
+  if (!envOverride) {
+    try {
+      fallback = await fetchManifestJson(FALLBACK_MANIFEST_URL)
+    } catch (error) {
+      fallbackError =
+        error instanceof Error ? error.message : 'Failed to fetch fallback manifest'
+    }
+  }
+
+  const manifest = pickNewerManifest(primary, fallback)
+  if (!manifest) {
+    result.error = primaryError || fallbackError || 'Failed to fetch update manifest'
     return result
+  }
+
+  if (fallback && pickNewerManifest(primary, fallback) === fallback) {
+    result.manifestUrl = FALLBACK_MANIFEST_URL
+  } else {
+    result.manifestUrl = primaryUrl
   }
 
   result.ok = true
@@ -137,5 +196,8 @@ export async function checkForUpdates(options) {
 }
 
 export function getLocalGuiVersion() {
+  // Lazy import so pure helpers can be unit-tested without Electron.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { app } = require('electron')
   return app.getVersion()
 }

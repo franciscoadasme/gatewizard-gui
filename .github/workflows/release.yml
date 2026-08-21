@@ -137,9 +137,11 @@ jobs:
           UPDATE_MANIFEST_TOKEN: ${{ secrets.UPDATE_MANIFEST_TOKEN }}
         run: |
           if [ -z "$UPDATE_MANIFEST_TOKEN" ]; then
-            echo "UPDATE_MANIFEST_TOKEN not set — skip syncing to public gatewizard repo."
-            echo "Copy dist/versions.json to gatewizard/releases/gui-versions.json manually, or add the secret."
-            exit 0
+            echo "::error::UPDATE_MANIFEST_TOKEN is not set. In-app update notifications read maurobedoya/gatewizard/releases/gui-versions.json and will stay stale."
+            echo "Add a PAT with contents:write on maurobedoya/gatewizard as secret UPDATE_MANIFEST_TOKEN,"
+            echo "or copy dist/versions.json → gatewizard/releases/gui-versions.json and push to main."
+            echo "Clients also fall back to this release's versions.json asset, but the public manifest should still be synced."
+            exit 1
           fi
           git clone "https://x-access-token:${UPDATE_MANIFEST_TOKEN}@github.com/maurobedoya/gatewizard.git" gatewizard-public
           mkdir -p gatewizard-public/releases

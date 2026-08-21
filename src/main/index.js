@@ -179,6 +179,8 @@ function getSplashWindowSize() {
 }
 
 let backendProcess = null
+/** @type {import('fs').FSWatcher | null} */
+let backendWatcher = null
 /** @type {BrowserWindow | null} */
 let mainWindow = null
 /** @type {BrowserWindow | null} */
@@ -860,10 +862,37 @@ function startBackend() {
 }
 
 function stopBackend() {
-  if (backendProcess && !backendProcess.killed) {
-    backendProcess.kill()
-    backendProcess = null
+  const child = backendProcess
+  backendProcess = null
+  if (!child?.pid || child.killed || child.exitCode != null) return
+  try {
+    if (process.platform === 'win32') {
+      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+      return
+    }
+    child.kill('SIGTERM')
+  } catch {
+    /* ignore */
   }
+  // Uvicorn otherwise waits for in-flight /scan-* polls and holds npm run dev open.
+  const force = setTimeout(() => {
+    try {
+      if (child.exitCode == null) child.kill('SIGKILL')
+    } catch {
+      /* ignore */
+    }
+  }, 1500)
+  child.once('exit', () => clearTimeout(force))
+}
+
+function stopBackendFileWatch() {
+  if (!backendWatcher) return
+  try {
+    backendWatcher.close()
+  } catch {
+    /* ignore */
+  }
+  backendWatcher = null
 }
 
 async function restartBackend() {
@@ -881,7 +910,8 @@ async function restartBackend() {
 function watchBackendFiles() {
   const backendDir = join(app.getAppPath(), 'backend')
   let debounceTimer = null
-  watch(backendDir, { recursive: true }, (_event, filename) => {
+  stopBackendFileWatch()
+  backendWatcher = watch(backendDir, { recursive: true }, (_event, filename) => {
     if (!filename?.endsWith('.py')) return
     if (debounceTimer) clearTimeout(debounceTimer)
     debounceTimer = setTimeout(() => {
@@ -1102,6 +1132,8 @@ app.on('child-process-gone', (_event, details) => {
 
 app.on('before-quit', () => {
   abortRuntimeInstalls('app quit')
+  stopBackendFileWatch()
+  killAnimationEncodeChild()
   stopBackend()
 })
 
