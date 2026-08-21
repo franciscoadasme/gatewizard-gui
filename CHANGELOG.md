@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Preparation / Builder output path preview:** with a working directory set but no PDB yet (so no folder name), the preview no longer says to set a working directory; it shows the placeholder path (or asks for a folder name). Preparation input is labeled **PDB file** and the browse dialog is PDB-only (PropKa/pdb4amber do not accept CIF/mmCIF/ENT). Preparation and Builder share the stacked PDB path + full-width select button layout.
 - **Analysis structural Pub PNG:** overlay y-limits use the full combined range of all series (e.g. area-per-lipid mean + upper/lower leaflets), not only the first series.
 - **Analysis structural type switch:** switching RMSD ↔ membrane thickness / area per lipid shows a chart overlay and sidebar “Switching…” spinner again while headgroup detection and CSV hydrate run; stale plots are cleared immediately so the old chart is not left visible during the wait.
 - **Analysis Pub PNG:** matplotlib export uses the headless Agg backend so backend logs no longer show Tk/Tcl errors on WSL (`main thread is not in main loop`, `Tcl_AsyncDelete`).
@@ -28,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Preparation / Builder / Equilibration output path:** folder browse button (same as Tools and Analysis) to choose a parent directory outside the top-bar working directory; path preview and “Use working directory” when a custom parent is set. Job scans include the custom parent so Progress / Builder cards still find those folders.
 - **Equilibration progress cards:** each stage row shows its planned simulation time from the protocol (e.g. `(0.125 ns)` on pending stages, `(0.233 / 0.125 ns · …)` while running). The stages summary uses two lines — **Simulated** (accumulated so far) and **Protocol total** (full planned MD time for all stages).
 - **Analysis export:** optional file name for CSV / SVG / PNG. PNG/SVG save every on-screen panel (overlay or separate sets). Pub PNG (matplotlib style) is on both Structural and Energetic and includes every visible set in the legend. Buttons show a spinner while writing.
 - **Builder job cards:** Cancel while a preparation job is running (same pattern as Tools Fix PBC).
@@ -38,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Sidebar output folder:** Preparation, Builder, and Equilibration use the shared `OutputPathFields` control (folder name + browse parent path), matching Tools and Analysis.
+- **Sidebar output folder placement:** Preparation, Builder, and Equilibration place the output folder next to the primary actions (Prepare / Generate / Run), matching Tools and Analysis, instead of under Input at the top.
 - **Equilibration default protocol:** Eq6 packing extended from 17.625 ns to **47.625 ns** so Eq1–6 total **50 ns** of MD (was 20 ns) in GUI `base.json` and matching banner copy.
 - **Equilibration Eq1 label:** renamed from “heat/heating” to **thermalization** (velocities are assigned at the target temperature; there is no temperature ramp).
 - **Equilibration Run on cluster:** opening the remote dialog from a progress card now seeds CPU/GPU from that job's protocol and saved resources (e.g. 1 CPU + 1 GPU) instead of the left-panel sidebar defaults (often 6 CPU).

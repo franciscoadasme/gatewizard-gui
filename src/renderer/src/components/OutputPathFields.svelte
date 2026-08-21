@@ -16,7 +16,10 @@
   let lastFollowedWorkingDir = $state('')
 
   const resolvedParent = $derived((parentDir || '').trim())
-  const previewName = $derived((resolvedFolderName || folderName || '').trim())
+  // Placeholder is only for preview/ghost text — not used when resolving the real folder name.
+  const previewName = $derived(
+    (resolvedFolderName || folderName || folderPlaceholder || '').trim()
+  )
   const fullPath = $derived(outputFolderPath(resolvedParent, previewName))
   const usingWorkingDir = $derived(!!workingDir && dirsEqual(resolvedParent, workingDir))
 
@@ -97,6 +100,8 @@
     >
       {#if fullPath}
         {fullPath}{#if extraHint}<span class="sidebar-hint">{extraHint}</span>{/if}
+      {:else if resolvedParent}
+        Enter a folder name under the selected path
       {:else}
         Set a working directory in the top bar, or choose an output path
       {/if}

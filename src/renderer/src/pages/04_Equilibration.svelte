@@ -50,9 +50,12 @@
     partialPullConfirmMessage,
     isSlurmTerminalState
   } from '../lib/slurmState.js'
+  import OutputPathFields from '../components/OutputPathFields.svelte'
   import {
     defaultEquilibrationFolderName,
-    outputFolderPath
+    outputFolderPath,
+    parentDirPath,
+    uniqueDirList
   } from '../lib/outputFolders.js'
   import { themeState } from '../lib/theme.svelte.js'
   import { themeBackgroundHex } from '../lib/viewerSettings.svelte.js'
@@ -201,6 +204,8 @@
   let gpuDevice = $state(0)
   let inputDir = $state('')
   let outputName = $state('')
+  /** Parent directory for equilibration output; defaults to the top-bar working directory. */
+  let outputParentDir = $state('')
   let computeTarget = $state(/** @type {'auto' | 'CPU' | 'CUDA' | 'OpenCL' | 'Metal'} */ ('auto'))
   let totalCpus = $state(1)
   let totalGpus = $state(1)
@@ -275,12 +280,6 @@
   let progressClusterProfileId = $state('')
   let progressClusterPassword = $state('')
 
-  const formJobDir = $derived(
-    workingDir && resolveOutputFolderName()
-      ? outputFolderPath(workingDir, resolveOutputFolderName())
-      : ''
-  )
-
   const GPU_TARGETS = ['CUDA', 'OpenCL', 'Metal']
   const OPENMM_COMPUTE_TARGETS = /** @type {const} */ (['auto', 'CPU', 'CUDA', 'OpenCL', 'Metal'])
   const BINARY_COMPUTE_TARGETS = /** @type {const} */ (['auto', 'CPU', 'CUDA'])
@@ -297,13 +296,14 @@
   // derived values
   const isEngineSupported = $derived(['namd', 'gromacs', 'openmm', 'amber'].includes(engine))
   const isProtocolValid = $derived(Array.isArray(protocol.stages) && protocol.stages.length > 0)
-  const outputDir = $derived(outputFolderPath(workingDir, resolveOutputFolderName()))
+  const resolvedOutputParent = $derived((outputParentDir.trim() || workingDir).trim())
+  const outputDir = $derived(outputFolderPath(resolvedOutputParent, resolveOutputFolderName()))
   const formJob = $derived(jobs.find((j) => j.jobDir === outputDir))
   const formFolderStatus = $derived(formJob?.status ?? 'empty')
   const formFolderRunning = $derived(formJob?.status === 'running')
   const formFolderHasInputs = $derived(formFolderStatus !== 'empty')
   const canGenerateInput = $derived(
-    workingDir !== '' &&
+    resolvedOutputParent !== '' &&
       inputDir !== '' &&
       isProtocolValid &&
       isEngineSupported &&
@@ -311,7 +311,7 @@
       !formFolderRunning
   )
   const canStartEquilibration = $derived(
-    workingDir !== '' &&
+    resolvedOutputParent !== '' &&
       formFolderStatus !== 'empty' &&
       formFolderStatus !== 'running' &&
       isEngineSupported &&
@@ -1704,16 +1704,32 @@
   }
 
   async function rescanJobs() {
-    if (!workingDir) return
-    const dir = workingDir
+    const roots = uniqueDirList(workingDir, outputParentDir)
+    if (roots.length === 0) return
     const gen = ++jobsScanGeneration
     loadingJobs = true
     try {
-      const { jobs: found } = await scanEquilibrationJobs(dir)
-      if (gen !== jobsScanGeneration || dir !== workingDir) return
+      const results = await Promise.all(roots.map((dir) => scanEquilibrationJobs(dir)))
+      if (gen !== jobsScanGeneration) return
+      const stillRoots = uniqueDirList(workingDir, outputParentDir)
+      if (
+        stillRoots.length !== roots.length ||
+        stillRoots.some((d, i) => d !== roots[i])
+      ) {
+        return
+      }
+      /** @type {Map<string, any>} */
+      const foundByDir = new Map()
+      for (const { jobs: found } of results) {
+        for (const summary of found) {
+          if (!foundByDir.has(summary.job_dir)) foundByDir.set(summary.job_dir, summary)
+        }
+      }
       const byDir = new Map(jobs.map((j) => [j.jobDir, j]))
       // Preserve existing watched flags; do not auto-watch on open.
-      jobs = found.map((summary) => jobFromScan(summary, byDir.get(summary.job_dir)))
+      jobs = [...foundByDir.values()]
+        .sort((a, b) => Number(b.dir_mtime || 0) - Number(a.dir_mtime || 0))
+        .map((summary) => jobFromScan(summary, byDir.get(summary.job_dir)))
       statusSynced = true
       void refreshRemoteCardSizes()
       prefetchJobRuntimes()
@@ -2457,6 +2473,8 @@
    */
   function applyLoadedJobToForm(job, fields) {
     outputName = job.name
+    const parent = parentDirPath(job.jobDir)
+    if (parent) outputParentDir = parent
     const nextEngine = normalizeEngineId(fields.engine) || normalizeEngineId(job.engine)
     if (nextEngine && nextEngine !== engine) {
       engine = nextEngine
@@ -2756,35 +2774,36 @@
   }
 
   $effect(() => {
-    if (workingDir !== '') {
+    if (resolvedOutputParent !== '') {
       showWorkingDirHint = false
       highlightWorkingDir(false)
     }
   })
 
-  /** Last workingDir we scanned — avoid wiping Use-in-form state on spurious effect re-runs. */
-  let lastScannedWorkingDir = ''
-  /** True when workingDir changed while another tab was active; scan runs on first visit. */
+  /** Last scan roots we scanned — avoid wiping Use-in-form state on spurious effect re-runs. */
+  let lastScannedRootsKey = ''
+  /** True when scan roots changed while another tab was active; scan runs on first visit. */
   let jobsScanPending = false
 
   $effect(() => {
-    const dir = workingDir || ''
+    const roots = uniqueDirList(workingDir, outputParentDir)
+    const rootsKey = roots.join('\0')
     const active = pageActive
-    if (!dir) {
+    if (!rootsKey) {
       jobs = []
       loadingJobs = false
       usingInFormDir = null
       formSourceJobDir = null
       jobsScanGeneration += 1
-      lastScannedWorkingDir = ''
+      lastScannedRootsKey = ''
       jobsScanPending = false
       return
     }
     if (!active) {
-      if (dir !== lastScannedWorkingDir) {
+      if (rootsKey !== lastScannedRootsKey) {
         jobsScanPending = true
         jobsScanGeneration += 1
-        if (lastScannedWorkingDir) {
+        if (lastScannedRootsKey) {
           jobs = []
           formSourceJobDir = null
           usingInFormDir = null
@@ -2792,9 +2811,9 @@
       }
       return
     }
-    if (dir === lastScannedWorkingDir && !jobsScanPending) return
+    if (rootsKey === lastScannedRootsKey && !jobsScanPending) return
     jobsScanPending = false
-    lastScannedWorkingDir = dir
+    lastScannedRootsKey = rootsKey
     // Clear previous directory cards immediately so the Progress pane shows Loading…
     jobs = []
     formSourceJobDir = null
@@ -3131,7 +3150,7 @@
   }
 
   function toggleWorkingDirHint(show) {
-    if (workingDir !== '') return
+    if (resolvedOutputParent !== '') return
     showWorkingDirHint = show
     highlightWorkingDir(show)
   }
@@ -3341,6 +3360,7 @@
   function onClearForm() {
     setInputDirectory('')
     outputName = ''
+    outputParentDir = ''
     formSourceJobDir = null
     engine = 'namd'
     ensemble = 'npt'
@@ -3415,32 +3435,6 @@
             >Select a directory...</Button
           >
         {/if}
-      </div>
-      <div class="space-y-1">
-        <p class="sidebar-label">Output folder</p>
-        <Input
-          type="text"
-          size="sm"
-          bind:value={outputName}
-          className="w-full"
-          placeholder={suggestedOutputFolderName}
-        />
-        {#if !outputName.trim() && inputDir}
-          <p class="sidebar-hint">
-            Empty uses <span class="font-mono">{suggestedOutputFolderName}</span> when generating inputs
-          </p>
-        {/if}
-        <p
-          class="rounded-md border border-neutral-200 p-2 wrap-break-word sidebar-label dark:border-neutral-800"
-        >
-          {#if outputDir}
-            {outputDir}
-          {:else if workingDir}
-            Files will be written under the working directory
-          {:else}
-            Set a working directory in the top bar
-          {/if}
-        </p>
       </div>
     </div>
     <Divider />
@@ -3742,6 +3736,19 @@
 
     <Divider />
 
+    <OutputPathFields
+      bind:parentDir={outputParentDir}
+      bind:folderName={outputName}
+      workingDir={workingDir}
+      folderPlaceholder={suggestedOutputFolderName}
+      resolvedFolderName={resolveOutputFolderName()}
+    />
+    {#if !outputName.trim() && inputDir}
+      <p class="sidebar-hint">
+        Empty uses <span class="font-mono">{suggestedOutputFolderName}</span> when generating inputs
+      </p>
+    {/if}
+
     <div class="space-y-2">
       <div
         role="group"
@@ -3790,22 +3797,22 @@
           {/if}
         </Button>
       </div>
-      {#if formFolderRunning && workingDir !== ''}
+      {#if formFolderRunning && resolvedOutputParent !== ''}
         <div class="gw-notice gw-notice-warning">
           <p>MD is running in</p>
           <p class="mt-0.5 break-all font-semibold">{resolveOutputFolderName()}</p>
           <p class="mt-1">
-            Change the <strong>Output folder</strong> name above to generate inputs or run another
+            Change the <strong>Output folder</strong> name to generate inputs or run another
             simulation.
           </p>
         </div>
       {/if}
-      {#if formFolderStatus === 'empty' && workingDir !== ''}
+      {#if formFolderStatus === 'empty' && resolvedOutputParent !== ''}
         <p class="gw-notice gw-notice-warning">
           Input files have not been generated yet. Click <strong>Generate Input Files</strong> first.
         </p>
       {/if}
-      {#if formFolderStatus === 'not_started' && workingDir !== '' && !formFolderRunning}
+      {#if formFolderStatus === 'not_started' && resolvedOutputParent !== '' && !formFolderRunning}
         <div class="gw-notice gw-notice-success">
           <p>✓ Input files are ready in</p>
           <p class="mt-0.5 break-all font-semibold">{resolveOutputFolderName()}</p>
@@ -3815,9 +3822,10 @@
           </p>
         </div>
       {/if}
-      {#if workingDir === '' && showWorkingDirHint}
+      {#if resolvedOutputParent === '' && showWorkingDirHint}
         <p class="gw-notice gw-notice-warning">
-          Set a <strong>Working Directory</strong> in the top bar to enable these actions.
+          Set a <strong>Working Directory</strong> in the top bar, or browse an output path, to enable
+          these actions.
         </p>
       {/if}
       <Button className="w-full" variant="ghost" onclick={onClearForm}>Clear form</Button>

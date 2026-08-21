@@ -4,6 +4,7 @@
   import Divider from '../components/ui/Divider.svelte'
   import Spinner from '../components/ui/Spinner.svelte'
   import FollowLog from '../components/FollowLog.svelte'
+  import OutputPathFields from '../components/OutputPathFields.svelte'
   import { builderStatus, logEvent } from '../lib/pageStatus.svelte.js'
   import {
     getAvailableLipids,
@@ -23,7 +24,9 @@
   } from '../lib/backendApi'
   import {
     defaultBuildFolderName,
-    outputFolderPath
+    outputFolderPath,
+    parentDirPath,
+    uniqueDirList
   } from '../lib/outputFolders.js'
   import { themeState } from '../lib/theme.svelte.js'
   import { themeBackgroundHex } from '../lib/viewerSettings.svelte.js'
@@ -37,6 +40,8 @@
 
   let workingFile = $state('')
   let outputFolderName = $state('')
+  /** Parent directory for builder output; defaults to the top-bar working directory. */
+  let outputParentDir = $state('')
 
   function resolveOutputFolderName() {
     if (outputFolderName.trim()) return outputFolderName.trim()
@@ -51,7 +56,11 @@
     return resolved
   }
 
-  const outputDir = $derived(outputFolderPath(workingDir, resolveOutputFolderName()))
+  const resolvedOutputParent = $derived((outputParentDir.trim() || workingDir).trim())
+  const outputDir = $derived(outputFolderPath(resolvedOutputParent, resolveOutputFolderName()))
+  const suggestedOutputFolderName = $derived(
+    defaultBuildFolderName(workingFile) || '02_build_structure'
+  )
 
   const lipidsPromise = getAvailableLipids().then((data) => data.lipids)
   const ffPromise = getAvailableForceFields()
@@ -119,7 +128,7 @@
   let pollIntervalId = $state(null)
 
   const canGenerateInput = $derived(
-    workingDir !== '' &&
+    resolvedOutputParent !== '' &&
       workingFile !== '' &&
       validationResult?.valid === true &&
       !generatingInputFiles &&
@@ -134,7 +143,7 @@
     )
   )
   const canStartPreparation = $derived(
-    workingDir !== '' &&
+    resolvedOutputParent !== '' &&
       pendingJob !== undefined &&
       !pendingJob.starting &&
       !generatingInputFiles
@@ -163,31 +172,38 @@
   })
 
   $effect(() => {
-    if (!workingDir) return
-    scanJobs(workingDir)
-      .then(({ jobs: found }) => {
+    const roots = uniqueDirList(workingDir, outputParentDir)
+    if (roots.length === 0) return
+    Promise.all(roots.map((dir) => scanJobs(dir)))
+      .then((results) => {
         const existing = new Set(jobs.map((j) => j.jobDir))
-        const newJobs = found
-          .filter((j) => !existing.has(j.job_dir))
-          .map((j) => ({
-            jobDir: j.job_dir,
-            name: j.name,
-            status: j.status || 'unknown',
-            currentStep: j.current_step || 0,
-            steps:
-              j.steps?.length > 0
-                ? j.steps
-                : j.steps_completed?.length > 0
-                  ? j.steps_completed
-                  : ['Packmol'],
-            stepsCompleted: j.steps_completed || [],
-            error: j.error || null,
-            startTime: j.start_time || '',
-            endTime: j.end_time || null,
-            elapsed: formatElapsed(j.start_time, j.end_time),
-            logLines: [],
-            showLog: false
-          }))
+        /** @type {typeof jobs} */
+        const newJobs = []
+        for (const { jobs: found } of results) {
+          for (const j of found) {
+            if (existing.has(j.job_dir)) continue
+            existing.add(j.job_dir)
+            newJobs.push({
+              jobDir: j.job_dir,
+              name: j.name,
+              status: j.status || 'unknown',
+              currentStep: j.current_step || 0,
+              steps:
+                j.steps?.length > 0
+                  ? j.steps
+                  : j.steps_completed?.length > 0
+                    ? j.steps_completed
+                    : ['Packmol'],
+              stepsCompleted: j.steps_completed || [],
+              error: j.error || null,
+              startTime: j.start_time || '',
+              endTime: j.end_time || null,
+              elapsed: formatElapsed(j.start_time, j.end_time),
+              logLines: [],
+              showLog: false
+            })
+          }
+        }
         if (newJobs.length > 0) {
           jobs = [...newJobs, ...jobs].sort(
             (a, b) => new Date(b.startTime || 0) - new Date(a.startTime || 0)
@@ -292,11 +308,13 @@
 
   /** Resolve Builder output folder for ligand_params/; sync the left-panel name if needed. */
   function requireBuilderOutputDir() {
-    if (!workingDir) {
-      throw new Error('Set a Working Directory in the top bar before parametrizing ligands.')
+    if (!resolvedOutputParent) {
+      throw new Error(
+        'Set a Working Directory in the top bar, or browse an output path, before parametrizing ligands.'
+      )
     }
     const folder = syncOutputFolderName()
-    const dir = outputFolderPath(workingDir, folder)
+    const dir = outputFolderPath(resolvedOutputParent, folder)
     if (!dir) {
       throw new Error('Could not resolve the Builder output folder for ligand parametrization.')
     }
@@ -382,7 +400,7 @@
       if (names.length > 0) {
         let outputDirForCache = ''
         try {
-          if (workingDir) outputDirForCache = requireBuilderOutputDir()
+          if (resolvedOutputParent) outputDirForCache = requireBuilderOutputDir()
         } catch {
           // Cache check can still fall back to the PDB directory on the backend
         }
@@ -534,7 +552,7 @@
           ? [parseFloat(boxDimX), parseFloat(boxDimY), parseFloat(boxDimZ)]
           : null,
       outputFolderName: outputFolderName.trim() || null,
-      workingDir: workingDir || null,
+      workingDir: resolvedOutputParent || null,
       ligandParams: ligands
         .filter((l) => l.frcmod && l.lib && l.name)
         .map((l) => ({ name: l.name, frcmod: l.frcmod, lib: l.lib }))
@@ -607,6 +625,8 @@
       if (result.success && result.job_dir) {
         const dirName = result.job_dir.split(/[/\\]/).pop() || result.job_dir
         outputFolderName = dirName
+        const parent = parentDirPath(result.job_dir)
+        if (parent) outputParentDir = parent
         /** @type {Job} */
         const newJob = {
           jobDir: result.job_dir,
@@ -766,6 +786,7 @@
     upperLeaflet = [{ lipid: 'POPC', ratio: 1.0 }]
     lowerLeaflet = [{ lipid: 'POPC', ratio: 1.0 }]
     outputFolderName = ''
+    outputParentDir = ''
     ligands = []
   }
 
@@ -777,6 +798,7 @@
     }
     workingFile = ''
     outputFolderName = ''
+    outputParentDir = ''
     jobs = []
     ligands = []
     validationResult = null
@@ -853,19 +875,18 @@
     <div class="space-y-2">
       <h2 class="sidebar-heading">Input</h2>
       <div class="space-y-1">
-        <span class="sidebar-label">PDB File</span>
-        <div class="flex items-center gap-1">
-          <input
-            type="text"
-            placeholder="Select PDB file..."
-            class="sidebar-control flex-1 p-2"
-            bind:value={workingFile}
-            readonly
-          />
-          <Button variant="default" className="shrink-0 text-xs px-2 py-1.5" onclick={onBrowse}
-            >Browse</Button
+        <span class="sidebar-label">PDB file</span>
+        {#if workingFile}
+          <p
+            class="w-full rounded-md border border-neutral-200 p-2 wrap-break-word sidebar-label dark:border-neutral-800"
+            title={workingFile}
           >
-        </div>
+            {workingFile}
+          </p>
+          <Button variant="outline" className="w-full" onclick={onBrowse}>Select another PDB…</Button>
+        {:else}
+          <Button variant="outline" className="w-full" onclick={onBrowse}>Select a PDB file…</Button>
+        {/if}
         {#if showProteinHWarning}
           <div class="gw-notice gw-notice-warning text-[11px] leading-snug">
             <p>
@@ -881,26 +902,6 @@
             </button>
           </div>
         {/if}
-      </div>
-      <div class="space-y-1">
-        <span class="sidebar-label">Output folder</span>
-        <input
-          type="text"
-          placeholder="02_build_structure"
-          class="sidebar-control w-full p-2"
-          bind:value={outputFolderName}
-        />
-        <p
-          class="rounded-md border border-neutral-200 p-2 wrap-break-word sidebar-label dark:border-neutral-800"
-        >
-          {#if outputDir}
-            {outputDir}
-          {:else if workingDir}
-            Files will be written under the working directory
-          {:else}
-            Set a working directory in the top bar
-          {/if}
-        </p>
       </div>
     </div>
     <Divider />
@@ -1013,7 +1014,7 @@
               variant="outline"
               className="w-full text-xs"
               onclick={() => onParametrizeLigand(i)}
-              disabled={!workingFile || !workingDir || lig.status === 'running'}
+              disabled={!workingFile || !resolvedOutputParent || lig.status === 'running'}
             >
               {lig.status === 'completed'
                 ? `Re-parametrize ${lig.name || 'ligand'}`
@@ -1022,9 +1023,10 @@
           {/if}
         </div>
       {/each}
-      {#if ligands.length > 0 && !workingDir}
+      {#if ligands.length > 0 && !resolvedOutputParent}
         <p class="sidebar-hint">
-          Set a working directory to write ligand_params under the Builder output folder.
+          Set a working directory or browse an output path to write ligand_params under the Builder
+          output folder.
         </p>
       {/if}
     </div>
@@ -1359,6 +1361,13 @@
 
     <!-- Actions -->
     <div class="space-y-2">
+      <OutputPathFields
+        bind:parentDir={outputParentDir}
+        bind:folderName={outputFolderName}
+        workingDir={workingDir}
+        folderPlaceholder={suggestedOutputFolderName}
+        resolvedFolderName={resolveOutputFolderName()}
+      />
       <Button
         className="w-full"
         variant="outline"
@@ -1444,9 +1453,10 @@
           Input files have not been generated yet. Click <strong>Generate Input Files</strong> first.
         </p>
       {/if}
-      {#if workingDir === '' && workingFile}
+      {#if resolvedOutputParent === '' && workingFile}
         <p class="gw-notice gw-notice-warning">
-          Set a <strong>Working Directory</strong> in the top bar to generate output folders.
+          Set a <strong>Working Directory</strong> in the top bar, or browse an output path, to
+          generate output folders.
         </p>
       {/if}
       <Button className="w-full" variant="ghost" onclick={onClear}>Clear</Button>

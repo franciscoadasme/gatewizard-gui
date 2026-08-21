@@ -3,6 +3,7 @@
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Divider from '../components/ui/Divider.svelte'
   import Input from '../components/ui/Input.svelte'
+  import OutputPathFields from '../components/OutputPathFields.svelte'
   import PrepStructureViewer from '../components/preparation/PrepStructureViewer.svelte'
   import {
     detectDisulfideBonds,
@@ -13,7 +14,8 @@
   } from '../lib/backendApi'
   import {
     defaultPreparationFolderName,
-    outputFolderPath
+    outputFolderPath,
+    parentDirPath
   } from '../lib/outputFolders.js'
   import { logEvent, preparationStatus } from '../lib/pageStatus.svelte.js'
   import { themeState } from '../lib/theme.svelte.js'
@@ -34,6 +36,8 @@
   let targetPh = $state(7.0)
   let workingFile = $state('')
   let outputFolderName = $state('')
+  /** Parent directory for preparation output; defaults to the top-bar working directory. */
+  let outputParentDir = $state('')
   /** @type {string} PDB path used inside the output folder after workspace setup */
   let activeWorkingFile = $state('')
   /** @type {string} Resolved output folder path returned by the backend */
@@ -100,7 +104,7 @@
   function buildOutputOptions() {
     syncOutputFolderName()
     return {
-      workingDir: workingDir || null,
+      workingDir: resolvedOutputParent || null,
       outputFolderName: outputFolderName.trim() || null
     }
   }
@@ -108,12 +112,18 @@
   function adoptJobDir(jobDir) {
     if (!jobDir) return
     preparationJobDir = jobDir
+    const parent = parentDirPath(jobDir)
+    if (parent) outputParentDir = parent
     syncOutputFolderName()
   }
 
-  const outputDir = $derived(outputFolderPath(workingDir, resolveOutputFolderName()))
+  const resolvedOutputParent = $derived((outputParentDir.trim() || workingDir).trim())
+  const outputDir = $derived(outputFolderPath(resolvedOutputParent, resolveOutputFolderName()))
+  const suggestedOutputFolderName = $derived(
+    defaultPreparationFolderName(workingFile) || '01_preparation_structure'
+  )
 
-  const canRunPreparationSteps = $derived(workingDir !== '' && workingFile !== '')
+  const canRunPreparationSteps = $derived(resolvedOutputParent !== '' && workingFile !== '')
 
   // derived values
   let protonatedFile = $derived.by(() => {
@@ -125,8 +135,8 @@
     if (!workingFile) return ''
     const basename = workingFile.split(/[/\\]/).pop() ?? 'structure.pdb'
     const outName = basename.replace(/\.pdb$/i, '_protonated.pdb')
-    if (workingDir) {
-      return `${workingDir.replace(/[/\\]+$/, '')}/${outName}`
+    if (resolvedOutputParent) {
+      return `${resolvedOutputParent.replace(/[/\\]+$/, '')}/${outName}`
     }
     return workingFile.replace(/\.pdb$/i, '_protonated.pdb')
   })
@@ -327,7 +337,12 @@
   }
 
   async function onSelectWorkingFile() {
-    const { canceled, filePath } = await window.api.openPdbDialog(workingDir || undefined)
+    // Preparation (PropKa / pdb4amber) is PDB-only — not CIF/mmCIF/ENT.
+    const { canceled, filePath } = await window.api.openFileDialog(
+      'Select PDB file',
+      [{ name: 'PDB', extensions: ['pdb'] }],
+      workingDir || undefined
+    )
     if (canceled) {
       return
     }
@@ -397,6 +412,7 @@
     activeWorkingFile = ''
     preparationJobDir = ''
     outputFolderName = ''
+    outputParentDir = ''
     cappingWarning = ''
     detectedCaps = []
     lastPropKaFile = ''
@@ -432,6 +448,7 @@
     activeWorkingFile = ''
     preparationJobDir = ''
     outputFolderName = ''
+    outputParentDir = ''
     lastPropKaFile = ''
     lastPropKaPh = null
     lastPropKaCap = null
@@ -449,44 +466,21 @@
     <div class="space-y-2">
       <h2 class="sidebar-heading">Input</h2>
       <div class="space-y-1">
-        <p class="sidebar-label">Working file</p>
-      {#if workingFile}
-        <p
-          class="w-full rounded-md border border-neutral-200 p-2 wrap-break-word sidebar-label dark:border-neutral-800"
-        >
-          {workingFile}
-        </p>
-        <Button variant="outline" className="w-full" onclick={onSelectWorkingFile}
-          >Select another file...</Button
-        >
-      {:else}
-        <Button variant="outline" className="w-full" onclick={onSelectWorkingFile}
-          >Select a file...</Button
-        >
-      {/if}
-      </div>
-      <div class="space-y-1">
-        <p class="sidebar-label">Output folder</p>
-        <Input
-          type="text"
-          size="sm"
-          bind:value={outputFolderName}
-          className="w-full"
-          placeholder="01_preparation_structure"
-        />
-        <p
-          class="rounded-md border border-neutral-200 p-2 wrap-break-word sidebar-label dark:border-neutral-800"
-        >
-          {#if outputDir}
-            {outputDir}
-          {:else if workingDir}
-            Files will be written under the working directory
-          {:else}
-            Set a working directory in the top bar
-          {/if}
-        </p>
-        {#if protonatedFile && outputDir}
-          <p class="sidebar-hint">Protonated PDB: {protonatedFile.split(/[/\\]/).pop()}</p>
+        <p class="sidebar-label">PDB file</p>
+        {#if workingFile}
+          <p
+            class="w-full rounded-md border border-neutral-200 p-2 wrap-break-word sidebar-label dark:border-neutral-800"
+            title={workingFile}
+          >
+            {workingFile}
+          </p>
+          <Button variant="outline" className="w-full" onclick={onSelectWorkingFile}
+            >Select another PDB…</Button
+          >
+        {:else}
+          <Button variant="outline" className="w-full" onclick={onSelectWorkingFile}
+            >Select a PDB file…</Button
+          >
         {/if}
       </div>
     </div>
@@ -579,6 +573,22 @@
     {/if}
     <Divider />
     <div class="space-y-2">
+      <OutputPathFields
+        bind:parentDir={outputParentDir}
+        bind:folderName={outputFolderName}
+        workingDir={workingDir}
+        folderPlaceholder={suggestedOutputFolderName}
+        resolvedFolderName={resolveOutputFolderName()}
+      />
+      {#if protonatedFile && outputDir}
+        <p class="sidebar-hint">Protonated PDB: {protonatedFile.split(/[/\\]/).pop()}</p>
+      {/if}
+      {#if resolvedOutputParent === '' && workingFile}
+        <p class="gw-notice gw-notice-warning">
+          Set a <strong>Working Directory</strong> in the top bar, or browse an output path, to write
+          preparation output.
+        </p>
+      {/if}
       <div class="flex items-center gap-1">
         <Checkbox name="remove-protein-h" bind:checked={removeProteinHydrogens} />
         <label
