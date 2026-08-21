@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Equilibration cluster Connect / Run on cluster:** wait for inventory probe before Watching/runtime log sync; dialog reacts when probe finishes and can seed Resources from cached `last_probe`. Prevents empty partitions/nodes for 1–2 minutes when many remote jobs compete for SSH.
 - **Analysis output folder:** clearing the left-panel name no longer forces `04_analysis` back into the field; the default stays as placeholder ghost text so any name can be typed. Run/Save still resolve an empty field to the default. Adding or switching simulation sets (and picking a topology) no longer overwrites a custom output folder name.
 - **Equilibration Progress Reload:** If the job folder was deleted, Reload removes the stale card instead of showing an error alert (same outcome as a full Progress rescan).
-- **Equilibration Use in form:** After loading a job, switching **Engine** or **Ensemble** updates Production to follow the sidebar again, and fills engine-specific stage fields (e.g. NAMD margin, barostat pressure/γ). Heat/scaffold/packing (Eq1–6) stay NVT/NPgT. No longer requires Clear form.
+- **Equilibration Use in form:** After loading a job, switching **Engine** or **Ensemble** updates Production to follow the sidebar again, and fills engine-specific stage fields (e.g. NAMD margin, barostat pressure/γ). Thermalization/scaffold/packing (Eq1–6) stay NVT/NPgT. No longer requires Clear form.
 - **Equilibration Edit constraint:** light-mode Name / force-constant contrast; selection count uses the builder input directory (no longer always “Invalid selection”).
 - **Equilibration Use in form (recovered jobs):** sticky “all NPT” protocols from older OpenMM metadata heal are corrected from on-disk inputs (packing → NPgT, finals → real ensemble). Requires updated `gatewizard` job-metadata inference.
 - **Equilibration Progress:** Cluster Connect stays visible with only local jobs or an empty list (no longer requires the Remote location filter).
@@ -38,11 +38,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Equilibration default protocol:** Eq6 packing extended from 17.625 ns to **47.625 ns** so Eq1–6 total **50 ns** of MD (was 20 ns) in GUI `base.json` and matching banner copy.
+- **Equilibration Eq1 label:** renamed from “heat/heating” to **thermalization** (velocities are assigned at the target temperature; there is no temperature ramp).
 - **Equilibration Run on cluster:** opening the remote dialog from a progress card now seeds CPU/GPU from that job's protocol and saved resources (e.g. 1 CPU + 1 GPU) instead of the left-panel sidebar defaults (often 6 CPU).
 - **Analysis Save / Load:** Saving… / Loading… spinners and in-progress notices while the session CSV/JSON is written or read; Save, Load, and Browse stay disabled until it finishes.
 - **Equilibration protocol cards:** hide settings the selected engine does not wire (e.g. NAMD-only margin). Trajectory frequency is shown for all engines and labeled by engine (DCD / XTC / NetCDF). Pressure and surface tension are shown when the stage ensemble uses a barostat / membrane tension path. Stage descriptions moved to an info-hover control with clearer wording.
-- **Equilibration default protocol (`base.json`):** universal membrane packing for all engines — Minimization → NVT heat → NVT scaffold (Eq2) → NPgT packing (Eq3–6, 20 ns MD) → production uses the sidebar ensemble.
-- **Equilibration banner:** heat/scaffold under NVT, pack under NPgT for 20 ns of MD, then production in the selected ensemble.
+- **Equilibration default protocol (`base.json`):** universal membrane packing for all engines — Minimization → NVT thermalization → NVT scaffold (Eq2) → NPgT packing (Eq3–6, 50 ns MD) → production uses the sidebar ensemble.
+- **Equilibration banner:** thermalize/scaffold under NVT, pack under NPgT for 50 ns of MD, then production in the selected ensemble.
 
 ## [1.0.13] - 2026-08-06
 

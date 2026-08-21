@@ -40,7 +40,7 @@ export function effectiveStageEnsemble(stageEnsemble, sidebarEnsemble) {
 }
 
 /**
- * Stages that follow the sidebar ensemble (production only). Heat, scaffold,
+ * Stages that follow the sidebar ensemble (production only). Thermalization, scaffold,
  * and packing (Eq1–6) keep their protocol ensembles.
  * @param {{ name?: string, stage_kind?: string, ensemble?: string|null, description?: string }} stage
  */
@@ -54,7 +54,7 @@ export function isSidebarControlledStage(stage) {
 /**
  * Reset sidebar-controlled stages to inherit (`ensemble: null`) and ensure
  * barostat-related fields exist when the effective ensemble needs them.
- * Packing / heat stages keep their explicit ensembles.
+ * Packing / early NVT stages keep their explicit ensembles.
  *
  * @param {{ stages?: Array<Record<string, unknown>> } | null | undefined} protocol
  * @param {string|null|undefined} sidebarEnsemble

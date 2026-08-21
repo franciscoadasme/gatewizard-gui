@@ -1,6 +1,6 @@
 {
   "name": "Default Protocol",
-  "description": "Heat and scaffold under NVT, pack under NPgT for 20 ns of MD (Eq1–6), then production in the selected ensemble",
+  "description": "Thermalize and scaffold under NVT, pack under NPgT for 50 ns of MD (Eq1–6), then production in the selected ensemble",
   "compute_defaults": {
     "cpu_cores": 6,
     "gpu_id": 0,
@@ -38,7 +38,7 @@
     },
     {
       "name": "Equilibration 1",
-      "description": "Warm the system to the target temperature while keeping the membrane scaffold restrained. Box size stays fixed for now.",
+      "description": "Assign velocities at the target temperature and thermalize under strong membrane restraints. Box size stays fixed for now.",
       "stage_kind": "equilibration",
       "resources_inherit": true,
       "time_ns": 0.125,
@@ -158,8 +158,8 @@
       "description": "Long NPgT packing (γ=0) with a light backbone hold so area and thickness can settle before production switches to the sidebar ensemble.",
       "stage_kind": "equilibration",
       "resources_inherit": true,
-      "time_ns": 17.625,
-      "steps": 8812500,
+      "time_ns": 47.625,
+      "steps": 23812500,
       "ensemble": "NPgT",
       "temperature": 303.15,
       "pressure": 1.0,

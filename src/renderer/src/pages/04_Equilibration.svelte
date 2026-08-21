@@ -3831,7 +3831,7 @@
       <div class="gw-notice gw-notice-warning">
         <p class="font-semibold">TESTING PROTOCOLS, NOT FOR PRODUCTION</p>
         <p class="mt-1">
-          Equilibration heats under NVT, scaffolds under NVT, then packs under NPgT (γ=0) for 20 ns of MD (Eq1–6).
+          Equilibration thermalizes under NVT, scaffolds under NVT, then packs under NPgT (γ=0) for 50 ns of MD (Eq1–6).
           Production is the first stage that uses the selected ensemble. Protocols are still under active testing. Use for
           development and validation only.
         </p>
