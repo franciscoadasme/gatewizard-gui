@@ -88,7 +88,7 @@ export function defaultPreparationFolderName(workingFile) {
 
 /** @param {string} workingFile */
 export function defaultBuildFolderName(workingFile) {
-  if (!workingFile) return ''
+  if (!workingFile) return '02_build_bilayer'
   return `02_build_${pdbStem(workingFile)}`
 }
 

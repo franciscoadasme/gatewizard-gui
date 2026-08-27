@@ -42,10 +42,12 @@
   let outputFolderName = $state('')
   /** Parent directory for builder output; defaults to the top-bar working directory. */
   let outputParentDir = $state('')
+  /** Include a protein PDB (default). Off = bilayer-only / free-molecule build. */
+  let includeProtein = $state(true)
 
   function resolveOutputFolderName() {
     if (outputFolderName.trim()) return outputFolderName.trim()
-    return defaultBuildFolderName(workingFile)
+    return includeProtein ? defaultBuildFolderName(workingFile) : '02_build_bilayer'
   }
 
   function syncOutputFolderName() {
@@ -59,7 +61,9 @@
   const resolvedOutputParent = $derived((outputParentDir.trim() || workingDir).trim())
   const outputDir = $derived(outputFolderPath(resolvedOutputParent, resolveOutputFolderName()))
   const suggestedOutputFolderName = $derived(
-    defaultBuildFolderName(workingFile) || '02_build_structure'
+    includeProtein && workingFile
+      ? defaultBuildFolderName(workingFile)
+      : '02_build_bilayer'
   )
 
   const lipidsPromise = getAvailableLipids().then((data) => data.lipids)
@@ -91,6 +95,27 @@
   let boxDimX = $state(100)
   let boxDimY = $state(100)
   let boxDimZ = $state(100)
+  /** packmol-memgen --distxy_fix; required when there is no protein. */
+  let distxyFix = $state(100)
+  /** Keep free molecules this far from the protein (Å). Empty = omit the flag. */
+  let soluteProtDist = $state('')
+
+  /**
+   * @typedef {{
+   *   pdb: string,
+   *   name: string,
+   *   concentration: string,
+   *   inMembrane: boolean,
+   *   charge: number,
+   *   multiplicity: number,
+   *   status: string,
+   *   frcmod: string,
+   *   lib: string,
+   *   mol2: string
+   * }} SoluteRow
+   */
+  /** @type {SoluteRow[]} */
+  let solutes = $state([])
 
   /**
    * @typedef {{
@@ -129,7 +154,7 @@
 
   const canGenerateInput = $derived(
     resolvedOutputParent !== '' &&
-      workingFile !== '' &&
+      (!includeProtein || workingFile !== '') &&
       validationResult?.valid === true &&
       !generatingInputFiles &&
       !launching
@@ -166,7 +191,7 @@
 
   // When workingDir changes from App, scan for existing preparation jobs
   $effect(() => {
-    if (workingDir && workingFile && !outputFolderName.trim()) {
+    if (workingDir && includeProtein && workingFile && !outputFolderName.trim()) {
       outputFolderName = defaultBuildFolderName(workingFile)
     }
   })
@@ -516,6 +541,84 @@
     ]
   }
 
+  function emptySolute() {
+    return {
+      pdb: '',
+      name: '',
+      concentration: '4',
+      inMembrane: false,
+      charge: 0,
+      multiplicity: 1,
+      status: 'idle',
+      frcmod: '',
+      lib: '',
+      mol2: ''
+    }
+  }
+
+  function addSolute() {
+    solutes = [...solutes, emptySolute()]
+  }
+
+  function removeSolute(/** @type {number} */ index) {
+    solutes = solutes.filter((_, i) => i !== index)
+  }
+
+  async function onBrowseSolute(/** @type {number} */ index) {
+    const result = await window.api.openPdbDialog(workingDir || undefined)
+    if (result.canceled) return
+    const next = { ...solutes[index], pdb: result.filePath }
+    if (!next.name) {
+      const stem = result.filePath.split(/[/\\]/).pop()?.replace(/\.pdb$/i, '') || ''
+      next.name = stem.slice(0, 3).toUpperCase()
+    }
+    solutes[index] = next
+    solutes = [...solutes]
+  }
+
+  async function onParametrizeSolute(/** @type {number} */ index) {
+    const solute = solutes[index]
+    if (!solute?.pdb) {
+      alert('Select a molecule PDB first.')
+      return
+    }
+    if (!solute.name.trim()) {
+      alert('Set a residue name (must match the PDB residue name).')
+      return
+    }
+    try {
+      const builderOut = requireBuilderOutputDir()
+      solutes[index] = { ...solute, status: 'running' }
+      solutes = [...solutes]
+      const result = await parametrizeLigand(
+        solute.pdb,
+        solute.name.trim(),
+        solute.charge,
+        solute.multiplicity,
+        builderOut,
+        true
+      )
+      solutes[index] = {
+        ...solute,
+        status: 'completed',
+        frcmod: result.frcmod || '',
+        lib: result.lib || '',
+        mol2: result.mol2 || ''
+      }
+      solutes = [...solutes]
+      logEvent(
+        'detail',
+        'build',
+        `Parametrized free molecule: ${solute.name}`,
+        `Output: ${builderOut}/ligand_params/${solute.name}`
+      )
+    } catch (error) {
+      solutes[index] = { ...solute, status: 'failed' }
+      solutes = [...solutes]
+      alert(error instanceof Error ? error.message : String(error))
+    }
+  }
+
   function buildParams() {
     syncOutputFolderName()
     const upperLipids = upperLeaflet.map((e) => e.lipid)
@@ -523,8 +626,18 @@
     const upperRatios = upperLeaflet.map((e) => e.ratio).join(':')
     const lowerRatios = lowerLeaflet.map((e) => e.ratio).join(':')
     const lipidRatios = `${upperRatios}//${lowerRatios}`
+    const soluteRows = solutes.filter((s) => s.pdb)
+    const ligandFromProtein = includeProtein
+      ? ligands
+          .filter((l) => l.frcmod && l.lib && l.name)
+          .map((l) => ({ name: l.name, frcmod: l.frcmod, lib: l.lib }))
+      : []
+    const ligandFromSolutes = soluteRows
+      .filter((s) => s.frcmod && s.lib && s.name)
+      .map((s) => ({ name: s.name, frcmod: s.frcmod, lib: s.lib }))
+    const protDist = parseFloat(String(soluteProtDist))
     return {
-      path: workingFile,
+      path: includeProtein ? workingFile : '',
       upperLipids,
       lowerLipids,
       lipidRatios,
@@ -534,10 +647,10 @@
         : null,
       proteinFf,
       lipidFf,
-      preoriented,
+      preoriented: includeProtein ? preoriented : true,
       parametrize,
       notProtonate,
-      removeProteinH,
+      removeProteinH: includeProtein ? removeProteinH : false,
       nloop: parseInt(String(nloop), 10),
       nloopAll: parseInt(String(nloopAll), 10),
       tolerance: parseFloat(String(tolerance)),
@@ -547,26 +660,49 @@
       anion,
       dist: parseFloat(dist),
       distWat: parseFloat(distWat),
+      distxyFix: includeProtein
+        ? null
+        : boxSizingMode === 'explicit'
+          ? parseFloat(boxDimX)
+          : parseFloat(distxyFix),
       dims:
         boxSizingMode === 'explicit'
           ? [parseFloat(boxDimX), parseFloat(boxDimY), parseFloat(boxDimZ)]
           : null,
       outputFolderName: outputFolderName.trim() || null,
       workingDir: resolvedOutputParent || null,
-      ligandParams: ligands
-        .filter((l) => l.frcmod && l.lib && l.name)
-        .map((l) => ({ name: l.name, frcmod: l.frcmod, lib: l.lib }))
+      ligandParams: [...ligandFromProtein, ...ligandFromSolutes],
+      solutes: soluteRows.map((s) => ({
+        pdb: s.pdb,
+        name: s.name,
+        concentration: String(s.concentration || '1'),
+        inMembrane: Boolean(s.inMembrane)
+      })),
+      soluteInmem: soluteRows.some((s) => s.inMembrane),
+      soluteProtDist:
+        includeProtein && Number.isFinite(protDist) && protDist > 0 ? protDist : null
     }
   }
 
   async function onValidate() {
-    if (!workingFile) {
+    if (includeProtein && !workingFile) {
       validationResult = {
         valid: false,
         warning: false,
         message: 'Please select a working PDB file first.'
       }
       return
+    }
+    if (!includeProtein && boxSizingMode === 'water_layer') {
+      const xy = parseFloat(String(distxyFix))
+      if (!Number.isFinite(xy) || xy <= 0) {
+        validationResult = {
+          valid: false,
+          warning: false,
+          message: 'Set a membrane XY size (Å). packmol-memgen requires --distxy_fix when there is no protein.'
+        }
+        return
+      }
     }
     if (!upperLeaflet.length && !lowerLeaflet.length) {
       validationResult = {
@@ -581,8 +717,10 @@
       validationResult = null
       const params = buildParams()
       const result = await validateBuilder(params)
-      if (typeof result.protein_hydrogen_count === 'number') {
+      if (includeProtein && typeof result.protein_hydrogen_count === 'number') {
         proteinHCount = result.protein_hydrogen_count
+      } else if (!includeProtein) {
+        proteinHCount = 0
       }
       validationResult = {
         valid: result.valid,
@@ -607,17 +745,18 @@
   }
 
   function buildJobSteps() {
+    const skipMemembed = preoriented || !includeProtein
     return parametrize
-      ? preoriented
+      ? skipMemembed
         ? ['Packmol', 'pdb4amber', 'tleap']
         : ['MEMEMBED', 'Packmol', 'pdb4amber', 'tleap']
-      : preoriented
+      : skipMemembed
         ? ['Packmol']
         : ['MEMEMBED', 'Packmol']
   }
 
   async function onGenerateInput() {
-    if (!workingFile) return
+    if (includeProtein && !workingFile) return
     try {
       generatingInputFiles = true
       const params = buildParams()
@@ -783,11 +922,15 @@
     boxDimX = 100
     boxDimY = 100
     boxDimZ = 100
+    distxyFix = 100
+    soluteProtDist = ''
+    includeProtein = true
     upperLeaflet = [{ lipid: 'POPC', ratio: 1.0 }]
     lowerLeaflet = [{ lipid: 'POPC', ratio: 1.0 }]
     outputFolderName = ''
     outputParentDir = ''
     ligands = []
+    solutes = []
   }
 
   /** Clear tab state (input, jobs, ligands) and restore form defaults. */
@@ -801,6 +944,7 @@
     outputParentDir = ''
     jobs = []
     ligands = []
+    solutes = []
     validationResult = null
     launching = false
     generatingInputFiles = false
@@ -856,7 +1000,9 @@
     })
   }
 
-  const showProteinHWarning = $derived(proteinHCount > 0 && !removeProteinH)
+  const showProteinHWarning = $derived(
+    includeProtein && proteinHCount > 0 && !removeProteinH
+  )
 
   async function onBrowse() {
     const result = await window.api.openPdbDialog(workingDir || undefined)
@@ -874,38 +1020,50 @@
     <!-- Input -->
     <div class="space-y-2">
       <h2 class="sidebar-heading">Input</h2>
-      <div class="space-y-1">
-        <span class="sidebar-label">PDB file</span>
-        {#if workingFile}
-          <p
-            class="w-full rounded-md border border-neutral-200 p-2 wrap-break-word sidebar-label dark:border-neutral-800"
-            title={workingFile}
-          >
-            {workingFile}
-          </p>
-          <Button variant="outline" className="w-full" onclick={onBrowse}>Select another PDB…</Button>
-        {:else}
-          <Button variant="outline" className="w-full" onclick={onBrowse}>Select a PDB file…</Button>
-        {/if}
-        {#if showProteinHWarning}
-          <div class="gw-notice gw-notice-warning text-[11px] leading-snug">
-            <p>
-              Protein has {proteinHCount} hydrogen atom{proteinHCount === 1 ? '' : 's'}. Non-Amber H
-              (e.g. from Schrödinger) can break tleap after packmol-memgen.
-            </p>
-            <button
-              type="button"
-              class="mt-1 font-medium text-neutral-900 underline underline-offset-2 hover:text-yellow-700 dark:text-neutral-100 dark:hover:text-yellow-400"
-              onclick={openAdvancedRemoveProteinH}
-            >
-              Open Advanced settings → Remove protein hydrogens
-            </button>
-          </div>
-        {/if}
+      <div class="flex items-center gap-2">
+        <Checkbox name="include-protein" bind:checked={includeProtein} />
+        <span class="sidebar-label">Include protein</span>
       </div>
+      {#if includeProtein}
+        <div class="space-y-1">
+          <span class="sidebar-label">PDB file</span>
+          {#if workingFile}
+            <p
+              class="w-full rounded-md border border-neutral-200 p-2 wrap-break-word sidebar-label dark:border-neutral-800"
+              title={workingFile}
+            >
+              {workingFile}
+            </p>
+            <Button variant="outline" className="w-full" onclick={onBrowse}>Select another PDB…</Button>
+          {:else}
+            <Button variant="outline" className="w-full" onclick={onBrowse}>Select a PDB file…</Button>
+          {/if}
+          {#if showProteinHWarning}
+            <div class="gw-notice gw-notice-warning text-[11px] leading-snug">
+              <p>
+                Protein has {proteinHCount} hydrogen atom{proteinHCount === 1 ? '' : 's'}. Non-Amber H
+                (e.g. from Schrödinger) can break tleap after packmol-memgen.
+              </p>
+              <button
+                type="button"
+                class="mt-1 font-medium text-neutral-900 underline underline-offset-2 hover:text-yellow-700 dark:text-neutral-100 dark:hover:text-yellow-400"
+                onclick={openAdvancedRemoveProteinH}
+              >
+                Open Advanced settings → Remove protein hydrogens
+              </button>
+            </div>
+          {/if}
+        </div>
+      {:else}
+        <p class="sidebar-hint">
+          Bilayer only: set membrane XY size under System Options. Optional free molecules can be
+          added below.
+        </p>
+      {/if}
     </div>
     <Divider />
 
+    {#if includeProtein}
     <!-- Ligand Parametrization (must run before packmol-memgen) -->
     <div class="space-y-2">
       <div class="flex items-center justify-between">
@@ -1028,6 +1186,121 @@
           Set a working directory or browse an output path to write ligand_params under the Builder
           output folder.
         </p>
+      {/if}
+    </div>
+    <Divider />
+    {/if}
+
+    <!-- Free molecules (packmol-memgen --solute) -->
+    <div class="space-y-2">
+      <div class="flex items-center justify-between">
+        <h2 class="sidebar-heading">Free molecules</h2>
+        <button class="dark:text-neutral-500 dark:hover:text-neutral-300" onclick={addSolute}
+          >+ Add</button
+        >
+      </div>
+      <p class="sidebar-hint">
+        Extra copies packed into water (default) or the membrane. Parametrize each molecule (GAFF2)
+        before generating inputs if you will run tleap.
+      </p>
+      {#if solutes.length === 0}
+        <p class="sidebar-hint">No free molecules. Optional for protein+membrane builds.</p>
+      {/if}
+      {#each solutes as solute, i (i)}
+        <div class="sidebar-panel space-y-1.5 p-2">
+          <div class="flex items-center justify-between gap-1">
+            <input
+              type="text"
+              placeholder="TEA"
+              class="sidebar-control w-14 p-1"
+              bind:value={solute.name}
+              title="Residue name; must match the molecule PDB"
+            />
+            <span
+              class="rounded px-1 py-0.5"
+              class:bg-neutral-700={solute.status === 'idle' || solute.status === 'manual'}
+              class:bg-yellow-800={solute.status === 'running'}
+              class:bg-green-800={solute.status === 'completed'}
+              class:bg-red-800={solute.status === 'failed'}
+            >
+              {solute.status === 'running'
+                ? 'Running...'
+                : solute.status === 'completed'
+                  ? 'Done'
+                  : solute.status === 'failed'
+                    ? 'Failed'
+                    : 'Pending'}
+            </span>
+            <button
+              class="dark:text-neutral-500 dark:hover:text-neutral-300"
+              onclick={() => removeSolute(i)}>&times;</button
+            >
+          </div>
+          {#if solute.pdb}
+            <p class="wrap-break-word sidebar-label" title={solute.pdb}>{solute.pdb}</p>
+          {/if}
+          <Button variant="outline" className="w-full text-xs" onclick={() => onBrowseSolute(i)}>
+            {solute.pdb ? 'Select another PDB…' : 'Select molecule PDB…'}
+          </Button>
+          <div class="flex items-center gap-1">
+            <span
+              class="sidebar-label shrink-0"
+              title="packmol-memgen --solute_con: molecule count, or 0.1M / %"
+            >
+              Amount
+            </span>
+            <input
+              type="text"
+              class="sidebar-control flex-1 p-1"
+              bind:value={solute.concentration}
+              placeholder="4 or 0.1M"
+            />
+          </div>
+          <div class="flex items-center gap-2">
+            <Checkbox name="solute-inmem-{i}" bind:checked={solute.inMembrane} />
+            <span class="sidebar-label" title="packmol-memgen --solute_inmem">In membrane</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="sidebar-label">Charge</span>
+            <input type="number" class="sidebar-control w-12 p-1" bind:value={solute.charge} />
+            <span class="sidebar-label">Mult.</span>
+            <input
+              type="number"
+              class="sidebar-control w-12 p-1"
+              bind:value={solute.multiplicity}
+            />
+          </div>
+          {#if solute.status !== 'running'}
+            <Button
+              variant="outline"
+              className="w-full text-xs"
+              onclick={() => onParametrizeSolute(i)}
+              disabled={!solute.pdb || !solute.name || !resolvedOutputParent}
+            >
+              {solute.status === 'completed'
+                ? `Re-parametrize ${solute.name || 'molecule'}`
+                : `Parametrize ${solute.name || 'molecule'}`}
+            </Button>
+          {/if}
+        </div>
+      {/each}
+      {#if includeProtein && solutes.length > 0}
+        <div class="flex items-center gap-1">
+          <span
+            class="sidebar-label"
+            title="packmol-memgen --solute_prot_dist: cylindrical keep-out around the protein"
+          >
+            Protein distance
+          </span>
+          <input
+            type="text"
+            inputmode="decimal"
+            class="sidebar-control w-14 p-1"
+            bind:value={soluteProtDist}
+            placeholder="10"
+          />
+          <span class="sidebar-label">Å</span>
+        </div>
       {/if}
     </div>
     <Divider />
@@ -1178,10 +1451,12 @@
     <!-- System Options -->
     <div class="space-y-2">
       <h2 class="sidebar-heading">System Options</h2>
-      <div class="flex items-center gap-2">
-        <Checkbox name="preoriented" bind:checked={preoriented} />
-        <span class="sidebar-label">Pre-oriented in membrane</span>
-      </div>
+      {#if includeProtein}
+        <div class="flex items-center gap-2">
+          <Checkbox name="preoriented" bind:checked={preoriented} />
+          <span class="sidebar-label">Pre-oriented in membrane</span>
+        </div>
+      {/if}
       <div class="flex items-center gap-2">
         <Checkbox name="add-salt" bind:checked={addSalt} />
         <span class="sidebar-label">Add salt</span>
@@ -1221,6 +1496,24 @@
         </label>
       </div>
       {#if boxSizingMode === 'water_layer'}
+        {#if !includeProtein}
+          <div class="flex items-center gap-1 pl-6">
+            <span
+              class="sidebar-label"
+              title="packmol-memgen --distxy_fix: required when there is no protein PDB"
+            >
+              Membrane XY
+            </span>
+            <input
+              type="number"
+              min="1"
+              step="1"
+              class="sidebar-control w-16 p-1"
+              bind:value={distxyFix}
+            />
+            <span class="sidebar-label">Å</span>
+          </div>
+        {/if}
         <div class="flex items-center gap-1 pl-6">
           <span class="sidebar-label" title="packmol-memgen --dist_wat">
             Water thickness
@@ -1298,25 +1591,27 @@
           <span class="sidebar-label">Parametrize with tleap</span>
         </div>
 
-        <div class="flex items-center gap-2">
-          <Checkbox name="not-protonate" bind:checked={notProtonate} />
-          <span
-            class="sidebar-label"
-            title="Recommended when the protein was prepared with PropKa first. Passes --notprotonate to packmol-memgen so residue names like GLH/ASH/HIP are kept. Without this, reduce may re-protonate and rename atoms (e.g. HA→HCA), which breaks tleap."
-          >
-            Skip protonation (preserve PropKa)
-          </span>
-        </div>
+        {#if includeProtein}
+          <div class="flex items-center gap-2">
+            <Checkbox name="not-protonate" bind:checked={notProtonate} />
+            <span
+              class="sidebar-label"
+              title="Recommended when the protein was prepared with PropKa first. Passes --notprotonate to packmol-memgen so residue names like GLH/ASH/HIP are kept. Without this, reduce may re-protonate and rename atoms (e.g. HA→HCA), which breaks tleap."
+            >
+              Skip protonation (preserve PropKa)
+            </span>
+          </div>
 
-        <div id="remove-protein-h-option" class="flex items-center gap-2">
-          <Checkbox name="remove-protein-h" bind:checked={removeProteinH} />
-          <span
-            class="sidebar-label"
-            title="Strip hydrogens from protein residues only before packmol-memgen. Ligands and other heteroatoms keep their hydrogens. Use when the PDB has non-Amber H (e.g. Schrödinger) that would break tleap."
-          >
-            Remove protein hydrogens
-          </span>
-        </div>
+          <div id="remove-protein-h-option" class="flex items-center gap-2">
+            <Checkbox name="remove-protein-h" bind:checked={removeProteinH} />
+            <span
+              class="sidebar-label"
+              title="Strip hydrogens from protein residues only before packmol-memgen. Ligands and other heteroatoms keep their hydrogens. Use when the PDB has non-Amber H (e.g. Schrödinger) that would break tleap."
+            >
+              Remove protein hydrogens
+            </span>
+          </div>
+        {/if}
 
         <div class="space-y-2">
           <h3 class="sidebar-group-heading">
@@ -1443,7 +1738,7 @@
           </p>
         {/if}
       </div>
-      {#if validationResult === null && workingFile}
+      {#if validationResult === null && (workingFile || !includeProtein)}
         <p class="gw-notice gw-notice-warning">
           Inputs have not been validated. Click <strong>Validate Inputs</strong> before generating.
         </p>
@@ -1453,7 +1748,7 @@
           Input files have not been generated yet. Click <strong>Generate Input Files</strong> first.
         </p>
       {/if}
-      {#if resolvedOutputParent === '' && workingFile}
+      {#if resolvedOutputParent === '' && (workingFile || !includeProtein)}
         <p class="gw-notice gw-notice-warning">
           Set a <strong>Working Directory</strong> in the top bar, or browse an output path, to
           generate output folders.
