@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import re
 import shlex
@@ -12,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -60,6 +61,44 @@ from gatewizard.utils.cluster.probe import read_job_metadata
 from gatewizard.utils.cluster.resources import prefer_nodes
 
 router = APIRouter(prefix="/cluster", tags=["cluster"])
+
+_pull_cancel_lock = threading.Lock()
+_pull_cancel_events: Dict[str, threading.Event] = {}
+
+
+class PullCancelledError(Exception):
+    """User cancelled an in-flight cluster pull."""
+
+
+def _pull_local_key(local_dir: Path) -> str:
+    return str(local_dir.resolve())
+
+
+def _register_pull_cancel(local_dir: Path) -> threading.Event:
+    key = _pull_local_key(local_dir)
+    evt = threading.Event()
+    with _pull_cancel_lock:
+        old = _pull_cancel_events.get(key)
+        if old is not None:
+            old.set()
+        _pull_cancel_events[key] = evt
+    return evt
+
+
+def _unregister_pull_cancel(local_dir: Path) -> None:
+    key = _pull_local_key(local_dir)
+    with _pull_cancel_lock:
+        _pull_cancel_events.pop(key, None)
+
+
+def _request_pull_cancel(local_dir: Path) -> bool:
+    key = _pull_local_key(local_dir)
+    with _pull_cancel_lock:
+        evt = _pull_cancel_events.get(key)
+    if evt is None:
+        return False
+    evt.set()
+    return True
 
 
 class ClusterProfilePayload(BaseModel):
@@ -168,6 +207,10 @@ class ClusterPullRequest(BaseModel):
     full: bool = True
     profile: Optional[ClusterProfilePayload] = None
     job_id: Optional[str] = None
+
+
+class ClusterCancelPullRequest(BaseModel):
+    local_dir: str = Field(description="Local equilibration job folder being pulled")
 
 
 class ClusterLocalDirSizeRequest(BaseModel):
@@ -786,6 +829,10 @@ def _execute_cluster_submit_locked(
         "cluster_resume": resume_point.can_resume,
     }
     write_execution_metadata(local, execution)
+    try:
+        _push_equilibration_job_json(payload.session_id, local, payload.remote_dir)
+    except Exception:
+        pass
     return {
         "ok": True,
         "job_id": job_id,
@@ -985,12 +1032,16 @@ def _prefer_newer_execution(
         return dict(current or {})
     if not current:
         return dict(prior)
+    # Never drop a known Slurm id for a copy that never stored one (remote JSON
+    # is uploaded before sbatch, so it usually has no scheduler_job_id).
+    if prior.get("scheduler_job_id") and not current.get("scheduler_job_id"):
+        return dict(prior)
+    if current.get("scheduler_job_id") and not prior.get("scheduler_job_id"):
+        return dict(current)
     tc = parse_submitted_at(current)
     tp = parse_submitted_at(prior)
     if tc and tp:
         return dict(current if tc >= tp else prior)
-    if current.get("scheduler_job_id") and not prior.get("scheduler_job_id"):
-        return dict(current)
     return dict(current or prior)
 
 
@@ -1021,6 +1072,138 @@ def _query_slurm_job_state(session_id: str, job_id: str) -> str:
         if len(cols) >= 2:
             return canonicalize_slurm_state(cols[1])
     return ""
+
+
+def _push_equilibration_job_json(session_id: str, local: Path, remote_dir: str) -> None:
+    """Copy local equilibration_job.json to the remote submit dir (has the Slurm id)."""
+    import base64
+
+    src = Path(local) / "equilibration_job.json"
+    dest_dir = (remote_dir or "").strip().rstrip("/")
+    if not session_id or not src.is_file() or not dest_dir:
+        return
+    dest = f"{dest_dir}/equilibration_job.json"
+    b64 = base64.b64encode(src.read_bytes()).decode("ascii")
+    cmd = (
+        "python3 -c "
+        + shlex.quote(
+            "import base64,sys; open(sys.argv[1],'wb').write(base64.b64decode(sys.argv[2]))"
+        )
+        + f" {shlex.quote(dest)} {shlex.quote(b64)}"
+    )
+    run_remote(session_id, cmd, timeout=30)
+
+
+def _recover_missing_job_identity(
+    session_id: str,
+    local: Path,
+    *,
+    profile: Optional[ClusterProfilePayload] = None,
+    remote_dir: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Rediscover Slurm id / remote path when local execution metadata was wiped."""
+    from gatewizard.utils.cluster.midrun import build_remote_submit_path
+    from gatewizard.utils.cluster.probe import (
+        infer_remote_path_from_peer_jobs,
+        local_scheduler_job_id_hints,
+        parse_job_ids_from_filenames,
+        parse_sbatch_job_name,
+        parse_sacct_allocations,
+        pick_latest_sacct_allocation,
+    )
+
+    local = Path(local)
+    fields: Dict[str, Any] = {}
+    job_name = parse_sbatch_job_name(local)
+    hints = local_scheduler_job_id_hints(local, job_name=job_name)
+    jid = hints[0] if hints else ""
+    state = ""
+
+    remote_path = (remote_dir or "").strip().rstrip("/")
+    if not remote_path:
+        meta = read_job_metadata(local)
+        ex = meta.get("execution") if isinstance(meta.get("execution"), dict) else {}
+        remote_path = str(ex.get("remote_path") or "").rstrip("/")
+    if not remote_path:
+        remote_path = infer_remote_path_from_peer_jobs(local) or ""
+    if not remote_path and profile:
+        cp = _profile(profile)
+        remote_path = build_remote_submit_path(
+            cp.submit_root or "",
+            local.name,
+            username=cp.username or "",
+        )
+
+    adapter = get_scheduler("slurm")
+
+    if remote_path:
+        globs = [f"{shlex.quote(remote_path)}/gw_*.log"]
+        if job_name:
+            globs.append(
+                f"{shlex.quote(remote_path)}/{shlex.quote(job_name)}.*.out"
+            )
+            globs.append(
+                f"{shlex.quote(remote_path)}/{shlex.quote(job_name)}.*.err"
+            )
+        ls_cmd = "ls -1t " + " ".join(globs) + " 2>/dev/null || true"
+        try:
+            _rc, out, _err = run_remote(session_id, ls_cmd, timeout=30)
+            remote_ids = parse_job_ids_from_filenames(out.splitlines(), job_name)
+            if remote_ids:
+                jid = remote_ids[0]
+        except Exception:
+            pass
+
+    if job_name:
+        try:
+            cmd = " ".join(
+                shlex.quote(x) for x in adapter.name_accounting_command(job_name)
+            )
+            _rc, out, _err = run_remote(session_id, cmd, timeout=60)
+            rows = parse_sacct_allocations(out)
+            rows = [r for r in rows if not r.get("name") or r["name"] == job_name]
+            picked = pick_latest_sacct_allocation(rows)
+            if picked:
+                jid = str(picked.get("job_id") or jid)
+                state = canonicalize_slurm_state(picked.get("state") or "")
+        except Exception:
+            pass
+
+        try:
+            cmd = " ".join(
+                shlex.quote(x) for x in adapter.name_status_command(job_name)
+            )
+            _rc, out, _err = run_remote(session_id, cmd, timeout=60)
+            handles = adapter.parse_status(out)
+            if handles:
+                jid = str(handles[0].job_id or jid)
+                state = canonicalize_slurm_state(handles[0].state)
+                if handles[0].node_list:
+                    fields["node_list"] = handles[0].node_list.split(",")[0].strip()
+                if getattr(handles[0], "cpus", 0):
+                    fields["allocated_cpus"] = int(handles[0].cpus)
+                if handles[0].partition:
+                    fields["partition"] = handles[0].partition
+        except Exception:
+            pass
+
+    if jid:
+        fields["scheduler_job_id"] = str(jid)
+        fields["mode"] = "remote"
+        fields["batch_script"] = "run_equilibration.slurm"
+    if remote_path:
+        fields["remote_path"] = remote_path
+    if state:
+        fields["last_remote_state"] = state
+    if profile:
+        cp = _profile(profile)
+        if cp.id:
+            fields["cluster_id"] = cp.id
+        if cp.name:
+            fields["cluster_name"] = cp.name
+    if fields.get("scheduler_job_id"):
+        update_execution_fields(local, **fields)
+    return fields
 
 
 def _fetch_remote_execution(session_id: str, remote_dir: str) -> Dict[str, Any]:
@@ -1060,6 +1243,7 @@ def _pull_job_files(
     profile: Optional[ClusterProfilePayload] = None,
     job_id: Optional[str] = None,
     on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> dict:
     """Rsync remote → local without clobbering local execution metadata."""
     from gatewizard.utils.equilibration_failure import (
@@ -1071,6 +1255,8 @@ def _pull_job_files(
     from gatewizard.utils.cluster.probe import read_job_metadata
 
     def emit(phase: str, message: str, percent: Optional[int] = None, **extra: Any) -> None:
+        if cancel_event and cancel_event.is_set():
+            raise PullCancelledError()
         if not on_progress:
             return
         evt: Dict[str, Any] = {"phase": phase, "message": message}
@@ -1180,14 +1366,21 @@ def _pull_job_files(
     def _sync_progress(evt: Dict[str, object]) -> None:
         if not on_progress:
             return
-        # Map rsync 0–100 onto overall 15–90 so resolve/finalize still show.
-        raw = evt.get("percent")
-        mapped = None
-        if isinstance(raw, (int, float)):
-            mapped = 15 + int(max(0, min(100, float(raw))) * 0.75)
         payload = dict(evt)
-        if mapped is not None:
-            payload["percent"] = mapped
+        bytes_val = payload.get("bytes")
+        total = payload.get("total_bytes")
+        if (
+            isinstance(bytes_val, (int, float))
+            and isinstance(total, (int, float))
+            and float(total) > 0
+        ):
+            payload["percent"] = max(
+                0, min(99, int(100.0 * float(bytes_val) / float(total)))
+            )
+        elif isinstance(payload.get("percent"), (int, float)):
+            payload["percent"] = int(
+                max(0, min(100, float(payload["percent"])))
+            )
         if not payload.get("message"):
             payload["message"] = "Downloading…"
         on_progress(payload)
@@ -1198,16 +1391,40 @@ def _pull_job_files(
         remote_bytes = remote_dir_byte_size(session_id, pull_source)
     except Exception:
         remote_bytes = 0
+    try:
+        from gatewizard.utils.equilibration_failure import PULL_PRESERVE_EXCLUDES as _pex
+
+        start_local_bytes = local_dir_byte_size(local, excludes=list(_pex))
+    except Exception:
+        start_local_bytes = local_dir_byte_size(local)
     if remote_bytes > 0:
         emit(
             "sync",
-            f"Downloading… 0 / {format_byte_size(remote_bytes)}",
-            15,
-            bytes=0,
+            (
+                f"Downloading… {format_byte_size(start_local_bytes)} / "
+                f"{format_byte_size(remote_bytes)}"
+                if start_local_bytes > 0
+                else f"Downloading… 0 / {format_byte_size(remote_bytes)}"
+            ),
+            (
+                max(0, min(99, int(100.0 * start_local_bytes / remote_bytes)))
+                if remote_bytes > 0 and start_local_bytes > 0
+                else 0
+            ),
+            bytes=int(start_local_bytes or 0),
             total_bytes=remote_bytes,
         )
     else:
-        emit("sync", "Downloading from cluster…", 15)
+        emit(
+            "sync",
+            (
+                f"Downloading… {format_byte_size(start_local_bytes)} on disk"
+                if start_local_bytes > 0
+                        else "Downloading from cluster…"
+            ),
+            0,
+            **({"bytes": int(start_local_bytes)} if start_local_bytes > 0 else {}),
+        )
 
     # Remember remote size on the card even if the client misses stream events.
     if remote_bytes > 0:
@@ -1232,8 +1449,13 @@ def _pull_job_files(
             on_progress=_sync_progress if on_progress else None,
             expected_bytes=remote_bytes or None,
             timeout=1800 if not remote_bytes else 600,
+            cancel_event=cancel_event,
         )
+    except PullCancelledError:
+        raise
     except ClusterSSHError as ex:
+        if cancel_event and cancel_event.is_set():
+            raise PullCancelledError() from ex
         raise HTTPException(status_code=400, detail=str(ex)) from ex
     finally:
         if staging_dir:
@@ -1260,7 +1482,7 @@ def _pull_job_files(
             )
         raise HTTPException(status_code=400, detail=detail)
 
-    emit("finalize", "Updating local metadata…", 92)
+    emit("finalize", "Updating local metadata…", None)
     try:
         import json as _json
         import shlex as _shlex
@@ -1441,8 +1663,39 @@ def _cluster_job_status(payload: ClusterJobStatusRequest) -> dict:
         elif stored_jid:
             effective_jid = stored_jid
 
+    if not effective_jid and payload.local_dir:
+        recovered = _recover_missing_job_identity(
+            session_id,
+            Path(payload.local_dir),
+            profile=payload.profile,
+            remote_dir=payload.remote_dir,
+        )
+        effective_jid = str(recovered.get("scheduler_job_id") or "").strip()
+        if recovered:
+            prev_exec = {**prev_exec, **recovered}
+
     if not effective_jid:
-        raise HTTPException(status_code=400, detail="No Slurm job id")
+        if payload.local_dir:
+            return {
+                "jobs": [],
+                "state": "",
+                "stdout": "",
+                "stderr": (
+                    "No Slurm job id in local metadata, and the cluster has no "
+                    "matching squeue/sacct job for this folder name."
+                ),
+                "pulled": None,
+                "session_id": session_id,
+                "execution": prev_exec or None,
+            }
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No Slurm job id in local metadata, and the cluster has no matching "
+                "squeue/sacct job for this folder name. Connect to the cluster and "
+                "Reload after the job is visible in squeue, or re-submit."
+            ),
+        )
 
     cmd_parts = adapter.status_command(effective_jid)
     cmd = " ".join(shlex.quote(x) for x in cmd_parts)
@@ -1695,8 +1948,21 @@ def cluster_pull_job(payload: ClusterPullRequest) -> dict:
     return result
 
 
+@router.post("/cancel-pull")
+def cluster_cancel_pull(payload: ClusterCancelPullRequest) -> dict:
+    """Stop an in-flight pull for a local job folder (kills rsync / SFTP)."""
+    local = Path(os.path.abspath(os.path.expanduser(payload.local_dir)))
+    cancelled = _request_pull_cancel(local)
+    return {
+        "cancelled": cancelled,
+        "message": "Pull cancel requested" if cancelled else "No active pull for this folder",
+    }
+
+
 @router.post("/pull-job-stream")
-async def cluster_pull_job_stream(payload: ClusterPullRequest) -> StreamingResponse:
+async def cluster_pull_job_stream(
+    request: Request, payload: ClusterPullRequest
+) -> StreamingResponse:
     """NDJSON stream of pull progress events, ending with ``phase=done|error``."""
     import asyncio
 
@@ -1719,6 +1985,7 @@ async def cluster_pull_job_stream(payload: ClusterPullRequest) -> StreamingRespo
 
     async def event_stream():
         progress_q: queue.Queue = queue.Queue()
+        cancel_event = _register_pull_cancel(local)
 
         def on_progress(evt: Dict[str, Any]) -> None:
             progress_q.put(("progress", evt))
@@ -1756,10 +2023,13 @@ async def cluster_pull_job_stream(payload: ClusterPullRequest) -> StreamingRespo
                     profile=payload.profile,
                     job_id=str(job_id) if job_id else None,
                     on_progress=on_progress,
+                    cancel_event=cancel_event,
                 )
                 if midrun_note and isinstance(result, dict):
                     result["midrun"] = midrun_note
                 progress_q.put(("done", result))
+            except PullCancelledError:
+                progress_q.put(("cancelled", {"message": "Pull cancelled"}))
             except HTTPException as ex:
                 detail = ex.detail
                 msg = detail if isinstance(detail, str) else str(detail)
@@ -1769,12 +2039,21 @@ async def cluster_pull_job_stream(payload: ClusterPullRequest) -> StreamingRespo
             except Exception as ex:
                 progress_q.put(("error", {"message": str(ex)}))
             finally:
+                _unregister_pull_cancel(local)
                 progress_q.put(None)
 
         threading.Thread(target=worker, daemon=True).start()
         loop = asyncio.get_running_loop()
         while True:
-            item = await loop.run_in_executor(None, progress_q.get)
+            if await request.is_disconnected():
+                cancel_event.set()
+            try:
+                item = await asyncio.wait_for(
+                    loop.run_in_executor(None, progress_q.get),
+                    timeout=0.25,
+                )
+            except asyncio.TimeoutError:
+                continue
             if item is None:
                 break
             kind, payload_evt = item
@@ -1796,6 +2075,16 @@ async def cluster_pull_job_stream(payload: ClusterPullRequest) -> StreamingRespo
                             else "Pull complete"
                         ),
                         "result": payload_evt,
+                    },
+                    ensure_ascii=False,
+                ) + "\n"
+            elif kind == "cancelled":
+                yield json.dumps(
+                    {
+                        "phase": "cancelled",
+                        "percent": None,
+                        "message": payload_evt.get("message") or "Pull cancelled",
+                        "cancelled": True,
                     },
                     ensure_ascii=False,
                 ) + "\n"

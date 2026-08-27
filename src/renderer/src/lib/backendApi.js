@@ -1,3 +1,12 @@
+import {
+  createCancelledError,
+  createPullSpeedTracker,
+  createPullCancelledError,
+  extractPullSpeedFromMessage,
+  formatPullTransferText,
+  isPullCancelledError
+} from './clusterPullProgress.js'
+
 /** Must match `BACKEND_URL` in `src/main/index.js`. */
 export const BACKEND_BASE_URL = 'http://127.0.0.1:8765'
 
@@ -151,7 +160,7 @@ export function scanJobs(directory) {
 
 /**
  * @typedef {{ cpu_cores_min?: number|null, cpu_cores_max?: number|null, gpu_id_min?: number|null, gpu_id_max?: number|null, num_gpus?: number|null, use_gpu?: boolean|null, platform?: string|null, engine?: string }} EquilibrationJobResources
- * @typedef {{ job_dir: string, name: string, engine: string, variant: string|null, status: string, start_time: string|null, dir_mtime?: number|null, stages_done: number, stages_total: number, error: string|null, can_run?: boolean, can_resume?: boolean, resume_reason?: string, resume_stage_index?: number, resume_stage_name?: string, resume_completed_stages?: number, resources?: EquilibrationJobResources, input_dir?: string|null, ensemble?: string|null, protocol?: { name: string, description?: string, stages: object[] }|null, gpu_resident?: boolean|null, execution?: object|null }} EquilibrationJobSummary
+ * @typedef {{ job_dir: string, name: string, engine: string, variant: string|null, status: string, start_time: string|null, dir_mtime?: number|null, stages_done: number, stages_total: number, error: string|null, can_run?: boolean, can_resume?: boolean, resume_reason?: string, resume_stage_index?: number, resume_stage_name?: string, resume_completed_stages?: number, resources?: EquilibrationJobResources, input_dir?: string|null, ensemble?: string|null, protocol?: { name: string, description?: string, stages: object[] }|null, gpu_resident?: boolean|null, execution?: object|null, has_batch_script?: boolean }} EquilibrationJobSummary
  * Scan a directory for equilibration job folders (run_equilibration.sh).
  * @param {string} directory  Absolute path to the working directory
  * @returns {Promise<{ jobs: EquilibrationJobSummary[] }>}
@@ -216,6 +225,7 @@ export function detectTerminalCaps(filePath) {
  * @param {number} charge
  * @param {number} multiplicity
  * @param {string | null} [outputDir] Builder output folder (ligand_params written under here)
+ * @param {boolean} [fromLigandFile] When true, filePath is a standalone ligand PDB (not a system PDB)
  * @returns {Promise<{ success: boolean, message: string, frcmod: string, lib: string, mol2?: string }>}
  */
 export function parametrizeLigand(
@@ -223,14 +233,16 @@ export function parametrizeLigand(
   ligandName,
   charge = 0,
   multiplicity = 1,
-  outputDir = null
+  outputDir = null,
+  fromLigandFile = false
 ) {
   return backendJson('/parametrize-ligand', {
     path: filePath,
     ligandName,
     charge,
     multiplicity,
-    ...(outputDir ? { outputDir } : {})
+    ...(outputDir ? { outputDir } : {}),
+    fromLigandFile: Boolean(fromLigandFile)
   })
 }
 
@@ -261,11 +273,11 @@ export function checkLigandParametrization(pdbPath, ligandNames, outputDir = nul
 
 /**
  * Run structural trajectory analysis (RMSD/RMSF/Distance/Rg/bilayer).
- * @param {{ topologyPath: string, trajectoryPaths: string[], analysisType: string, selection?: string, selection2?: string, referenceFrame?: number, align?: boolean, fileTimes?: Record<string, number>, fileStrides?: Record<string, number>, rmsfXaxisType?: string, leafletLipidSel?: string|null, leafletFilterSel?: string|null, nBins?: number, interpolate?: boolean, start?: number|null, stop?: number|null, step?: number|null }} payload
+ * @param {{ topologyPath: string, trajectoryPaths: string[], analysisType: string, selection?: string, selection2?: string, referenceFrame?: number, align?: boolean, fileTimes?: Record<string, number>, fileStrides?: Record<string, number>, rmsfXaxisType?: string, leafletLipidSel?: string|null, leafletFilterSel?: string|null, nBins?: number, interpolate?: boolean, excludeSel?: string|null, excludeCutoff?: number, excludeDim?: number, aplMethod?: string|null, gridmatN?: number, gridmatPrecision?: number, vtmcNSamples?: number, vtmcProteinRadius?: number, start?: number|null, stop?: number|null, step?: number|null }} payload
  * @returns {Promise<{ analysis_type: string, x: number[], y: number[], x_label: string, y_label: string, series_name: string, x_labels?: string[], stats?: Record<string, number>, mean_upper_leaflet?: number[], mean_lower_leaflet?: number[] }>}
  */
-export function runStructuralAnalysis(payload) {
-  return backendJson('/analysis-structural', payload)
+export function runStructuralAnalysis(payload, opts = {}) {
+  return backendJson('/analysis-structural', payload, opts)
 }
 
 /**
@@ -279,7 +291,7 @@ export function countAnalysisSelection(payload) {
 
 /**
  * Detect which engine/tool should fix PBC for the given inputs.
- * @param {{ topologyPath: string, trajectoryPaths?: string[], engine?: string }} payload
+ * @param {{ topologyPath: string, trajectoryPaths?: string[], engine?: string, tprPath?: string|null, ndxPath?: string|null }} payload
  * @returns {Promise<{ engine: string, method: string, reason: string, tpr: string|null, ndx: string|null, topology: string|null, warnings: string[], center_groups?: Array<{ name: string, index: number, n_atoms: number, recommended?: boolean, lipid_like?: boolean }>, recommended_center?: string|null, recommended_center_groups?: string[], recommended_output?: string|null, lipid_resnames?: string[], recommended_center_selection?: string, supported_output_formats?: string[] }>}
  */
 export function detectPbcEngine(payload) {
@@ -345,8 +357,8 @@ export function getEnergeticProperties(payload) {
  * @param {{ logPaths: string[], properties?: string[], fileTimes?: Record<string, number>, fileStrides?: Record<string, number>, timeUnits?: string, energyUnits?: string, pressureUnits?: string, temperatureUnits?: string, volumeUnits?: string, engine?: 'namd'|'openmm'|'gromacs'|'amber' }} payload
  * @returns {Promise<{ x: number[], x_label: string, series: Array<{ name: string, key: string, unit: string, y: number[] }>, statistics: Record<string, Record<string, number>> }>}
  */
-export function runEnergeticAnalysis(payload) {
-  return backendJson('/analysis-energetic', payload)
+export function runEnergeticAnalysis(payload, opts = {}) {
+  return backendJson('/analysis-energetic', payload, opts)
 }
 
 /**
@@ -725,6 +737,11 @@ export async function clusterCancelJob(props) {
 }
 
 /** @param {object} props */
+export async function clusterCancelPull(props) {
+  return backendJson('/cluster/cancel-pull', props)
+}
+
+/** @param {object} props */
 export async function clusterPullJob(props) {
   return backendJson('/cluster/pull-job', props)
 }
@@ -768,9 +785,11 @@ export async function clusterPullJob(props) {
  *   error?: string,
  *   result?: object
  * }) => void} [onProgress]
+ * @param {{ signal?: AbortSignal }} [opts]
  * @returns {Promise<object>} final pull result
  */
-export async function clusterPullJobStream(props, onProgress) {
+export async function clusterPullJobStream(props, onProgress, opts = {}) {
+  const signal = opts.signal
   const url = `${BACKEND_BASE_URL}/cluster/pull-job-stream`
   const localDir = props.local_dir || props.localDir || ''
   /** @type {number} */
@@ -779,6 +798,13 @@ export async function clusterPullJobStream(props, onProgress) {
   let pollTimer = null
   /** @type {number} */
   let lastPollPct = -1
+  /** @type {number} */
+  let lastPollBytes = -1
+  /** @type {string|null} */
+  let lastPollSpeed = null
+  /** @type {string|null} */
+  let lastStreamSpeed = null
+  const speedTracker = createPullSpeedTracker()
 
   const stopLocalPoll = () => {
     if (pollTimer != null) {
@@ -791,6 +817,28 @@ export async function clusterPullJobStream(props, onProgress) {
     if (typeof evt?.total_bytes === 'number' && evt.total_bytes > 0) {
       expectedBytes = evt.total_bytes
     }
+    if (evt?.speed) {
+      lastStreamSpeed = String(evt.speed)
+    } else if (evt?.message) {
+      const extracted = extractPullSpeedFromMessage(evt.message)
+      if (extracted) lastStreamSpeed = extracted
+    }
+    if (typeof evt?.bytes === 'number' && evt.bytes >= 0) {
+      const computed = speedTracker.sample(evt.bytes)
+      const speed = evt.speed || lastStreamSpeed || computed
+      if (speed && !evt.speed) evt = { ...evt, speed }
+      if (evt.message && speed && !String(evt.message).includes(String(speed))) {
+        evt = {
+          ...evt,
+          message: formatPullTransferText(
+            evt.bytes,
+            evt.total_bytes || expectedBytes,
+            null,
+            String(speed)
+          )
+        }
+      }
+    }
     if (typeof onProgress === 'function') onProgress(evt)
   }
 
@@ -801,25 +849,43 @@ export async function clusterPullJobStream(props, onProgress) {
         const info = await clusterLocalDirSize({ local_dir: localDir })
         const bytes = typeof info?.bytes === 'number' ? info.bytes : 0
         const formatted = info?.formatted || `${bytes} B`
+        const computed = speedTracker.sample(bytes)
+        const speed = lastStreamSpeed || computed
+        const byteDelta = lastPollBytes < 0 ? bytes : bytes - lastPollBytes
+        // Keep updating while a large file grows inside the same integer %.
+        // Otherwise the ring freezes for tens of seconds on multi-GB pulls.
+        const significantGrowth = byteDelta >= 256 * 1024
         if (expectedBytes > 0) {
-          const raw = Math.max(0, Math.min(99, Math.round((100 * bytes) / expectedBytes)))
-          // Map onto overall Pull bar (sync ≈ 15–90), matching backend mapping.
-          const pct = 15 + Math.round(raw * 0.75)
-          if (pct === lastPollPct && raw !== 0) return
+          const pct = Math.max(0, Math.min(99, Math.round((100 * bytes) / expectedBytes)))
+          if (
+            pct === lastPollPct &&
+            pct !== 0 &&
+            speed === lastPollSpeed &&
+            !significantGrowth
+          ) {
+            return
+          }
           lastPollPct = pct
+          lastPollBytes = bytes
+          lastPollSpeed = speed
           emit({
             phase: 'sync',
             percent: pct,
             bytes,
             total_bytes: expectedBytes,
-            message: `Downloading… ${formatted} / ${formatBytesApprox(expectedBytes)} (${raw}%)`
+            speed,
+            message: formatPullTransferText(bytes, expectedBytes, formatted, speed)
           })
         } else if (bytes > 0) {
+          if (speed === lastPollSpeed && speed != null && !significantGrowth) return
+          lastPollBytes = bytes
+          lastPollSpeed = speed
           emit({
             phase: 'sync',
             percent: null,
             bytes,
-            message: `Downloading… ${formatted} on disk`
+            speed,
+            message: formatPullTransferText(bytes, 0, formatted, speed)
           })
         }
       } catch {
@@ -830,6 +896,16 @@ export async function clusterPullJobStream(props, onProgress) {
 
   startLocalPoll()
 
+  const abortPull = async () => {
+    stopLocalPoll()
+    if (!localDir) return
+    try {
+      await clusterCancelPull({ local_dir: localDir, localDir })
+    } catch {
+      /* best effort */
+    }
+  }
+
   let response
   try {
     response = await fetch(url, {
@@ -838,9 +914,14 @@ export async function clusterPullJobStream(props, onProgress) {
         'Content-Type': 'application/json',
         Accept: 'application/x-ndjson'
       },
-      body: JSON.stringify(keysToSnakeCase(props))
+      body: JSON.stringify(keysToSnakeCase(props)),
+      signal
     })
   } catch (err) {
+    if (signal?.aborted || err?.name === 'AbortError') {
+      await abortPull()
+      throw createPullCancelledError()
+    }
     stopLocalPoll()
     console.error('[backendApi] pull stream failed', { url, err })
     throw err
@@ -872,6 +953,10 @@ export async function clusterPullJobStream(props, onProgress) {
 
   try {
     while (true) {
+      if (signal?.aborted) {
+        await abortPull()
+        throw createPullCancelledError()
+      }
       const { done, value } = await reader.read()
       if (done) break
       buffer += decoder.decode(value, { stream: true })
@@ -903,6 +988,9 @@ export async function clusterPullJobStream(props, onProgress) {
           } catch {
             /* stream already closing */
           }
+        } else if (evt?.phase === 'cancelled') {
+          stopLocalPoll()
+          throw createPullCancelledError()
         }
       }
     }
@@ -917,6 +1005,12 @@ export async function clusterPullJobStream(props, onProgress) {
         /* ignore trailing garbage */
       }
     }
+  } catch (err) {
+    if (isPullCancelledError(err, signal)) {
+      await abortPull()
+      throw createPullCancelledError()
+    }
+    throw err
   } finally {
     stopLocalPoll()
   }
@@ -1257,9 +1351,10 @@ export function packmolScanJobs(payload) {
  * @template T
  * @param {string} path
  * @param {Record<string, unknown> | null | undefined} [payload] JSON-serialized when present and the method allows a body
+ * @param {{ signal?: AbortSignal, cancelledMessage?: string, cancelledName?: string }} [opts]
  * @returns {Promise<T>}
  */
-export async function backendJson(path, payload) {
+export async function backendJson(path, payload, opts = {}) {
   const url = `${BACKEND_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`
   /** @type {RequestInit} */
   const init = { method: payload ? 'POST' : 'GET' }
@@ -1267,11 +1362,18 @@ export async function backendJson(path, payload) {
     init.headers = { 'Content-Type': 'application/json' }
     init.body = JSON.stringify(keysToSnakeCase(payload))
   }
+  if (opts.signal) init.signal = opts.signal
 
   let response
   try {
     response = await fetch(url, init)
   } catch (err) {
+    if (isPullCancelledError(err, opts.signal)) {
+      throw createCancelledError(
+        opts.cancelledMessage || 'Request cancelled',
+        opts.cancelledName || 'Cancelled'
+      )
+    }
     console.error('[backendApi] fetch failed', { url, err })
     const msg = err instanceof Error ? err.message : String(err)
     if (msg === 'Failed to fetch' || err instanceof TypeError) {
@@ -1285,7 +1387,13 @@ export async function backendJson(path, payload) {
   let data = {}
   try {
     data = await response.json()
-  } catch {
+  } catch (err) {
+    if (isPullCancelledError(err, opts.signal)) {
+      throw createCancelledError(
+        opts.cancelledMessage || 'Request cancelled',
+        opts.cancelledName || 'Cancelled'
+      )
+    }
     data = {}
   }
   if (!response.ok) {

@@ -4,6 +4,7 @@
   import Input from './ui/Input.svelte'
   import Spinner from './ui/Spinner.svelte'
   import { loadClusterProfiles } from '../lib/clusterProfiles.js'
+  import { formatPullStatusLine, isPullCancelledError, pullEventPercent } from '../lib/clusterPullProgress.js'
   import {
     adoptSharedSession,
     getClusterSession,
@@ -13,6 +14,7 @@
     clusterCancelJob,
     clusterConnect,
     clusterDisconnect,
+    clusterCancelPull,
     clusterJobStatus,
     clusterProbe,
     clusterPullJobStream,
@@ -65,6 +67,8 @@
   let submitPercent = $state(null)
   let submitPhase = $state('')
   let pulling = $state(false)
+  /** @type {AbortController|null} */
+  let pullAbort = null
   /** @type {number|null} */
   let pullPercent = $state(null)
   let showDetails = $state(false)
@@ -905,6 +909,22 @@
     }
   }
 
+  async function cancelPull() {
+    if (!pulling) return
+    if (pullAbort) pullAbort.abort()
+    else if (jobDir) {
+      try {
+        await clusterCancelPull({ local_dir: jobDir, localDir: jobDir })
+      } catch {
+        /* best effort */
+      }
+    }
+    pulling = false
+    pullPercent = null
+    pullAbort = null
+    setStatus('Pull cancelled')
+  }
+
   async function pull() {
     if (!sessionId || !jobDir || !remotePath.trim()) {
       setStatus('Connect and set the remote path first.', true)
@@ -916,6 +936,7 @@
     }
     pulling = true
     pullPercent = 0
+    pullAbort = new AbortController()
     setStatus(
       remoteActive
         ? `Partial pull (job still ${String(remoteState || 'active').toUpperCase()})…`
@@ -933,11 +954,20 @@
           job_id: schedulerJobId || execution?.scheduler_job_id || null
         },
         (evt) => {
-          if (typeof evt.percent === 'number' && Number.isFinite(evt.percent)) {
-            pullPercent = Math.max(0, Math.min(100, evt.percent))
+          const pct = pullEventPercent(evt, pullPercent)
+          if (pct != null) pullPercent = pct
+          if (evt.message || evt.speed) {
+            setStatus(
+              formatPullStatusLine({
+                message: evt.message,
+                bytes: evt.bytes,
+                totalBytes: evt.total_bytes,
+                speed: evt.speed
+              })
+            )
           }
-          if (evt.message) setStatus(evt.message)
-        }
+        },
+        { signal: pullAbort.signal }
       )
       const nextExec = {
         ...(execution || {}),
@@ -965,10 +995,15 @@
         setStatus('Pulled remote job files')
       }
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : String(err), true)
+      if (isPullCancelledError(err, pullAbort?.signal)) {
+        setStatus('Pull cancelled')
+      } else {
+        setStatus(err instanceof Error ? err.message : String(err), true)
+      }
     } finally {
       pulling = false
       pullPercent = null
+      pullAbort = null
     }
   }
 
@@ -1444,24 +1479,21 @@
                 >
                   Status
                 </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busy || pulling || !sessionId}
-                  onclick={pull}
-                  title={remoteActive
-                    ? 'Job still running — downloads a partial snapshot only'
-                    : 'Download results from the cluster'}
-                >
-                  {#if pulling}<Spinner className="mr-1" />{/if}
-                  {pulling
-                    ? pullPercent != null
-                      ? `Pulling… ${Math.round(pullPercent)}%`
-                      : 'Pulling…'
-                    : remoteActive
-                      ? 'Pull (partial)'
-                      : 'Pull results'}
-                </Button>
+                {#if pulling}
+                  <Button size="sm" variant="outline" onclick={cancelPull}>Cancel pull</Button>
+                {:else}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy || !sessionId}
+                    onclick={pull}
+                    title={remoteActive
+                      ? 'Job still running — downloads a partial snapshot only'
+                      : 'Download results from the cluster'}
+                  >
+                    {remoteActive ? 'Pull (partial)' : 'Pull results'}
+                  </Button>
+                {/if}
                 <Button
                   size="sm"
                   variant="outline"
@@ -1476,8 +1508,15 @@
         {/if}
 
         {#if statusMessage}
-          <p class={statusError ? 'text-xs text-red-500' : 'text-xs text-neutral-500'}>
-            {statusMessage}
+          <p
+            class="{statusError
+              ? 'text-xs text-red-500'
+              : 'text-xs text-neutral-500'} flex items-center gap-1.5"
+          >
+            {#if pulling}
+              <Spinner className="size-3 shrink-0" label="Downloading" />
+            {/if}
+            <span>{statusMessage}</span>
           </p>
         {/if}
         {#if submitting}
