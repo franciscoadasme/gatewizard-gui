@@ -29,6 +29,7 @@
     stopEquilibration,
     getStructure,
     clusterJobStatus,
+    clusterCancelPull,
     clusterPullJobStream,
     clusterJobFolderSizes,
     listEquilibrationJobFiles,
@@ -57,6 +58,16 @@
     parentDirPath,
     uniqueDirList
   } from '../lib/outputFolders.js'
+  import {
+    extractPullSpeedFromMessage,
+    formatByteSize,
+    formatPullStatusLine,
+    formatPullTransferText,
+    isPullCancelledError,
+    jobPullDisplayPercent,
+    mergePullLocalBytes,
+    pullEventPercent
+  } from '../lib/clusterPullProgress.js'
   import { themeState } from '../lib/theme.svelte.js'
   import { themeBackgroundHex } from '../lib/viewerSettings.svelte.js'
   import { formEnsembleValue } from '../lib/ensemble.js'
@@ -258,6 +269,8 @@
   })
   /** @type {number | null} */
   let systemSize = $state(null)
+  /** True when the input structure has protein atoms; null until counted. */
+  let hasProtein = $state(/** @type {boolean | null} */ (null))
   let loadingSystemSize = $state(false)
   /** Bumped whenever inputDir is (re)assigned so the size loader re-runs for the same path. */
   let inputDirRevision = $state(0)
@@ -365,7 +378,7 @@
       : []
   )
   /** @typedef {{ name: string, status: 'running' | 'completed' | 'error' | 'not_started', simulated_time: number|null, total_simulation_time: number|null, performance: number|null, elapsed_time_seconds: number|null, is_minimization?: boolean, steps_completed?: number|null, total_steps?: number|null, minimization_converged_early?: boolean, output: string, cpu_cores?: number|null, num_gpus?: number|null }} EqStageInfo */
-  /** @typedef {{ jobDir: string, name: string, engine: string, variant: string|null, status: string, startTime: string, dirMtime?: number, elapsed: string, stagesDone: number, stagesTotal: number, error: string|null, canRun: boolean, canResume: boolean, resumeReason: string, resumeStageName: string, resources: import('../lib/backendApi.js').EquilibrationJobResources | null, inputDir: string|null, ensemble: string|null, protocol: { name: string, description?: string, stages: object[] }|null, gpuResident?: boolean|null, execution: object|null, stages: EqStageInfo[], watched: boolean, showStages: boolean, showInfo: boolean, processInfo: { pid: number|null, running: boolean, command: string|null, start_time: string|null, working_dir: string, engine: string } | null, loadingProcessInfo: boolean, stopping: boolean, continuing: boolean, running: boolean, reloading: boolean, pulling: boolean, pullProgress: { percent: number|null, message: string, phase: string } | null, syncSizes: { localBytes: number|null, remoteBytes: number|null, localFormatted: string, remoteFormatted: string, loading: boolean } | null, selectedLog: string|null, logMode: 'head'|'tail', logLines: number, logLinesEditing: boolean, logFiles: string[], logView: { lines: string[], exists: boolean, loading: boolean, mode: string, lineCount: number } | null, loadingStages: boolean, syncingRemoteStages: boolean, equilibrationOutput: string }} EquilibrationJob */
+  /** @typedef {{ jobDir: string, name: string, engine: string, variant: string|null, status: string, startTime: string, dirMtime?: number, elapsed: string, stagesDone: number, stagesTotal: number, error: string|null, canRun: boolean, canResume: boolean, resumeReason: string, resumeStageName: string, resources: import('../lib/backendApi.js').EquilibrationJobResources | null, inputDir: string|null, ensemble: string|null, protocol: { name: string, description?: string, stages: object[] }|null, gpuResident?: boolean|null, execution: object|null, stages: EqStageInfo[], watched: boolean, showStages: boolean, showInfo: boolean, processInfo: { pid: number|null, running: boolean, command: string|null, start_time: string|null, working_dir: string, engine: string } | null, loadingProcessInfo: boolean, stopping: boolean, continuing: boolean, running: boolean, reloading: boolean, pulling: boolean, pullProgress: { percent: number|null, message: string, phase: string, speed?: string|null } | null, syncSizes: { localBytes: number|null, remoteBytes: number|null, localFormatted: string, remoteFormatted: string, loading: boolean } | null, selectedLog: string|null, logMode: 'head'|'tail', logLines: number, logLinesEditing: boolean, logFiles: string[], logView: { lines: string[], exists: boolean, loading: boolean, mode: string, lineCount: number } | null, loadingStages: boolean, syncingRemoteStages: boolean, equilibrationOutput: string }} EquilibrationJob */
 
   // state
   /** @type {null | { stageIndex: number, constraintIndex: number, source: Constraint | null }} */
@@ -382,6 +395,8 @@
   let formSourceJobDir = $state(/** @type {string | null} */ (null))
   /** @type {EquilibrationJob[]} */
   let jobs = $state([])
+  /** @type {Map<string, AbortController>} */
+  const pullAbortByJobDir = new Map()
   /** @type {ReturnType<typeof setInterval> | null} */
   let pollIntervalId = null
   /** Guards overlapping directory scans when the working directory changes quickly. */
@@ -865,6 +880,14 @@
     return 'ready'
   }
 
+  function jobHasBatchScript(job) {
+    return Boolean(job?.hasBatchScript || job?.execution?.batch_script)
+  }
+
+  function jobCanSyncCluster(job) {
+    return job?.execution?.mode === 'remote' || jobHasBatchScript(job)
+  }
+
   /** @param {'all' | 'local' | 'remote'} loc @param {typeof progressStatusFilter} st */
   function progressFilterEmptyLabel(loc, st) {
     const parts = []
@@ -1066,13 +1089,13 @@
     if (!job) return
     // One-shot: skip if already loading, already have stage payload, or runtime known.
     if (job.loadingStages || job.stages?.length || formatStagesMdElapsed(job.stages)) return
-    const remote = job.execution?.mode === 'remote'
+    const remote = jobCanSyncCluster(job)
     // Wait until cluster inventory probe finishes — log sync contends with sinfo.
     if (remote && !clusterSession.inventoryReady) return
     if (
       remote &&
       !remoteJobFinishedLocally(job) &&
-      job.execution?.scheduler_job_id
+      (job.execution?.scheduler_job_id || jobHasBatchScript(job))
     ) {
       // Prefetch: Slurm state only. Watching poll pulls logs later.
       await refreshJobDetail(index, { pullLogs: false })
@@ -1372,6 +1395,25 @@
   }
 
   /** @param {number} index */
+  async function cancelPullRemoteJob(index) {
+    const job = jobs[index]
+    if (!job?.pulling) return
+    const ac = pullAbortByJobDir.get(job.jobDir)
+    if (ac) {
+      ac.abort()
+      return
+    }
+    try {
+      await clusterCancelPull({ local_dir: job.jobDir })
+    } catch {
+      /* best effort */
+    }
+    jobs[index] = { ...job, pulling: false, pullProgress: null }
+    void refreshJobSyncSizes(index, { measureRemote: false })
+    logEvent('detail', 'eq', 'Pull cancelled', job.jobDir)
+  }
+
+  /** @param {number} index */
   async function pullRemoteJob(index) {
     const job = jobs[index]
     if (!job?.execution?.mode || job.execution.mode !== 'remote') return
@@ -1426,6 +1468,8 @@
         openClusterDialog(job)
         return
       }
+      const ac = new AbortController()
+      pullAbortByJobDir.set(jobDir, ac)
       const res = await clusterPullJobStream(
         {
           session_id: sessionId,
@@ -1439,11 +1483,8 @@
           const i = jobIndexByDir(jobDir)
           if (i < 0) return
           const current = jobs[i]
+          const cancelled = evt.phase === 'cancelled'
           const done = evt.phase === 'done'
-          const pct =
-            typeof evt.percent === 'number' && Number.isFinite(evt.percent)
-              ? Math.max(0, Math.min(100, evt.percent))
-              : current.pullProgress?.percent ?? null
           const msg = evt.message || current.pullProgress?.message || 'Pulling…'
           const nextSync = {
             ...(current.syncSizes || {
@@ -1454,27 +1495,54 @@
               loading: false
             })
           }
+          if (typeof evt.bytes === 'number' && evt.bytes >= 0 && evt.phase === 'sync') {
+            const merged = mergePullLocalBytes(nextSync.localBytes, evt.bytes)
+            nextSync.localBytes = merged
+            nextSync.localFormatted = formatByteSize(merged, { fine: true })
+          }
           if (typeof evt.total_bytes === 'number' && evt.total_bytes > 0) {
             nextSync.remoteBytes = evt.total_bytes
-            nextSync.remoteFormatted = formatBytesLabel(evt.total_bytes)
+            nextSync.remoteFormatted = formatByteSize(evt.total_bytes, { fine: true })
           }
-          if (typeof evt.bytes === 'number' && evt.bytes >= 0 && evt.phase === 'sync') {
-            nextSync.localBytes = evt.bytes
-            nextSync.localFormatted = formatBytesLabel(evt.bytes)
-          }
+          const pct = pullEventPercent(
+            {
+              ...evt,
+              bytes: nextSync.localBytes ?? evt.bytes,
+              total_bytes: nextSync.remoteBytes ?? evt.total_bytes
+            },
+            current.pullProgress?.percent ?? null
+          )
+          const speed =
+            evt.speed ||
+            extractPullSpeedFromMessage(msg) ||
+            current.pullProgress?.speed ||
+            null
+          const liveMsg =
+            typeof nextSync.localBytes === 'number' && nextSync.localBytes >= 0
+              ? formatPullTransferText(
+                  nextSync.localBytes,
+                  nextSync.remoteBytes || 0,
+                  nextSync.localFormatted,
+                  typeof speed === 'string' ? speed : null
+                )
+              : msg
           // Unlock Pull as soon as the transfer reports done — do not wait for
           // stream close / stage reload, which can stall behind another card's rsync.
           jobs[i] = {
             ...current,
-            pulling: done ? false : current.pulling,
-            pullProgress: {
-              percent: done ? 100 : pct,
-              message: msg,
-              phase: evt.phase || current.pullProgress?.phase || 'sync'
-            },
+            pulling: done || cancelled ? false : current.pulling,
+            pullProgress: cancelled
+              ? null
+              : {
+                  percent: done ? 100 : pct,
+                  message: done || cancelled ? msg : liveMsg,
+                  phase: evt.phase || current.pullProgress?.phase || 'sync',
+                  speed: typeof speed === 'string' ? speed : null
+                },
             syncSizes: nextSync
           }
-        }
+        },
+        { signal: ac.signal }
       )
       const i = jobIndexByDir(jobDir)
       if (i < 0) return
@@ -1538,6 +1606,30 @@
         }
       }, 1600)
     } catch (err) {
+      const ac = pullAbortByJobDir.get(jobDir)
+      if (isPullCancelledError(err, ac?.signal)) {
+        patchByDir((cur) => ({
+          ...cur,
+          pulling: false,
+          pullProgress: {
+            percent: cur.pullProgress?.percent ?? null,
+            message: 'Pull cancelled',
+            phase: 'cancelled'
+          },
+          error: null
+        }))
+        const i = jobIndexByDir(jobDir)
+        if (i >= 0) void refreshJobSyncSizes(i, { measureRemote: false })
+        logEvent('detail', 'eq', 'Pull cancelled', jobDir)
+        window.setTimeout(() => {
+          const later = jobIndexByDir(jobDir)
+          if (later < 0) return
+          if (jobs[later].pullProgress?.phase === 'cancelled') {
+            jobs[later] = { ...jobs[later], pullProgress: null }
+          }
+        }, 2000)
+        return
+      }
       patchByDir((cur) => ({
         ...cur,
         error: err instanceof Error ? err.message : String(err),
@@ -1545,6 +1637,7 @@
         pullProgress: null
       }))
     } finally {
+      pullAbortByJobDir.delete(jobDir)
       patchByDir((cur) => (cur.pulling ? { ...cur, pulling: false } : cur))
     }
   }
@@ -1631,6 +1724,7 @@
           ? summary.gpu_resident
           : (existing?.gpuResident ?? null),
       execution: summary.execution ?? existing?.execution ?? null,
+      hasBatchScript: Boolean(summary.has_batch_script || existing?.hasBatchScript),
       stages: existing?.stages ?? [],
       watched: existing?.watched ?? false,
       showStages: existing?.showStages ?? false,
@@ -1826,8 +1920,8 @@
     const pollCluster =
       !localOnly &&
       (!finishedRemote || needsCatchUp) &&
-      job.execution?.mode === 'remote' &&
-      Boolean(job.execution?.scheduler_job_id)
+      jobCanSyncCluster(job) &&
+      (Boolean(job.execution?.scheduler_job_id) || jobHasBatchScript(job))
     const willPullLogs =
       pollCluster &&
       pullLogs &&
@@ -1846,20 +1940,20 @@
       try {
         const profiles = await loadClusterProfiles()
         const profile =
-          profiles.find((p) => p.id && p.id === job.execution.cluster_id) ||
-          profiles.find((p) => p.name && p.name === job.execution.cluster_name) ||
+          profiles.find((p) => p.id && p.id === job.execution?.cluster_id) ||
+          profiles.find((p) => p.name && p.name === job.execution?.cluster_name) ||
           profiles[0]
         if (profile?.identity_file || profile?.host || clusterSession.sessionId) {
           const live = jobs[index]
           if (!live || live.jobDir !== jobDir) return
           const schedulerJobId = live.execution?.scheduler_job_id
-          if (!schedulerJobId) return
+          if (!schedulerJobId && !jobHasBatchScript(live)) return
           const remote = await clusterJobStatus({
             session_id: clusterSession.sessionId || null,
             profile: sharedProfilePlain() || JSON.parse(JSON.stringify(profile)),
-            job_id: schedulerJobId,
+            job_id: schedulerJobId || null,
             local_dir: job.jobDir,
-            remote_dir: job.execution.remote_path || null,
+            remote_dir: job.execution?.remote_path || null,
             // Watching / catch-up: light log sync. Prefetch may pass pullLogs:false.
             pull_logs: willPullLogs
           })
@@ -2030,22 +2124,21 @@
   /** Refresh Slurm state in equilibration_job.json before re-reading the card. */
   async function syncRemoteExecutionMetadata(/** @type {number} */ index) {
     const job = jobs[index]
-    if (!job?.execution?.mode || job.execution.mode !== 'remote') return
+    if (!jobCanSyncCluster(job)) return
     const schedulerJobId = job.execution?.scheduler_job_id
-    if (!schedulerJobId) return
     try {
       const profiles = await loadClusterProfiles()
       const profile =
-        profiles.find((p) => p.id && p.id === job.execution.cluster_id) ||
-        profiles.find((p) => p.name && p.name === job.execution.cluster_name) ||
+        profiles.find((p) => p.id && p.id === job.execution?.cluster_id) ||
+        profiles.find((p) => p.name && p.name === job.execution?.cluster_name) ||
         profiles[0]
       if (!clusterSession.sessionId && !profile?.identity_file) return
       const remote = await clusterJobStatus({
         session_id: clusterSession.sessionId || null,
         profile: sharedProfilePlain() || (profile ? JSON.parse(JSON.stringify(profile)) : null),
-        job_id: schedulerJobId,
+        job_id: schedulerJobId || null,
         local_dir: job.jobDir,
-        remote_dir: job.execution.remote_path || null,
+        remote_dir: job.execution?.remote_path || null,
         pull_logs: false
       })
       applyJobExecution(job.jobDir, {
@@ -2053,7 +2146,7 @@
         mode: 'remote',
         scheduler_job_id: remote.execution?.scheduler_job_id || schedulerJobId,
         last_remote_state:
-          remote.execution?.last_remote_state || remote.state || job.execution.last_remote_state
+          remote.execution?.last_remote_state || remote.state || job.execution?.last_remote_state
       })
     } catch {
       /* cluster unreachable */
@@ -2093,7 +2186,7 @@
     const jobName = job.name
     jobs[index] = { ...job, reloading: true }
     try {
-      if (job.execution?.mode === 'remote') {
+      if (jobCanSyncCluster(job)) {
         await syncRemoteExecutionMetadata(index)
       }
       const summary = await getEquilibrationJobSummary(job.jobDir, workingDir || undefined)
@@ -2895,7 +2988,7 @@
     const ready = clusterSession.inventoryReady
     const sid = clusterSession.sessionId || ''
     const remoteDirs = jobs
-      .filter((j) => j.execution?.mode === 'remote')
+      .filter((j) => jobCanSyncCluster(j))
       .map((j) => j.jobDir)
       .join('|')
     if (!ready || !sid || !remoteDirs) return
@@ -2905,7 +2998,7 @@
     untrack(() => {
       const tasks = []
       for (let i = 0; i < jobs.length; i++) {
-        if (jobs[i].execution?.mode === 'remote') {
+        if (jobCanSyncCluster(jobs[i])) {
           const index = i
           tasks.push(() => ensureJobRuntimeLoaded(index))
         }
@@ -2919,15 +3012,22 @@
     void inputDirRevision
     if (!dir) {
       systemSize = null
+      hasProtein = null
       loadingSystemSize = false
       return
     }
     loadingSystemSize = true
     systemSize = null
     let cancelled = false
-    countMatchingAtoms(dir, 'all')
-      .then((n) => {
-        if (!cancelled) systemSize = n
+    Promise.all([countMatchingAtoms(dir, 'all'), countMatchingAtoms(dir, 'protein')])
+      .then(([nAll, nProt]) => {
+        if (cancelled) return
+        systemSize = nAll
+        if (nProt === null) {
+          hasProtein = null
+          return
+        }
+        applyProteinPresence(nProt > 0)
       })
       .finally(() => {
         if (!cancelled) loadingSystemSize = false
@@ -2958,6 +3058,73 @@
     } catch {
       return null
     }
+  }
+
+  /**
+   * @param {{ name?: string, selection?: string }} c
+   */
+  function isProteinProtocolConstraint(c) {
+    const key = String(c?.selection || c?.name || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, '_')
+    if (key === 'protein_backbone' || key === 'protein_sidechain') return true
+    const name = String(c?.name || '').trim().toLowerCase()
+    if (name === 'protein backbone' || name === 'protein sidechain') return true
+    const sel = String(c?.selection || '').trim().toLowerCase()
+    return sel === 'protein and backbone' || sel === 'protein and not backbone'
+  }
+
+  function restoreProteinConstraintsFromBase() {
+    const baseStages = baseProtocol.stages ?? []
+    const selections = {
+      ...(baseProtocol.selections ?? {}),
+      ...(protocol.selections ?? {})
+    }
+    for (let i = 0; i < (protocol.stages ?? []).length; i++) {
+      const baseCons = baseStages[i]?.constraints ?? []
+      const protCons = baseCons.filter((c) => isProteinProtocolConstraint(c))
+      if (!protCons.length) continue
+      const existing = protocol.stages[i].constraints ?? []
+      const withoutProt = existing.filter((c) => !isProteinProtocolConstraint(c))
+      protocol.stages[i].constraints = [
+        ...protCons.map((c) => {
+          const copy = { ...c, id: crypto.randomUUID() }
+          if (copy.selection != null && selections[copy.selection] != null) {
+            copy.selection = selections[copy.selection]
+          }
+          return copy
+        }),
+        ...withoutProt
+      ]
+    }
+  }
+
+  /**
+   * Omit protein backbone/sidechain rows when the loaded system has no protein.
+   * Restore them from the default protocol when switching back to a protein system.
+   * @param {boolean} proteinPresent
+   */
+  function applyProteinPresence(proteinPresent) {
+    const prev = hasProtein
+    if (!proteinPresent) {
+      let stripped = false
+      for (const stage of protocol.stages ?? []) {
+        if (!Array.isArray(stage.constraints)) continue
+        const next = stage.constraints.filter((c) => !isProteinProtocolConstraint(c))
+        if (next.length !== stage.constraints.length) {
+          stage.constraints = next
+          stripped = true
+        }
+      }
+      addComRestraint = false
+      addRotationRestraint = false
+      if (stripped) protocolFormKey += 1
+    } else if (prev === false) {
+      restoreProteinConstraintsFromBase()
+      protocolFormKey += 1
+    }
+    hasProtein = proteinPresent
   }
 
   async function validateComSelection() {
@@ -3064,6 +3231,7 @@
     try {
       protocol = prepareProtocolForRendering(await window.api.readJson(filePath))
       protocolFormKey += 1
+      if (hasProtein === false) applyProteinPresence(false)
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error))
     }
@@ -3384,6 +3552,7 @@
     engineCandidates = []
     engineCandidateId = 'custom'
     selectedGmxrc = null
+    hasProtein = null
     protocol = prepareProtocolForRendering(structuredClone(baseProtocol))
     applyEngineResourceDefaults('namd')
     protocolFormKey += 1
@@ -3422,6 +3591,11 @@
             </p>
           {:else if systemSize !== null}
             <p class="sidebar-hint mb-2">System size: {systemSize.toLocaleString()} atoms</p>
+            {#if hasProtein === false}
+              <p class="sidebar-hint mb-2">
+                No protein detected — protein restraints omitted from the protocol.
+              </p>
+            {/if}
           {:else if inputDir}
             <p class="sidebar-hint mb-2 text-amber-600 dark:text-amber-400">
               Could not read system size (check .prmtop / .inpcrd)
@@ -4668,31 +4842,44 @@
                 {/if}
 
                 {#if job.pullProgress}
+                  {@const pullPct = jobPullDisplayPercent(job)}
+                  {@const pullStatus = formatPullStatusLine({
+                    message: job.pullProgress.message,
+                    bytes: job.syncSizes?.localBytes,
+                    totalBytes: job.syncSizes?.remoteBytes,
+                    speed: job.pullProgress.speed,
+                    localFormatted: job.syncSizes?.localFormatted,
+                    remoteFormatted: job.syncSizes?.remoteFormatted
+                  })}
+                  {@const pullActive =
+                    job.pulling ||
+                    job.pullProgress.phase === 'sync' ||
+                    job.pullProgress.phase === 'finalize' ||
+                    job.pullProgress.phase === 'resolve'}
                   <div class="mt-2 space-y-1">
-                    <div class="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
-                      <span class="truncate" title={job.pullProgress.message}
-                        >{job.pullProgress.message}</span
+                    {#if pullStatus}
+                      <p
+                        class="flex items-center gap-1.5 truncate text-[11px] text-neutral-500"
+                        title={job.pullProgress.message}
                       >
-                      {#if job.pullProgress.percent != null}
-                        <span class="shrink-0 tabular-nums"
-                          >{Math.round(job.pullProgress.percent)}%</span
-                        >
-                      {/if}
-                    </div>
+                        {#if pullActive}
+                          <Spinner className="size-3 shrink-0" label="Downloading" />
+                        {/if}
+                        <span class="truncate">{pullStatus}</span>
+                      </p>
+                    {/if}
                     <div
                       class="h-1.5 w-full overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-700"
                       role="progressbar"
                       aria-valuemin="0"
                       aria-valuemax="100"
-                      aria-valuenow={job.pullProgress.percent ?? undefined}
+                      aria-valuenow={pullPct ?? undefined}
                       aria-label="Pull progress"
                     >
                       <div
                         class="h-full rounded-full bg-sky-500 transition-[width] duration-200 ease-out dark:bg-sky-400"
-                        class:animate-pulse={job.pullProgress.percent == null}
-                        style:width="{job.pullProgress.percent != null
-                          ? Math.max(2, job.pullProgress.percent)
-                          : 35}%"
+                        class:animate-pulse={pullPct == null}
+                        style:width="{pullPct != null ? Math.max(2, pullPct) : 35}%"
                       ></div>
                     </div>
                   </div>
@@ -4708,26 +4895,30 @@
                       {job.watched ? 'Watching' : 'Watch'}
                     </Button>
                     {#if job.execution?.mode === 'remote' && job.execution?.remote_path}
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onclick={() => pullRemoteJob(jobIndex)}
-                        disabled={job.pulling}
-                        title={remoteSchedulerRunning(job)
-                          ? 'Job still running — Pull downloads a partial snapshot only (confirm before start)'
-                          : 'Download results from the cluster (Watching does not pull — use this button)'}
-                      >
-                        {#if job.pulling}
-                          <Spinner className="mr-1 size-3" />
-                          {job.pullProgress?.percent != null
-                            ? `Pull ${Math.round(job.pullProgress.percent)}%`
-                            : 'Pulling…'}
-                        {:else if remoteSchedulerRunning(job)}
-                          Pull (partial)
-                        {:else}
-                          Pull
-                        {/if}
-                      </Button>
+                      {#if job.pulling}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onclick={() => cancelPullRemoteJob(jobIndex)}
+                        >
+                          Cancel pull
+                        </Button>
+                      {:else}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onclick={() => pullRemoteJob(jobIndex)}
+                          title={remoteSchedulerRunning(job)
+                            ? 'Job still running — Pull downloads a partial snapshot only (confirm before start)'
+                            : 'Download results from the cluster (Watching does not pull — use this button)'}
+                        >
+                          {#if remoteSchedulerRunning(job)}
+                            Pull (partial)
+                          {:else}
+                            Pull
+                          {/if}
+                        </Button>
+                      {/if}
                     {/if}
                     {#if job.canRun || job.status === 'not_started' || job.execution?.mode === 'remote' || job.status === 'error' || job.canResume}
                       <Button
