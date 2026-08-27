@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Builder:** bilayer-only packing (uncheck **Include protein**, set **Membrane XY**) and **Free molecules** (`--solute` / `--solute_con`, optional in-membrane and protein distance). Protein+membrane jobs are unchanged.
 ### Fixed
 
+- **Tools Fix PBC:** Amber/NAMD/OpenMM default center is protein + bilayer. Loading a PSF/PDB no longer resets the field to protein-only; detected lipid residue names (e.g. POPC) replace the generic list when present.
 - **Equilibration:** bilayer-only / non-protein input omits protein backbone and sidechain restraint rows (and turns off protein COM). Generate Input Files matches the API so OpenMM no longer looks for `restraints/prot_pos.txt`.
 - **Preparation / Builder output path preview:** with a working directory set but no PDB yet (so no folder name), the preview no longer says to set a working directory; it shows the placeholder path (or asks for a folder name). Preparation input is labeled **PDB file** and the browse dialog is PDB-only (PropKa/pdb4amber do not accept CIF/mmCIF/ENT). Preparation and Builder share the stacked PDB path + full-width select button layout.
 - **Analysis structural Pub PNG:** overlay y-limits use the full combined range of all series (e.g. area-per-lipid mean + upper/lower leaflets), not only the first series.

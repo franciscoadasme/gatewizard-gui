@@ -114,6 +114,10 @@
     'lipids'
   ]
 
+  /** Amber/NAMD/OpenMM Fix PBC default: protein + bilayer (matches API fallback). */
+  const DEFAULT_MEMBRANE_CENTER =
+    'protein or resname PA PC OL PE PS PG PI POPC POPE POPS DPPC DMPC DOPC DSPC CHL CHOL CHL1 SM'
+
   let toolCategory = $state('structural')
   let tool = $state('fix_pbc')
   let launching = $state(false)
@@ -174,7 +178,7 @@
     topologyPath: '',
     tprPath: '',
     ndxPath: '',
-    centerSelection: 'protein',
+    centerSelection: DEFAULT_MEMBRANE_CENTER,
     selectedCenterGroups: /** @type {string[]} */ ([]),
     selectedOutputGroups: /** @type {string[]} */ ([]),
     centerGroupText: '',
@@ -247,7 +251,7 @@
       fixPbc.centerSelection = `protein or resname ${lipids.join(' ')}`
       return
     }
-    fixPbc.centerSelection = 'protein or resname PA PC OL'
+    fixPbc.centerSelection = DEFAULT_MEMBRANE_CENTER
   }
 
   /**
@@ -335,11 +339,13 @@
     }
   })
 
-  // Re-detect engine (and Amber lipid center selection) when inputs change
+  // Re-detect engine when inputs change (incl. explicit GROMACS TPR / NDX)
   $effect(() => {
     const _eng = fixPbc.engine
     const _top = fixPbc.topologyPath
     const _trajs = trajectoryPaths
+    const _tpr = fixPbc.tprPath
+    const _ndx = fixPbc.ndxPath
     if (_top) {
       void refreshDetect()
     }
@@ -797,17 +803,22 @@
       const info = await detectPbcEngine({
         topologyPath: fixPbc.topologyPath,
         trajectoryPaths: trajectoryPaths,
-        engine: fixPbc.engine
+        engine: fixPbc.engine,
+        tprPath: fixPbc.tprPath || null,
+        ndxPath: fixPbc.ndxPath || null
       })
       fixPbc.detectInfo = info
       if (!fixPbc.tprPath && info.tpr) fixPbc.tprPath = info.tpr
       if (!fixPbc.ndxPath && info.ndx) fixPbc.ndxPath = info.ndx
-      if (
-        info.engine !== 'gromacs' &&
-        info.recommended_center_selection &&
-        isAutoCenterSelection(fixPbc.centerSelection)
-      ) {
-        fixPbc.centerSelection = info.recommended_center_selection
+      if (info.engine !== 'gromacs' && isAutoCenterSelection(fixPbc.centerSelection)) {
+        const rec = String(info.recommended_center_selection || '').trim()
+        if (rec && rec.toLowerCase() !== 'protein') {
+          fixPbc.centerSelection = rec
+        } else if (info.lipid_resnames?.length) {
+          fixPbc.centerSelection = `protein or resname ${info.lipid_resnames.join(' ')}`
+        } else if (!/^protein or resname /i.test(fixPbc.centerSelection)) {
+          fixPbc.centerSelection = DEFAULT_MEMBRANE_CENTER
+        }
       }
       if (info.center_groups?.length) {
         fixPbc.centerGroups = info.center_groups
@@ -960,7 +971,7 @@
       topologyPath: '',
       tprPath: '',
       ndxPath: '',
-      centerSelection: 'protein',
+      centerSelection: DEFAULT_MEMBRANE_CENTER,
       selectedCenterGroups: [],
       selectedOutputGroups: [],
       centerGroupText: '',
@@ -1061,7 +1072,7 @@
         outputDir: resolvedOutputParent,
         jobName: folderName,
         engine: fixPbc.engine,
-        centerSelection: fixPbc.centerSelection.trim() || 'protein',
+        centerSelection: fixPbc.centerSelection.trim() || DEFAULT_MEMBRANE_CENTER,
         centerGroup: centerGroups.length === 1 ? centerGroups[0] : null,
         outputGroup: outputGroups.length === 1 ? outputGroups[0] : null,
         centerGroups: centerGroups.length ? centerGroups : null,
@@ -1478,7 +1489,8 @@
                 size="sm"
                 bind:value={fixPbc.centerSelection}
                 className="min-w-0 flex-1"
-                placeholder={fixPbc.detectInfo?.recommended_center_selection || 'protein'}
+                placeholder={fixPbc.detectInfo?.recommended_center_selection ||
+                  DEFAULT_MEMBRANE_CENTER}
               />
               <button
                 type="button"
@@ -1601,13 +1613,12 @@
             {:else}
               <p class="sidebar-hint">
                 {#if fixPbc.detectInfo?.lipid_resnames?.length}
-                  Default for Amber: protein + detected lipids
+                  Default for Amber/NAMD/OpenMM: protein + detected bilayer
                   (<code>resname {fixPbc.detectInfo.lipid_resnames.join(' ')}</code>). Open
                   <span class="text-neutral-300">Membrane tips</span> for other masks.
                 {:else}
-                  Use MDAnalysis-style selections (e.g. <code>resname PA PC OL</code>); they are
-                  converted to cpptraj masks for Amber/OpenMM. Open
-                  <span class="text-neutral-300">Membrane tips</span> for examples.
+                  Default for Amber/NAMD/OpenMM: protein + bilayer residue names. Open
+                  <span class="text-neutral-300">Membrane tips</span> for other masks.
                 {/if}
               </p>
             {/if}
