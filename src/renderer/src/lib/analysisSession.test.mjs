@@ -1,6 +1,5 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import {
   computeStatsFromSeries,
   clonePlainAnalysisData,
@@ -288,28 +287,60 @@ test('structuralResultNeedsCsvHydration detects stripped bilayer leaflets', asyn
   )
 })
 
+function makeCsvReader(filesByName) {
+  return async (path) => {
+    const name = String(path).replace(/\\/g, '/').split('/').pop()
+    const text = filesByName[name]
+    if (text == null) throw new Error(`missing fixture ${name}`)
+    return text
+  }
+}
+
+const HYDRATE_SESSION_DIR = '/tmp/gw_tests/analysis'
+const HYDRATE_RMSD_CSV = `x,RMSD
+0,0.10
+1,0.12
+2,0.11
+3,0.13`
+const HYDRATE_SLIM_SET = {
+  id: 'set-1',
+  label: 'Prod',
+  csvStem: 'set1',
+  structuralResults: {
+    rmsd: {
+      analysisType: 'rmsd',
+      rawX: [],
+      rawY: [],
+      seriesName: 'RMSD',
+      dataCsv: 'set1_rmsd.csv'
+    }
+  }
+}
+
 test('hydrateAnalysisSessionFromCsv restores plot arrays from csv', async () => {
-  const sessionDir =
-    '/mnt/c/Users/kcoru/OneDrive/Escritorio/gatewizard_dev/testing_wsl/v1_confs/analysis_openmm/04_analysis'
-  const raw = JSON.parse(readFileSync(`${sessionDir}/analysis_session.json`, 'utf8'))
   const session = await hydrateAnalysisSessionFromCsv(
-    raw,
-    sessionDir,
-    async (path) => readFileSync(path, 'utf8')
+    {
+      version: 1,
+      mode: 'structural',
+      outputFolderName: '04_analysis',
+      activeSetId: 'set-1',
+      sets: [structuredClone(HYDRATE_SLIM_SET)]
+    },
+    HYDRATE_SESSION_DIR,
+    makeCsvReader({ 'set1_rmsd.csv': HYDRATE_RMSD_CSV })
   )
-  assert.equal(session.sets[0].structuralResults.rmsd.rawY.length, 475)
+  assert.equal(session.sets[0].structuralResults.rmsd.rawY.length, 4)
+  assert.equal(session.sets[0].structuralResults.rmsd.rawY[1], 0.12)
 })
 
 test('hydrateAnalysisSetsFromCsv updates in-memory sets', async () => {
-  const sessionDir =
-    '/mnt/c/Users/kcoru/OneDrive/Escritorio/gatewizard_dev/testing_wsl/v1_confs/analysis_openmm/04_analysis'
-  const raw = JSON.parse(readFileSync(`${sessionDir}/analysis_session.json`, 'utf8'))
   const sets = await hydrateAnalysisSetsFromCsv(
-    raw.sets,
-    sessionDir,
-    async (path) => readFileSync(path, 'utf8')
+    [structuredClone(HYDRATE_SLIM_SET)],
+    HYDRATE_SESSION_DIR,
+    makeCsvReader({ 'set1_rmsd.csv': HYDRATE_RMSD_CSV })
   )
-  assert.equal(sets[0].structuralResults.rmsd.rawY.length, 475)
+  assert.equal(sets[0].structuralResults.rmsd.rawY.length, 4)
+  assert.equal(sets[0].structuralResults.rmsd.rawY[1], 0.12)
 })
 
 test('legacy plot colors follow theme until the user customizes them', () => {

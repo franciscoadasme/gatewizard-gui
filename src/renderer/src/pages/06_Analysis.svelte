@@ -25,6 +25,9 @@
   } from '../lib/backendApi'
   import { computeMultiSeriesStats, computeSeriesStats } from '../lib/chartStats.js'
   import {
+    APL_METHOD_DEFAULTS,
+    APL_METHODS,
+    aplMethodLabel,
     createAnalysisSet,
     defaultSelectionForStructuralType,
     duplicateAnalysisSet,
@@ -37,6 +40,7 @@
     isBilayerStructuralType,
     looksLikeBilayerHeadgroupSelection,
     looksLikeProteinSelection,
+    normalizeAplMethod,
     normalizeAnalysisSetStructuralResults,
     newSetId,
     resolveStructuralTypeSelection,
@@ -85,7 +89,8 @@
   } from '../lib/outputFolders.js'
   import {
     assignProtocolStageTimes,
-    defaultProtocolName
+    defaultProtocolName,
+    formatTrajectoryTimeNs
   } from '../lib/protocolStageTimes.js'
   import { logEvent } from '../lib/pageStatus.svelte.js'
   import { themeState } from '../lib/theme.svelte.js'
@@ -106,6 +111,8 @@
 
   let mode = $state('structural')
   let running = $state(false)
+  /** @type {AbortController|null} */
+  let analysisAbort = $state(null)
   /** Separate from analysis run — Detect Properties must not freeze the Run button. */
   let detectingProperties = $state(false)
   let outputFolderName = $state('')
@@ -154,6 +161,17 @@
   let leafletLipidSel = $state('')
   let leafletFilterSel = $state('')
   let nBins = $state('1')
+  /** Non-lipid atoms for protein-aware APL (empty = no exclusion). */
+  let excludeSel = $state('protein')
+  let excludeCutoff = $state('30')
+  let aplMethod = $state(APL_METHOD_DEFAULTS.aplMethod)
+  let gridmatN = $state(APL_METHOD_DEFAULTS.gridmatN)
+  let gridmatPrecision = $state(APL_METHOD_DEFAULTS.gridmatPrecision)
+  let vtmcNSamples = $state(APL_METHOD_DEFAULTS.vtmcNSamples)
+  let vtmcProteinRadius = $state(APL_METHOD_DEFAULTS.vtmcProteinRadius)
+  const aplMethodHint = $derived(
+    APL_METHODS.find((item) => item.id === aplMethod)?.hint || ''
+  )
   let interpolate = $state(false)
   /** @type {Array<{ name: string, atomCount: number, enabled: boolean }>} */
   let lipidHeadgroupAtoms = $state([])
@@ -1136,7 +1154,15 @@
    * @param {string} leafletLipid
    * @param {string} leafletFilter
    */
-  function formatSelectionSubtitle(type, sel, sel2, leafletLipid, leafletFilter) {
+  function formatSelectionSubtitle(
+    type,
+    sel,
+    sel2,
+    leafletLipid,
+    leafletFilter,
+    exclude = '',
+    method = ''
+  ) {
     const s1 = (sel || '').trim()
     const s2 = (sel2 || '').trim()
     let text = ''
@@ -1148,6 +1174,13 @@
       if (s1) parts.push(s1)
       if ((leafletLipid || '').trim()) parts.push(`lipid: ${leafletLipid.trim()}`)
       if ((leafletFilter || '').trim()) parts.push(`filter: ${leafletFilter.trim()}`)
+      if (type === 'area_per_lipid') {
+        const methodId = normalizeAplMethod(method)
+        parts.push(aplMethodLabel(methodId).replace(/\s*\(default\)$/i, ''))
+        if (methodId !== 'lipyphilic' && (exclude || '').trim()) {
+          parts.push(`exclude: ${exclude.trim()}`)
+        }
+      }
       if (!parts.length) return ''
       text = `Selection: ${parts.join(' · ')}`
     } else if (s1) {
@@ -1330,6 +1363,13 @@
       leafletFilterSel,
       nBins,
       interpolate,
+      excludeSel,
+      excludeCutoff,
+      aplMethod,
+      gridmatN,
+      gridmatPrecision,
+      vtmcNSamples,
+      vtmcProteinRadius,
       lipidHeadgroupAtoms: lipidHeadgroupAtoms.map((a) => ({ ...a }))
     }
   }
@@ -1350,6 +1390,18 @@
     leafletFilterSel = snap.leafletFilterSel ?? ''
     if (snap.nBins != null) nBins = String(snap.nBins)
     if (snap.interpolate != null) interpolate = Boolean(snap.interpolate)
+    excludeSel = snap.excludeSel ?? 'protein'
+    excludeCutoff = snap.excludeCutoff != null ? String(snap.excludeCutoff) : '30'
+    aplMethod = normalizeAplMethod(snap.aplMethod)
+    gridmatN = snap.gridmatN != null ? String(snap.gridmatN) : APL_METHOD_DEFAULTS.gridmatN
+    gridmatPrecision =
+      snap.gridmatPrecision != null ? String(snap.gridmatPrecision) : APL_METHOD_DEFAULTS.gridmatPrecision
+    vtmcNSamples =
+      snap.vtmcNSamples != null ? String(snap.vtmcNSamples) : APL_METHOD_DEFAULTS.vtmcNSamples
+    vtmcProteinRadius =
+      snap.vtmcProteinRadius != null
+        ? String(snap.vtmcProteinRadius)
+        : APL_METHOD_DEFAULTS.vtmcProteinRadius
     lipidHeadgroupAtoms = Array.isArray(snap.lipidHeadgroupAtoms)
       ? snap.lipidHeadgroupAtoms.map((a) => ({ ...a }))
       : []
@@ -2021,6 +2073,13 @@
       leafletFilterSel,
       nBins,
       interpolate,
+      excludeSel,
+      excludeCutoff,
+      aplMethod,
+      gridmatN,
+      gridmatPrecision,
+      vtmcNSamples,
+      vtmcProteinRadius,
       selectionsByType
     }
   }
@@ -2060,6 +2119,20 @@
         leafletFilterSel = opts.leafletFilterSel
         nBins = opts.nBins
         interpolate = opts.interpolate
+        excludeSel = opts.excludeSel ?? 'protein'
+        excludeCutoff = opts.excludeCutoff != null ? String(opts.excludeCutoff) : '30'
+        aplMethod = normalizeAplMethod(opts.aplMethod)
+        gridmatN = opts.gridmatN != null ? String(opts.gridmatN) : APL_METHOD_DEFAULTS.gridmatN
+        gridmatPrecision =
+          opts.gridmatPrecision != null
+            ? String(opts.gridmatPrecision)
+            : APL_METHOD_DEFAULTS.gridmatPrecision
+        vtmcNSamples =
+          opts.vtmcNSamples != null ? String(opts.vtmcNSamples) : APL_METHOD_DEFAULTS.vtmcNSamples
+        vtmcProteinRadius =
+          opts.vtmcProteinRadius != null
+            ? String(opts.vtmcProteinRadius)
+            : APL_METHOD_DEFAULTS.vtmcProteinRadius
       }
     }
   }
@@ -2392,6 +2465,13 @@
     void leafletLipidSel
     void leafletFilterSel
     void nBins
+    void excludeSel
+    void excludeCutoff
+    void aplMethod
+    void gridmatN
+    void gridmatPrecision
+    void vtmcNSamples
+    void vtmcProteinRadius
     void interpolate
     void lipidHeadgroupAtoms
     void energeticEngine
@@ -2537,22 +2617,50 @@
       await ensureBilayerSelectionReady()
     }
 
-    const result = await runStructuralAnalysis({
-      topologyPath,
-      trajectoryPaths: trajectoryFiles.map((f) => f.path),
-      analysisType: structuralType,
-      selection,
-      selection2,
-      referenceFrame: Number(referenceFrame || 0),
-      align,
-      fileTimes: makeFileTimes(trajectoryFiles),
-      fileStrides: makeFileStrides(trajectoryFiles),
-      rmsfXaxisType: rmsfXaxisType,
-      leafletLipidSel: leafletLipidSel.trim() || null,
-      leafletFilterSel: leafletFilterSel.trim() || null,
-      nBins: Number(nBins) || 1,
-      interpolate
-    })
+    const result = await runStructuralAnalysis(
+      {
+        topologyPath,
+        trajectoryPaths: trajectoryFiles.map((f) => f.path),
+        analysisType: structuralType,
+        selection,
+        selection2,
+        referenceFrame: Number(referenceFrame || 0),
+        align,
+        fileTimes: makeFileTimes(trajectoryFiles),
+        fileStrides: makeFileStrides(trajectoryFiles),
+        rmsfXaxisType: rmsfXaxisType,
+        leafletLipidSel: leafletLipidSel.trim() || null,
+        leafletFilterSel: leafletFilterSel.trim() || null,
+        nBins: Number(nBins) || 1,
+        interpolate,
+        excludeSel:
+          structuralType === 'area_per_lipid' && aplMethod !== 'lipyphilic'
+            ? excludeSel.trim() || null
+            : null,
+        excludeCutoff:
+          structuralType === 'area_per_lipid'
+            ? Math.max(0, Number(excludeCutoff) || 0)
+            : undefined,
+        aplMethod: structuralType === 'area_per_lipid' ? aplMethod : undefined,
+        gridmatN:
+          structuralType === 'area_per_lipid'
+            ? Math.max(2, Number(gridmatN) || 20)
+            : undefined,
+        gridmatPrecision:
+          structuralType === 'area_per_lipid'
+            ? Math.max(0.1, Number(gridmatPrecision) || 13)
+            : undefined,
+        vtmcNSamples:
+          structuralType === 'area_per_lipid'
+            ? Math.max(1000, Number(vtmcNSamples) || 50_000)
+            : undefined,
+        vtmcProteinRadius:
+          structuralType === 'area_per_lipid'
+            ? Math.max(0.1, Number(vtmcProteinRadius) || 1.7)
+            : undefined,
+      },
+      analysisRunOpts()
+    )
 
     const xLabelsResult = result.x_labels || []
     const extraSeries =
@@ -2577,7 +2685,9 @@
         selection,
         selection2,
         leafletLipidSel,
-        leafletFilterSel
+        leafletFilterSel,
+        excludeSel,
+        aplMethod
       ),
       lastAnalysisHasTimeX: xLabelsResult.length === 0
     })
@@ -2598,18 +2708,21 @@
       selectedProperties = [...propsToAnalyze]
     }
 
-    const result = await runEnergeticAnalysis({
-      logPaths: logFiles.map((f) => f.path),
-      properties: propsToAnalyze,
-      fileTimes: makeFileTimes(logFiles),
-      fileStrides: makeFileStrides(logFiles),
-      timeUnits,
-      energyUnits,
-      pressureUnits,
-      temperatureUnits,
-      volumeUnits,
-      engine: energeticEngine
-    })
+    const result = await runEnergeticAnalysis(
+      {
+        logPaths: logFiles.map((f) => f.path),
+        properties: propsToAnalyze,
+        fileTimes: makeFileTimes(logFiles),
+        fileStrides: makeFileStrides(logFiles),
+        timeUnits,
+        energyUnits,
+        pressureUnits,
+        temperatureUnits,
+        volumeUnits,
+        engine: energeticEngine
+      },
+      analysisRunOpts()
+    )
 
     const engineLabels = { namd: 'NAMD', openmm: 'OpenMM', gromacs: 'GROMACS', amber: 'Amber' }
     const rawSeriesLocal = (result.series || []).map((s) => ({
@@ -2989,9 +3102,9 @@
   function makeFileTimes(items) {
     const map = {}
     for (const item of items) {
-      const value = Number(item.timeNs)
-      if (Number.isFinite(value) && value > 0) {
-        map[basename(item.path)] = Math.round(value * 1000) / 1000
+      const value = formatTrajectoryTimeNs(Number(item.timeNs))
+      if (value != null && value > 0) {
+        map[basename(item.path)] = value
       }
     }
     return map
@@ -3190,6 +3303,13 @@
           leafletFilterSel: s.structuralOptions.leafletFilterSel,
           nBins: s.structuralOptions.nBins,
           interpolate: s.structuralOptions.interpolate,
+          excludeSel: s.structuralOptions.excludeSel,
+          excludeCutoff: s.structuralOptions.excludeCutoff,
+          aplMethod: s.structuralOptions.aplMethod,
+          gridmatN: s.structuralOptions.gridmatN,
+          gridmatPrecision: s.structuralOptions.gridmatPrecision,
+          vtmcNSamples: s.structuralOptions.vtmcNSamples,
+          vtmcProteinRadius: s.structuralOptions.vtmcProteinRadius,
           lipidHeadgroupAtoms: []
         }
       }
@@ -3216,6 +3336,20 @@
           leafletFilterSel: nextSnap.leafletFilterSel ?? '',
           nBins: nextSnap.nBins ?? s.structuralOptions.nBins,
           interpolate: nextSnap.interpolate ?? s.structuralOptions.interpolate,
+          excludeSel: nextSnap.excludeSel ?? s.structuralOptions.excludeSel ?? 'protein',
+          excludeCutoff: nextSnap.excludeCutoff ?? s.structuralOptions.excludeCutoff ?? '30',
+          aplMethod: normalizeAplMethod(nextSnap.aplMethod ?? s.structuralOptions.aplMethod),
+          gridmatN: nextSnap.gridmatN ?? s.structuralOptions.gridmatN ?? APL_METHOD_DEFAULTS.gridmatN,
+          gridmatPrecision:
+            nextSnap.gridmatPrecision ??
+            s.structuralOptions.gridmatPrecision ??
+            APL_METHOD_DEFAULTS.gridmatPrecision,
+          vtmcNSamples:
+            nextSnap.vtmcNSamples ?? s.structuralOptions.vtmcNSamples ?? APL_METHOD_DEFAULTS.vtmcNSamples,
+          vtmcProteinRadius:
+            nextSnap.vtmcProteinRadius ??
+            s.structuralOptions.vtmcProteinRadius ??
+            APL_METHOD_DEFAULTS.vtmcProteinRadius,
           selectionsByType: {
             ...map,
             [nextType]: { ...nextSnap, selection: nextSelection }
@@ -3492,6 +3626,13 @@
     leafletFilterSel = ''
     nBins = '1'
     interpolate = false
+    excludeSel = 'protein'
+    excludeCutoff = '30'
+    aplMethod = APL_METHOD_DEFAULTS.aplMethod
+    gridmatN = APL_METHOD_DEFAULTS.gridmatN
+    gridmatPrecision = APL_METHOD_DEFAULTS.gridmatPrecision
+    vtmcNSamples = APL_METHOD_DEFAULTS.vtmcNSamples
+    vtmcProteinRadius = APL_METHOD_DEFAULTS.vtmcProteinRadius
     lipidHeadgroupAtoms = []
     headgroupDetecting = false
     headgroupDetectAttempted = false
@@ -3715,6 +3856,49 @@
   }
 
   // ---- Run analysis ----
+  function analysisRunOpts() {
+    return {
+      signal: analysisAbort?.signal,
+      cancelledMessage: 'Analysis cancelled',
+      cancelledName: 'AnalysisCancelled'
+    }
+  }
+
+  function startAnalysisAbort() {
+    analysisAbort?.abort()
+    analysisAbort = new AbortController()
+    return analysisAbort
+  }
+
+  function cancelAnalysis() {
+    analysisAbort?.abort()
+  }
+
+  /** @param {unknown} error */
+  function isAnalysisCancelled(error) {
+    if (analysisAbort?.signal?.aborted) return true
+    if (!(error instanceof Error)) return false
+    if (
+      error.name === 'AnalysisCancelled' ||
+      error.name === 'AbortError' ||
+      error.name === 'Cancelled'
+    ) {
+      return true
+    }
+    return /^Analysis cancelled$/i.test(error.message || '')
+  }
+
+  /**
+   * Whether a set has the inputs needed to run the current analysis mode.
+   * @param {import('../lib/analysisSets.js').AnalysisSet} set
+   */
+  function setHasAnalysisInputs(set) {
+    if (mode === 'energetic') {
+      return (set.energeticOptions?.logFiles || []).length > 0
+    }
+    return Boolean(set.topologyPath) && (set.trajectoryFiles || []).length > 0
+  }
+
   /** @param {'current' | 'all'} [scope] */
   async function runAnalysis(scope = runAnalysisScope) {
     if (scope === 'all' && analysisSets.length > 1) {
@@ -3726,6 +3910,8 @@
 
   async function runAnalysisCurrentSet() {
     resetAnalysisProgress()
+    startAnalysisAbort()
+    let cancelled = false
     try {
       running = true
       lastError = ''
@@ -3744,12 +3930,19 @@
         await runEnergeticForActiveSet()
       }
     } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error)
+      if (isAnalysisCancelled(error)) {
+        lastError = 'Analysis cancelled'
+        cancelled = true
+      } else {
+        lastError = error instanceof Error ? error.message : String(error)
+      }
     } finally {
       // Unblock UI before save — session write must not keep "Running..." stuck.
       running = false
+      analysisAbort = null
       resetAnalysisProgress()
     }
+    if (cancelled) return
     try {
       await saveAnalysisCsvToOutputFolder()
       // Save both structural + energetic results present on sets (mixed sessions).
@@ -3767,6 +3960,7 @@
   async function runAnalysisAllSets() {
     persistActiveSetFields()
     const runStructuralType = structuralType
+    startAnalysisAbort()
     running = true
     lastError = ''
     statsRange = null
@@ -3775,16 +3969,46 @@
     const savedId = activeSetId
     /** @type {string[]} */
     const errors = []
+    /** @type {string[]} */
+    const skipped = []
     let completed = 0
-    const total = analysisSets.length
-    runProgressStages = analysisSets.map((set) => ({
+    // Only run visible sets that already have the needed inputs. Hidden / empty
+    // sets in between must not stop the batch from reaching later sets with data.
+    const runnable = analysisSets.filter((set) => {
+      if (!set.visible) {
+        skipped.push(`${set.label}: hidden`)
+        return false
+      }
+      if (!setHasAnalysisInputs(set)) {
+        skipped.push(
+          mode === 'energetic'
+            ? `${set.label}: no log files`
+            : `${set.label}: no topology/trajectories`
+        )
+        return false
+      }
+      return true
+    })
+    const total = runnable.length
+    if (total === 0) {
+      lastError =
+        skipped.length > 0
+          ? `No runnable sets. ${skipped.join('; ')}`
+          : 'No sets available to run.'
+      running = false
+      analysisAbort = null
+      resetAnalysisProgress()
+      return
+    }
+    runProgressStages = runnable.map((set) => ({
       id: set.id,
       label: set.label,
       status: /** @type {'pending'} */ ('pending')
     }))
     try {
-      for (let i = 0; i < analysisSets.length; i++) {
-        const set = analysisSets[i]
+      for (let i = 0; i < runnable.length; i++) {
+        if (analysisAbort?.signal.aborted) break
+        const set = runnable[i]
         activeSetId = set.id
         loadActiveSetFields()
         structuralType = runStructuralType
@@ -3805,9 +4029,6 @@
             }
           }
         }
-        if (mode === 'structural' && isBilayerType(runStructuralType)) {
-          await ensureBilayerSelectionReady()
-        }
         persistActiveSetFields()
         runProgressStages = runProgressStages.map((stage, idx) =>
           idx === i ? { ...stage, status: 'running' } : stage
@@ -3815,6 +4036,9 @@
         const typeLabel = mode === 'structural' ? runStructuralType : 'energetic'
         setAnalysisProgress(i + 1, total, `${set.label} (${typeLabel})`)
         try {
+          if (mode === 'structural' && isBilayerType(runStructuralType)) {
+            await ensureBilayerSelectionReady()
+          }
           if (mode === 'structural') {
             await runStructuralForActiveSet()
             rebuildStructResultsFromSets()
@@ -3840,6 +4064,13 @@
           )
           await saveAnalysisSessionToOutputFolder()
         } catch (error) {
+          if (isAnalysisCancelled(error)) {
+            lastError = 'Analysis cancelled'
+            runProgressStages = runProgressStages.map((stage, idx) =>
+              idx === i && stage.status === 'running' ? { ...stage, status: 'error' } : stage
+            )
+            break
+          }
           const msg = error instanceof Error ? error.message : String(error)
           errors.push(`${set.label}: ${msg}`)
           runProgressStages = runProgressStages.map((stage, idx) =>
@@ -3847,20 +4078,33 @@
           )
         }
       }
-      if (errors.length > 0) {
+      if (analysisAbort?.signal.aborted && !lastError) {
+        lastError = 'Analysis cancelled'
+      } else if (errors.length > 0) {
+        const skipNote = skipped.length ? ` Skipped ${skipped.length}: ${skipped.join('; ')}.` : ''
         lastError =
-          errors.length === analysisSets.length
+          errors.length === total
             ? errors[0]
-            : `Completed ${completed}/${analysisSets.length} sets. ${errors.join(' ')}`
+            : `Completed ${completed}/${total} sets. ${errors.join(' ')}${skipNote}`
         if (completed > 0) {
           logEvent(
             'warn',
             'analysis',
-            `Ran analysis on ${completed}/${analysisSets.length} sets; ${errors.length} failed.`
+            `Ran analysis on ${completed}/${total} sets; ${errors.length} failed.`
           )
         }
       } else {
-        logEvent('info', 'analysis', `Ran analysis on all ${analysisSets.length} sets.`)
+        const skipNote = skipped.length ? ` Skipped ${skipped.length} (${skipped.join('; ')}).` : ''
+        logEvent(
+          'info',
+          'analysis',
+          `Ran analysis on ${completed} set(s).${skipNote}`
+        )
+        if (skipped.length && !lastError) {
+          showAnalysisActionNotice(
+            `Ran ${completed} set(s). Skipped ${skipped.length}: ${skipped.join('; ')}.`
+          )
+        }
       }
     } finally {
       activeSetId = savedId
@@ -3868,6 +4112,7 @@
       await hydratePlotDataFromOutputFolder()
       rememberSessionSaveFingerprint()
       running = false
+      analysisAbort = null
       analysisStatus.progress.phase = errors.length > 0 && completed > 0 ? 'error' : 'done'
       if (completed === total && errors.length === 0) {
         resetAnalysisProgress()
@@ -4885,10 +5130,11 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     blurOnEnter
                     type="number"
                     min="0"
-                    step="0.001"
+                    step="0.0001"
                     placeholder="0"
                     bind:value={trajectoryFiles[i].timeNs}
-                    className="w-16 shrink-0"
+                    className="w-24 shrink-0 tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                    title="Time offset in ns (e.g. 200.1234 or 2000.1234)"
                   />
                   <span class="sidebar-label shrink-0">ns</span>
                   <Input
@@ -5015,6 +5261,105 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     {/if}
                   </label>
                 {/each}
+              </div>
+            {/if}
+
+            {#if structuralType === 'area_per_lipid'}
+              <div class="space-y-2">
+                <p class="sidebar-label">APL method</p>
+                <Select size="sm" bind:value={aplMethod} className="w-full">
+                  {#each APL_METHODS as method (method.id)}
+                    <option value={method.id}>{method.label}</option>
+                  {/each}
+                </Select>
+                {#if aplMethod === 'lipyphilic'}
+                  <p class="gw-notice gw-notice-warning text-[11px] leading-snug">
+                    LiPyphilic is a pure-lipid box Voronoi. It ignores the protein, so APL is
+                    inflated to box / lipids per leaflet. Use EVAPL (default) for
+                    leaflets that contain protein, peptide, DNA, or other occupants.
+                  </p>
+                {:else if aplMethodHint}
+                  <p class="sidebar-hint">{aplMethodHint}</p>
+                {/if}
+
+                {#if aplMethod !== 'lipyphilic'}
+                  <Input
+                    size="sm"
+                    bind:value={excludeSel}
+                    placeholder="Exclude selection (empty = none)"
+                    className="w-full"
+                    title="Non-lipid atoms that reduce lipid-accessible area (protein, peptide, DNA, ligands, …)"
+                  />
+                {/if}
+
+                {#if aplMethod === 'evapl'}
+                  <div class="flex items-center gap-2">
+                    <span class="sidebar-label shrink-0">Exclude cutoff (Å)</span>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="0"
+                      step="0.5"
+                      bind:value={excludeCutoff}
+                      className="w-20"
+                      title="Only exclude atoms within this distance of the leaflet (default 30 Å)"
+                    />
+                  </div>
+                {/if}
+
+                {#if aplMethod === 'gridmat'}
+                  <div class="flex items-center gap-2">
+                    <span class="sidebar-label shrink-0">Grid points</span>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="2"
+                      step="1"
+                      bind:value={gridmatN}
+                      className="w-20"
+                      title="GridMAT points along the long box axis (default 20)"
+                    />
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="sidebar-label shrink-0">Protein cutoff (Å)</span>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="0.1"
+                      step="0.5"
+                      bind:value={gridmatPrecision}
+                      className="w-20"
+                      title="GridMAT offending-atom proximity (default 13 Å)"
+                    />
+                  </div>
+                {/if}
+
+                {#if aplMethod === 'vtmc'}
+                  <div class="flex items-center gap-2">
+                    <span class="sidebar-label shrink-0">MC samples</span>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="1000"
+                      step="1000"
+                      bind:value={vtmcNSamples}
+                      className="w-24"
+                      title="Monte Carlo samples per leaflet (default 50000)"
+                    />
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="sidebar-label shrink-0">Protein radius (Å)</span>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="0.1"
+                      step="0.1"
+                      bind:value={vtmcProteinRadius}
+                      className="w-20"
+                      title="Protein-atom disk radius (default 1.7 Å)"
+                    />
+                  </div>
+                {/if}
               </div>
             {/if}
 
@@ -5236,10 +5581,11 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   blurOnEnter
                   type="number"
                   min="0"
-                  step="0.001"
+                  step="0.0001"
                   placeholder="0"
                   bind:value={logFiles[i].timeNs}
-                  className="w-16 shrink-0"
+                  className="w-24 shrink-0 tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                  title="Time offset in ns (e.g. 200.1234 or 2000.1234)"
                 />
                 <span class="sidebar-label shrink-0">ns</span>
                 <Input
@@ -6234,10 +6580,11 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               </div>
             </div>
             <p class="sidebar-hint">
-              A flat mean APL line is expected when the lateral box is fixed (e.g. NVT): Voronoi areas
-              sum to L<sub>x</sub>·L<sub>y</sub>, so mean ≈ box area / n<sub>lipids</sub>. Leaflets can still
-              fluctuate. In NPT/variable-area ensembles the mean should vary with the box. Check the
-              backend log for box area vs mean APL diagnostics.
+              With no exclude selection, a flat mean APL is expected when the lateral box is fixed
+              (e.g. NVT): Voronoi areas sum to L<sub>x</sub>·L<sub>y</sub>, so mean ≈ box area /
+              n<sub>lipids</sub>. With protein exclusion enabled, mean APL is reduced by the protein
+              footprint. Leaflets can still fluctuate. Check the backend log for box vs mean APL
+              diagnostics.
             </p>
           {/if}
           {/if}
@@ -6502,7 +6849,10 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               — {analysisStatus.progress.label}
             {/if}
           </p>
-          <Spinner />
+          <div class="flex shrink-0 items-center gap-2">
+            <Button size="sm" variant="outline" onclick={cancelAnalysis}>Cancel</Button>
+            <Spinner />
+          </div>
         </div>
         <div class="h-1.5 overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800">
           <div
@@ -6600,6 +6950,12 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
         {:else}
           Run Analysis
         {/if}
+      </Button>
+    {/if}
+
+    {#if running}
+      <Button className="w-full" variant="outline" onclick={cancelAnalysis}>
+        Cancel analysis
       </Button>
     {/if}
 

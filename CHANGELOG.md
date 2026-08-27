@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Builder:** bilayer-only packing (uncheck **Include protein**, set **Membrane XY**) and **Free molecules** (`--solute` / `--solute_con`, optional in-membrane and protein distance). Protein+membrane jobs are unchanged.
+- **Analysis area per lipid:** exclusion-aware Voronoi APL (**EVAPL**, default) — **Exclude selection** (default `protein`; also peptide, DNA, ligands) and **Exclude cutoff (Å)** (default **30**) so occupants reduce mean APL instead of tiling the full box.
+- **Analysis:** **Cancel analysis** while a run is in progress (single set or all sets). The UI unblocks immediately and shows “Analysis cancelled” instead of a browser abort error.
+- **Analysis trajectories:** per-file time offset (ns) accepts **four decimal places** (e.g. `200.1234`, `2000.1234`); inputs use `0.0001` step and a wider field.
+- **Analysis run all sets:** skips hidden sets and sets missing trajectories/logs, then continues with every remaining set that has data (empty sets in between no longer stop the batch).
+
+### Changed
+
+- **Analysis area per lipid:** the GUI now picks the algorithm — **EVAPL** (Exclusion-aware Voronoi Area Per Lipid, default), **Box Voronoi (lipyphilic)**, **GridMAT-MD**, or **VTMC** — with the matching settings (exclude cutoff, grid points/precision, MC samples/protein radius). LiPyphilic shows a warning that it is for **pure lipids only** (not systems with protein or other leaflet occupants).
 - **Equilibration Pull progress:** local-size poll no longer skips updates when integer % is unchanged (large files were freezing the ring/status for long stretches). Status line prefers live on-disk bytes over stale stream text; pull start reports existing local size instead of `0 / remote`.
 ### Fixed
 

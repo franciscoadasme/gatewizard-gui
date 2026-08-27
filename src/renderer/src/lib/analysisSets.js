@@ -15,6 +15,13 @@ import { clonePlainAnalysisData } from './analysisSession.js'
  * @property {string} [leafletFilterSel]
  * @property {string} [nBins]
  * @property {boolean} [interpolate]
+ * @property {string} [excludeSel]
+ * @property {string} [excludeCutoff]
+ * @property {string} [aplMethod]
+ * @property {string} [gridmatN]
+ * @property {string} [gridmatPrecision]
+ * @property {string} [vtmcNSamples]
+ * @property {string} [vtmcProteinRadius]
  * @property {Array<{ name: string, atomCount: number, enabled: boolean }>} [lipidHeadgroupAtoms]
  */
 
@@ -30,8 +37,68 @@ import { clonePlainAnalysisData } from './analysisSession.js'
  * @property {string} leafletFilterSel
  * @property {string} nBins
  * @property {boolean} interpolate
+ * @property {string} [excludeSel]
+ * @property {string} [excludeCutoff]
+ * @property {string} [aplMethod]
+ * @property {string} [gridmatN]
+ * @property {string} [gridmatPrecision]
+ * @property {string} [vtmcNSamples]
+ * @property {string} [vtmcProteinRadius]
  * @property {Record<string, StructuralTypeSelection>} [selectionsByType]
  */
+
+/** GUI APL methods. */
+export const APL_METHODS = [
+  {
+    id: 'evapl',
+    label: 'EVAPL (default)',
+    hint: 'Exclusion-aware Voronoi Area Per Lipid: one periodic Voronoi; exclude atoms (protein, peptide, DNA, ligands, …) in a lipid cell shrink that cell (one COM clip).'
+  },
+  {
+    id: 'lipyphilic',
+    label: 'Box Voronoi (lipyphilic)',
+    hint: 'Pure-lipid reference only. Ignores occupants; mean ≈ box XY / lipids per leaflet. Not recommended when protein, DNA, or other non-lipids occupy the leaflet — use EVAPL, GridMAT, or VTMC.'
+  },
+  {
+    id: 'gridmat',
+    label: 'GridMAT-MD',
+    hint: 'Assign a grid to the nearest headgroup or nearby protein atom (Allen et al. 2009).'
+  },
+  {
+    id: 'vtmc',
+    label: 'VTMC (Voronoi + Monte Carlo)',
+    hint: 'Subtract protein disks by Monte Carlo sampling (Mori, Ogushi & Sugita 2012).'
+  }
+]
+
+export const APL_METHOD_DEFAULTS = {
+  aplMethod: 'evapl',
+  gridmatN: '20',
+  gridmatPrecision: '13',
+  vtmcNSamples: '50000',
+  vtmcProteinRadius: '1.7'
+}
+
+/** @param {string | null | undefined} method */
+export function normalizeAplMethod(method) {
+  const m = String(method || 'evapl')
+    .trim()
+    .toLowerCase()
+    .replace(/-/g, '_')
+  if (m === 'auto' || m === '') return 'evapl'
+  if (m === 'voronoi' || m === 'standard') return 'lipyphilic'
+  if (m === 'evapl') return 'evapl'
+  if (m === 'gridmat' || m === 'gridmat_md' || m === 'grid') return 'gridmat'
+  if (m === 'vtmc' || m === 'voronoi_mc' || m === 'mori') return 'vtmc'
+  if (m === 'lipyphilic') return 'lipyphilic'
+  return 'evapl'
+}
+
+/** @param {string | null | undefined} method */
+export function aplMethodLabel(method) {
+  const id = normalizeAplMethod(method)
+  return APL_METHODS.find((item) => item.id === id)?.label || id
+}
 
 export const BILAYER_STRUCTURAL_TYPES = new Set(['area_per_lipid', 'membrane_thickness'])
 
@@ -134,7 +201,14 @@ export function resolveStructuralTypeSelection(opts, type) {
         leafletLipidSel: opts.leafletLipidSel,
         leafletFilterSel: opts.leafletFilterSel,
         nBins: opts.nBins,
-        interpolate: opts.interpolate
+        interpolate: opts.interpolate,
+        excludeSel: opts.excludeSel,
+        excludeCutoff: opts.excludeCutoff,
+        aplMethod: normalizeAplMethod(opts.aplMethod),
+        gridmatN: opts.gridmatN,
+        gridmatPrecision: opts.gridmatPrecision,
+        vtmcNSamples: opts.vtmcNSamples,
+        vtmcProteinRadius: opts.vtmcProteinRadius
       }
     }
   }
@@ -149,6 +223,13 @@ export function resolveStructuralTypeSelection(opts, type) {
     leafletFilterSel: '',
     nBins: opts?.nBins ?? '1',
     interpolate: opts?.interpolate ?? false,
+    excludeSel: opts?.excludeSel ?? 'protein',
+    excludeCutoff: opts?.excludeCutoff ?? '30',
+    aplMethod: normalizeAplMethod(opts?.aplMethod),
+    gridmatN: opts?.gridmatN ?? APL_METHOD_DEFAULTS.gridmatN,
+    gridmatPrecision: opts?.gridmatPrecision ?? APL_METHOD_DEFAULTS.gridmatPrecision,
+    vtmcNSamples: opts?.vtmcNSamples ?? APL_METHOD_DEFAULTS.vtmcNSamples,
+    vtmcProteinRadius: opts?.vtmcProteinRadius ?? APL_METHOD_DEFAULTS.vtmcProteinRadius,
     lipidHeadgroupAtoms: []
   }
 }
@@ -235,6 +316,9 @@ export function defaultStructuralOptions() {
     leafletFilterSel: '',
     nBins: '1',
     interpolate: false,
+    excludeSel: 'protein',
+    excludeCutoff: '30',
+    ...APL_METHOD_DEFAULTS,
     selectionsByType: {
       rmsd: {
         selection: defaults.selection,
@@ -246,6 +330,9 @@ export function defaultStructuralOptions() {
         leafletFilterSel: '',
         nBins: '1',
         interpolate: false,
+        excludeSel: 'protein',
+        excludeCutoff: '30',
+        ...APL_METHOD_DEFAULTS,
         lipidHeadgroupAtoms: []
       }
     }

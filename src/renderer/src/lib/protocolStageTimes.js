@@ -86,9 +86,7 @@ export function assignProtocolStageTimes(files) {
       return file
     }
     matched += 1
-    const formatted =
-      Number.isInteger(time) ? String(time) : String(Math.round(time * 1000) / 1000)
-    return { ...file, timeNs: formatted }
+    return { ...file, timeNs: formatTrajectoryTimeNsField(time) }
   })
   return { files: next, matched, unmatched }
 }
@@ -99,3 +97,21 @@ export function getDefaultStageTimeMap() {
 }
 
 export const defaultProtocolName = baseProtocol.name || 'Default Protocol'
+
+/** Decimal places for trajectory / log time offsets (ns) in the Analysis page. */
+export const TRAJECTORY_TIME_NS_DECIMALS = 4
+
+/** @param {number} value */
+export function formatTrajectoryTimeNs(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return null
+  const factor = 10 ** TRAJECTORY_TIME_NS_DECIMALS
+  return Math.round(n * factor) / factor
+}
+
+/** @param {number} value */
+export function formatTrajectoryTimeNsField(value) {
+  const n = formatTrajectoryTimeNs(value)
+  if (n == null) return ''
+  return Number.isInteger(n) ? String(n) : String(n)
+}
