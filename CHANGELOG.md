@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Analysis area per lipid:** the GUI now picks the algorithm — **EVAPL** (Exclusion-aware Voronoi Area Per Lipid, default), **Box Voronoi (lipyphilic)**, **GridMAT-MD**, or **VTMC** — with the matching settings (exclude cutoff, grid points/precision, MC samples/protein radius). LiPyphilic shows a warning that it is for **pure lipids only** (not systems with protein or other leaflet occupants).
 - **Equilibration Pull progress:** local-size poll no longer skips updates when integer % is unchanged (large files were freezing the ring/status for long stretches). Status line prefers live on-disk bytes over stale stream text; pull start reports existing local size instead of `0 / remote`.
+- **Tools Fix PBC (GROMACS):** no longer shows yellow “no .tpr / provide index” warnings as soon as a PDB topology is chosen. Detect uses the GROMACS TPR / Index browse fields, and also looks for `step*.tpr` / `index.ndx` next to the topology (not only next to trajectories).
+
 ### Fixed
 
 - **Tools Fix PBC:** Amber/NAMD/OpenMM default center is protein + bilayer. Loading a PSF/PDB no longer resets the field to protein-only; detected lipid residue names (e.g. POPC) replace the generic list when present.

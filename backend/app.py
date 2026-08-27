@@ -90,6 +90,7 @@ try:
         NAMDEquilibrationManager,
         GROMACSEquilibrationManager,
         OpenMMEquilibrationManager,
+        pdb_has_protein,
     )
 except ImportError:
     from gatewizard.tools.equilibration import NAMDEquilibrationManager
@@ -97,9 +98,14 @@ except ImportError:
     AmberEquilibrationManager = None
     GROMACSEquilibrationManager = None
     OpenMMEquilibrationManager = None
+    try:
+        from gatewizard.tools.equilibration import pdb_has_protein
+    except ImportError:
+        pdb_has_protein = None
 from gatewizard.tools.force_fields import ForceFieldManager
 from gatewizard.tools.ligand_parametrization import (
     detect_ligands,
+    parametrize_ligand,
     parametrize_ligand_from_system_pdb,
     get_ligand_2d_image,
     get_ligand_2d_image_from_pdb_lines,
@@ -728,10 +734,20 @@ class ParametrizeLigandRequest(BaseModel):
             "Defaults to the PDB parent directory if omitted."
         ),
     )
+    from_ligand_file: bool = Field(
+        False,
+        description=(
+            "When True, path is a standalone ligand PDB (free molecule). "
+            "When False (default), extract ligand_name from a system PDB."
+        ),
+    )
 
 
 class ValidateBuilderRequest(BaseModel):
-    path: str = Field(..., description="Absolute path to a PDB/mmCIF file")
+    path: str = Field(
+        "",
+        description="Absolute path to a protein PDB. Empty for a bilayer-only build.",
+    )
     upper_lipids: List[str] = Field(..., description="Upper leaflet lipid names")
     lower_lipids: List[str] = Field(..., description="Lower leaflet lipid names")
     lipid_ratios: str = Field(
@@ -753,14 +769,27 @@ class ValidateBuilderRequest(BaseModel):
         description="Minimum solute-to-box-boundary distance in Angstroms (--dist)",
     )
     dist_wat: float = Field(26, description="Water layer thickness in Angstroms")
+    distxy_fix: float | None = Field(
+        None,
+        description="Fixed membrane XY size in Å (--distxy_fix). Required when path is empty.",
+    )
+    dims: List[float] | None = None
     remove_protein_h: bool = Field(
         False,
         description="When True, skip the protein-hydrogen warning (user will strip H).",
     )
+    parametrize: bool = True
+    ligand_params: list | None = None
+    solutes: list | None = None
+    solute_inmem: bool = False
+    solute_prot_dist: float | None = None
 
 
 class StartPreparationRequest(BaseModel):
-    path: str = Field(..., description="Absolute path to a PDB/mmCIF file")
+    path: str = Field(
+        "",
+        description="Absolute path to a protein PDB. Empty for a bilayer-only build.",
+    )
     upper_lipids: List[str] = Field(..., description="Upper leaflet lipid names")
     lower_lipids: List[str] = Field(..., description="Lower leaflet lipid names")
     lipid_ratios: str = Field(..., description="Lipid ratios")
@@ -796,12 +825,19 @@ class StartPreparationRequest(BaseModel):
         description="Minimum solute-to-box-boundary distance in Angstroms (--dist)",
     )
     dist_wat: float = Field(26, description="Water layer thickness in Angstroms")
+    distxy_fix: float | None = Field(
+        None,
+        description="Fixed membrane XY size in Å (--distxy_fix). Required when path is empty.",
+    )
     dims: List[float] | None = None
     output_folder_name: str | None = None
     working_dir: str | None = Field(
         None, description="Project working directory from the GUI top bar"
     )
     ligand_params: list | None = None
+    solutes: list | None = None
+    solute_inmem: bool = False
+    solute_prot_dist: float | None = None
     nloop: int = Field(20, description="GENCAN loops for PACKMOL (--nloop)")
     nloop_all: int = Field(
         100, description="GENCAN loops for all-together packing (--nloop_all)"
@@ -1022,13 +1058,24 @@ def parametrize_ligand_endpoint(payload: ParametrizeLigandRequest) -> dict:
     else:
         working_dir = os.path.dirname(path)
     try:
-        result = parametrize_ligand_from_system_pdb(
-            pdb_file=path,
-            ligand_name=payload.ligand_name,
-            output_dir=working_dir,
-            charge=payload.charge,
-            multiplicity=payload.multiplicity,
-        )
+        if payload.from_ligand_file:
+            lig_dir = os.path.join(working_dir, "ligand_params", payload.ligand_name)
+            os.makedirs(lig_dir, exist_ok=True)
+            result = parametrize_ligand(
+                ligand_pdb=path,
+                ligand_name=payload.ligand_name,
+                output_dir=lig_dir,
+                charge=payload.charge,
+                multiplicity=payload.multiplicity,
+            )
+        else:
+            result = parametrize_ligand_from_system_pdb(
+                pdb_file=path,
+                ligand_name=payload.ligand_name,
+                output_dir=working_dir,
+                charge=payload.charge,
+                multiplicity=payload.multiplicity,
+            )
         return result
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
@@ -1627,6 +1674,7 @@ def _equilibration_job_summary(
             "protocol": job_meta.get("protocol"),
             "gpu_resident": job_meta.get("gpu_resident"),
             "execution": execution,
+            "has_batch_script": (eq_dir / "run_equilibration.slurm").is_file(),
         }
 
     start_time: str | None = None
@@ -1804,6 +1852,7 @@ def _equilibration_job_summary(
         "protocol": job_meta.get("protocol"),
         "gpu_resident": job_meta.get("gpu_resident"),
         "execution": execution,
+        "has_batch_script": (eq_dir / "run_equilibration.slurm").is_file(),
         **_equilibration_resume_fields(eq_dir, engine),
     }
     # While a remote job is live, hide Continue/restart from a previous attempt.
@@ -2024,13 +2073,15 @@ def project_status(directory: str) -> dict:
 
 @app.post("/validate-builder")
 def validate_builder(payload: ValidateBuilderRequest) -> dict:
-    path = os.path.abspath(os.path.expanduser(payload.path))
-    if not os.path.isfile(path):
-        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    path = (payload.path or "").strip()
+    if path:
+        path = os.path.abspath(os.path.expanduser(path))
+        if not os.path.isfile(path):
+            raise HTTPException(status_code=404, detail=f"File not found: {path}")
     try:
         builder = Builder()
         is_valid, error_msg = builder.validate_system_inputs(
-            pdb_file=path,
+            pdb_file=path or None,
             upper_lipids=payload.upper_lipids,
             lower_lipids=payload.lower_lipids,
             lipid_ratios=payload.lipid_ratios,
@@ -2043,15 +2094,27 @@ def validate_builder(payload: ValidateBuilderRequest) -> dict:
             anion=payload.anion,
             dist=payload.dist,
             dist_wat=payload.dist_wat,
+            distxy_fix=payload.distxy_fix,
+            dims=payload.dims,
             remove_protein_h=payload.remove_protein_h,
+            parametrize=payload.parametrize,
+            ligand_params={
+                lp["name"]: {"frcmod": lp["frcmod"], "lib": lp["lib"]}
+                for lp in (payload.ligand_params or [])
+                if isinstance(lp, dict) and lp.get("name") and lp.get("frcmod") and lp.get("lib")
+            },
+            solutes=payload.solutes or [],
+            solute_inmem=payload.solute_inmem,
+            solute_prot_dist=payload.solute_prot_dist,
         )
         # Distinguish warning (valid but message present) from clean success
         is_warning = is_valid and bool(error_msg)
         protein_h_count = 0
-        try:
-            protein_h_count = count_protein_hydrogens(path)
-        except OSError:
-            protein_h_count = 0
+        if path:
+            try:
+                protein_h_count = count_protein_hydrogens(path)
+            except OSError:
+                protein_h_count = 0
         return {
             "valid": is_valid,
             "warning": is_warning,
@@ -2080,12 +2143,17 @@ def _configure_builder(payload: StartPreparationRequest) -> Builder:
         anion=payload.anion,
         dist=payload.dist,
         dist_wat=payload.dist_wat,
+        distxy_fix=payload.distxy_fix,
         dims=payload.dims,
         output_folder_name=payload.output_folder_name or None,
         ligand_params={
             lp["name"]: {"frcmod": lp["frcmod"], "lib": lp["lib"]}
             for lp in (payload.ligand_params or [])
+            if isinstance(lp, dict) and lp.get("name") and lp.get("frcmod") and lp.get("lib")
         },
+        solutes=payload.solutes or [],
+        solute_inmem=payload.solute_inmem,
+        solute_prot_dist=payload.solute_prot_dist,
         nloop=payload.nloop,
         nloop_all=payload.nloop_all,
         tolerance=payload.tolerance,
@@ -2093,13 +2161,28 @@ def _configure_builder(payload: StartPreparationRequest) -> Builder:
     return builder
 
 
+def _builder_pdb_and_workdir(payload: StartPreparationRequest) -> tuple[str | None, str]:
+    path = (payload.path or "").strip()
+    if path:
+        path = os.path.abspath(os.path.expanduser(path))
+        if not os.path.isfile(path):
+            raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    working_dir = payload.working_dir
+    if working_dir:
+        working_dir = os.path.abspath(os.path.expanduser(working_dir))
+    elif path:
+        working_dir = os.path.dirname(path)
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="working_dir is required when no protein PDB is provided",
+        )
+    return (path or None), working_dir
+
+
 @app.post("/generate-preparation")
 def generate_preparation(payload: StartPreparationRequest) -> dict:
-    path = os.path.abspath(os.path.expanduser(payload.path))
-    if not os.path.isfile(path):
-        raise HTTPException(status_code=404, detail=f"File not found: {path}")
-    working_dir = payload.working_dir or os.path.dirname(path)
-    working_dir = os.path.abspath(os.path.expanduser(working_dir))
+    path, working_dir = _builder_pdb_and_workdir(payload)
     try:
         builder = _configure_builder(payload)
         success, message, job_dir = builder.generate_preparation_inputs(
@@ -2152,11 +2235,7 @@ def cancel_preparation(payload: CancelPreparationRequest) -> dict:
 
 @app.post("/start-preparation")
 def start_preparation(payload: StartPreparationRequest) -> dict:
-    path = os.path.abspath(os.path.expanduser(payload.path))
-    if not os.path.isfile(path):
-        raise HTTPException(status_code=404, detail=f"File not found: {path}")
-    working_dir = payload.working_dir or os.path.dirname(path)
-    working_dir = os.path.abspath(os.path.expanduser(working_dir))
+    path, working_dir = _builder_pdb_and_workdir(payload)
     try:
         builder = _configure_builder(payload)
         success, message, job_dir = builder.prepare_system(
@@ -2733,6 +2812,28 @@ def _collect_system_files(input_dir: Path) -> dict[str, str]:
     return files
 
 
+_GUI_PROTEIN_CONSTRAINT_KEYS = frozenset({"protein_backbone", "protein_sidechain"})
+
+
+def _omit_protein_restraints_if_absent(
+    payload: "GenerateEquilibrationRequest", system_files: dict[str, str]
+) -> None:
+    """Drop protein backbone/sidechain rows when the input structure has none."""
+    if pdb_has_protein is None:
+        return
+    pdb = system_files.get("pdb") or system_files.get("bilayer_pdb")
+    if not pdb or pdb_has_protein(Path(pdb)):
+        return
+    for stage in payload.protocol.stages:
+        stage.constraints = [
+            c
+            for c in stage.constraints
+            if _normalize_constraint_key(c.name) not in _GUI_PROTEIN_CONSTRAINT_KEYS
+        ]
+    payload.add_com_restraint = False
+    payload.add_rotation_restraint = False
+
+
 def _write_openmm_com_params(
     pdb_path: Path,
     output_dir: Path,
@@ -2849,6 +2950,9 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
             detail="Amber support is not available in this gatewizard installation",
         )
 
+    system_files = _collect_system_files(input_dir)
+    _omit_protein_restraints_if_absent(payload, system_files)
+
     stage_params = _build_stage_params(payload.protocol.stages)
     compute_defaults = (
         payload.protocol.compute_defaults.model_dump()
@@ -2857,7 +2961,6 @@ def generate_equilibration(payload: GenerateEquilibrationRequest) -> None:
     )
     selections = _build_selections(payload.protocol.stages)
     _validate_constraint_support(engine, stage_params, selections)
-    system_files = _collect_system_files(input_dir)
 
     if engine == "gromacs":
         if "prmtop" not in system_files or "inpcrd" not in system_files:
@@ -3189,6 +3292,38 @@ class StructuralAnalysisRequest(BaseModel):
     n_bins: int = Field(1, description="Grid bins for membrane thickness analysis")
     interpolate: bool = Field(
         False, description="Interpolate missing grid values (membrane thickness)"
+    )
+    exclude_sel: str | None = Field(
+        "protein",
+        description="Non-lipid atoms for exclusion-aware APL (protein, peptide, DNA, ligands; ignored by lipyphilic)",
+    )
+    exclude_cutoff: float = Field(
+        30.0,
+        description="Å cutoff for exclude atoms near the leaflet (APL only; default 30 Å)",
+    )
+    exclude_dim: int = Field(
+        3,
+        description="Exclude cutoff dimension: 3 = 3D distance, 1 = z to leaflet midplane",
+    )
+    apl_method: str | None = Field(
+        "auto",
+        description="APL algorithm: auto, evapl (default Exclusion-aware Voronoi Area Per Lipid), lipyphilic (pure lipids only), gridmat, vtmc",
+    )
+    gridmat_n: int = Field(
+        20,
+        description="GridMAT grid points along the long box axis (default 20)",
+    )
+    gridmat_precision: float = Field(
+        13.0,
+        description="GridMAT protein proximity cutoff in Å (default 1.3 nm)",
+    )
+    vtmc_n_samples: int = Field(
+        50_000,
+        description="VTMC Monte Carlo sample count per leaflet (default 50000)",
+    )
+    vtmc_protein_radius: float = Field(
+        1.7,
+        description="VTMC protein atom disk radius in Å (default 1.7 ≈ C VDW)",
     )
     start: int | None = Field(None, description="First trajectory frame (inclusive)")
     stop: int | None = Field(None, description="Last trajectory frame (exclusive)")
@@ -4124,6 +4259,14 @@ def run_structural_analysis(payload: StructuralAnalysisRequest) -> dict:
                     leaflet_filter_sel=payload.leaflet_filter_sel,
                     n_bins=payload.n_bins,
                     interpolate=payload.interpolate,
+                    exclude_sel=payload.exclude_sel,
+                    exclude_cutoff=payload.exclude_cutoff,
+                    exclude_dim=payload.exclude_dim,
+                    apl_method=payload.apl_method,
+                    gridmat_n=payload.gridmat_n,
+                    gridmat_precision=payload.gridmat_precision,
+                    vtmc_n_samples=payload.vtmc_n_samples,
+                    vtmc_protein_radius=payload.vtmc_protein_radius,
                     file_times=payload.file_times,
                     file_strides=payload.file_strides,
                     start=payload.start,
@@ -4161,6 +4304,12 @@ class DetectPbcEngineRequest(BaseModel):
         "auto",
         description="auto | gromacs | amber | namd | openmm | mdanalysis",
     )
+    tpr_path: str | None = Field(
+        None, description="Optional explicit GROMACS .tpr (Tools UI browse field)"
+    )
+    ndx_path: str | None = Field(
+        None, description="Optional explicit GROMACS index.ndx"
+    )
 
 
 @app.post("/tools-detect-pbc-engine")
@@ -4177,6 +4326,8 @@ def tools_detect_pbc_engine(payload: DetectPbcEngineRequest) -> dict:
                 str(top),
                 [str(p) for p in trajs],
                 engine_hint=payload.engine,
+                tpr_path=payload.tpr_path,
+                ndx_path=payload.ndx_path,
             )
         )
     except Exception as ex:
@@ -4225,7 +4376,10 @@ class FixPbcRequest(BaseModel):
     )
     center_selection: str = Field(
         "protein",
-        description="Centering selection (MDAnalysis / cpptraj mask hint)",
+        description=(
+            "Centering selection (MDAnalysis / cpptraj). "
+            "Amber/NAMD/OpenMM default to protein + bilayer; GROMACS uses index groups."
+        ),
     )
     center_group: str | None = Field(
         None,
