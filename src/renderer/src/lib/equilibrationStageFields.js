@@ -45,7 +45,7 @@ export function effectiveStageEnsemble(stageEnsemble, sidebarEnsemble) {
  * @param {{ name?: string, stage_kind?: string, ensemble?: string|null, description?: string }} stage
  */
 export function isSidebarControlledStage(stage) {
-  const kind = String(stage?.stage_kind || '').lower()
+  const kind = String(stage?.stage_kind || '').toLowerCase()
   const name = String(stage?.name || '').toLowerCase()
   if (kind === 'production' || name === 'production') return true
   return false

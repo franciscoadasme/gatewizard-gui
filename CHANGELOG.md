@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Equilibration startup:** a Python-style `.lower()` call crashed on launch (`String(...).lower is not a function` in `isSidebarControlledStage`). Every page stays mounted, so that uncaught `$effect` error froze tab switching even if Equilibration was never opened.
 - **Tools Fix PBC:** Amber/NAMD/OpenMM default center is protein + bilayer. Loading a PSF/PDB no longer resets the field to protein-only; detected lipid residue names (e.g. POPC) replace the generic list when present.
 - **Equilibration Progress:** Watch / Reload rediscover cluster jobs whose `equilibration_job.json` lost `mode` / `scheduler_job_id` (they used to stay **Ready** forever). Connect + Reload on a folder with `run_equilibration.slurm` queries Slurm by job name and restores remote status. After sbatch, the job JSON (with the Slurm id) is copied to the remote submit dir.
 - **Equilibration:** bilayer-only / non-protein input omits protein backbone and sidechain restraint rows (and turns off protein COM). Generate Input Files matches the API so OpenMM no longer looks for `restraints/prot_pos.txt`.
