@@ -40,7 +40,7 @@
   const classes = $derived(
     `${baseClass} ${variantClasses[variant] ?? variantClasses.default} ${
       sizeClasses[size] ?? sizeClasses.default
-    } ${className}`.trim()
+    } w-full min-w-0`.trim()
   )
 
   const chevronClasses = $derived(
@@ -50,7 +50,7 @@
   )
 </script>
 
-<div class="relative">
+<div class={`relative min-w-0 ${className}`.trim()}>
   <select
     class={classes}
     {value}

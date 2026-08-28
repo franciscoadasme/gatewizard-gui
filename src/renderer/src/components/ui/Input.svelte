@@ -48,12 +48,28 @@
       sizeClasses[size] ?? sizeClasses.default
     } ${className}`.trim()
   )
+
+  const extraProps = $derived(
+    Object.fromEntries(Object.entries(restProps).filter(([key]) => key !== 'oninput'))
+  )
+
+  /** Keep number fields as strings so Svelte cannot ping-pong int ↔ string forever. */
+  function handleInput(/** @type {Event} */ e) {
+    const el = /** @type {HTMLInputElement} */ (e.currentTarget)
+    const next = el.value
+    const prev = value == null ? '' : String(value)
+    // Chromium number inputs can emit `input` when the framework resets `.value`
+    // on each render. Re-assigning the same string retriggers the whole app.
+    if (next === prev) return
+    value = next
+    restProps.oninput?.(e)
+  }
 </script>
 
 <input
   {type}
   class={classes}
-  bind:value
+  value={value == null ? '' : String(value)}
   {disabled}
   {readonly}
   {required}
@@ -61,6 +77,7 @@
   {name}
   {placeholder}
   spellcheck="false"
+  {...extraProps}
   onkeydown={handleKeydown}
-  {...restProps}
+  oninput={handleInput}
 />

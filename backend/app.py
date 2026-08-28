@@ -3271,6 +3271,10 @@ class StructuralAnalysisRequest(BaseModel):
     selection: str = Field("protein and backbone", description="MDAnalysis selection")
     selection2: str = Field("", description="Second selection for distance analysis")
     reference_frame: int = Field(0, description="Reference frame for RMSD")
+    reference_structure: str | None = Field(
+        None,
+        description="Optional PDB/GRO used as RMSD reference instead of reference_frame",
+    )
     align: bool = Field(True, description="Align structures before RMSD")
     file_times: dict[str, float] | None = Field(
         None, description="Optional per-file durations in ns"
@@ -4159,6 +4163,20 @@ def _bilayer_analysis_error_message(exc: Exception, lipid_sel: str) -> str:
             f"headgroup atom names (current selection: {lipid_sel!r}). The trajectory "
             "may not contain an equilibrated bilayer."
         )
+    if "NoneType" in msg and "subscriptable" in msg:
+        return (
+            "Membrane analysis failed because a trajectory frame has no periodic box. "
+            "This usually means a starting PDB was added to the trajectory list. "
+            "Remove PDB/GRO files from Trajectories (thickness and area-per-lipid need "
+            "DCD/XTC with a box). To RMSD against a starting structure, use the RMSD "
+            "reference PDB field instead of listing the PDB as a trajectory."
+        )
+    if "Box is None" in msg or "no periodic box" in msg:
+        return (
+            "Trajectory has no periodic box. Remove starting PDB/GRO files from the "
+            "trajectory list. For RMSD vs a starting structure, use the RMSD reference "
+            "PDB field."
+        )
     return msg or "Bilayer analysis failed."
 
 
@@ -4289,6 +4307,7 @@ def run_structural_analysis(payload: StructuralAnalysisRequest) -> dict:
                 file_times=payload.file_times,
                 file_strides=payload.file_strides,
                 rmsf_xaxis_type=payload.rmsf_xaxis_type,
+                reference_structure=payload.reference_structure,
             )
         return sanitize_value(result)
     except Exception as ex:

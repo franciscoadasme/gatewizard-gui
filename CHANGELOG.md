@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Analysis custom plot grid:** Overlay uses an ordered set list (add / up / down / remove). Custom grid is a session-persisted mosaic (columns × rows, gap, aspect, last-row align, legends, reference lines). Plot settings can target **All cells** or **This cell**; each square has a list button for that cell’s sets, draw order, and title. Line width/dash apply to structural and energetic plots. Live SVG matches publication PNG.
+- **Analysis RMSD reference PDB:** optional starting structure instead of Ref. frame. PDB/GRO files in the trajectory list are ignored when DCD/XTC files are present (they have no periodic box and were breaking membrane thickness).
+- **Analysis area per lipid:** show/hide Average, Upper leaflet, and Lower leaflet on the plot (and publication PNG). CSV still stores all three.
 - **Builder:** bilayer-only packing (uncheck **Include protein**, set **Membrane XY**) and **Free molecules** (`--solute` / `--solute_con`, optional in-membrane and protein distance). Protein+membrane jobs are unchanged.
 - **Analysis area per lipid:** exclusion-aware Voronoi APL (**EVAPL**, default) — **Exclude selection** (default `protein`; also peptide, DNA, ligands) and **Exclude cutoff (Å)** (default **30**) so occupants reduce mean APL instead of tiling the full box.
 - **Analysis:** **Cancel analysis** while a run is in progress (single set or all sets). The UI unblocks immediately and shows “Analysis cancelled” instead of a browser abort error.
@@ -17,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Analysis plot layout:** Overlay vs grid is a toolbar (icons + add/remove column/row). Mosaic extras live under **Grid options**; **Advanced** holds margins, tick chrome, and fonts. Min/max fields are wider than ticks/decimals; reference lines stay in the sidebar (value/width, then style/label). **Reset view** clears zoom/pan only; a menu also resets axis limits. Trajectory/log list and Time (ns) are inputs for the next Run (the plot comes from the last analysis CSV). Dash gaps scale with line width.
 - **Analysis area per lipid:** the GUI now picks the algorithm — **EVAPL** (Exclusion-aware Voronoi Area Per Lipid, default), **Box Voronoi (lipyphilic)**, **GridMAT-MD**, or **VTMC** — with the matching settings (exclude cutoff, grid points/precision, MC samples/protein radius). LiPyphilic shows a warning that it is for **pure lipids only** (not systems with protein or other leaflet occupants).
 - **Equilibration Pull progress:** local-size poll no longer skips updates when integer % is unchanged (large files were freezing the ring/status for long stretches). Status line prefers live on-disk bytes over stale stream text; pull start reports existing local size instead of `0 / remote`.
 - **Tools Fix PBC (GROMACS):** no longer shows yellow “no .tpr / provide index” warnings as soon as a PDB topology is chosen. Detect uses the GROMACS TPR / Index browse fields, and also looks for `step*.tpr` / `index.ndx` next to the topology (not only next to trajectories).
@@ -24,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Equilibration startup:** a Python-style `.lower()` call crashed on launch (`String(...).lower is not a function` in `isSidebarControlledStage`). Every page stays mounted, so that uncaught `$effect` error froze tab switching even if Equilibration was never opened.
+- **Analysis Overlay/Grid:** clicking Grid or loading a session no longer freezes the app. Mosaic cells use padding-bottom instead of CSS `aspect-ratio` (Chromium could tight-loop layout in a flex + overflow pane). Chart-width observers no longer retrigger layout every frame.
+- **Analysis custom grid:** set checkboxes hide or show series in mosaic cells (not only overlay). X/Y tick counts and the axis box apply to overlay and grid.
 - **Tools Fix PBC:** Amber/NAMD/OpenMM default center is protein + bilayer. Loading a PSF/PDB no longer resets the field to protein-only; detected lipid residue names (e.g. POPC) replace the generic list when present.
 - **Equilibration Progress:** Watch / Reload rediscover cluster jobs whose `equilibration_job.json` lost `mode` / `scheduler_job_id` (they used to stay **Ready** forever). Connect + Reload on a folder with `run_equilibration.slurm` queries Slurm by job name and restores remote status. After sbatch, the job JSON (with the Slurm id) is copied to the remote submit dir.
 - **Equilibration:** bilayer-only / non-protein input omits protein backbone and sidechain restraint rows (and turns off protein COM). Generate Input Files matches the API so OpenMM no longer looks for `restraints/prot_pos.txt`.
@@ -45,6 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Remote job dialog:** Time-limit ± controls use tight hit targets (no nested labels) so nearby taps on touchscreens no longer change the value; time limit sits on its own row under Partition (days / hours / minutes + Slurm time on one line).
 - **Equilibration (Amber resources):** GUI defaults match the API — MD stages use GPU (`pmemd.cuda`, CPU×1); only the first packing barostat stage stays CPU×6. Sidebar compute target is no longer forced to CPU-only.
 - **Equilibration Stages/Details on running jobs:** merging live log stages with the protocol outline no longer falls back by index (Minimization + OpenMM Eq1… misaligned and duplicated stage names, which broke the Stages/Details panel). Match by stage name only.
+- **Analysis structural grid:** titles, y-labels, and last x-ticks no longer clip; each panel clips itself so inner series are not cut at t=0. When labels/tick numbers are only on the first column or last row, inner cells keep the same plot-box size. Last/first x values sit on their ticks; extra left margin 0 does not leave a gutter. PNG/SVG exports the whole mosaic; publication legends stay print-sized.
+- **Analysis membrane thickness:** starting PDB files listed as trajectories no longer crash with `NoneType` / `Box is None`.
 
 ### Added
 

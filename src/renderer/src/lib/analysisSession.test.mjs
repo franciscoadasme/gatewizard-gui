@@ -164,6 +164,32 @@ test('deserializeAnalysisSession keeps structural compareLayout and energetic la
   assert.equal(session.energeticCompareLayout, 'by_property')
 })
 
+test('serializeAnalysisSession round-trips gridLayout', () => {
+  const session = serializeAnalysisSession({
+    mode: 'structural',
+    compareLayout: 'grid',
+    outputFolderName: '04_analysis',
+    activeSetId: 'set-1',
+    sets: [{ id: 'set-1', label: 'A' }, { id: 'set-2', label: 'B' }],
+    gridLayout: {
+      cols: 3,
+      rows: 2,
+      lastRowAlign: 'center',
+      legendMode: 'outside',
+      overlaySetIds: ['set-2', 'set-1'],
+      cells: [{ setIds: ['set-1', 'set-2'] }, { setIds: ['set-2'] }],
+      edited: true
+    }
+  })
+  const loaded = deserializeAnalysisSession(session)
+  assert.equal(loaded.compareLayout, 'grid')
+  assert.equal(loaded.gridLayout.cols, 3)
+  assert.equal(loaded.gridLayout.lastRowAlign, 'center')
+  assert.deepEqual(loaded.gridLayout.cells[0].setIds, ['set-1', 'set-2'])
+  assert.deepEqual(loaded.gridLayout.overlaySetIds, ['set-2', 'set-1'])
+  assert.equal(loaded.gridLayout.edited, true)
+})
+
 test('slimSetsForSessionSave strips both structural and energetic in mixed session', () => {
   const sets = slimSetsForSessionSave(
     [
@@ -380,4 +406,85 @@ test('custom plot colors are kept across themes and saved in the session', () =>
   const loaded = deserializeAnalysisSession(session)
   assert.equal(loaded.plotSettings.structural.rmsd.plotBg, '#112233')
   assert.equal(loaded.plotSettings.energeticGlobal.plotBgCustomized, true)
+})
+
+test('deserializeAnalysisSession stringifies numeric trajectory timeNs and stride', async () => {
+  const { normalizeAnalysisFileRow } = await import('./analysisSets.js')
+  const row = normalizeAnalysisFileRow({
+    path: '/tmp/a.dcd',
+    timeNs: 200,
+    stride: 50
+  })
+  assert.equal(row.timeNs, '200')
+  assert.equal(row.stride, '50')
+  assert.equal(typeof row.timeNs, 'string')
+  assert.equal(typeof row.stride, 'string')
+  const empty = normalizeAnalysisFileRow({ path: '/tmp/b.dcd', timeNs: '', stride: '1' })
+  assert.equal(empty.timeNs, '')
+  assert.equal(empty.stride, '1')
+
+  const loaded = deserializeAnalysisSession({
+    version: 1,
+    mode: 'structural',
+    compareLayout: 'overlay',
+    outputFolderName: 'analysis_01',
+    activeSetId: 'set-1',
+    sets: [
+      {
+        id: 'set-1',
+        label: 'NVT',
+        trajectoryFiles: [{ path: '/tmp/prod.dcd', timeNs: 200, stride: 50 }],
+        structuralResults: {
+          rmsd: { analysisType: 'rmsd', rawX: [0], rawY: [1], dataCsv: 'set1_rmsd.csv' }
+        }
+      }
+    ]
+  })
+  assert.equal(loaded.sets[0].trajectoryFiles[0].timeNs, '200')
+  assert.equal(loaded.sets[0].trajectoryFiles[0].stride, '50')
+})
+
+test('deserializeAnalysisSession stringifies numeric plot tick counts', () => {
+  const loaded = deserializeAnalysisSession({
+    version: 1,
+    mode: 'structural',
+    compareLayout: 'overlay',
+    outputFolderName: 'analysis_01',
+    activeSetId: 'set-1',
+    sets: [{ id: 'set-1', label: 'NVT' }],
+    plotSettings: {
+      structural: { area_per_lipid: { xTickCount: 5, yTickCount: 4 } },
+      energeticGlobal: { xTickCount: 6 }
+    }
+  })
+  assert.equal(loaded.plotSettings.structural.area_per_lipid.xTickCount, '5')
+  assert.equal(loaded.plotSettings.structural.area_per_lipid.yTickCount, '4')
+  assert.equal(loaded.plotSettings.energeticGlobal.xTickCount, '6')
+})
+
+test('hydrate restores the on-disk Charmm-gui vs GateWizard session', async (t) => {
+  const { access, readFile } = await import('node:fs/promises')
+  const dir =
+    '/mnt/c/Users/kcoru/OneDrive/Escritorio/gatewizard_dev/testing_wsl/v6_analysis_gw_cg/analysis_01'
+  try {
+    await access(`${dir}/analysis_session.json`)
+  } catch {
+    t.skip('session folder not present')
+    return
+  }
+  const raw = JSON.parse(await readFile(`${dir}/analysis_session.json`, 'utf8'))
+  let session = deserializeAnalysisSession(raw)
+  session = await hydrateAnalysisSessionFromCsv(session, dir, async (path) =>
+    readFile(path, 'utf8')
+  )
+  assert.equal(session.sets.length, 11)
+  assert.equal(session.compareLayout, 'grid')
+  assert.equal(session.gridLayout?.cols, 4)
+  const apl = session.sets[0].structuralResults.area_per_lipid
+  assert.ok(apl.rawY.length > 10)
+  assert.equal(apl.extraSeries.length, 2)
+  assert.ok(apl.extraSeries[0].rawY.length > 10)
+  assert.equal(typeof session.sets[0].trajectoryFiles[0].timeNs, 'string')
+  assert.equal(typeof session.sets[0].trajectoryFiles[0].stride, 'string')
+  assert.ok(setsHaveAnyPlottableResults(session.sets))
 })

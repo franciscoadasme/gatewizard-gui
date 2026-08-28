@@ -8,6 +8,7 @@ import { clonePlainAnalysisData } from './analysisSession.js'
  * @typedef {Object} StructuralTypeSelection
  * @property {string} selection
  * @property {string} selection2
+ * @property {string} [referenceStructurePath]
  * @property {string} [referenceFrame]
  * @property {boolean} [align]
  * @property {string} [rmsfXaxisType]
@@ -30,6 +31,7 @@ import { clonePlainAnalysisData } from './analysisSession.js'
  * @property {string} structuralType
  * @property {string} selection
  * @property {string} selection2
+ * @property {string} referenceStructurePath
  * @property {string} referenceFrame
  * @property {boolean} align
  * @property {string} rmsfXaxisType
@@ -196,6 +198,7 @@ export function resolveStructuralTypeSelection(opts, type) {
         selection: opts.selection,
         selection2: opts.selection2 || 'protein and resid 50',
         referenceFrame: opts.referenceFrame,
+        referenceStructurePath: opts.referenceStructurePath || '',
         align: opts.align,
         rmsfXaxisType: opts.rmsfXaxisType,
         leafletLipidSel: opts.leafletLipidSel,
@@ -217,6 +220,7 @@ export function resolveStructuralTypeSelection(opts, type) {
     selection: defaults.selection,
     selection2: defaults.selection2,
     referenceFrame: opts?.referenceFrame ?? '0',
+    referenceStructurePath: opts?.referenceStructurePath ?? '',
     align: opts?.align ?? true,
     rmsfXaxisType: opts?.rmsfXaxisType ?? 'residue_number',
     leafletLipidSel: '',
@@ -261,6 +265,7 @@ export function resolveStructuralTypeSelection(opts, type) {
  * @property {string} chartTitle
  * @property {string} selectionSubtitle
  * @property {boolean} lastAnalysisHasTimeX
+ * @property {Array<{ path: string, basename: string, timeNs: string, start: number, nPoints: number }> | null} [sourceFiles]
  */
 
 /**
@@ -274,6 +279,7 @@ export function resolveStructuralTypeSelection(opts, type) {
  * @property {string} energeticEngine
  * @property {Record<string, { mean: number, std: number, min: number, max: number }>} [statistics]
  * @property {string} [dataCsv] sibling CSV used when session JSON is slimmed
+ * @property {Array<{ path: string, basename: string, timeNs: string, start: number, nPoints: number }> | null} [sourceFiles]
  */
 
 /**
@@ -310,6 +316,7 @@ export function defaultStructuralOptions() {
     selection: defaults.selection,
     selection2: defaults.selection2,
     referenceFrame: '0',
+    referenceStructurePath: '',
     align: true,
     rmsfXaxisType: 'residue_number',
     leafletLipidSel: '',
@@ -324,6 +331,7 @@ export function defaultStructuralOptions() {
         selection: defaults.selection,
         selection2: defaults.selection2,
         referenceFrame: '0',
+        referenceStructurePath: '',
         align: true,
         rmsfXaxisType: 'residue_number',
         leafletLipidSel: '',
@@ -367,6 +375,49 @@ export function nextCsvStem(existingSets = []) {
   let n = 1
   while (used.has(`set${n}`)) n++
   return `set${n}`
+}
+
+/**
+ * Coerce trajectory/log time+stride to strings so number inputs cannot
+ * ping-pong int ↔ string (that loop blocks Svelte `tick()` during session load).
+ * @param {unknown} file
+ * @returns {{ path: string, timeNs: string, stride: string }}
+ */
+export function normalizeAnalysisFileRow(file) {
+  const src = file && typeof file === 'object' ? /** @type {Record<string, unknown>} */ (file) : {}
+  const timeRaw = src.timeNs
+  let timeNs = ''
+  if (timeRaw !== '' && timeRaw != null && String(timeRaw).trim() !== '') {
+    const n = Number(timeRaw)
+    timeNs = Number.isFinite(n) ? String(n) : String(timeRaw).trim()
+  }
+  const strideN = Math.min(999, Math.max(1, Math.floor(Number(src.stride) || 1)))
+  return {
+    ...src,
+    path: String(src.path || ''),
+    timeNs,
+    stride: String(strideN)
+  }
+}
+
+/** @param {AnalysisSet} set */
+export function normalizeAnalysisSetFiles(set) {
+  if (!set || typeof set !== 'object') return set
+  /** @type {AnalysisSet} */
+  const next = {
+    ...set,
+    trajectoryFiles: Array.isArray(set.trajectoryFiles)
+      ? set.trajectoryFiles.map(normalizeAnalysisFileRow)
+      : []
+  }
+  if (set.energeticOptions && typeof set.energeticOptions === 'object') {
+    const logs = set.energeticOptions.logFiles
+    next.energeticOptions = {
+      ...set.energeticOptions,
+      logFiles: Array.isArray(logs) ? logs.map(normalizeAnalysisFileRow) : logs
+    }
+  }
+  return next
 }
 
 /** Fill missing/duplicate csv stems (`set1`, `set2`, …) without renaming existing unique ones. */
@@ -520,6 +571,18 @@ export function aplSeriesLabel(set, role) {
   if (role === 'upper') return String(set?.aplUpperLabel ?? '').trim() || APL_DEFAULT_UPPER_LABEL
   if (role === 'lower') return String(set?.aplLowerLabel ?? '').trim() || APL_DEFAULT_LOWER_LABEL
   return String(set?.aplMeanLabel ?? '').trim() || APL_DEFAULT_MEAN_LABEL
+}
+
+/**
+ * Area-per-lipid plot visibility. Missing flags (older sessions) stay visible.
+ * @param {object | null | undefined} plotSettings
+ * @param {'mean' | 'upper' | 'lower' | string} role
+ */
+export function aplRoleIsVisible(plotSettings, role) {
+  if (role === 'upper') return plotSettings?.aplShowUpper !== false
+  if (role === 'lower') return plotSettings?.aplShowLower !== false
+  if (role === 'mean') return plotSettings?.aplShowMean !== false
+  return true
 }
 
 /** @param {AnalysisSet | null | undefined} set @param {'mean' | 'upper' | 'lower'} role */

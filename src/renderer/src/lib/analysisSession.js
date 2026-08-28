@@ -5,6 +5,7 @@ import {
   assignCsvStems,
   getSetStructuralResult,
   getSetStructuralResultTypes,
+  normalizeAnalysisSetFiles,
   normalizeAnalysisSetStructuralResults,
   structuralResultHasPlotData,
   structuralResultNeedsCsvHydration
@@ -400,6 +401,7 @@ export async function hydrateAnalysisSetsFromCsv(sets, sessionDir, readText, mod
  * @property {string} [sessionName] Optional human label (independent of folder name)
  * @property {string} activeSetId
  * @property {AnalysisSet[]} sets
+ * @property {object} [gridLayout] Custom mosaic (cols/rows, per-cell setIds, legends)
  * @property {{
  *   structural?: Record<string, Record<string, unknown>>,
  *   energeticGlobal?: Record<string, unknown>,
@@ -448,13 +450,91 @@ export function colorLooksCustomized(value, legacyDefault) {
   return s !== String(legacyDefault || '').trim().toLowerCase()
 }
 
+/** Plot-settings keys bound to number <input>s — keep them strings to avoid int↔string loops. */
+const PLOT_STRING_KEYS = new Set([
+  'lineWidth',
+  'xMin',
+  'xMax',
+  'yMin',
+  'yMax',
+  'aspectRatio',
+  'dpi',
+  'extraLeftMargin',
+  'extraRightMargin',
+  'extraTopMargin',
+  'extraBottomMargin',
+  'tickLabelGap',
+  'tickLength',
+  'tickWidth',
+  'spineWidth',
+  'legendSwatchSize',
+  'legendFontSize',
+  'axisFontSize',
+  'titleFontSize',
+  'xTickCount',
+  'yTickCount',
+  'xTickDecimals',
+  'yTickDecimals',
+  'xTickStep',
+  'yTickStep',
+  'aplMarkerSize',
+  'aplMeanMarkerEvery',
+  'aplUpperMarkerEvery',
+  'aplLowerMarkerEvery'
+])
+
+/**
+ * @param {unknown} plot
+ */
+export function stringifyPlotSettingNumbers(plot) {
+  if (!plot || typeof plot !== 'object' || Array.isArray(plot)) return plot
+  const next = { ...plot }
+  for (const key of PLOT_STRING_KEYS) {
+    const v = next[key]
+    if (typeof v === 'number' && Number.isFinite(v)) next[key] = String(v)
+  }
+  return next
+}
+
+/**
+ * @param {unknown} plotSettings
+ */
+export function normalizeSessionPlotSettings(plotSettings) {
+  if (!plotSettings || typeof plotSettings !== 'object') return plotSettings
+  const src = /** @type {Record<string, unknown>} */ (plotSettings)
+  const structuralSrc =
+    src.structural && typeof src.structural === 'object' && !Array.isArray(src.structural)
+      ? /** @type {Record<string, unknown>} */ (src.structural)
+      : null
+  const panelsSrc =
+    src.energeticPanels &&
+    typeof src.energeticPanels === 'object' &&
+    !Array.isArray(src.energeticPanels)
+      ? /** @type {Record<string, unknown>} */ (src.energeticPanels)
+      : null
+  return {
+    ...src,
+    structural: structuralSrc
+      ? Object.fromEntries(
+          Object.entries(structuralSrc).map(([k, v]) => [k, stringifyPlotSettingNumbers(v)])
+        )
+      : src.structural,
+    energeticGlobal: stringifyPlotSettingNumbers(src.energeticGlobal),
+    energeticPanels: panelsSrc
+      ? Object.fromEntries(
+          Object.entries(panelsSrc).map(([k, v]) => [k, stringifyPlotSettingNumbers(v)])
+        )
+      : src.energeticPanels
+  }
+}
+
 /**
  * Fill plotBgCustomized / textColorCustomized for old sessions that only stored hex.
  * @param {Record<string, unknown> | null | undefined} plot
  */
 export function hydratePlotColorFlags(plot) {
   if (!plot || typeof plot !== 'object') return plot
-  const next = { ...plot }
+  const next = stringifyPlotSettingNumbers({ ...plot })
   if (next.plotBgCustomized == null) {
     next.plotBgCustomized = colorLooksCustomized(next.plotBg, LEGACY_PLOT_BG)
     if (!next.plotBgCustomized) next.plotBg = ''
@@ -507,6 +587,7 @@ export function normalizeEnergeticCompareLayout(raw) {
  *   sessionName?: string,
  *   activeSetId: string,
  *   sets: AnalysisSet[],
+ *   gridLayout?: object,
  *   plotSettings?: AnalysisSessionV1['plotSettings'],
  * }} state
  * @returns {AnalysisSessionV1}
@@ -523,7 +604,8 @@ export function serializeAnalysisSession(state) {
     outputFolderName: state.outputFolderName,
     sessionName: String(state.sessionName || '').trim(),
     activeSetId: state.activeSetId,
-    sets: clonePlainAnalysisData(state.sets),
+    sets: clonePlainAnalysisData(state.sets).map(normalizeAnalysisSetFiles),
+    gridLayout: state.gridLayout ? clonePlainAnalysisData(state.gridLayout) : null,
     plotSettings: state.plotSettings ? clonePlainAnalysisData(state.plotSettings) : null
   }
 }
@@ -574,8 +656,12 @@ export function deserializeAnalysisSession(raw) {
     outputFolderName: String(obj.outputFolderName || ''),
     sessionName: String(obj.sessionName || obj.session_name || '').trim(),
     activeSetId: String(obj.activeSetId || obj.sets[0]?.id || ''),
-    sets: /** @type {AnalysisSet[]} */ (obj.sets),
-    plotSettings: obj.plotSettings && typeof obj.plotSettings === 'object' ? obj.plotSettings : null
+    sets: /** @type {AnalysisSet[]} */ (obj.sets).map(normalizeAnalysisSetFiles),
+    gridLayout: obj.gridLayout && typeof obj.gridLayout === 'object' ? obj.gridLayout : null,
+    plotSettings:
+      obj.plotSettings && typeof obj.plotSettings === 'object'
+        ? normalizeSessionPlotSettings(obj.plotSettings)
+        : null
   })
 }
 

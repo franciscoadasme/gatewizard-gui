@@ -2,6 +2,8 @@
  * Build PlotSpec JSON from GUI energetic analysis state (mirrors gatewizard plot_spec.py).
  */
 
+import { plotSpecAxisChrome, plotSpecExtraMargins } from './analysisGridLayout.js'
+
 const DEFAULT_LINE_COLORS = [
   '#f59e0b',
   '#22c55e',
@@ -67,6 +69,8 @@ export function buildPlotSpecFromGui({
       title: ps.title || name,
       ylabel: ps.ylabel || (unit ? `${name} (${unit})` : name),
       line_color: ps.lineColor || DEFAULT_LINE_COLORS[i % DEFAULT_LINE_COLORS.length],
+      linewidth: Number(ps.lineWidth) || Number(g.lineWidth) || 1.5,
+      linestyle: ps.lineStyle || g.lineStyle || 'solid',
       xlim: limits(ps.xMin, ps.xMax),
       ylim: limits(ps.yMin, ps.yMax),
       show_grid: ps.showGrid ?? null
@@ -91,7 +95,9 @@ export function buildPlotSpecFromGui({
       font_family: g.fontFamily ?? 'Roboto, sans-serif',
       xlabel: g.xLabel || `Time (${timeUnits})`,
       title: g.title || null,
-      xlim: limits(g.xMin, g.xMax)
+      xlim: limits(g.xMin, g.xMax),
+      ...plotSpecAxisChrome(g),
+      ...plotSpecExtraMargins(g)
     },
     panels
   }
@@ -125,6 +131,20 @@ export const energGlobalDefaults = {
   textColorCustomized: false,
   gridColor: '#262626',
   showGrid: true,
+  lineWidth: '2',
+  lineStyle: 'solid',
+  tickLength: '4',
+  tickWidth: '1',
+  spineWidth: '1',
+  showTicks: true,
+  spineLeft: true,
+  spineBottom: true,
+  spineTop: false,
+  spineRight: false,
+  extraLeftMargin: '0',
+  extraRightMargin: '0',
+  extraTopMargin: '0',
+  extraBottomMargin: '0',
   xMin: '',
   xMax: '',
   dpi: '300',

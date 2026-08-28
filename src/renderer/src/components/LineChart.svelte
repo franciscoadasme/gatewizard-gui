@@ -1,4 +1,10 @@
 <script>
+  import { onMount } from 'svelte'
+  import ChartLegend from './ChartLegend.svelte'
+  import { axisTickFractions, strokeDashForStyle } from '../lib/analysisGridLayout.js'
+
+  let wrapEl = $state(/** @type {HTMLElement | null} */ (null))
+
   let {
     /** @type {Array<{ name: string, x: number[], y: number[], color?: string, strokeDasharray?: string, strokeWidth?: number, marker?: string, markerSize?: number, markerEvery?: number }>} */
     series = [],
@@ -23,7 +29,11 @@
     chartSubtitle = '',
     xTickLabels = [],
     extraLeftMargin = 0,
+    extraRightMargin = 0,
+    extraTopMargin = 0,
     extraBottomMargin = 0,
+    /** Gap between tick marks and tick numbers (SVG user units) */
+    tickLabelGap = 8,
     legendPosition = 'bottom',
     xTicks = 5,
     yTicks = 5,
@@ -38,6 +48,28 @@
     axisFontSize = 12,
     /** Chart title size */
     titleFontSize = 13,
+    showXLabel = true,
+    showYLabel = true,
+    showTicks = true,
+    showXTickLabels = true,
+    showYTickLabels = true,
+    /** Keep left/bottom plot gutters even when labels or tick numbers are hidden */
+    reserveXLabel = false,
+    reserveYLabel = false,
+    reserveXTickLabels = false,
+    reserveYTickLabels = false,
+    tickLength = 4,
+    tickWidth = 1,
+    spineWidth = 1,
+    showSpineLeft = true,
+    showSpineBottom = true,
+    showSpineTop = false,
+    showSpineRight = false,
+    /** Data-unit step; empty / 0 uses even tick count */
+    xTickStep = '',
+    yTickStep = '',
+    /** @type {Array<{ axis?: string, value: number, color?: string, width?: number, style?: string, label?: string }>} */
+    referenceLines = [],
     /** @type {'pan' | 'boxZoom' | 'rangeSelect'} */
     interactionMode = 'pan',
     /** Highlight band for range stats [t0, t1] in data x units */
@@ -45,27 +77,117 @@
     /** @type {((range: { xMin?: number, xMax?: number, yMin?: number, yMax?: number }) => void) | null} */
     onAxisRange = null,
     /** @type {((range: { t0: number, t1: number } | null) => void) | null} */
-    onStatsRange = null
+    onStatsRange = null,
+    /** Fill parent height instead of CSS aspect-ratio (mosaic cells). */
+    fillContainer = false
   } = $props()
 
   const palette = ['#f59e0b', '#22c55e', '#38bdf8', '#f87171', '#a78bfa', '#f472b6']
-  const legendSwatch = $derived(Math.max(6, Number(legendSwatchSize) || 12))
-  const legendFs = $derived(Math.max(7, Number(legendFontSize) || 10))
-  const axisFs = $derived(Math.max(7, Number(axisFontSize) || 12))
-  const titleFs = $derived(Math.max(8, Number(titleFontSize) || 13))
-  const tickFs = $derived(Math.max(7, axisFs - 1))
-
+  /** CSS pixel width of the chart box — settings are screen px, SVG viewBox is 900. */
+  let cssW = $state(400)
   const width = 900
   const height = $derived(Math.round(width / aspectRatio))
-  const titleBand = $derived(chartTitle || chartSubtitle ? (chartSubtitle ? 34 : 22) : 0)
-  const margin = $derived({
-    top: 36 + (titleBand > 22 ? 12 : 0),
-    right: 16,
-    bottom: 42 + (Number(extraBottomMargin) || 0),
-    left: 56 + (Number(extraLeftMargin) || 0)
+  const pxToSvg = $derived(cssW > 16 ? width / cssW : 1)
+
+  // Measure once (and on window resize). ResizeObserver + bind:clientWidth
+  // fought mosaic layout after Overlay/Grid session load and starved all clicks.
+  onMount(() => {
+    const el = wrapEl
+    if (!el) return
+    const apply = () => {
+      const n = Math.round(el.getBoundingClientRect().width)
+      if (n > 16) cssW = n
+    }
+    apply()
+    let timer = 0
+    const onResize = () => {
+      clearTimeout(timer)
+      timer = window.setTimeout(apply, 200)
+    }
+    window.addEventListener('resize', onResize)
+    return () => {
+      clearTimeout(timer)
+      window.removeEventListener('resize', onResize)
+    }
   })
-  const plotWidth = $derived(width - margin.left - margin.right)
-  const plotHeight = $derived(height - margin.top - margin.bottom)
+
+  /**
+   * Dash lengths from plot settings are CSS px; stroke-width is also CSS px × pxToSvg.
+   * @param {string | undefined} dash
+   * @param {number} scale
+   */
+  function svgDasharray(dash, scale) {
+    const raw = String(dash || '').trim()
+    if (!raw) return undefined
+    const parts = raw.split(/[\s,]+/).map((n) => Number(n) * scale)
+    if (parts.some((n) => !Number.isFinite(n) || n < 0)) return raw
+    return parts.join(' ')
+  }
+  const legendSwatch = $derived(Math.max(6, Number(legendSwatchSize) || 12) * pxToSvg)
+  const legendFs = $derived(Math.max(7, Number(legendFontSize) || 10) * pxToSvg)
+  const axisFs = $derived(Math.max(7, Number(axisFontSize) || 12) * pxToSvg)
+  const titleFs = $derived(Math.max(8, Number(titleFontSize) || 13) * pxToSvg)
+  const tickFs = $derived(Math.max(6 * pxToSvg, axisFs * 0.92))
+  const edgePad = $derived(Math.max(4, 6 * pxToSvg))
+  const tickLen = $derived(Math.max(0, Number(tickLength) || 0) * pxToSvg)
+  const tickStroke = $derived(Math.max(0.2, Number(tickWidth) || 1) * pxToSvg)
+  const spineStroke = $derived(Math.max(0.2, Number(spineWidth) || 1) * pxToSvg)
+  const tickGap = $derived(Math.max(0, Number(tickLabelGap) || 8) * pxToSvg)
+  const titleBand = $derived.by(() => {
+    if (!chartTitle && !chartSubtitle) return edgePad
+    const titleH = chartTitle ? titleFs * 1.15 + edgePad : 0
+    const subH = chartSubtitle ? Math.max(8, titleFs - 3 * pxToSvg) * 1.15 + edgePad * 0.5 : 0
+    return titleH + subH + edgePad
+  })
+  const yLabelX = $derived(showYLabel || reserveYLabel ? axisFs * 0.5 + edgePad : 0)
+  /** Extra padding in SVG units; 0 is tight to labels, negative is allowed. */
+  function extraSvg(value) {
+    const n = Number(value)
+    if (!Number.isFinite(n)) return 0
+    return Math.max(-80, Math.min(240, n)) * pxToSvg
+  }
+  const margin = $derived.by(() => {
+    const spaceYLabel = showYLabel || reserveYLabel
+    const spaceYTickLabels = showYTickLabels || reserveYTickLabels
+    const spaceXLabel = showXLabel || reserveXLabel
+    const spaceXTickLabels = showXTickLabels || reserveXTickLabels
+    const yLabelSpace = spaceYLabel ? yLabelX + axisFs * 0.2 : 0
+    const yTickMarkSpace = showTicks ? tickLen : 0
+    let yTickNumSpace = 0
+    if (spaceYTickLabels) {
+      const y0 = extents.yMin
+      const y1 = extents.yMax
+      const ticks = axisTickFractions(y0, y1, yTickStep, yTicks)
+      let maxChars = 2
+      for (const t of ticks) {
+        const yVal = y1 - (y1 - y0) * t
+        maxChars = Math.max(maxChars, String(fmtY(yVal)).length)
+      }
+      yTickNumSpace = Math.ceil(maxChars * tickFs * 0.58) + tickGap
+    }
+    const yTickSpace =
+      yTickMarkSpace + yTickNumSpace || (spaceYLabel ? edgePad : edgePad * 0.5)
+    const xLabelSpace = spaceXLabel ? axisFs + edgePad : 0
+    const xTickMarkSpace = showTicks ? tickLen : 0
+    const xTickNumSpace = spaceXTickLabels ? tickFs + tickGap + edgePad : 0
+    const xTickSpace = xTickMarkSpace + xTickNumSpace || edgePad
+    const extraL = extraSvg(extraLeftMargin)
+    const extraR = extraSvg(extraRightMargin)
+    const extraT = extraSvg(extraTopMargin)
+    const extraB = extraSvg(extraBottomMargin)
+    const rightBase = spaceXTickLabels
+      ? Math.max(edgePad * 1.5, Math.ceil(tickFs * 2.8))
+      : edgePad
+    return {
+      top: Math.max(2, titleBand + extraT),
+      right: Math.max(2, rightBase + extraR),
+      bottom: Math.max(2, xTickSpace + xLabelSpace + extraB),
+      left: Math.max(2, yLabelSpace + yTickSpace + extraL)
+    }
+  })
+  const clipId = `plot-clip-${typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`
+  const plotWidth = $derived(Math.max(40, width - margin.left - margin.right))
+  const plotHeight = $derived(Math.max(40, height - margin.top - margin.bottom))
 
   const dataDomain = $derived(typeof onAxisRange === 'function')
 
@@ -502,24 +624,6 @@
     selectRect = null
   }
 
-  export function resetView() {
-    scale = 1
-    tx = 0
-    ty = 0
-    selectRect = null
-    onAxisRange?.({ xMin: null, xMax: null, yMin: null, yMax: null })
-    onStatsRange?.(null)
-  }
-
-  const zoomed = $derived(
-    dataDomain
-      ? xMinOverride != null ||
-          xMaxOverride != null ||
-          yMinOverride != null ||
-          yMaxOverride != null
-      : scale !== 1 || tx !== 0 || ty !== 0
-  )
-
   const plotTransform = $derived(
     dataDomain
       ? ''
@@ -555,24 +659,8 @@
     onStatsRange?.({ t0: next.t0, t1: next.t1 })
   }
 
-  function normalizeTickCount(v) {
-    const n = Math.round(Number(v) || 5)
-    return Math.max(2, Math.min(20, n))
-  }
-
-  const xTickFractions = $derived.by(() => {
-    const n = normalizeTickCount(xTicks)
-    const ticks = []
-    for (let i = 0; i < n; i++) ticks.push(i / (n - 1))
-    return ticks
-  })
-
-  const yTickFractions = $derived.by(() => {
-    const n = normalizeTickCount(yTicks)
-    const ticks = []
-    for (let i = 0; i < n; i++) ticks.push(i / (n - 1))
-    return ticks
-  })
+  const xTickFractions = $derived(axisTickFractions(extents.xMin, extents.xMax, xTickStep, xTicks))
+  const yTickFractions = $derived(axisTickFractions(extents.yMin, extents.yMax, yTickStep, yTicks))
 
   const xTickData = $derived.by(() => {
     const ticks = xTickFractions
@@ -613,21 +701,13 @@
   )
 </script>
 
-<div class={`space-y-2 ${className}`}>
-  <div class="relative">
-    {#if zoomed || statsRange}
-      <button
-        class="absolute top-2 right-2 z-10 rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-xs text-neutral-300 hover:bg-neutral-800"
-        onclick={resetView}
-      >
-        Reset view
-      </button>
-    {/if}
-
+<div class={`space-y-2 ${fillContainer ? 'flex h-full min-h-0 flex-col' : ''} ${className}`}>
+  <div class={`relative ${fillContainer ? 'min-h-0 flex-1' : ''}`}>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
-      class="relative w-full"
-      style={`aspect-ratio: ${aspectRatio}; max-height: 100%; cursor: ${cursorStyle}`}
+      bind:this={wrapEl}
+      class={`relative w-full overflow-hidden ${fillContainer ? 'h-full min-h-0' : ''}`}
+      style={`${fillContainer ? '' : `aspect-ratio: ${aspectRatio}; `}contain: layout paint; cursor: ${cursorStyle}`}
       role="application"
       aria-label="Interactive line chart"
       onwheel={onWheel}
@@ -641,12 +721,13 @@
         role="img"
         aria-label="Line chart"
         viewBox={`0 0 ${width} ${height}`}
-        class="h-full w-full rounded-md border dark:border-neutral-800"
+        overflow="hidden"
+        class="h-full w-full overflow-hidden rounded-md border dark:border-neutral-800"
         font-family={fontFamily}
       >
         <defs>
-          <clipPath id="plot-area">
-            <rect x={margin.left} y={margin.top} width={plotWidth} height={plotHeight} />
+          <clipPath id={clipId}>
+            <rect x={margin.left} y={margin.top} width={Math.max(1, plotWidth)} height={Math.max(1, plotHeight)} />
           </clipPath>
         </defs>
 
@@ -656,7 +737,7 @@
           {#if chartTitle}
             <text
               x={margin.left + plotWidth / 2}
-              y={chartSubtitle ? 16 : 20}
+              y={titleFs * 0.9 + edgePad}
               text-anchor="middle"
               font-size={titleFs}
               font-weight="600"
@@ -667,7 +748,11 @@
           {#if chartSubtitle}
             <text
               x={margin.left + plotWidth / 2}
-              y={chartTitle ? 30 : 18}
+              y={
+                chartTitle
+                  ? titleFs * 0.9 + edgePad + Math.max(8, titleFs - 3 * pxToSvg) + 4
+                  : Math.max(8, titleFs - 3 * pxToSvg) + edgePad
+              }
               text-anchor="middle"
               font-size={Math.max(7, titleFs - 3)}
               font-family={fontFamily}
@@ -677,53 +762,107 @@
           {/if}
         {/if}
 
+        {#if showSpineBottom}
         <line
           x1={margin.left}
           y1={margin.top + plotHeight}
           x2={margin.left + plotWidth}
           y2={margin.top + plotHeight}
           stroke={axisColor}
-          stroke-width="1"
+          stroke-width={spineStroke}
+          stroke-linecap="square"
         />
+        {/if}
+        {#if showSpineLeft}
         <line
           x1={margin.left}
           y1={margin.top}
           x2={margin.left}
           y2={margin.top + plotHeight}
           stroke={axisColor}
-          stroke-width="1"
+          stroke-width={spineStroke}
+          stroke-linecap="square"
         />
+        {/if}
+        {#if showSpineTop}
+        <line
+          x1={margin.left}
+          y1={margin.top}
+          x2={margin.left + plotWidth}
+          y2={margin.top}
+          stroke={axisColor}
+          stroke-width={spineStroke}
+          stroke-linecap="square"
+        />
+        {/if}
+        {#if showSpineRight}
+        <line
+          x1={margin.left + plotWidth}
+          y1={margin.top}
+          x2={margin.left + plotWidth}
+          y2={margin.top + plotHeight}
+          stroke={axisColor}
+          stroke-width={spineStroke}
+          stroke-linecap="square"
+        />
+        {/if}
 
         {#each yTickFractions as t (t)}
+          {@const yVal = extents.yMax - (extents.yMax - extents.yMin) * t}
+          {@const ty = margin.top + plotHeight * t}
           {#if showGrid}
             <line
               x1={margin.left}
-              y1={margin.top + plotHeight * t}
+              y1={ty}
               x2={margin.left + plotWidth}
-              y2={margin.top + plotHeight * t}
+              y2={ty}
               stroke={gridColor}
               stroke-width="1"
             />
           {/if}
-          {@const yVal = extents.yMax - (extents.yMax - extents.yMin) * t}
-          <text
-            x={margin.left - 8}
-            y={margin.top + plotHeight * t + 4}
-            text-anchor="end"
-            font-size={tickFs}
-            font-family={fontFamily}
-            fill={tickColor}>{fmtY(yVal)}</text
-          >
+          {#if showTicks && tickLen > 0}
+            <line
+              x1={margin.left - tickLen}
+              y1={ty}
+              x2={margin.left}
+              y2={ty}
+              stroke={axisColor}
+              stroke-width={tickStroke}
+            />
+          {/if}
+          {#if showYTickLabels}
+            <text
+              x={margin.left - tickLen - tickGap}
+              y={ty + tickFs * 0.35}
+              text-anchor="end"
+              font-size={tickFs}
+              font-family={fontFamily}
+              fill={tickColor}>{fmtY(yVal)}</text
+            >
+          {/if}
         {/each}
         {#each xTickData as tick (tick.t)}
-          <text
-            x={margin.left + plotWidth * tick.t}
-            y={margin.top + plotHeight + 18}
-            text-anchor="middle"
-            font-size={tickFs}
-            font-family={fontFamily}
-            fill={tickColor}>{tick.label}</text
-          >
+          {@const tx = margin.left + plotWidth * tick.t}
+          {#if showTicks && tickLen > 0}
+            <line
+              x1={tx}
+              y1={margin.top + plotHeight}
+              x2={tx}
+              y2={margin.top + plotHeight + tickLen}
+              stroke={axisColor}
+              stroke-width={tickStroke}
+            />
+          {/if}
+          {#if showXTickLabels}
+            <text
+              x={tx}
+              y={margin.top + plotHeight + tickLen + tickGap + tickFs * 0.85}
+              text-anchor="middle"
+              font-size={tickFs}
+              font-family={fontFamily}
+              fill={tickColor}>{tick.label}</text
+            >
+          {/if}
         {/each}
 
         {#if statsBand}
@@ -786,18 +925,41 @@
           />
         {/if}
 
-        <g clip-path="url(#plot-area)">
+        <g clip-path={`url(#${clipId})`}>
           <g transform={plotTransform}>
+            {#each referenceLines as line, ri (`ref-${ri}-${line.axis}-${line.value}`)}
+              {@const axis = line.axis === 'x' ? 'x' : 'y'}
+              {@const val = Number(line.value)}
+              {#if Number.isFinite(val)}
+                {@const refW = (Number(line.width) || 1.2) * pxToSvg}
+                {@const refDash = svgDasharray(
+                  strokeDashForStyle(line.style, Number(line.width) || 1.2),
+                  pxToSvg
+                )}
+                <line
+                  x1={axis === 'x' ? sx(val) : sx(extents.xMin)}
+                  y1={axis === 'x' ? sy(extents.yMax) : sy(val)}
+                  x2={axis === 'x' ? sx(val) : sx(extents.xMax)}
+                  y2={axis === 'x' ? sy(extents.yMin) : sy(val)}
+                  stroke={line.color || axisColor}
+                  stroke-width={refW}
+                  stroke-dasharray={refDash}
+                  stroke-linecap={refDash ? 'butt' : 'round'}
+                  pointer-events="none"
+                />
+              {/if}
+            {/each}
             {#each series as s, i (s.key ?? i)}
-              {@const sw = Number(s.strokeWidth) || 2}
+              {@const sw = (Number(s.strokeWidth) || 2) * pxToSvg}
+              {@const dash = svgDasharray(s.strokeDasharray, pxToSvg)}
               <path
                 d={linePaths[i] ?? ''}
                 fill="none"
                 stroke={s.color || palette[i % palette.length]}
                 stroke-width={dataDomain ? sw : sw / scale}
-                stroke-dasharray={s.strokeDasharray || undefined}
-                stroke-linejoin="round"
-                stroke-linecap="round"
+                stroke-dasharray={dash}
+                stroke-linejoin={dash ? 'miter' : 'round'}
+                stroke-linecap={dash ? 'butt' : 'round'}
               />
               {#each markerPaths[i] ?? [] as md, mi (`${s.key ?? i}-m${mi}`)}
                 <path
@@ -811,23 +973,27 @@
           </g>
         </g>
 
+        {#if showXLabel}
         <text
           x={margin.left + plotWidth / 2}
-          y={height - 8}
+          y={height - edgePad * 0.7}
           text-anchor="middle"
           font-size={axisFs}
           font-family={fontFamily}
           fill={labelColor}>{xLabel}</text
         >
+        {/if}
+        {#if showYLabel}
         <text
-          x="14"
+          x={yLabelX}
           y={margin.top + plotHeight / 2}
           text-anchor="middle"
           font-size={axisFs}
           font-family={fontFamily}
           fill={labelColor}
-          transform={`rotate(-90, 14, ${margin.top + plotHeight / 2})`}>{yLabel}</text
+          transform={`rotate(-90, ${yLabelX}, ${margin.top + plotHeight / 2})`}>{yLabel}</text
         >
+        {/if}
 
         {#if legendPosition !== 'bottom' && legendPosition !== 'none' && series.length > 0}
           {@const itemH = Math.max(16, legendSwatch + 6)}
@@ -876,16 +1042,17 @@
   </div>
 
   {#if legendPosition === 'bottom' && series.length > 0}
-    <div class="flex flex-wrap items-center gap-x-4 gap-y-1" style={`font-size:${legendFs}px`}>
-      {#each series as s, i (s.key ?? i)}
-        <div class="flex items-center gap-1">
-          <span
-            class="inline-block shrink-0 rounded-sm"
-            style={`width:${legendSwatch}px;height:${legendSwatch}px;background:${s.color || palette[i % palette.length]}`}
-          ></span>
-          <span class="text-neutral-300">{s.name}</span>
-        </div>
-      {/each}
-    </div>
+    <ChartLegend
+      series={series.map((s, i) => ({
+        key: s.key ?? `${s.name}-${i}`,
+        name: s.name,
+        color: s.color || palette[i % palette.length]
+      }))}
+      columns={Math.min(4, Math.max(1, series.length))}
+      fontFamily={fontFamily}
+      fontSize={legendFs}
+      swatchSize={legendSwatch}
+      textColor={labelColor}
+    />
   {/if}
 </div>

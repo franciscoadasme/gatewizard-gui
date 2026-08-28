@@ -1,5 +1,5 @@
 <script>
-  import { tick } from 'svelte'
+  import { tick, untrack } from 'svelte'
   import Beaker from '../components/icons/Beaker.svelte'
   import Protein from '../components/icons/Protein.svelte'
   import TopologyInfoModal from '../components/TopologyInfoModal.svelte'
@@ -7,11 +7,19 @@
   import Button from '../components/ui/Button.svelte'
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Divider from '../components/ui/Divider.svelte'
-  import { analysisStatus } from '../lib/pageStatus.svelte.js'
+  import { analysisStatus, logEvent } from '../lib/pageStatus.svelte.js'
   import Input from '../components/ui/Input.svelte'
   import Select from '../components/ui/Select.svelte'
   import Spinner from '../components/ui/Spinner.svelte'
   import LineChart from '../components/LineChart.svelte'
+  import AnalysisGridCell from '../components/AnalysisGridCell.svelte'
+  import ChartLegend from '../components/ChartLegend.svelte'
+  import OrderedSetChips from '../components/OrderedSetChips.svelte'
+  import ColorInput from '../components/ui/ColorInput.svelte'
+  import Layers from '../components/icons/Layers.svelte'
+  import Grid2x2Plus from '../components/icons/Grid2x2Plus.svelte'
+  import Gear from '../components/icons/Gear.svelte'
+  import ChevronDown from '../components/icons/ChevronDown.svelte'
   import {
     analyzeTopology,
     countAnalysisSelection,
@@ -32,6 +40,7 @@
     defaultSelectionForStructuralType,
     duplicateAnalysisSet,
     assignCsvStems,
+    aplRoleIsVisible,
     aplSeriesColor,
     aplSeriesLabel,
     extraSeriesRole,
@@ -41,11 +50,13 @@
     looksLikeBilayerHeadgroupSelection,
     looksLikeProteinSelection,
     normalizeAplMethod,
+    normalizeAnalysisFileRow,
     normalizeAnalysisSetStructuralResults,
     newSetId,
     resolveStructuralTypeSelection,
     setHasResult,
     structuralMeanY,
+    structuralResultNeedsCsvHydration,
     structuralSetHasPlottableResult
   } from '../lib/analysisSets.js'
   import { notifyJobFinishedIfUnfocused } from '../lib/jobNotifications.svelte.js'
@@ -92,12 +103,44 @@
     defaultProtocolName,
     formatTrajectoryTimeNs
   } from '../lib/protocolStageTimes.js'
-  import { logEvent } from '../lib/pageStatus.svelte.js'
+  import {
+    defaultGridLayout,
+    ensureGridCellsForSets,
+    normalizeGridLayout,
+    normalizeReferenceLines,
+    emptyReferenceLine,
+    cellLabelVisibility,
+    cellShowsLegend,
+    mosaicRows,
+    autoFillGridLayout,
+    resizeGridCells,
+    concatInSetIdOrder,
+    figureLegendItems,
+    gridSpecSlices,
+    syncOrderedIds,
+    visibleSetIds,
+    gridCellEmptyReason,
+    cellOverride,
+    mergeCellPlotSettings,
+    guiSvgFontToMpl,
+    patchCellPlotOverride,
+    clearCellPlotKeysFromOverrides,
+    CELL_PLOT_KEYS,
+    strokeDashForStyle,
+    lineChartAxisProps,
+    plotSpecAxisChrome,
+    lineChartExtraMarginProps,
+    plotSpecExtraMargins
+  } from '../lib/analysisGridLayout.js'
+  import {
+    applyPlotSourcesToResult,
+    capturePlotSourceFiles
+  } from '../lib/analysisPlotSources.js'
   import { themeState } from '../lib/theme.svelte.js'
   import { themeBackgroundHex } from '../lib/viewerSettings.svelte.js'
 
-  /** @type {{ workingDir?: string }} */
-  let { workingDir = '' } = $props()
+  /** @type {{ workingDir?: string, pageActive?: boolean }} */
+  let { workingDir = '', pageActive = true } = $props()
 
   /** @type {Array<{ id: 'structural' | 'energetic', label: string, Icon: typeof Protein }>} */
   const ANALYSIS_MODES = [
@@ -156,6 +199,7 @@
   let selectionCountLoading = $state(false)
   let selectionCountError = $state('')
   let referenceFrame = $state('0')
+  let referenceStructurePath = $state('')
   let align = $state(true)
   let rmsfXaxisType = $state('residue_number')
   let leafletLipidSel = $state('')
@@ -187,6 +231,22 @@
   /** @type {'overlay' | 'grid'} */
   /** Structural multi-set layout */
   let compareLayout = $state('overlay')
+  /** Custom mosaic + overlay series order (session-persisted). */
+  let gridLayout = $state(defaultGridLayout())
+  let plotGridOptionsOpen = $state(false)
+  let plotSettingsAdvancedOpen = $state(false)
+  /** Mosaic cell selected for per-cell plot settings (0-based). */
+  let selectedGridCell = $state(0)
+  /** Which mosaic cell has the sets/order popover open (`null` = closed). */
+  let gridCellEditorOpen = $state(/** @type {number | null} */ (null))
+  /** Wheel/box-zoom window; not the Plot Settings min/max fields. */
+  let structViewRange = $state(
+    /** @type {{ xMin: number, xMax: number, yMin: number, yMax: number } | null} */ (null)
+  )
+  /** @type {Record<string, { xMin: number, xMax: number, yMin: number, yMax: number }>} */
+  let energViewRangeByKey = $state({})
+  let resetMenuOpen = $state(false)
+  let resetMenuWrapEl = $state(/** @type {HTMLElement | null} */ (null))
   /** Energetic multi-set layout: by_property | by_set | overlay */
   let energeticCompareLayout = $state(
     /** @type {import('../lib/analysisSession.js').EnergeticCompareLayout} */ ('by_property')
@@ -400,79 +460,102 @@
     return true
   }
 
-  function bumpPlotData() {
+  function bumpPlotData(changedSetIds) {
     plotDataRevision += 1
-    syncChartViewFromSets()
+    syncChartViewFromSets(changedSetIds)
     syncEnergeticGeom()
   }
 
   /**
-   * Show a blur/spinner overlay on the plot panel while a view rebuild runs.
-   * Awaits a paint frame first so the overlay is visible before heavy work.
-   * @param {string} label
-   * @param {() => (void | Promise<void>)} work
+   * Flush pending UI without hanging forever if an $effect loop never settles.
+   * @param {number} [ms]
    */
-  async function withPlotViewBusy(label, work) {
-    const gen = ++plotViewBusyGeneration
-    plotViewBusyLabel = label || 'Updating plot…'
-    plotViewBusy = true
-    try {
-      await tick()
-      // Paint the overlay before sync chart rebuilds block the main thread.
-      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
-      await work()
-      await tick()
-      // Keep overlay through LineChart remount / layout.
-      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
-    } finally {
-      if (gen === plotViewBusyGeneration) plotViewBusy = false
-    }
-  }
-
-  /** Line dash pattern from plot style name. */
-  function strokeDashForStyle(style) {
-    switch (String(style || 'solid')) {
-      case 'dashed':
-        return '8 4'
-      case 'dotted':
-        return '2 3'
-      case 'dashdot':
-        return '8 3 2 3'
-      default:
-        return ''
-    }
+  function flushUi(ms = 50) {
+    return Promise.race([
+      tick(),
+      new Promise((resolve) => setTimeout(resolve, ms))
+    ])
   }
 
   /**
    * Snapshot chart series/panels from analysisSets into plain chartView state.
    * Must be called after any load/store/visibility/layout change.
+   * @param {string[] | undefined} changedSetIds when set, reuse other grid panels' series arrays
    */
-  function syncChartViewFromSets() {
+  function syncChartViewFromSets(changedSetIds) {
     if (mode !== 'structural') {
       return
     }
     try {
       const type = structuralType
       const layout = compareLayout
-      const setsPlain = clonePlainAnalysisData(analysisSets)
-      const visible = setsPlain.filter(
-        (s) => s.visible && structuralSetHasPlottableResult(s, type)
-      )
-      if (visible.length === 0) {
-        chartView = { mode: 'empty', series: [], panels: [] }
-        return
+      const setsPlain = analysisSets
+      const byId = new Map(setsPlain.map((s) => [s.id, s]))
+      const allIds = setsPlain.map((s) => s.id)
+      const changed = changedSetIds == null ? null : new Set(changedSetIds)
+
+      const seriesBySetId = {}
+      for (const set of setsPlain) {
+        const res = getSetStructuralResult(normalizeAnalysisSetStructuralResults(set), type)
+        if (!res) continue
+        seriesBySetId[set.id] = buildStructuralSeries(set, res, { prefixSetName: false })
       }
-      const multi = setsPlain.length > 1
-      const useGrid = multi && visible.length > 1 && layout === 'grid'
-      if (useGrid) {
-        const panels = visible.map((set) => {
-          const res = getSetStructuralResult(normalizeAnalysisSetStructuralResults(set), type)
+
+      const seriesForIds = (ids, prefixIfMulti) => {
+        const ordered = ids.filter((id) => byId.has(id))
+        const prefix = prefixIfMulti && ordered.length > 1
+        const chunks = {}
+        for (const id of ordered) {
+          const raw = seriesBySetId[id]
+          if (!raw?.length) continue
+          const set = byId.get(id)
+          chunks[id] = prefix
+            ? buildStructuralSeries(set, getSetStructuralResult(normalizeAnalysisSetStructuralResults(set), type), {
+                prefixSetName: true
+              })
+            : raw
+        }
+        return concatInSetIdOrder(ordered, chunks)
+      }
+
+      if (layout === 'grid') {
+        const cells = gridLayout.cells || []
+        const prevPanels = chartView.panels || []
+        const panels = cells.map((cell, i) => {
+          const ids = cell.setIds || []
+          const visibleIds = visibleSetIds(ids, setsPlain)
+          const prev = prevPanels[i]
+          const sameIds =
+            prev &&
+            Array.isArray(prev.setIds) &&
+            prev.setIds.length === ids.length &&
+            prev.setIds.every((id, j) => id === ids[j])
+          const sameVisible =
+            prev &&
+            Array.isArray(prev.visibleSetIds) &&
+            prev.visibleSetIds.length === visibleIds.length &&
+            prev.visibleSetIds.every((id, j) => id === visibleIds[j])
+          if (changed && sameIds && sameVisible && !ids.some((id) => changed.has(id))) {
+            return prev
+          }
+          const series = seriesForIds(visibleIds, true)
+          const names = visibleIds
+            .map((id) => {
+              const set = byId.get(id)
+              return set ? setLegendName(set) : ''
+            })
+            .filter(Boolean)
+          const title = String(cell.title || '').trim() || names.join(', ')
+          const emptyReason = gridCellEmptyReason(ids, visibleIds, series.length)
           return {
-            key: set.id,
-            title: setLegendName(set),
-            series: res
-              ? buildStructuralSeries(set, res, { prefixSetName: false })
-              : []
+            key: `cell-${i}`,
+            cellIndex: i,
+            title: title || `Panel ${i + 1}`,
+            series,
+            setIds: ids,
+            visibleSetIds: visibleIds,
+            empty: series.length === 0,
+            emptyReason
           }
         })
         chartView = {
@@ -482,13 +565,17 @@
         }
         return
       }
-      const series = visible.flatMap((set) => {
-        const res = getSetStructuralResult(normalizeAnalysisSetStructuralResults(set), type)
-        if (!res) return []
-        return buildStructuralSeries(set, res, {
-          prefixSetName: visible.length > 1
-        })
+
+      const overlayIds = syncOrderedIds(gridLayout.overlaySetIds, allIds)
+      const visibleIds = overlayIds.filter((id) => {
+        const set = byId.get(id)
+        return set && set.visible && structuralSetHasPlottableResult(set, type)
       })
+      if (visibleIds.length === 0) {
+        chartView = { mode: 'empty', series: [], panels: [] }
+        return
+      }
+      const series = seriesForIds(visibleIds, true)
       chartView = { mode: 'overlay', series, panels: [] }
     } catch (err) {
       logEvent(
@@ -499,6 +586,120 @@
       )
       chartView = { mode: 'empty', series: [], panels: [] }
     }
+  }
+
+  function analysisSetIds() {
+    return analysisSets.map((s) => s.id)
+  }
+
+  function syncSetsIntoGridLayout() {
+    gridLayout = ensureGridCellsForSets(gridLayout, analysisSetIds())
+  }
+
+  /** Layout chrome (gap, ticks, legend placement) — live, no chart remount. */
+  function patchGridChrome(partial) {
+    gridLayout = normalizeGridLayout({ ...gridLayout, ...partial })
+    markSessionDirty()
+  }
+
+  function setGridColsRows(cols, rows) {
+    const nextCols = Math.max(1, Math.min(8, Math.round(Number(cols) || gridLayout.cols)))
+    const nextRows = Math.max(1, Math.min(16, Math.round(Number(rows) || gridLayout.rows)))
+    let next = normalizeGridLayout({
+      ...gridLayout,
+      cols: nextCols,
+      rows: nextRows,
+      cells: resizeGridCells(gridLayout.cells, nextCols, nextRows)
+    })
+    if (!next.edited) next = autoFillGridLayout(next, analysisSetIds())
+    gridLayout = next
+    const n = Math.max(1, (Number(next.cols) || 1) * (Number(next.rows) || 1))
+    if (selectedGridCell >= n) selectedGridCell = n - 1
+    if (gridCellEditorOpen != null && gridCellEditorOpen >= n) gridCellEditorOpen = null
+    markSessionDirty()
+    bumpPlotData()
+  }
+
+  function addGridColumn() {
+    setGridColsRows((Number(gridLayout.cols) || 1) + 1, gridLayout.rows)
+  }
+
+  function removeGridColumn() {
+    setGridColsRows((Number(gridLayout.cols) || 1) - 1, gridLayout.rows)
+  }
+
+  function addGridRow() {
+    setGridColsRows(gridLayout.cols, (Number(gridLayout.rows) || 1) + 1)
+  }
+
+  function removeGridRow() {
+    setGridColsRows(gridLayout.cols, (Number(gridLayout.rows) || 1) - 1)
+  }
+
+  /** Tick step from plot settings (empty = use tick count). */
+  function plotTickStep(axis) {
+    return axis === 'x' ? ps.xTickStep : ps.yTickStep
+  }
+
+  function setOverlaySetIds(ids) {
+    const nextIds = syncOrderedIds(ids, analysisSetIds())
+    if (
+      nextIds.length === (gridLayout.overlaySetIds || []).length &&
+      nextIds.every((id, i) => id === gridLayout.overlaySetIds[i])
+    ) {
+      return
+    }
+    gridLayout = normalizeGridLayout({ ...gridLayout, overlaySetIds: nextIds })
+    markSessionDirty()
+    bumpPlotData()
+  }
+
+  function setCellSetIds(index, ids) {
+    const prev = gridLayout.cells?.[index]?.setIds || []
+    const nextIds = ids
+    if (
+      prev.length === nextIds.length &&
+      prev.every((id, i) => id === nextIds[i])
+    ) {
+      return
+    }
+    const cells = (gridLayout.cells || []).map((c, i) =>
+      i === index ? { ...c, setIds: ids } : c
+    )
+    gridLayout = normalizeGridLayout({ ...gridLayout, cells, edited: true })
+    markSessionDirty()
+    bumpPlotData()
+  }
+
+  function setCellTitle(index, title) {
+    const cells = (gridLayout.cells || []).map((c, i) =>
+      i === index ? { ...c, title } : c
+    )
+    gridLayout = normalizeGridLayout({ ...gridLayout, cells, edited: true })
+    if (chartView.panels[index]) {
+      const ids = chartView.panels[index].setIds || []
+      const names = ids
+        .map((id) => {
+          const set = analysisSets.find((s) => s.id === id)
+          return set ? setLegendName(set) : ''
+        })
+        .filter(Boolean)
+      chartView.panels[index].title = String(title || '').trim() || names.join(', ') || `Panel ${index + 1}`
+    }
+    markSessionDirty()
+  }
+
+  function resetGridToAuto() {
+    const ids = analysisSetIds()
+    const cols = gridLayout.cols || 2
+    const rows = Math.max(1, Math.ceil(Math.max(ids.length, 1) / cols))
+    gridLayout = autoFillGridLayout({ ...gridLayout, cols, rows, edited: false }, ids)
+    markSessionDirty()
+    bumpPlotData()
+  }
+
+  function patchReferenceLines(next) {
+    patchStructuralPlot({ referenceLines: normalizeReferenceLines(next) })
   }
 
   /** Display names matching the Structural Options dropdown. */
@@ -539,19 +740,18 @@
     const label = !isApl ? legend : role === 'extra' ? extraName : aplSeriesLabel(set, role)
     const name = isApl && opts.prefixSetName ? `${legend} · ${label}` : label
     let color = mainColor
-    let strokeDasharray = ''
+    let lineStyle = sp.lineStyle || 'solid'
     let marker = 'none'
     let markerEvery = 1
     if (isApl) {
       if (role === 'mean') {
-        strokeDasharray = strokeDashForStyle(sp.aplMeanLineStyle)
+        lineStyle = sp.aplMeanLineStyle || sp.lineStyle || 'solid'
         marker = sp.aplMeanMarker || 'none'
         markerEvery = Math.max(1, Math.floor(Number(sp.aplMeanMarkerEvery) || 10))
       } else if (role === 'upper' || role === 'lower') {
         color = aplSeriesColor(set, role)
-        strokeDasharray = strokeDashForStyle(
+        lineStyle =
           role === 'upper' ? sp.aplUpperLineStyle || 'dashed' : sp.aplLowerLineStyle || 'dotted'
-        )
         marker =
           role === 'upper' ? sp.aplUpperMarker || 'none' : sp.aplLowerMarker || 'none'
         markerEvery = Math.max(
@@ -561,14 +761,15 @@
           )
         )
       } else {
-        strokeDasharray = strokeDashForStyle('dashed')
+        lineStyle = sp.lineStyle || 'dashed'
         markerEvery = 10
       }
     }
     return {
       name,
       color,
-      strokeDasharray,
+      lineStyle,
+      strokeDasharray: strokeDashForStyle(lineStyle, Number(sp.lineWidth) || 2),
       strokeWidth: Number(sp.lineWidth) || 2,
       marker: isApl ? marker : 'none',
       markerSize: Number(sp.aplMarkerSize) || 3,
@@ -587,32 +788,39 @@
       return
     }
     const type = structuralType
-    const visibleCount = analysisSets.filter(
-      (s) => s.visible && structuralSetHasPlottableResult(s, type)
-    ).length
-    const prefix = visibleCount > 1 && chartView.mode !== 'grid'
+    const overlayPrefix =
+      chartView.mode !== 'grid' &&
+      analysisSets.filter((s) => s.visible && structuralSetHasPlottableResult(s, type)).length > 1
     for (const series of chartView.series) {
       const set = analysisSets.find((s) => s.id === series.setId)
       if (!set) continue
       Object.assign(
         series,
         structuralSeriesAppearance(set, series.seriesRole || 'mean', {
-          prefixSetName: prefix,
+          prefixSetName: overlayPrefix,
           extraName: series.extraName || '',
           type
         })
       )
     }
     for (const panel of chartView.panels) {
-      const panelSet = analysisSets.find((s) => s.id === panel.key)
-      if (panelSet) panel.title = setLegendName(panelSet)
+      const ids = panel.setIds || []
+      const names = ids
+        .map((id) => {
+          const set = analysisSets.find((s) => s.id === id)
+          return set ? setLegendName(set) : ''
+        })
+        .filter(Boolean)
+      const cell = gridLayout.cells?.[panel.cellIndex]
+      panel.title = String(cell?.title || '').trim() || names.join(', ') || panel.title
+      const prefix = ids.length > 1
       for (const series of panel.series) {
-        const set = analysisSets.find((s) => s.id === series.setId) || panelSet
+        const set = analysisSets.find((s) => s.id === series.setId)
         if (!set) continue
         Object.assign(
           series,
           structuralSeriesAppearance(set, series.seriesRole || 'mean', {
-            prefixSetName: false,
+            prefixSetName: prefix,
             extraName: series.extraName || '',
             type
           })
@@ -631,15 +839,23 @@
   function buildStructuralSeries(set, res, opts = {}) {
     if (!structuralResultHasPlotData(res)) return []
     const type = res.analysisType ?? structuralType
+    const viewed = applyPlotSourcesToResult(res, set.trajectoryFiles, {
+      timeX: res.lastAnalysisHasTimeX === true,
+      coordinateOnly: true
+    })
     const sp = sPlots[type] || structDefaults
     const xUnit = sp.xUnit || 'ns'
     const yUnit = sp.yUnit || 'Å'
-    const xs = res.lastAnalysisHasTimeX ? convertX(res.rawX, 'ns', xUnit) : [...(res.rawX || [])]
+    const xs = viewed.lastAnalysisHasTimeX
+      ? convertX(viewed.rawX, 'ns', xUnit)
+      : [...(viewed.rawX || [])]
     const prefix = opts.prefixSetName === true
     /** @type {Array<{ name: string, x: number[], y: number[], color?: string, strokeDasharray?: string, strokeWidth?: number, marker?: string, markerSize?: number, markerEvery?: number, seriesRole?: string, setId?: string, key?: string, extraName?: string }>} */
     const out = []
-    const meanY = structuralMeanY(res)
-    if (meanY.length > 0) {
+    const meanY = structuralMeanY(viewed)
+    const includeMean =
+      type !== 'area_per_lipid' || aplRoleIsVisible(sp, 'mean')
+    if (meanY.length > 0 && includeMean) {
       out.push({
         ...structuralSeriesAppearance(set, 'mean', { prefixSetName: prefix, type }),
         x: xs,
@@ -649,9 +865,10 @@
         key: `${set.id}:mean`
       })
     }
-    for (const s of res.extraSeries || []) {
+    for (const s of viewed.extraSeries || []) {
       if (!Array.isArray(s.rawY) || s.rawY.length === 0) continue
       const role = extraSeriesRole(s)
+      if (type === 'area_per_lipid' && !aplRoleIsVisible(sp, role)) continue
       out.push({
         ...structuralSeriesAppearance(set, role === 'extra' ? 'extra' : role, {
           prefixSetName: prefix,
@@ -759,6 +976,21 @@
     panelRangeStats = {}
     lastError = ''
     applyPlotSettingsFromSession(session.plotSettings)
+    gridLayout = ensureGridCellsForSets(
+      session.gridLayout ? normalizeGridLayout(session.gridLayout) : defaultGridLayout(),
+      analysisSets.map((s) => s.id)
+    )
+    // Mosaic used to own tick spacing. Copy X only — Y step "1" from this session
+    // would draw ~20 ticks on APL (55–75) and stall the plot flush.
+    const gridXStep = String(gridLayout.xTickStep || '').trim()
+    if (gridXStep) {
+      sPlots = Object.fromEntries(
+        Object.entries(sPlots).map(([type, plot]) => [
+          type,
+          String(plot.xTickStep || '').trim() ? plot : { ...plot, xTickStep: gridXStep }
+        ])
+      )
+    }
     warnMissingSessionPaths(session)
     // Energetic charts read live set data; rebuild so the open energetic tab shows
     // immediately without toggling Structural → Energetic.
@@ -853,7 +1085,7 @@
     plotViewBusyLabel = 'Loading session…'
     plotViewBusy = true
     try {
-      await tick()
+      await flushUi(50)
       const raw = await window.api.readJson(sessionPath)
       let session = deserializeAnalysisSession(raw)
       const sessionDir = sessionPath.replace(/\\/g, '/').replace(/\/[^/]+$/, '')
@@ -889,57 +1121,53 @@
           sessionDir
         )
       }
-      applyAnalysisSession(session)
-      applyOutputLocationFromSessionDir(sessionDir)
-      if (!hydratedAny) {
-        await hydratePlotDataFromOutputFolder([sessionDir])
-      }
-      await tick()
-      if (mode === 'energetic') {
-        rebuildEnergeticViewAfterLoad()
-        await tick()
-        bumpPlotData()
-        const nPanels = energeticPanels.length
-        const nPoints =
-          energeticPanels[0]?.series?.[0]?.y?.length ||
-          displaySeries[0]?.y?.length ||
-          rawX.length ||
-          0
-        logEvent(
-          'info',
-          'analysis',
-          'Energetic session loaded',
-          `${nPanels} panel(s) · ${displaySeries.length} series · ${nPoints} points` +
-            (hydratedEnergetic ? '' : ' · CSV hydrate missed energetic arrays')
-        )
-        if (nPanels === 0 && hydratedEnergetic) {
-          analysisSets = analysisSets.map((s) => ({ ...s }))
-          rebuildEnergeticViewAfterLoad()
-          await tick()
-          bumpPlotData()
-        }
-      } else {
-        bumpPlotData()
-        const nSeries = chartView.series.length
-        const nPoints = chartView.series[0]?.y?.length || 0
-        logEvent(
-          'info',
-          'analysis',
-          'Chart rebuilt after session load',
-          `${chartView.mode} · ${nSeries} series · ${nPoints} points`
-        )
-        if (nSeries === 0 && hydratedAny) {
-          analysisSets = analysisSets.map((s) => ({ ...s }))
-          await tick()
-          bumpPlotData()
-        }
-      }
+      const prevSuppressDirty = suppressSessionDirty
       suppressSessionDirty = true
       try {
+        applyAnalysisSession(session)
+        applyOutputLocationFromSessionDir(sessionDir)
+        if (!hydratedAny) {
+          await hydratePlotDataFromOutputFolder([sessionDir])
+        }
+        if (mode === 'energetic') {
+          rebuildEnergeticViewAfterLoad()
+          bumpPlotData()
+          const nPanels = energeticPanels.length
+          const nPoints =
+            energeticPanels[0]?.series?.[0]?.y?.length ||
+            displaySeries[0]?.y?.length ||
+            rawX.length ||
+            0
+          logEvent(
+            'info',
+            'analysis',
+            'Energetic session loaded',
+            `${nPanels} panel(s) · ${displaySeries.length} series · ${nPoints} points` +
+              (hydratedEnergetic ? '' : ' · CSV hydrate missed energetic arrays')
+          )
+          if (nPanels === 0 && hydratedEnergetic) {
+            analysisSets = analysisSets.map((s) => ({ ...s }))
+            rebuildEnergeticViewAfterLoad()
+            bumpPlotData()
+          }
+        } else {
+          const nSeries = chartView.series.length
+          const nPoints = chartView.series[0]?.y?.length || 0
+          logEvent(
+            'info',
+            'analysis',
+            'Chart rebuilt after session load',
+            `${chartView.mode} · ${nSeries} series · ${nPoints} points`
+          )
+          if (nSeries === 0 && hydratedAny) {
+            analysisSets = analysisSets.map((s) => ({ ...s }))
+            bumpPlotData()
+          }
+        }
         persistActiveSetFields()
         rememberSessionSaveFingerprint()
       } finally {
-        suppressSessionDirty = false
+        suppressSessionDirty = prevSuppressDirty
       }
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error)
@@ -1013,6 +1241,7 @@
     yLabel: '',
     lineColor: '#f59e0b',
     lineWidth: '2',
+    lineStyle: 'solid',
     plotBg: '',
     textColor: '',
     plotBgCustomized: false,
@@ -1029,7 +1258,19 @@
     dpi: '150',
     fontFamily: 'Roboto, sans-serif',
     extraLeftMargin: '0',
+    extraRightMargin: '0',
+    extraTopMargin: '0',
     extraBottomMargin: '0',
+    tickLabelGap: '8',
+    tickLength: '4',
+    tickWidth: '1',
+    spineWidth: '1',
+    showTicks: true,
+    spineLeft: true,
+    spineBottom: true,
+    spineTop: false,
+    spineRight: false,
+    gridColor: '',
     legendPosition: 'top-left',
     legendSwatchSize: '12',
     legendFontSize: '10',
@@ -1040,6 +1281,9 @@
     /** Empty = auto tick decimals; 0–8 = fixed places on axis ticks */
     xTickDecimals: '',
     yTickDecimals: '',
+    /** Optional data-unit spacing; empty uses tick count. */
+    xTickStep: '',
+    yTickStep: '',
     residueCodeFormat: 'three',
     /** Show atom/residue selection under the plot title */
     showSelectionSubtitle: true,
@@ -1047,6 +1291,9 @@
     aplMeanLineStyle: 'solid',
     aplUpperLineStyle: 'dashed',
     aplLowerLineStyle: 'dotted',
+    aplShowMean: true,
+    aplShowUpper: true,
+    aplShowLower: true,
     aplMeanMarker: 'none',
     aplUpperMarker: 'none',
     aplLowerMarker: 'none',
@@ -1057,7 +1304,9 @@
     /** Marker every N points (1 = every point). */
     aplMeanMarkerEvery: '10',
     aplUpperMarkerEvery: '10',
-    aplLowerMarkerEvery: '10'
+    aplLowerMarkerEvery: '10',
+    /** Horizontal/vertical experimental markers for this analysis type */
+    referenceLines: []
   }
   // Energetic plot settings defaults
   const energDefaults = {
@@ -1079,7 +1328,9 @@
     transparentBg: false,
     dpi: '150',
     fontFamily: 'Roboto, sans-serif',
-    extraLeftMargin: '20',
+    extraLeftMargin: '0',
+    extraRightMargin: '0',
+    extraTopMargin: '0',
     extraBottomMargin: '0',
     legendPosition: 'top-left',
     xTickCount: '5',
@@ -1111,9 +1362,19 @@
     yTickCount: '5',
     xTickDecimals: '',
     yTickDecimals: '',
-    extraLeftMargin: '20',
+    extraLeftMargin: '0',
+    extraRightMargin: '0',
+    extraTopMargin: '0',
     extraBottomMargin: '0',
-    residueCodeFormat: 'three'
+    residueCodeFormat: 'three',
+    tickLength: '4',
+    tickWidth: '1',
+    spineWidth: '1',
+    showTicks: true,
+    spineLeft: true,
+    spineBottom: true,
+    spineTop: false,
+    spineRight: false
   }
   let ePlotGlobal = $state({ ...energGlobalDefaults, ...energPanelShell })
   /** @type {Record<string, ReturnType<typeof defaultPanelSettings>>} */
@@ -1195,6 +1456,14 @@
 
   // Derived: active plot settings for structural mode
   const ps = $derived(mode === 'structural' ? sPlots[structuralType] : sPlots.rmsd)
+  const gridPlotApplyCell = $derived(
+    mode === 'structural' && compareLayout === 'grid' && gridLayout.plotApplyScope === 'cell'
+  )
+  const plotEdit = $derived(
+    gridPlotApplyCell
+      ? mergeCellPlotSettings(ps, cellOverride(gridLayout, selectedGridCell))
+      : ps
+  )
   const resolvedStructColors = $derived(resolvePlotColors(ps, themeState.current))
   const resolvedEnergColors = $derived(resolvePlotColors(ePlotGlobal, themeState.current))
   const displayPlotBg = $derived(
@@ -1215,14 +1484,30 @@
 
   // ── Sync to shared status bar store ──
   $effect(() => {
-    analysisStatus.running = running
-    analysisStatus.mode = mode
-    analysisStatus.analysisType = mode === 'structural' ? structuralType : 'energetic'
-    analysisStatus.resultAvailable =
+    const runningNow = running
+    const modeNow = mode
+    const typeNow = mode === 'structural' ? structuralType : 'energetic'
+    const resultNow =
       mode === 'structural'
         ? activeStructRes !== null || showStructuralSetOverlay
         : chartSeries.length > 0 || isCompareOverlay
-    analysisStatus.error = lastError || ''
+    const errorNow = lastError || ''
+    untrack(() => {
+      if (
+        analysisStatus.running === runningNow &&
+        analysisStatus.mode === modeNow &&
+        analysisStatus.analysisType === typeNow &&
+        analysisStatus.resultAvailable === resultNow &&
+        analysisStatus.error === errorNow
+      ) {
+        return
+      }
+      analysisStatus.running = runningNow
+      analysisStatus.mode = modeNow
+      analysisStatus.analysisType = typeNow
+      analysisStatus.resultAvailable = resultNow
+      analysisStatus.error = errorNow
+    })
   })
 
   const isBilayerType = (type) => isBilayerStructuralType(type)
@@ -1260,6 +1545,7 @@
       activeSetId,
       compareLayout,
       energeticCompareLayout,
+      gridLayout,
       structuralType,
       selection,
       selection2,
@@ -1346,9 +1632,9 @@
       sessionActionNotice.startsWith('Latest changes are already saved')
     if (!keepingAlreadySavedToast) {
       clearSessionActionNoticeTimer()
-      sessionActionNotice = ''
+      if (sessionActionNotice) sessionActionNotice = ''
     }
-    sessionSavedClean = false
+    if (sessionSavedClean) sessionSavedClean = false
   }
 
   /** Snapshot of the UI fields that belong to the current structural type. */
@@ -1357,6 +1643,7 @@
       selection,
       selection2,
       referenceFrame,
+      referenceStructurePath,
       align,
       rmsfXaxisType,
       leafletLipidSel,
@@ -1384,6 +1671,8 @@
     selection = snap.selection ?? defaults.selection
     selection2 = snap.selection2 ?? defaults.selection2
     if (snap.referenceFrame != null) referenceFrame = String(snap.referenceFrame)
+    if (snap.referenceStructurePath != null)
+      referenceStructurePath = String(snap.referenceStructurePath)
     if (snap.align != null) align = Boolean(snap.align)
     if (snap.rmsfXaxisType != null) rmsfXaxisType = snap.rmsfXaxisType
     leafletLipidSel = snap.leafletLipidSel ?? ''
@@ -1562,7 +1851,39 @@
   const energeticMultiSetSession = $derived(
     mode === 'energetic' && analysisSets.filter((s) => s.energeticResult != null).length > 1
   )
-  const showCompareLayoutControl = $derived(analysisSets.length > 1)
+  const showCompareLayoutControl = $derived(
+    analysisSets.length > 1 || (mode === 'structural' && compareLayout === 'grid')
+  )
+  const gridChipSets = $derived(
+    analysisSets.map((s) => ({
+      id: s.id,
+      label: s.label,
+      legendLabel: s.legendLabel
+    }))
+  )
+  const structuralMosaic = $derived(
+    mosaicRows(chartView.panels, gridLayout.cols, /** @type {'start' | 'center'} */ (gridLayout.lastRowAlign))
+  )
+  const gridCellAspect = $derived(
+    Number(gridLayout.aspectRatio) > 0
+      ? Number(gridLayout.aspectRatio)
+      : Number(ps.aspectRatio) || 2.5
+  )
+  const outsideLegendSeries = $derived.by(() => {
+    if (mode !== 'structural' || compareLayout !== 'grid' || gridLayout.legendMode !== 'outside') {
+      return []
+    }
+    /** @type {Record<string, string>} */
+    const setNames = {}
+    /** @type {Record<string, string>} */
+    const setColors = {}
+    for (const s of analysisSets) {
+      setNames[s.id] = setLegendName(s)
+      setColors[s.id] = s.color
+    }
+    return figureLegendItems(chartView.series, gridLayout, { setNames, setColors })
+  })
+  const structReferenceLines = $derived(normalizeReferenceLines(ps.referenceLines))
   /**
    * Structural: overlay when 2+ visible sets.
    * Energetic: stay on the multi-set path whenever the session has 2+ energetic
@@ -1638,7 +1959,10 @@
    * }} [opts]
    */
   function seriesFromEnergeticSet(set, properties, opts = {}) {
-    const res = set.energeticResult
+    const res = applyPlotSourcesToResult(set.energeticResult, set.energeticOptions?.logFiles, {
+      timeX: true,
+      coordinateOnly: false
+    })
     if (!res) return []
     const maxPoints = opts.maxPoints ?? 0
     const colorBySet = opts.colorBySet === true
@@ -1690,7 +2014,14 @@
     const color = colorBySet
       ? set?.color
       : ePlotPanels[s.baseName]?.lineColor || set?.color
-    return { name, color: color || '#f59e0b' }
+    const lineStyle = ePlotGlobal.lineStyle || 'solid'
+    return {
+      name,
+      color: color || '#f59e0b',
+      strokeWidth: Number(ePlotGlobal.lineWidth) || 2,
+      strokeDasharray: strokeDashForStyle(lineStyle, Number(ePlotGlobal.lineWidth) || 2),
+      lineStyle
+    }
   }
 
   function energeticNameMode() {
@@ -1967,26 +2298,35 @@
   /** @param {string} key @param {{ xMin?: number|null, xMax?: number|null, yMin?: number|null, yMax?: number|null }} range */
   function applyPanelAxisRange(key, range) {
     if (!key) return
-    ensureEPlotPanel(key)
-    const panel = { ...ePlotPanels[key] }
-    if (range.xMin != null) panel.xMin = String(range.xMin)
-    if (range.xMax != null) panel.xMax = String(range.xMax)
-    if (range.yMin != null) panel.yMin = String(range.yMin)
-    if (range.yMax != null) panel.yMax = String(range.yMax)
     if (range.xMin == null && range.xMax == null && range.yMin == null && range.yMax == null) {
-      panel.xMin = ''
-      panel.xMax = ''
-      panel.yMin = ''
-      panel.yMax = ''
+      if (!energViewRangeByKey[key]) return
+      const next = { ...energViewRangeByKey }
+      delete next[key]
+      energViewRangeByKey = next
+      return
     }
-    ePlotPanels = { ...ePlotPanels, [key]: panel }
+    const view = {
+      xMin: range.xMin,
+      xMax: range.xMax,
+      yMin: range.yMin,
+      yMax: range.yMax
+    }
     if (ePlotGlobal.syncX !== false && range.xMin != null && range.xMax != null) {
-      const next = { ...ePlotPanels }
-      for (const k of Object.keys(next)) {
-        next[k] = { ...next[k], xMin: String(range.xMin), xMax: String(range.xMax) }
+      const next = { ...energViewRangeByKey }
+      for (const k of Object.keys(ePlotPanels)) {
+        const prev = next[k]
+        next[k] = {
+          xMin: range.xMin,
+          xMax: range.xMax,
+          yMin: prev?.yMin ?? range.yMin,
+          yMax: prev?.yMax ?? range.yMax
+        }
       }
-      ePlotPanels = next
+      next[key] = view
+      energViewRangeByKey = next
+      return
     }
+    energViewRangeByKey = { ...energViewRangeByKey, [key]: view }
   }
 
   /** @param {{ t0: number, t1: number } | null} range */
@@ -2010,19 +2350,21 @@
   }
 
   function applyStructAxisRange(range) {
-    const type = structuralType
-    const plot = { ...sPlots[type] }
-    if (range.xMin != null) plot.xMin = String(range.xMin)
-    if (range.xMax != null) plot.xMax = String(range.xMax)
-    if (range.yMin != null) plot.yMin = String(range.yMin)
-    if (range.yMax != null) plot.yMax = String(range.yMax)
     if (range.xMin == null && range.xMax == null && range.yMin == null && range.yMax == null) {
-      plot.xMin = ''
-      plot.xMax = ''
-      plot.yMin = ''
-      plot.yMax = ''
+      structViewRange = null
+      return
     }
-    sPlots = { ...sPlots, [type]: plot }
+    structViewRange = {
+      xMin: range.xMin,
+      xMax: range.xMax,
+      yMin: range.yMin,
+      yMax: range.yMax
+    }
+  }
+
+  function clearChartViewRange() {
+    structViewRange = null
+    energViewRangeByKey = {}
   }
 
   function resetChartView() {
@@ -2031,8 +2373,26 @@
     panelRangeStats = {}
     statsRangeStartInput = ''
     statsRangeEndInput = ''
+    clearChartViewRange()
+    resetMenuOpen = false
+  }
+
+  function resetChartViewAndLimits() {
+    resetChartView()
     if (mode === 'structural') {
-      applyStructAxisRange({})
+      const type = structuralType
+      const prev = sPlots[type]
+      const plot = { ...prev, xMin: '', xMax: '', yMin: '', yMax: '' }
+      if (
+        prev &&
+        prev.xMin === '' &&
+        prev.xMax === '' &&
+        prev.yMin === '' &&
+        prev.yMax === ''
+      ) {
+        return
+      }
+      sPlots = { ...sPlots, [type]: plot }
     } else {
       const next = { ...ePlotPanels }
       for (const k of Object.keys(next)) {
@@ -2041,6 +2401,18 @@
       ePlotPanels = next
     }
   }
+
+  $effect(() => {
+    if (!resetMenuOpen) return
+    /** @param {PointerEvent} e */
+    function onPointerDown(e) {
+      const t = e.target
+      if (resetMenuWrapEl && t instanceof Node && resetMenuWrapEl.contains(t)) return
+      resetMenuOpen = false
+    }
+    document.addEventListener('pointerdown', onPointerDown, true)
+    return () => document.removeEventListener('pointerdown', onPointerDown, true)
+  })
 
   function applyStatsRangeFromInputs() {
     const t0 = Number(statsRangeStartInput)
@@ -2067,6 +2439,7 @@
       selection,
       selection2,
       referenceFrame,
+      referenceStructurePath,
       align,
       rmsfXaxisType,
       leafletLipidSel,
@@ -2087,7 +2460,7 @@
   function captureEnergeticOptions() {
     return {
       energeticEngine,
-      logFiles: [...logFiles],
+      logFiles: (logFiles || []).map(normalizeAnalysisFileRow),
       availableProperties: [...availableProperties],
       selectedProperties: [...selectedProperties],
       timeUnits,
@@ -2103,6 +2476,7 @@
     structuralType = type
     const snap = resolveStructuralTypeSelection(opts, type)
     applyTypeSelectionSnapshot(snap, type)
+    referenceStructurePath = String(opts.referenceStructurePath || snap.referenceStructurePath || '')
     // Prefer explicit flat fields when they match the active type and are usable
     // (keeps session loads / persist round-trips exact).
     if (opts.structuralType === type && typeof opts.selection === 'string') {
@@ -2112,12 +2486,14 @@
       if (flatOk) {
         selection = opts.selection
         selection2 = opts.selection2
-        referenceFrame = opts.referenceFrame
+        if (opts.referenceFrame != null) referenceFrame = String(opts.referenceFrame)
+        if (opts.referenceStructurePath != null)
+          referenceStructurePath = String(opts.referenceStructurePath)
         align = opts.align
         rmsfXaxisType = opts.rmsfXaxisType
         leafletLipidSel = opts.leafletLipidSel
         leafletFilterSel = opts.leafletFilterSel
-        nBins = opts.nBins
+        nBins = opts.nBins != null ? String(opts.nBins) : nBins
         interpolate = opts.interpolate
         excludeSel = opts.excludeSel ?? 'protein'
         excludeCutoff = opts.excludeCutoff != null ? String(opts.excludeCutoff) : '30'
@@ -2139,7 +2515,7 @@
 
   function applyEnergeticOptions(/** @type {import('../lib/analysisSets.js').EnergeticOptions} */ opts) {
     energeticEngine = opts.energeticEngine || 'namd'
-    logFiles = [...(opts.logFiles || [])]
+    logFiles = (opts.logFiles || []).map(normalizeAnalysisFileRow)
     availableProperties = [...(opts.availableProperties || [])]
     selectedProperties = [...(opts.selectedProperties || [])]
     timeUnits = opts.timeUnits || 'ns'
@@ -2272,7 +2648,7 @@
         ? {
             ...s,
             topologyPath,
-            trajectoryFiles: [...trajectoryFiles],
+            trajectoryFiles: (trajectoryFiles || []).map(normalizeAnalysisFileRow),
             structuralOptions: captureStructuralOptions(),
             energeticOptions: captureEnergeticOptions()
           }
@@ -2283,10 +2659,11 @@
   function loadActiveSetFields() {
     const set = analysisSets.find((s) => s.id === activeSetId)
     if (!set) return
+    const prevSuppressDirty = suppressSessionDirty
     suppressSessionDirty = true
     try {
       topologyPath = set.topologyPath
-      trajectoryFiles = [...set.trajectoryFiles]
+      trajectoryFiles = (set.trajectoryFiles || []).map(normalizeAnalysisFileRow)
       applyStructuralOptions(set.structuralOptions)
       applyEnergeticOptions(set.energeticOptions)
       // outputFolderName is session-level — never reset when switching/adding sets
@@ -2298,7 +2675,7 @@
         applyEnergeticResultToView(set.energeticResult)
       }
     } finally {
-      suppressSessionDirty = false
+      suppressSessionDirty = prevSuppressDirty
     }
   }
 
@@ -2327,6 +2704,78 @@
   function patchStructuralPlot(patch) {
     const type = structuralType
     sPlots = { ...sPlots, [type]: { ...sPlots[type], ...patch } }
+  }
+
+  /**
+   * Show or hide Average / Upper / Lower on the APL plot (CSV is unchanged).
+   * @param {'mean' | 'upper' | 'lower'} role
+   * @param {boolean} visible
+   */
+  function setAplSeriesVisible(role, visible) {
+    const key =
+      role === 'upper' ? 'aplShowUpper' : role === 'lower' ? 'aplShowLower' : 'aplShowMean'
+    markSessionDirty()
+    patchStructuralPlot({ [key]: Boolean(visible) })
+    syncChartViewFromSets()
+  }
+
+  /**
+   * Plot-settings fields that can target every mosaic cell or only the selected one.
+   * @param {Record<string, unknown>} patch
+   */
+  function setPlotField(patch) {
+    markSessionDirty()
+    if (gridPlotApplyCell) {
+      const n = Math.max(1, (Number(gridLayout.cols) || 1) * (Number(gridLayout.rows) || 1))
+      const idx = Math.max(0, Math.min(n - 1, selectedGridCell))
+      gridLayout = patchCellPlotOverride(gridLayout, idx, patch)
+    } else {
+      patchStructuralPlot(patch)
+      if (mode === 'structural' && compareLayout === 'grid') {
+        gridLayout = clearCellPlotKeysFromOverrides(gridLayout, Object.keys(patch))
+      }
+    }
+    if ('lineWidth' in patch || 'lineStyle' in patch) applyChartAppearance()
+  }
+
+  /** @param {object} plotSettings */
+  function plotGridColor(plotSettings, textColor) {
+    const c = String(plotSettings?.gridColor || '').trim()
+    return c || `${textColor}40`
+  }
+
+  /** @param {number} cellIndex */
+  function cellPlotSettings(cellIndex) {
+    return mergeCellPlotSettings(ps, cellOverride(gridLayout, cellIndex))
+  }
+
+  /** @type {WeakMap<object[], { width: number, style: string, type: string, out: object[] }>} */
+  const cellLineCache = new WeakMap()
+
+  /**
+   * Apply per-cell line width/style on top of the type-level series appearance.
+   * @param {Array<object>} series
+   * @param {object} cps
+   * @param {string} type
+   */
+  function seriesWithCellLine(series, cps, type) {
+    const list = series || []
+    const width = Number(cps.lineWidth) || 2
+    const style = cps.lineStyle || 'solid'
+    const hit = list.length ? cellLineCache.get(list) : null
+    if (hit && hit.width === width && hit.style === style && hit.type === type) return hit.out
+    const out = list.map((s) => {
+      const keepRoleDash =
+        type === 'area_per_lipid' && (s.seriesRole === 'upper' || s.seriesRole === 'lower')
+      return {
+        ...s,
+        strokeWidth: width,
+        strokeDasharray: strokeDashForStyle(keepRoleDash ? s.lineStyle || style : style, width),
+        ...(keepRoleDash ? {} : { lineStyle: style })
+      }
+    })
+    if (list.length) cellLineCache.set(list, { width, style, type, out })
+    return out
   }
 
   function setStructuralPlotBg(hex) {
@@ -2428,7 +2877,10 @@
       for (const type of Object.keys(next)) {
         next[type] = hydratePlotColorFlags({
           ...next[type],
-          ...(plotSettings.structural[type] || {})
+          ...(plotSettings.structural[type] || {}),
+          referenceLines: normalizeReferenceLines(
+            plotSettings.structural[type]?.referenceLines ?? next[type].referenceLines
+          )
         })
       }
       sPlots = next
@@ -2460,6 +2912,7 @@
     void trajectoryFiles
     void mode
     void referenceFrame
+    void referenceStructurePath
     void align
     void rmsfXaxisType
     void leafletLipidSel
@@ -2479,27 +2932,24 @@
     void selectedProperties
     void sessionName
     void outputFolderName
+    if (loadingSession || suppressSessionDirty) return
     markSessionDirty()
   })
 
-  async function onModeChange(/** @type {'structural' | 'energetic'} */ next) {
+  function onModeChange(/** @type {'structural' | 'energetic'} */ next) {
     if (next === mode) return
     clearAnalysisActionNotice()
     lastError = ''
-    await withPlotViewBusy(
-      next === 'energetic' ? 'Switching to energetic…' : 'Switching to structural…',
-      async () => {
-        persistActiveSetFields()
-        mode = next
-        loadActiveSetFields()
-        if (next === 'energetic') {
-          rebuildEnergeticViewAfterLoad()
-        } else {
-          rebuildStructResultsFromSets()
-          bumpPlotData()
-        }
-      }
-    )
+    persistActiveSetFields()
+    mode = next
+    clearChartViewRange()
+    loadActiveSetFields()
+    if (next === 'energetic') {
+      rebuildEnergeticViewAfterLoad()
+    } else {
+      rebuildStructResultsFromSets()
+      bumpPlotData()
+    }
   }
 
   function selectAnalysisSet(id) {
@@ -2514,6 +2964,7 @@
     markSessionDirty()
     const id = newSetId()
     analysisSets = [...analysisSets, createAnalysisSet(analysisSets.length, id, analysisSets)]
+    syncSetsIntoGridLayout()
     activeSetId = id
     loadActiveSetFields()
   }
@@ -2525,6 +2976,7 @@
     if (!current) return
     const copy = duplicateAnalysisSet(current, analysisSets.length, analysisSets)
     analysisSets = [...analysisSets, copy]
+    syncSetsIntoGridLayout()
     activeSetId = copy.id
     loadActiveSetFields()
   }
@@ -2533,6 +2985,7 @@
     if (analysisSets.length <= 1) return
     markSessionDirty()
     analysisSets = analysisSets.filter((s) => s.id !== id)
+    syncSetsIntoGridLayout()
     if (activeSetId === id) {
       activeSetId = analysisSets[0].id
       loadActiveSetFields()
@@ -2540,26 +2993,24 @@
   }
 
   function toggleSetVisible(id, visible) {
-    void withPlotViewBusy(visible ? 'Showing set…' : 'Hiding set…', async () => {
-      analysisSets = analysisSets.map((s) => (s.id === id ? { ...s, visible } : s))
-      bumpPlotData()
-    })
+    analysisSets = analysisSets.map((s) => (s.id === id ? { ...s, visible } : s))
+    bumpPlotData()
   }
 
   /** @param {'overlay' | 'grid'} layout */
   function setCompareLayout(layout) {
-    void withPlotViewBusy('Updating layout…', async () => {
-      compareLayout = layout === 'grid' ? 'grid' : 'overlay'
-      bumpPlotData()
-    })
+    compareLayout = layout === 'grid' ? 'grid' : 'overlay'
+    if (compareLayout !== 'grid') gridCellEditorOpen = null
+    if (compareLayout === 'grid' && !gridLayout.edited) {
+      gridLayout = autoFillGridLayout(gridLayout, analysisSetIds())
+    }
+    bumpPlotData()
   }
 
   /** @param {import('../lib/analysisSession.js').EnergeticCompareLayout | string} layout */
   function setEnergeticCompareLayout(layout) {
-    void withPlotViewBusy('Updating layout…', async () => {
-      energeticCompareLayout = normalizeEnergeticCompareLayout(layout)
-      bumpPlotData()
-    })
+    energeticCompareLayout = normalizeEnergeticCompareLayout(layout)
+    bumpPlotData()
   }
 
   /** @param {string} type @param {object} resultPayload */
@@ -2590,7 +3041,7 @@
         }
       })
     )
-    bumpPlotData()
+    bumpPlotData([activeSetId])
   }
 
   /** @param {import('../lib/analysisSets.js').EnergeticSetResult} resultPayload */
@@ -2625,6 +3076,7 @@
         selection,
         selection2,
         referenceFrame: Number(referenceFrame || 0),
+        referenceStructure: referenceStructurePath.trim() || null,
         align,
         fileTimes: makeFileTimes(trajectoryFiles),
         fileStrides: makeFileStrides(trajectoryFiles),
@@ -2689,7 +3141,11 @@
         excludeSel,
         aplMethod
       ),
-      lastAnalysisHasTimeX: xLabelsResult.length === 0
+      lastAnalysisHasTimeX: xLabelsResult.length === 0,
+      sourceFiles:
+        xLabelsResult.length === 0
+          ? capturePlotSourceFiles(result.x || [], trajectoryFiles, { coordinateOnly: true })
+          : null
     })
   }
 
@@ -2745,7 +3201,8 @@
       chartXLabel: result.x_label || 'Time',
       selectedProperties: [...selectedProperties],
       energeticEngine,
-      statistics: result.statistics || {}
+      statistics: result.statistics || {},
+      sourceFiles: capturePlotSourceFiles(result.x || [], logFiles, { coordinateOnly: false })
     })
 
     for (const s of rawSeriesLocal) {
@@ -2813,7 +3270,9 @@
       dpi: Number(ePlotGlobal.dpi) || 300,
       font_family: ePlotGlobal.fontFamily || 'Roboto, sans-serif',
       xlabel: displayXLabel,
-      title: displayTitle || ePlotGlobal.title || 'Energetic Analysis'
+      title: displayTitle || ePlotGlobal.title || 'Energetic Analysis',
+      ...plotSpecAxisChrome(ePlotGlobal),
+      ...plotSpecExtraMargins(ePlotGlobal)
     }
   }
 
@@ -2826,7 +3285,9 @@
         unit: s.propLabel || (s.baseName ? energeticPropYLabel(s.baseName) : '') || '',
         y: s.y,
         x: s.x,
-        color: s.color
+        color: s.color,
+        linewidth: Number(s.strokeWidth) || Number(ePlotGlobal.lineWidth) || 1.5,
+        linestyle: s.lineStyle || ePlotGlobal.lineStyle || 'solid'
       }))
   }
 
@@ -2868,7 +3329,9 @@
                 name: s.name,
                 title: s.name,
                 ylabel,
-                line_color: s.color || lineColors[i % lineColors.length]
+                line_color: s.color || lineColors[i % lineColors.length],
+                linewidth: Number(s.linewidth) || Number(ePlotGlobal.lineWidth) || 1.5,
+                linestyle: s.linestyle || ePlotGlobal.lineStyle || 'solid'
               }))
             }
           }
@@ -2895,6 +3358,8 @@
               ylabel,
               series_keys: series.map((s) => s.key),
               line_color: series[0]?.color || lineColors[0],
+              linewidth: Number(ePlotGlobal.lineWidth) || 1.5,
+              linestyle: ePlotGlobal.lineStyle || 'solid',
               xlim,
               ylim
             }
@@ -2998,18 +3463,34 @@
     return activeStructRes?.selectionSubtitle || ''
   })
 
-  // Axis overrides
+  // Axis overrides: wheel/box-zoom (`structViewRange`) sits on top of Plot Settings min/max.
   const xMinO = $derived(
-    ps.xMin !== '' && Number.isFinite(Number(ps.xMin)) ? Number(ps.xMin) : null
+    structViewRange != null
+      ? structViewRange.xMin
+      : ps.xMin !== '' && Number.isFinite(Number(ps.xMin))
+        ? Number(ps.xMin)
+        : null
   )
   const xMaxO = $derived(
-    ps.xMax !== '' && Number.isFinite(Number(ps.xMax)) ? Number(ps.xMax) : null
+    structViewRange != null
+      ? structViewRange.xMax
+      : ps.xMax !== '' && Number.isFinite(Number(ps.xMax))
+        ? Number(ps.xMax)
+        : null
   )
   const yMinO = $derived(
-    ps.yMin !== '' && Number.isFinite(Number(ps.yMin)) ? Number(ps.yMin) : null
+    structViewRange != null
+      ? structViewRange.yMin
+      : ps.yMin !== '' && Number.isFinite(Number(ps.yMin))
+        ? Number(ps.yMin)
+        : null
   )
   const yMaxO = $derived(
-    ps.yMax !== '' && Number.isFinite(Number(ps.yMax)) ? Number(ps.yMax) : null
+    structViewRange != null
+      ? structViewRange.yMax
+      : ps.yMax !== '' && Number.isFinite(Number(ps.yMax))
+        ? Number(ps.yMax)
+        : null
   )
 
   // --- Modals ---
@@ -3183,6 +3664,17 @@
     }
   }
 
+  async function pickReferenceStructure() {
+    const result = await window.api.openFileDialog(
+      'Select RMSD reference structure',
+      [{ name: 'Structure', extensions: ['pdb', 'gro', 'ent'] }],
+      workingDir || undefined
+    )
+    if (result.canceled || !result.filePath) return
+    referenceStructurePath = result.filePath
+    persistActiveSetFields()
+  }
+
   async function addTrajectoryFile() {
     const result = await window.api.openFilesDialog(
       'Add Trajectory Files',
@@ -3203,12 +3695,39 @@
 
   function removeTrajectory(index) {
     trajectoryFiles = trajectoryFiles.filter((_, i) => i !== index)
+    persistActiveSetFields()
+    bumpPlotData()
+  }
+
+  /** @param {number} index @param {string} value */
+  function setTrajectoryTimeNs(index, value) {
+    const next = String(value ?? '')
+    if (String(trajectoryFiles[index]?.timeNs ?? '') === next) return
+    trajectoryFiles = trajectoryFiles.map((f, i) => (i === index ? { ...f, timeNs: next } : f))
+    persistActiveSetFields()
+    bumpPlotData()
+  }
+
+  function removeLog(index) {
+    logFiles = logFiles.filter((_, i) => i !== index)
+    persistActiveSetFields()
+    bumpPlotData()
+  }
+
+  /** @param {number} index @param {string} value */
+  function setLogTimeNs(index, value) {
+    const next = String(value ?? '')
+    if (String(logFiles[index]?.timeNs ?? '') === next) return
+    logFiles = logFiles.map((f, i) => (i === index ? { ...f, timeNs: next } : f))
+    persistActiveSetFields()
+    bumpPlotData()
   }
 
   function assignProtocolTimesToTrajectories() {
     const { files, matched, unmatched } = assignProtocolStageTimes(trajectoryFiles)
     trajectoryFiles = files
     persistActiveSetFields()
+    bumpPlotData()
     if (matched > 0) {
       logEvent(
         'info',
@@ -3235,6 +3754,7 @@
     const { files, matched, unmatched } = assignProtocolStageTimes(logFiles)
     logFiles = files
     persistActiveSetFields()
+    bumpPlotData()
     if (matched > 0) {
       logEvent(
         'info',
@@ -3261,9 +3781,7 @@
     if (nextType === structuralType || structuralTypeChanging) return
     structuralTypeChanging = true
     try {
-      await withPlotViewBusy('Switching analysis type…', async () => {
-        await applyStructuralTypeChange(nextType)
-      })
+      await applyStructuralTypeChange(nextType)
     } finally {
       structuralTypeChanging = false
     }
@@ -3277,6 +3795,7 @@
     // Freeze the leaving type's selection before switching the active type in UI state.
     const prevSnapshot = snapshotCurrentTypeSelection()
     structuralType = nextType
+    clearChartViewRange()
 
     if (isBilayerType(prevType) && !isBilayerType(nextType)) {
       headgroupDetectGeneration += 1
@@ -3297,6 +3816,7 @@
           selection: s.structuralOptions.selection,
           selection2: s.structuralOptions.selection2,
           referenceFrame: s.structuralOptions.referenceFrame,
+          referenceStructurePath: s.structuralOptions.referenceStructurePath,
           align: s.structuralOptions.align,
           rmsfXaxisType: s.structuralOptions.rmsfXaxisType,
           leafletLipidSel: s.structuralOptions.leafletLipidSel,
@@ -3330,6 +3850,8 @@
           selection: nextSelection,
           selection2: nextSnap.selection2,
           referenceFrame: nextSnap.referenceFrame ?? s.structuralOptions.referenceFrame,
+          referenceStructurePath:
+            nextSnap.referenceStructurePath ?? s.structuralOptions.referenceStructurePath ?? '',
           align: nextSnap.align ?? s.structuralOptions.align,
           rmsfXaxisType: nextSnap.rmsfXaxisType ?? s.structuralOptions.rmsfXaxisType,
           leafletLipidSel: nextSnap.leafletLipidSel ?? '',
@@ -3378,7 +3900,7 @@
       const needsDetect =
         !selection.trim() ||
         looksLikeProteinSelection(selection) ||
-        lipidHeadgroupAtoms.length === 0
+        (lipidHeadgroupAtoms.length === 0 && !looksLikeBilayerHeadgroupSelection(selection))
       if (needsDetect && topologyPath) {
         await refreshHeadgroupAtoms()
       } else if (lipidHeadgroupAtoms.length > 0) {
@@ -3389,7 +3911,11 @@
     }
 
     persistActiveSetFields()
-    await hydratePlotDataFromOutputFolder()
+    const needsCsv = analysisSets.some((s) => {
+      const res = resultForSetAndType(s, nextType)
+      return res != null && structuralResultNeedsCsvHydration(res)
+    })
+    if (needsCsv) await hydratePlotDataFromOutputFolder()
     bumpPlotData()
   }
 
@@ -3467,10 +3993,6 @@
     logFiles = sortByName([...logFiles, ...added])
     // Auto-detect columns for this set (fast header peek — does not run analysis).
     await detectEnergeticColumns({ quiet: true })
-  }
-
-  function removeLog(index) {
-    logFiles = logFiles.filter((_, i) => i !== index)
   }
 
   // ---- Drag-to-reorder state ----
@@ -3620,6 +4142,7 @@
     selection2AtomCount = null
     selectionCountError = ''
     referenceFrame = '0'
+    referenceStructurePath = ''
     align = true
     rmsfXaxisType = 'residue_number'
     leafletLipidSel = ''
@@ -3641,6 +4164,7 @@
     analysisSets = [createAnalysisSet(0, 'set-1')]
     activeSetId = 'set-1'
     compareLayout = 'overlay'
+    gridLayout = defaultGridLayout()
     energeticCompareLayout = 'by_property'
     statsRangeStartInput = ''
     statsRangeEndInput = ''
@@ -3820,28 +4344,18 @@
   }
 
   function toggleProperty(prop, checked) {
-    void withPlotViewBusy(checked ? 'Showing property…' : 'Hiding property…', async () => {
-      const nextProps = checked
-        ? selectedProperties.includes(prop)
-          ? [...selectedProperties]
-          : [...selectedProperties, prop]
-        : selectedProperties.filter((p) => p !== prop)
-      selectedProperties = nextProps
-      if (checked) ensureEPlotPanel(prop)
-      // Keep stored set metadata aligned so save/compare stay consistent with checkboxes.
-      analysisSets = analysisSets.map((s) => {
-        if (isCompareOverlay) {
-          // While comparing, property visibility is shared across sets.
-          if (!s.energeticResult && s.id !== activeSetId) return s
-          return {
-            ...s,
-            energeticOptions: { ...s.energeticOptions, selectedProperties: [...nextProps] },
-            energeticResult: s.energeticResult
-              ? { ...s.energeticResult, selectedProperties: [...nextProps] }
-              : s.energeticResult
-          }
-        }
-        if (s.id !== activeSetId) return s
+    const nextProps = checked
+      ? selectedProperties.includes(prop)
+        ? [...selectedProperties]
+        : [...selectedProperties, prop]
+      : selectedProperties.filter((p) => p !== prop)
+    selectedProperties = nextProps
+    if (checked) ensureEPlotPanel(prop)
+    // Keep stored set metadata aligned so save/compare stay consistent with checkboxes.
+    analysisSets = analysisSets.map((s) => {
+      if (isCompareOverlay) {
+        // While comparing, property visibility is shared across sets.
+        if (!s.energeticResult && s.id !== activeSetId) return s
         return {
           ...s,
           energeticOptions: { ...s.energeticOptions, selectedProperties: [...nextProps] },
@@ -3849,10 +4363,18 @@
             ? { ...s.energeticResult, selectedProperties: [...nextProps] }
             : s.energeticResult
         }
-      })
-      if (checked && !focusedPanelKey) focusedPanelKey = prop
-      bumpPlotData()
+      }
+      if (s.id !== activeSetId) return s
+      return {
+        ...s,
+        energeticOptions: { ...s.energeticOptions, selectedProperties: [...nextProps] },
+        energeticResult: s.energeticResult
+          ? { ...s.energeticResult, selectedProperties: [...nextProps] }
+          : s.energeticResult
+      }
     })
+    if (checked && !focusedPanelKey) focusedPanelKey = prop
+    bumpPlotData()
   }
 
   // ---- Run analysis ----
@@ -4251,6 +4773,27 @@
    * @param {SVGSVGElement} svg
    * @param {number} index
    */
+  function uniquifySvgClipIds(svg, index) {
+    const paths = [...svg.querySelectorAll('clipPath[id]')]
+    paths.forEach((el, j) => {
+      const oldId = el.getAttribute('id')
+      if (!oldId) return
+      const next = `plot-clip-export-${index}-${j}`
+      el.setAttribute('id', next)
+      const prev = `url(#${oldId})`
+      svg.querySelectorAll('[clip-path]').forEach((node) => {
+        const val = node.getAttribute('clip-path') || ''
+        if (val.includes(`#${oldId}`)) node.setAttribute('clip-path', `url(#${next})`)
+        else if (val === prev) node.setAttribute('clip-path', `url(#${next})`)
+      })
+    })
+    return svg
+  }
+
+  /**
+   * @param {SVGSVGElement} svg
+   * @param {number} index
+   */
   async function rasterizeChartSvgToPng(svg, index = 0) {
     const vb = svg.viewBox?.baseVal
     const svgW = vb && vb.width > 0 ? vb.width : 900
@@ -4260,14 +4803,10 @@
       Math.min(600, Number(mode === 'energetic' ? ePlotGlobal.dpi : ps.dpi) || 150)
     )
     const pixelScale = dpi / 96
-    const clone = svg.cloneNode(true)
+    const clone = /** @type {SVGSVGElement} */ (svg.cloneNode(true))
     clone.setAttribute('width', String(svgW))
     clone.setAttribute('height', String(svgH))
-    const uniqueId = `plot-area-${Date.now()}-${index}`
-    clone.querySelectorAll('[id="plot-area"]').forEach((el) => el.setAttribute('id', uniqueId))
-    clone
-      .querySelectorAll('[clip-path="url(#plot-area)"]')
-      .forEach((el) => el.setAttribute('clip-path', `url(#${uniqueId})`))
+    uniquifySvgClipIds(clone, index)
     const svgData = new XMLSerializer().serializeToString(clone)
     const svgB64 = btoa(unescape(encodeURIComponent(svgData)))
     const url = `data:image/svg+xml;base64,${svgB64}`
@@ -4293,6 +4832,81 @@
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
     const dataUrl = canvas.toDataURL('image/png')
     return dataUrl.replace(/^data:image\/png;base64,/, '')
+  }
+
+  /**
+   * Draw every SVG in a mosaic wrapper onto one canvas (layout matches the screen).
+   * @param {HTMLElement} root
+   */
+  async function rasterizeMosaicToPng(root) {
+    const svgs = [...root.querySelectorAll('svg')].filter((el) => !el.closest('[data-grid-cell-chrome]'))
+    if (svgs.length === 0) throw new Error('Mosaic has no charts to export')
+    const wrap = root.getBoundingClientRect()
+    const dpi = Math.max(72, Math.min(600, Number(ps.dpi) || 150))
+    const pixelScale = dpi / 96
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.max(1, Math.round(wrap.width * pixelScale))
+    canvas.height = Math.max(1, Math.round(wrap.height * pixelScale))
+    const ctx = canvas.getContext('2d')
+    if (!ctx) throw new Error('Could not create canvas for PNG export')
+    const transparent = Boolean(ps.transparentBg)
+    if (!transparent) {
+      ctx.fillStyle = gridLayout.figureBg || displayPlotBg
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+    }
+    for (let i = 0; i < svgs.length; i++) {
+      const svg = svgs[i]
+      const r = svg.getBoundingClientRect()
+      const base64 = await rasterizeChartSvgToPng(svg, i)
+      const img = new Image()
+      await new Promise((resolve, reject) => {
+        img.onload = resolve
+        img.onerror = (e) => reject(new Error('Mosaic tile failed to load: ' + String(e)))
+        img.src = `data:image/png;base64,${base64}`
+      })
+      ctx.drawImage(
+        img,
+        (r.left - wrap.left) * pixelScale,
+        (r.top - wrap.top) * pixelScale,
+        r.width * pixelScale,
+        r.height * pixelScale
+      )
+    }
+    return canvas.toDataURL('image/png').replace(/^data:image\/png;base64,/, '')
+  }
+
+  /**
+   * @param {HTMLElement} root
+   */
+  function composeMosaicSvg(root) {
+    const svgs = [...root.querySelectorAll('svg')].filter((el) => !el.closest('[data-grid-cell-chrome]'))
+    const wrap = root.getBoundingClientRect()
+    const w = Math.max(1, Math.round(wrap.width))
+    const h = Math.max(1, Math.round(wrap.height))
+    const bg = ps.transparentBg ? 'none' : gridLayout.figureBg || displayPlotBg
+    const parts = svgs.map((svg, i) => {
+      const r = svg.getBoundingClientRect()
+      const clone = /** @type {SVGSVGElement} */ (svg.cloneNode(true))
+      uniquifySvgClipIds(clone, i)
+      clone.setAttribute('x', String(Math.round(r.left - wrap.left)))
+      clone.setAttribute('y', String(Math.round(r.top - wrap.top)))
+      clone.setAttribute('width', String(Math.round(r.width)))
+      clone.setAttribute('height', String(Math.round(r.height)))
+      clone.removeAttribute('class')
+      return new XMLSerializer().serializeToString(clone)
+    })
+    return (
+      `<?xml version="1.0" encoding="UTF-8"?>\n` +
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">` +
+      (bg !== 'none' ? `<rect width="100%" height="100%" fill="${bg}"/>` : '') +
+      parts.join('') +
+      `</svg>`
+    )
+  }
+
+  function structuralMosaicRoot() {
+    if (mode !== 'structural' || chartView.mode !== 'grid') return null
+    return plotExportRoot?.querySelector('[data-chart-mosaic]') || null
   }
 
   /**
@@ -4448,6 +5062,7 @@
           sessionName,
           activeSetId,
           sets: slimSetsForSessionSave(analysisSets, 'all'),
+          gridLayout: clonePlainAnalysisData(gridLayout),
           plotSettings: {
             structural: clonePlainAnalysisData(sPlots),
             energeticGlobal: clonePlainAnalysisData(ePlotGlobal),
@@ -4533,6 +5148,23 @@
     if (exportingKind || !canExportOnscreenChart) return
     try {
       await withChartExport('svg', async () => {
+        await tick()
+        await new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve))
+        )
+        const mosaic = structuralMosaicRoot()
+        if (mosaic) {
+          const filePath = await resolveExportPath(
+            `${exportFileStem()}.svg`,
+            'Export SVG — the on-screen mosaic is saved as one .svg',
+            [{ name: 'SVG', extensions: ['svg'] }]
+          )
+          if (!filePath) return
+          await window.api.writeText(filePath, composeMosaicSvg(mosaic))
+          showAnalysisActionNotice(`Exported SVG to ${filePath}`)
+          logEvent('info', 'analysis', 'Exported SVG', filePath)
+          return
+        }
         const charts = await collectVisibleChartExports()
         if (charts.length === 0) {
           showAnalysisActionNotice(
@@ -4580,33 +5212,155 @@
   }
 
   function buildStructuralPlotPayload() {
+    const refs = normalizeReferenceLines(ps.referenceLines).map((line) => ({
+      axis: line.axis,
+      value: line.value,
+      color: line.color,
+      width: line.width,
+      style: line.style,
+      label: line.label
+    }))
+    const lineColors = ['#f59e0b', '#22c55e', '#38bdf8', '#f87171', '#a78bfa', '#f472b6']
+    const toDataSeries = (s) => {
+      const set = analysisSets.find((x) => x.id === s.setId)
+      return {
+        key: s.key || s.name,
+        name: s.name,
+        unit: '',
+        y: s.y,
+        x: s.x,
+        color: s.color,
+        set_id: s.setId,
+        set_name: set ? setLegendName(set) : s.name,
+        series_role: s.seriesRole,
+        linewidth: Number(s.strokeWidth) || Number(ps.lineWidth) || 1.5,
+        linestyle: s.lineStyle || ps.lineStyle || 'solid'
+      }
+    }
+
+    if (chartView.mode === 'grid' && chartView.panels.length > 0) {
+      const plotPanels = chartView.panels.filter((p) => (p.series || []).some((s) => (s.y?.length ?? 0) > 0))
+      const allSeries = plotPanels.flatMap((p) => (p.series || []).filter((s) => (s.y?.length ?? 0) > 0))
+      if (plotPanels.length === 0 || allSeries.length === 0) {
+        // fall through to overlay path
+      } else {
+        const cols = Math.max(1, Number(gridLayout.cols) || 2)
+        const n = plotPanels.length
+        const { rows } = gridSpecSlices(n, cols, gridLayout.lastRowAlign)
+        const aspect = gridCellAspect
+        const cellW = 3.6
+        let figW = Math.max(6, cols * cellW)
+        let figH = Math.max(3, rows * (cellW / Math.max(0.4, aspect)))
+        if (gridLayout.legendMode === 'outside') {
+          if (gridLayout.legendOutside === 'top' || gridLayout.legendOutside === 'bottom') figH += 0.55
+          else figW += 1.15
+        }
+        const gapFrac = Math.max(0.02, Math.min(0.45, (Number(gridLayout.gapPx) || 16) / 80))
+        const origIndex = (panel) =>
+          Number.isFinite(panel.cellIndex) ? panel.cellIndex : chartView.panels.indexOf(panel)
+        return {
+          data: {
+            x: allSeries[0]?.x || [],
+            series: allSeries.map(toDataSeries)
+          },
+          plotSpec: {
+            version: 1,
+            layout: 'grid',
+            cols,
+            rows,
+            last_row_align: gridLayout.lastRowAlign === 'center' ? 'center' : 'start',
+            wspace: gapFrac,
+            hspace: gapFrac,
+            cell_aspect: aspect,
+            sync_x: false,
+            legend: {
+              mode: gridLayout.legendMode,
+              cell: Number(gridLayout.legendCell) || 0,
+              loc: gridLayout.legendOutside,
+              entries: gridLayout.legendEntries,
+              fontsize: guiSvgFontToMpl(ps.legendFontSize, 8),
+              ncol: Number(gridLayout.legendColumns) || 1,
+              title: gridLayout.legendTitle || ''
+            },
+            reference_lines: refs,
+            global: {
+              plot_bg: gridLayout.cellBg || resolvedStructColors.plotBg,
+              fig_bg: gridLayout.figureBg || resolvedStructColors.plotBg,
+              text_color: resolvedStructColors.textColor,
+              grid_color: String(ps.gridColor || '').trim() || resolvedStructColors.textColor,
+              show_grid: ps.showGrid !== false,
+              figsize: [figW, figH],
+              dpi: Number(ps.dpi) || 300,
+              font_family: ps.fontFamily || 'Roboto, sans-serif',
+              xlabel: displayXLabel,
+              ylabel: displayYLabel,
+              title: displayTitle || 'Structural Analysis',
+              xlim: null,
+              ylim: null,
+              ...plotSpecAxisChrome(ps),
+              ...plotSpecExtraMargins(ps)
+            },
+            panels: plotPanels.map((panel, i) => {
+              const series = (panel.series || []).filter((s) => (s.y?.length ?? 0) > 0)
+              const ext = dataExtentsFromSeries(series)
+              const idx = origIndex(panel)
+              const labels = cellLabelVisibility(gridLayout, idx)
+              const cps = mergeCellPlotSettings(ps, cellOverride(gridLayout, idx))
+              const loc =
+                cps.legendPosition === 'top-right'
+                  ? 'upper right'
+                  : cps.legendPosition === 'bottom-left'
+                    ? 'lower left'
+                    : cps.legendPosition === 'bottom-right'
+                      ? 'lower right'
+                      : 'upper left'
+              return {
+                key: panel.key,
+                name: panel.title,
+                title: panel.title,
+                ylabel: displayYLabel,
+                series_keys: series.map((s) => s.key || s.name),
+                line_color: series[0]?.color || lineColors[i % lineColors.length],
+                xlim: ext ? [ext.xMin, ext.xMax] : null,
+                ylim: ext ? publicationYlimFromExtents(ext) : null,
+                show_xlabel: labels.showXLabel,
+                show_ylabel: labels.showYLabel,
+                show_ticks: ps.showTicks !== false,
+                show_xticklabels: labels.showXTickLabels,
+                show_yticklabels: labels.showYTickLabels,
+                show_legend: cellShowsLegend(gridLayout, idx) && cps.legendPosition !== 'none',
+                show_grid: cps.showGrid !== false,
+                linewidth: Number(cps.lineWidth) || 1.5,
+                linestyle: cps.lineStyle || 'solid',
+                legend_loc: loc,
+                legend_fontsize: guiSvgFontToMpl(cps.legendFontSize, 8)
+              }
+            })
+          }
+        }
+      }
+    }
+
     const shown = publicationSeries()
-    const layout = chartView.mode === 'grid' && shown.length > 1 ? 'grid' : 'overlay'
     const globalExt = dataExtentsFromSeries(shown)
     const overlayXlim = globalExt ? [globalExt.xMin, globalExt.xMax] : null
     const overlayYlim = globalExt ? publicationYlimFromExtents(globalExt) : null
     return {
       data: {
         x: shown[0]?.x || [],
-        series: shown.map((s) => ({
-          key: s.key || s.name,
-          name: s.name,
-          unit: '',
-          y: s.y,
-          x: s.x
-        }))
+        series: shown.map(toDataSeries)
       },
       plotSpec: {
         version: 1,
-        layout,
+        layout: 'overlay',
         cols: 2,
-        // Per-set grid panels can have different trajectory lengths — do not force one x window.
-        sync_x: layout === 'overlay',
+        sync_x: true,
+        reference_lines: refs,
         global: {
           plot_bg: resolvedStructColors.plotBg,
           fig_bg: resolvedStructColors.plotBg,
           text_color: resolvedStructColors.textColor,
-          grid_color: resolvedStructColors.textColor,
+          grid_color: String(ps.gridColor || '').trim() || resolvedStructColors.textColor,
           show_grid: ps.showGrid !== false,
           figsize: [10, 6],
           dpi: Number(ps.dpi) || 300,
@@ -4614,32 +5368,22 @@
           xlabel: displayXLabel,
           ylabel: displayYLabel,
           title: displayTitle || 'Structural Analysis',
-          xlim: layout === 'overlay' ? overlayXlim : null,
-          ylim: layout === 'overlay' ? overlayYlim : null
+          xlim: overlayXlim,
+          ylim: overlayYlim,
+          ...plotSpecAxisChrome(ps),
+          ...plotSpecExtraMargins(ps)
         },
-        panels: shown.map((s, i) => {
-          const ext = dataExtentsFromSeries([s])
-          // Overlay shares one axis: use combined extents so APL leaflets (etc.)
-          // are not clipped to the first series (usually Mean).
-          const xlim =
-            layout === 'overlay' ? overlayXlim : ext ? [ext.xMin, ext.xMax] : null
-          const ylim =
-            layout === 'overlay'
-              ? overlayYlim
-              : ext
-                ? publicationYlimFromExtents(ext)
-                : overlayYlim
-          return {
-            key: s.key || s.name,
-            name: s.name,
-            title: s.name,
-            ylabel: displayYLabel,
-            line_color:
-              s.color || ['#f59e0b', '#22c55e', '#38bdf8', '#f87171', '#a78bfa', '#f472b6'][i % 6],
-            xlim,
-            ylim
-          }
-        })
+        panels: shown.map((s, i) => ({
+          key: s.key || s.name,
+          name: s.name,
+          title: s.name,
+          ylabel: displayYLabel,
+          line_color: s.color || lineColors[i % lineColors.length],
+          linewidth: Number(s.strokeWidth) || Number(ps.lineWidth) || 1.5,
+          linestyle: s.lineStyle || ps.lineStyle || 'solid',
+          xlim: overlayXlim,
+          ylim: overlayYlim
+        }))
       }
     }
   }
@@ -4682,6 +5426,24 @@
     if (exportingKind || !canExportOnscreenChart) return
     try {
       await withChartExport('png', async () => {
+        await tick()
+        await new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve))
+        )
+        const mosaic = structuralMosaicRoot()
+        if (mosaic) {
+          const filePath = await resolveExportPath(
+            `${exportFileStem()}.png`,
+            'Export PNG — the on-screen mosaic is saved as one .png',
+            [{ name: 'PNG', extensions: ['png'] }]
+          )
+          if (!filePath) return
+          const base64 = await rasterizeMosaicToPng(mosaic)
+          await window.api.writeBinary(filePath, base64)
+          showAnalysisActionNotice(`Exported PNG to ${filePath}`)
+          logEvent('info', 'analysis', 'Exported PNG', filePath)
+          return
+        }
         const charts = await collectVisibleChartExports()
         if (charts.length === 0) {
           showAnalysisActionNotice(
@@ -4711,6 +5473,52 @@
     }
   }
 </script>
+
+{#snippet structuralGridCell(panel)}
+  {@const idx = panel.cellIndex ?? 0}
+  {@const cps = cellPlotSettings(idx)}
+  <AnalysisGridCell
+    {panel}
+    {gridLayout}
+    {gridCellAspect}
+    selected={gridPlotApplyCell && selectedGridCell === idx}
+    {cps}
+    series={panel.empty ? [] : seriesWithCellLine(panel.series, cps, structuralType)}
+    {displayXLabel}
+    {displayYLabel}
+    {displayXTickLabels}
+    {resolvedStructColors}
+    {ps}
+    {plotEdit}
+    {xMinO}
+    {xMaxO}
+    {yMinO}
+    {yMaxO}
+    {hasChartTimeAxis}
+    {chartInteractionMode}
+    {statsRange}
+    xTickStep={plotTickStep('x')}
+    yTickStep={plotTickStep('y')}
+    {structReferenceLines}
+    editing={gridCellEditorOpen === idx}
+    cellTitle={gridLayout.cells?.[idx]?.title || ''}
+    cellSetIds={gridLayout.cells?.[idx]?.setIds || []}
+    sets={gridChipSets}
+    onSelectCell={(i) => {
+      selectedGridCell = i
+      if (gridCellEditorOpen != null && gridCellEditorOpen !== i) gridCellEditorOpen = null
+    }}
+    onEditCell={() => {
+      selectedGridCell = idx
+      gridCellEditorOpen = gridCellEditorOpen === idx ? null : idx
+    }}
+    onCloseEditor={() => (gridCellEditorOpen = null)}
+    onCellSetIds={(ids) => setCellSetIds(idx, ids)}
+    onCellTitle={(title) => setCellTitle(idx, title)}
+    onAxisRange={applyStructAxisRange}
+    onStatsRange={handleStatsRange}
+  />
+{/snippet}
 
 <!-- Selection help modal -->
 {#if showSelectionHelp}
@@ -4994,7 +5802,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 const checked = /** @type {HTMLInputElement} */ (e.currentTarget).checked
                 toggleSetVisible(set.id, checked)
               }}
-              title="Show in chart overlay"
+              title="Show in chart"
             />
             {#if analysisSets.length > 1}
               <button
@@ -5007,39 +5815,17 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           </div>
         {/each}
       </div>
-      {#if showCompareLayoutControl}
-        {#if mode === 'structural'}
-          <Select
-            size="sm"
-            className="w-full"
-            value={compareLayout}
-            onchange={(e) =>
-              setCompareLayout(
-                /** @type {'overlay' | 'grid'} */ (
-                  /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                )
-              )
-            }
-          >
-            <option value="overlay">Compare: overlay</option>
-            <option value="grid">Compare: separate panels (per set)</option>
-          </Select>
-        {:else}
-          <Select
-            size="sm"
-            className="w-full"
-            value={energeticCompareLayout}
-            onchange={(e) => setEnergeticCompareLayout(e.currentTarget.value)}
-          >
-            <option value="by_property">Compare: one panel per property</option>
-            <option value="by_set">Compare: one panel per set</option>
-            <option value="overlay">Compare: all on one plot</option>
-          </Select>
-          <p class="sidebar-hint">
-            Per property: each property has its own plot with all sets (distinct set colors). Per set:
-            each set is a panel with its properties.
-          </p>
-        {/if}
+      {#if showCompareLayoutControl && mode === 'energetic'}
+        <Select
+          size="sm"
+          className="w-full"
+          value={energeticCompareLayout}
+          onchange={(e) => setEnergeticCompareLayout(e.currentTarget.value)}
+        >
+          <option value="by_property">Compare: one panel per property</option>
+          <option value="by_set">Compare: one panel per set</option>
+          <option value="overlay">Compare: all on one plot</option>
+        </Select>
       {/if}
       {#if mode === 'energetic' && isCompareOverlay && visibleCompareSets.length > 0 && selectedProperties.length > 0 && compareEnergeticProperties.length === 0}
         <p class="sidebar-hint text-amber-600 dark:text-amber-400">
@@ -5047,7 +5833,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
         </p>
       {/if}
       <p class="sidebar-hint">
-        Each set keeps its own files, analysis options, and results. Use the checkbox to show or hide sets in the chart overlay.
+        Each set keeps its own files, analysis options, and results. Use the checkbox to show or hide a set on the chart.
       </p>
     </div>
 
@@ -5132,7 +5918,10 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     min="0"
                     step="0.0001"
                     placeholder="0"
-                    bind:value={trajectoryFiles[i].timeNs}
+                    value={trajectoryFiles[i].timeNs}
+                    oninput={(e) =>
+                      setTrajectoryTimeNs(i, /** @type {HTMLInputElement} */ (e.currentTarget).value)
+                    }
                     className="w-24 shrink-0 tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                     title="Time offset in ns (e.g. 200.1234 or 2000.1234)"
                   />
@@ -5161,6 +5950,11 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           <p class="sidebar-hint">
             Stride loads and analyzes every Nth frame only (e.g. 10 ≈ 10× fewer frames). Applies per file when trajectories are concatenated.
           </p>
+          {#if trajectoryFiles.some((f) => /\.(pdb|ent|gro)$/i.test(f.path))}
+            <p class="sidebar-hint text-amber-600 dark:text-amber-400">
+              A PDB/GRO in this list is ignored for thickness and area-per-lipid (those files have no periodic box). For RMSD vs a starting structure, use <span class="font-medium">Reference PDB</span> under RMSD instead of listing it as a trajectory.
+            </p>
+          {/if}
         </div>
       </div>
 
@@ -5488,9 +6282,44 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
         {/if}
 
         {#if structuralType === 'rmsd'}
+          <div class="space-y-1">
+            <p class="sidebar-label">Reference PDB (optional)</p>
+            <div class="flex gap-1">
+              <Input
+                size="sm"
+                value={basename(referenceStructurePath) || '—'}
+                disabled
+                className="min-w-0 flex-1"
+                title={referenceStructurePath || 'Not set — uses Ref. frame'}
+              />
+              <Button size="sm" variant="outline" onclick={pickReferenceStructure}>Select</Button>
+              {#if referenceStructurePath}
+                <button
+                  type="button"
+                  class="shrink-0 px-1 text-red-500 hover:text-red-400"
+                  onclick={() => {
+                    referenceStructurePath = ''
+                    persistActiveSetFields()
+                  }}
+                  title="Clear reference PDB">✕</button
+                >
+              {/if}
+            </div>
+            <p class="sidebar-hint">
+              Starting structure for RMSD instead of Ref. frame. Do not add this file to Trajectories — extra PDBs break membrane thickness (no unit cell).
+            </p>
+          </div>
           <div class="flex items-center gap-2">
             <span class="sidebar-label shrink-0">Ref. frame</span>
-            <Input size="sm" type="number" min="0" bind:value={referenceFrame} className="w-20" />
+            <Input
+              size="sm"
+              type="number"
+              min="0"
+              bind:value={referenceFrame}
+              disabled={Boolean(referenceStructurePath)}
+              className="w-20"
+              title={referenceStructurePath ? 'Ignored when a reference PDB is set' : 'Frame index in the concatenated trajectories'}
+            />
           </div>
           <label class="flex items-center gap-2">
             <Checkbox name="align-rmsd" bind:checked={align} />
@@ -5583,7 +6412,10 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   min="0"
                   step="0.0001"
                   placeholder="0"
-                  bind:value={logFiles[i].timeNs}
+                  value={logFiles[i].timeNs}
+                  oninput={(e) =>
+                    setLogTimeNs(i, /** @type {HTMLInputElement} */ (e.currentTarget).value)
+                  }
                   className="w-24 shrink-0 tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                   title="Time offset in ns (e.g. 200.1234 or 2000.1234)"
                 />
@@ -5801,6 +6633,31 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
       {#if plotSettingsOpen}
         <div class="sidebar-panel space-y-2 p-2">
+          {#if mode === 'structural' && compareLayout === 'grid'}
+            <div>
+              <p class="sidebar-label mb-0.5">Apply settings</p>
+              <div class="flex gap-1">
+                <Button
+                  size="sm"
+                  variant={gridLayout.plotApplyScope !== 'cell' ? 'default' : 'outline'}
+                  className="flex-1"
+                  onclick={() => patchGridChrome({ plotApplyScope: 'all' })}>All cells</Button
+                >
+                <Button
+                  size="sm"
+                  variant={gridLayout.plotApplyScope === 'cell' ? 'default' : 'outline'}
+                  className="flex-1"
+                  onclick={() => patchGridChrome({ plotApplyScope: 'cell' })}
+                  >This cell ({selectedGridCell + 1})</Button
+                >
+              </div>
+              <p class="sidebar-hint">
+                {gridLayout.plotApplyScope === 'cell'
+                  ? 'Applies to the selected square (click a plot to choose it).'
+                  : 'Applies to every square.'}
+              </p>
+            </div>
+          {/if}
           {#if mode === 'structural'}
             <div>
               <p class="sidebar-label mb-0.5">Title</p>
@@ -5874,7 +6731,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             </label>
             <div class="grid grid-cols-2 gap-1">
               <div>
-                <p class="sidebar-label mb-0.5">X tick labels</p>
+                <p class="sidebar-label mb-0.5">X ticks</p>
                 <Input
                   size="sm"
                   type="number"
@@ -5886,7 +6743,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 />
               </div>
               <div>
-                <p class="sidebar-label mb-0.5">Y tick labels</p>
+                <p class="sidebar-label mb-0.5">Y ticks</p>
                 <Input
                   size="sm"
                   type="number"
@@ -6064,6 +6921,144 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               <Checkbox name="show-grid-global" bind:checked={ePlotGlobal.showGrid} />
               <span class="sidebar-label">Show grid</span>
             </label>
+            <div class="grid grid-cols-2 gap-1">
+              <div>
+                <p class="sidebar-label mb-0.5">Line width</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="0.5"
+                  max="12"
+                  step="0.5"
+                  bind:value={ePlotGlobal.lineWidth}
+                  className="w-full"
+                />
+              </div>
+              <div>
+                <p class="sidebar-label mb-0.5">Line style</p>
+                <Select size="sm" bind:value={ePlotGlobal.lineStyle} className="w-full">
+                  <option value="solid">Solid</option>
+                  <option value="dashed">Dashed</option>
+                  <option value="dotted">Dotted</option>
+                  <option value="dashdot">Dash-dot</option>
+                </Select>
+              </div>
+            </div>
+            <label class="flex items-center gap-2">
+              <Checkbox name="energ-show-ticks" bind:checked={ePlotGlobal.showTicks} />
+              <span class="sidebar-label">Show tick marks</span>
+            </label>
+            <div class="grid grid-cols-2 gap-1">
+              <div>
+                <p class="sidebar-label mb-0.5">Tick length</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="0"
+                  max="16"
+                  step="1"
+                  bind:value={ePlotGlobal.tickLength}
+                  className="w-full"
+                />
+              </div>
+              <div>
+                <p class="sidebar-label mb-0.5">Tick width</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="0.2"
+                  max="8"
+                  step="0.2"
+                  bind:value={ePlotGlobal.tickWidth}
+                  className="w-full"
+                />
+              </div>
+              <div>
+                <p class="sidebar-label mb-0.5">Axis line width</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="0.2"
+                  max="8"
+                  step="0.2"
+                  bind:value={ePlotGlobal.spineWidth}
+                  className="w-full"
+                />
+              </div>
+            </div>
+            <p class="sidebar-label mb-0.5">Axis box</p>
+            <div class="grid grid-cols-2 gap-x-2 gap-y-1">
+              <label class="flex items-center gap-2">
+                <Checkbox name="energ-spine-left" bind:checked={ePlotGlobal.spineLeft} />
+                <span class="sidebar-label">Left</span>
+              </label>
+              <label class="flex items-center gap-2">
+                <Checkbox name="energ-spine-bottom" bind:checked={ePlotGlobal.spineBottom} />
+                <span class="sidebar-label">Bottom</span>
+              </label>
+              <label class="flex items-center gap-2">
+                <Checkbox name="energ-spine-top" bind:checked={ePlotGlobal.spineTop} />
+                <span class="sidebar-label">Top</span>
+              </label>
+              <label class="flex items-center gap-2">
+                <Checkbox name="energ-spine-right" bind:checked={ePlotGlobal.spineRight} />
+                <span class="sidebar-label">Right</span>
+              </label>
+            </div>
+            <div class="grid grid-cols-2 gap-1">
+              <div>
+                <p class="sidebar-label mb-0.5">Extra left margin</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="-80"
+                  max="240"
+                  step="1"
+                  bind:value={ePlotGlobal.extraLeftMargin}
+                  className="w-full"
+                  placeholder="0"
+                />
+              </div>
+              <div>
+                <p class="sidebar-label mb-0.5">Extra right margin</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="-80"
+                  max="240"
+                  step="1"
+                  bind:value={ePlotGlobal.extraRightMargin}
+                  className="w-full"
+                  placeholder="0"
+                />
+              </div>
+              <div>
+                <p class="sidebar-label mb-0.5">Extra top margin</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="-80"
+                  max="240"
+                  step="1"
+                  bind:value={ePlotGlobal.extraTopMargin}
+                  className="w-full"
+                  placeholder="0"
+                />
+              </div>
+              <div>
+                <p class="sidebar-label mb-0.5">Extra bottom margin</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="-80"
+                  max="240"
+                  step="1"
+                  bind:value={ePlotGlobal.extraBottomMargin}
+                  className="w-full"
+                  placeholder="0"
+                />
+              </div>
+            </div>
             <div>
               <p class="sidebar-label mb-0.5">Export DPI (publication PNG)</p>
               <Select size="sm" bind:value={ePlotGlobal.dpi} className="w-full">
@@ -6128,74 +7123,209 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
           <!-- Axis limits (structural) -->
           {#if mode === 'structural'}
-          <div>
-            <p class="sidebar-label mb-0.5">X min / max</p>
-            <div class="flex gap-1">
-              <Input size="sm" bind:value={ps.xMin} placeholder="auto" className="w-full" />
-              <Input size="sm" bind:value={ps.xMax} placeholder="auto" className="w-full" />
+          <div class="min-w-0 space-y-1">
+            <div
+              class="grid min-w-0 grid-cols-[1.15rem_minmax(0,1.35fr)_minmax(0,1.35fr)_2.35rem_2.85rem] items-end gap-1"
+            >
+              <p class="sidebar-label pb-1.5">X</p>
+              <div class="min-w-0">
+                <p class="sidebar-label mb-0.5">Min</p>
+                <Input size="sm" bind:value={ps.xMin} placeholder="auto" className="w-full min-w-0" />
+              </div>
+              <div class="min-w-0">
+                <p class="sidebar-label mb-0.5">Max</p>
+                <Input size="sm" bind:value={ps.xMax} placeholder="auto" className="w-full min-w-0" />
+              </div>
+              <div class="min-w-0">
+                <p class="sidebar-label mb-0.5">Ticks</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="2"
+                  max="20"
+                  step="1"
+                  bind:value={ps.xTickCount}
+                  className="w-full min-w-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                  title="Number of X tick marks"
+                />
+              </div>
+              <div class="min-w-0">
+                <p class="sidebar-label mb-0.5">Dec.</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="0"
+                  max="8"
+                  step="1"
+                  bind:value={ps.xTickDecimals}
+                  placeholder="auto"
+                  className="w-full min-w-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                  title="X tick decimal places. Empty = auto."
+                />
+              </div>
+              <p class="sidebar-label pb-1.5">Y</p>
+              <div class="min-w-0">
+                <p class="sidebar-label mb-0.5">Min</p>
+                <Input size="sm" bind:value={ps.yMin} placeholder="auto" className="w-full min-w-0" />
+              </div>
+              <div class="min-w-0">
+                <p class="sidebar-label mb-0.5">Max</p>
+                <Input size="sm" bind:value={ps.yMax} placeholder="auto" className="w-full min-w-0" />
+              </div>
+              <div class="min-w-0">
+                <p class="sidebar-label mb-0.5">Ticks</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="2"
+                  max="20"
+                  step="1"
+                  bind:value={ps.yTickCount}
+                  className="w-full min-w-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                  title="Number of Y tick marks"
+                />
+              </div>
+              <div class="min-w-0">
+                <p class="sidebar-label mb-0.5">Dec.</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="0"
+                  max="8"
+                  step="1"
+                  bind:value={ps.yTickDecimals}
+                  placeholder="auto"
+                  className="w-full min-w-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                  title="Y tick decimal places. Empty = auto."
+                />
+              </div>
             </div>
           </div>
-
-          <div class="grid grid-cols-2 gap-1">
-            <div>
-              <p class="sidebar-label mb-0.5">X tick labels</p>
-              <Input
+          <div class="min-w-0 space-y-1">
+            <div class="flex items-center justify-between">
+              <p class="sidebar-label">Reference lines</p>
+              <Button
                 size="sm"
-                type="number"
-                min="2"
-                max="20"
-                step="1"
-                bind:value={ps.xTickCount}
-                className="w-full"
-              />
+                variant="ghost"
+                onclick={() =>
+                  patchReferenceLines([
+                    ...(ps.referenceLines || []),
+                    emptyReferenceLine()
+                  ])
+                }>+ Add</Button
+              >
             </div>
-            <div>
-              <p class="sidebar-label mb-0.5">Y tick labels</p>
-              <Input
-                size="sm"
-                type="number"
-                min="2"
-                max="20"
-                step="1"
-                bind:value={ps.yTickCount}
-                className="w-full"
-              />
-            </div>
-            <div>
-              <p class="sidebar-label mb-0.5">X decimals</p>
-              <Input
-                size="sm"
-                type="number"
-                min="0"
-                max="8"
-                step="1"
-                bind:value={ps.xTickDecimals}
-                placeholder="auto"
-                className="w-full"
-                title="Decimal places on X axis ticks. Empty = auto."
-              />
-            </div>
-            <div>
-              <p class="sidebar-label mb-0.5">Y decimals</p>
-              <Input
-                size="sm"
-                type="number"
-                min="0"
-                max="8"
-                step="1"
-                bind:value={ps.yTickDecimals}
-                placeholder="auto"
-                className="w-full"
-                title="Decimal places on Y axis ticks. Empty = auto."
-              />
-            </div>
-          </div>
-          <div>
-            <p class="sidebar-label mb-0.5">Y min / max</p>
-            <div class="flex gap-1">
-              <Input size="sm" bind:value={ps.yMin} placeholder="auto" className="w-full" />
-              <Input size="sm" bind:value={ps.yMax} placeholder="auto" className="w-full" />
-            </div>
+            {#each structReferenceLines as line, ri (`ref-${ri}`)}
+              <div class="min-w-0 space-y-1 rounded-md border border-neutral-800 p-1.5">
+                <div class="flex min-w-0 items-center gap-1">
+                  <Select
+                    size="sm"
+                    className="w-12 shrink-0"
+                    value={line.axis}
+                    onchange={(e) => {
+                      const next = [...structReferenceLines]
+                      next[ri] = {
+                        ...next[ri],
+                        axis: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                      }
+                      patchReferenceLines(next)
+                    }}
+                  >
+                    <option value="y">Y</option>
+                    <option value="x">X</option>
+                  </Select>
+                  <Input
+                    size="sm"
+                    type="number"
+                    step="any"
+                    value={line.value}
+                    className="min-w-0 flex-1 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                    title="Value"
+                    oninput={(e) => {
+                      const next = [...structReferenceLines]
+                      next[ri] = {
+                        ...next[ri],
+                        value: Number(/** @type {HTMLInputElement} */ (e.currentTarget).value)
+                      }
+                      patchReferenceLines(next)
+                    }}
+                  />
+                  <ColorInput
+                    size="sm"
+                    className="shrink-0"
+                    value={line.color}
+                    oninput={(e) => {
+                      const next = [...structReferenceLines]
+                      next[ri] = {
+                        ...next[ri],
+                        color: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                      }
+                      patchReferenceLines(next)
+                    }}
+                  />
+                  <Input
+                    size="sm"
+                    type="number"
+                    min="0.4"
+                    max="6"
+                    step="0.1"
+                    value={line.width}
+                    className="w-10 shrink-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                    title="Width"
+                    oninput={(e) => {
+                      const next = [...structReferenceLines]
+                      next[ri] = {
+                        ...next[ri],
+                        width: Number(/** @type {HTMLInputElement} */ (e.currentTarget).value)
+                      }
+                      patchReferenceLines(next)
+                    }}
+                  />
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="shrink-0 px-1.5"
+                    onclick={() =>
+                      patchReferenceLines(structReferenceLines.filter((_, j) => j !== ri))
+                    }>✕</Button
+                  >
+                </div>
+                <div class="flex min-w-0 items-center gap-1">
+                  <Select
+                    size="sm"
+                    className="w-[6.75rem] shrink-0"
+                    value={line.style}
+                    onchange={(e) => {
+                      const next = [...structReferenceLines]
+                      next[ri] = {
+                        ...next[ri],
+                        style: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                      }
+                      patchReferenceLines(next)
+                    }}
+                  >
+                    <option value="solid">Solid</option>
+                    <option value="dashed">Dashed</option>
+                    <option value="dotted">Dotted</option>
+                    <option value="dashdot">Dash-dot</option>
+                  </Select>
+                  <Input
+                    size="sm"
+                    value={line.label}
+                    placeholder="Label"
+                    className="min-w-0 flex-1"
+                    oninput={(e) => {
+                      const next = [...structReferenceLines]
+                      next[ri] = {
+                        ...next[ri],
+                        label: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                      }
+                      patchReferenceLines(next)
+                    }}
+                  />
+                </div>
+              </div>
+            {/each}
           </div>
           {/if}
 
@@ -6284,19 +7414,111 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 onclick={clearStructuralTextColorCustom}
               >Auto</Button>
             </div>
-            <div class="flex items-end pb-1">
+            <div class="flex flex-wrap items-end gap-2 pb-1">
               <label class="flex items-center gap-2">
-                <Checkbox name="show-grid" bind:checked={ps.showGrid} />
+                <Checkbox
+                  name="show-grid"
+                  checked={plotEdit.showGrid !== false}
+                  onchange={(e) => setPlotField({ showGrid: e.currentTarget.checked })}
+                />
                 <span class="sidebar-label">Show grid</span>
               </label>
+              <div>
+                <p class="sidebar-label mb-0.5">Grid color</p>
+                <div class="flex items-center gap-1">
+                  <input
+                    type="color"
+                    value={String(plotEdit.gridColor || '').trim() || resolvedStructColors.textColor}
+                    disabled={plotEdit.showGrid === false}
+                    class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0 disabled:opacity-40"
+                    oninput={(e) => setPlotField({ gridColor: e.currentTarget.value })}
+                    title="Background grid line color"
+                  />
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={!String(plotEdit.gridColor || '').trim()}
+                    onclick={() => setPlotField({ gridColor: '' })}
+                  >Auto</Button>
+                </div>
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-1">
+              <div>
+                <p class="sidebar-label mb-0.5">Line width</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="0.5"
+                  max="12"
+                  step="0.5"
+                  value={plotEdit.lineWidth}
+                  className="w-full"
+                  oninput={(e) =>
+                    setPlotField({
+                      lineWidth: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    })
+                  }
+                />
+              </div>
+              <div>
+                <p class="sidebar-label mb-0.5">Line style</p>
+                <Select
+                  size="sm"
+                  className="w-full"
+                  value={plotEdit.lineStyle || 'solid'}
+                  onchange={(e) =>
+                    setPlotField({
+                      lineStyle: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                    })
+                  }
+                >
+                  <option value="solid">Solid</option>
+                  <option value="dashed">Dashed</option>
+                  <option value="dotted">Dotted</option>
+                  <option value="dashdot">Dash-dot</option>
+                </Select>
+              </div>
             </div>
           </div>
           {#if structuralType === 'area_per_lipid'}
             <div class="space-y-1 rounded border border-neutral-800 p-2">
               <p class="sidebar-label">Area per lipid series (this set)</p>
               <p class="sidebar-hint">
-                Average uses the set color. Upper/lower colors and labels apply only to the selected set.
+                Uncheck a series to hide it on the plot. CSV still stores all three.
               </p>
+              <div class="flex flex-wrap gap-x-3 gap-y-1">
+                <label class="flex items-center gap-1.5">
+                  <Checkbox
+                    name="apl-show-mean"
+                    size="sm"
+                    checked={ps.aplShowMean !== false}
+                    onchange={(e) =>
+                      setAplSeriesVisible('mean', e.currentTarget.checked)}
+                  />
+                  <span class="text-xs text-neutral-700 dark:text-neutral-300">Average</span>
+                </label>
+                <label class="flex items-center gap-1.5">
+                  <Checkbox
+                    name="apl-show-upper"
+                    size="sm"
+                    checked={ps.aplShowUpper !== false}
+                    onchange={(e) =>
+                      setAplSeriesVisible('upper', e.currentTarget.checked)}
+                  />
+                  <span class="text-xs text-neutral-700 dark:text-neutral-300">Upper leaflet</span>
+                </label>
+                <label class="flex items-center gap-1.5">
+                  <Checkbox
+                    name="apl-show-lower"
+                    size="sm"
+                    checked={ps.aplShowLower !== false}
+                    onchange={(e) =>
+                      setAplSeriesVisible('lower', e.currentTarget.checked)}
+                  />
+                  <span class="text-xs text-neutral-700 dark:text-neutral-300">Lower leaflet</span>
+                </label>
+              </div>
               {#if activeAnalysisSet}
                 <div class="col-span-2 grid grid-cols-1 gap-1">
                   <div>
@@ -6564,40 +7786,29 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     onchange={() => applyChartAppearance()}
                   />
                 </div>
-                <div>
-                  <p class="sidebar-label mb-0.5">Line width</p>
-                  <Input
-                    size="sm"
-                    type="number"
-                    min="1"
-                    max="6"
-                    step="0.5"
-                    bind:value={ps.lineWidth}
-                    className="w-full"
-                    onchange={() => applyChartAppearance()}
-                  />
-                </div>
               </div>
             </div>
-            <p class="sidebar-hint">
-              With no exclude selection, a flat mean APL is expected when the lateral box is fixed
-              (e.g. NVT): Voronoi areas sum to L<sub>x</sub>·L<sub>y</sub>, so mean ≈ box area /
-              n<sub>lipids</sub>. With protein exclusion enabled, mean APL is reduced by the protein
-              footprint. Leaflets can still fluctuate. Check the backend log for box vs mean APL
-              diagnostics.
-            </p>
           {/if}
           {/if}
 
           {#if mode === 'structural'}
+            <button
+              type="button"
+              class="flex w-full items-center gap-1.5 rounded-md border border-neutral-800 px-2 py-1 text-left text-xs text-neutral-300 hover:bg-neutral-900"
+              onclick={() => (plotSettingsAdvancedOpen = !plotSettingsAdvancedOpen)}
+            >
+              <Gear className="size-3.5" />
+              <span class="sidebar-label">Advanced</span>
+              <span class="ml-auto sidebar-hint">{plotSettingsAdvancedOpen ? '▲' : '▼'}</span>
+            </button>
+          {/if}
+          {#if mode === 'structural' && plotSettingsAdvancedOpen}
             <label class="flex items-center gap-2">
               <Checkbox name="show-selection-subtitle" bind:checked={ps.showSelectionSubtitle} />
               <span class="sidebar-label">Show selection on plot</span>
             </label>
-          {/if}
 
           <!-- Aspect ratio + transparent bg + DPI + font (structural) -->
-          {#if mode === 'structural'}
           <div class="grid grid-cols-2 gap-1">
             <div>
               <p class="sidebar-label mb-0.5">Aspect ratio (W/H)</p>
@@ -6645,10 +7856,19 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           {/if}
 
           {#if mode === 'structural'}
-          <!-- Legend position -->
+          {#if compareLayout !== 'grid' || gridLayout.legendMode === 'each' || gridLayout.legendMode === 'one'}
           <div>
             <p class="sidebar-label mb-0.5">Legend position</p>
-            <Select size="sm" bind:value={ps.legendPosition} className="w-full">
+            <Select
+              size="sm"
+              value={plotEdit.legendPosition || 'top-left'}
+              className="w-full"
+              onchange={(e) =>
+                setPlotField({
+                  legendPosition: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                })
+              }
+            >
               <option value="bottom">Below chart</option>
               <option value="top-left">Inside — top left</option>
               <option value="top-right">Inside — top right</option>
@@ -6657,6 +7877,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               <option value="none">Hidden</option>
             </Select>
           </div>
+          {/if}
           <div class="grid grid-cols-2 gap-1">
             <div>
               <p class="sidebar-label mb-0.5">Legend square (px)</p>
@@ -6664,10 +7885,15 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 size="sm"
                 type="number"
                 min="6"
-                max="28"
+                max="48"
                 step="1"
-                bind:value={ps.legendSwatchSize}
+                value={plotEdit.legendSwatchSize}
                 className="w-full"
+                oninput={(e) =>
+                  setPlotField({
+                    legendSwatchSize: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                  })
+                }
               />
             </div>
             <div>
@@ -6676,10 +7902,15 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 size="sm"
                 type="number"
                 min="7"
-                max="22"
+                max="48"
                 step="1"
-                bind:value={ps.legendFontSize}
+                value={plotEdit.legendFontSize}
                 className="w-full"
+                oninput={(e) =>
+                  setPlotField({
+                    legendFontSize: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                  })
+                }
               />
             </div>
             <div>
@@ -6688,10 +7919,15 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 size="sm"
                 type="number"
                 min="7"
-                max="22"
+                max="64"
                 step="1"
-                bind:value={ps.axisFontSize}
+                value={plotEdit.axisFontSize}
                 className="w-full"
+                oninput={(e) =>
+                  setPlotField({
+                    axisFontSize: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                  })
+                }
               />
             </div>
             <div>
@@ -6700,10 +7936,15 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 size="sm"
                 type="number"
                 min="8"
-                max="28"
+                max="64"
                 step="1"
-                bind:value={ps.titleFontSize}
+                value={plotEdit.titleFontSize}
                 className="w-full"
+                oninput={(e) =>
+                  setPlotField({
+                    titleFontSize: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                  })
+                }
               />
             </div>
           </div>
@@ -6717,7 +7958,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 size="sm"
                 type="number"
                 min="6"
-                max="28"
+                max="48"
                 step="1"
                 bind:value={ePlotGlobal.legendSwatchSize}
                 className="w-full"
@@ -6729,7 +7970,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 size="sm"
                 type="number"
                 min="7"
-                max="22"
+                max="48"
                 step="1"
                 bind:value={ePlotGlobal.legendFontSize}
                 className="w-full"
@@ -6741,7 +7982,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 size="sm"
                 type="number"
                 min="7"
-                max="22"
+                max="64"
                 step="1"
                 bind:value={ePlotGlobal.axisFontSize}
                 className="w-full"
@@ -6753,7 +7994,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 size="sm"
                 type="number"
                 min="8"
-                max="28"
+                max="64"
                 step="1"
                 bind:value={ePlotGlobal.titleFontSize}
                 className="w-full"
@@ -6763,19 +8004,60 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           {/if}
 
           {#if mode === 'structural'}
-          <!-- Margin extra (for long tick labels) -->
           <div class="grid grid-cols-2 gap-1">
             <div>
               <p class="sidebar-label mb-0.5">Extra left margin</p>
               <Input
                 size="sm"
                 type="number"
-                min="0"
-                max="120"
-                step="5"
-                bind:value={ps.extraLeftMargin}
+                min="-80"
+                max="240"
+                step="1"
+                value={plotEdit.extraLeftMargin}
                 className="w-full"
                 placeholder="0"
+                title="0 is tight to the Y numbers. Negative pulls the plot left."
+                oninput={(e) =>
+                  setPlotField({
+                    extraLeftMargin: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                  })
+                }
+              />
+            </div>
+            <div>
+              <p class="sidebar-label mb-0.5">Extra right margin</p>
+              <Input
+                size="sm"
+                type="number"
+                min="-80"
+                max="240"
+                step="1"
+                value={plotEdit.extraRightMargin ?? '0'}
+                className="w-full"
+                placeholder="0"
+                oninput={(e) =>
+                  setPlotField({
+                    extraRightMargin: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                  })
+                }
+              />
+            </div>
+            <div>
+              <p class="sidebar-label mb-0.5">Extra top margin</p>
+              <Input
+                size="sm"
+                type="number"
+                min="-80"
+                max="240"
+                step="1"
+                value={plotEdit.extraTopMargin ?? '0'}
+                className="w-full"
+                placeholder="0"
+                oninput={(e) =>
+                  setPlotField({
+                    extraTopMargin: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                  })
+                }
               />
             </div>
             <div>
@@ -6783,15 +8065,171 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               <Input
                 size="sm"
                 type="number"
-                min="0"
-                max="80"
-                step="5"
-                bind:value={ps.extraBottomMargin}
+                min="-80"
+                max="240"
+                step="1"
+                value={plotEdit.extraBottomMargin}
                 className="w-full"
                 placeholder="0"
+                oninput={(e) =>
+                  setPlotField({
+                    extraBottomMargin: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                  })
+                }
+              />
+            </div>
+            <div>
+              <p class="sidebar-label mb-0.5">Tick number gap</p>
+              <Input
+                size="sm"
+                type="number"
+                min="0"
+                max="32"
+                step="1"
+                value={plotEdit.tickLabelGap ?? '8'}
+                className="w-full"
+                placeholder="8"
+                title="Space between tick marks and tick numbers"
+                oninput={(e) =>
+                  setPlotField({
+                    tickLabelGap: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                  })
+                }
               />
             </div>
           </div>
+          <label class="flex items-center gap-2">
+            <Checkbox
+              name="overlay-show-ticks"
+              checked={plotEdit.showTicks !== false}
+              onchange={(e) => setPlotField({ showTicks: e.currentTarget.checked })}
+            />
+            <span class="sidebar-label">Show tick marks</span>
+          </label>
+            <div class="grid grid-cols-2 gap-1">
+              <div>
+                <p class="sidebar-label mb-0.5">Tick length</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="0"
+                  max="16"
+                  step="1"
+                  value={plotEdit.tickLength}
+                  className="w-full"
+                  oninput={(e) =>
+                    setPlotField({
+                      tickLength: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    })
+                  }
+                />
+              </div>
+              <div>
+                <p class="sidebar-label mb-0.5">Tick width</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="0.2"
+                  max="8"
+                  step="0.2"
+                  value={plotEdit.tickWidth}
+                  className="w-full"
+                  oninput={(e) =>
+                    setPlotField({
+                      tickWidth: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    })
+                  }
+                />
+              </div>
+              <div>
+                <p class="sidebar-label mb-0.5">Axis line width</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="0.2"
+                  max="8"
+                  step="0.2"
+                  value={plotEdit.spineWidth}
+                  className="w-full"
+                  oninput={(e) =>
+                    setPlotField({
+                      spineWidth: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    })
+                  }
+                />
+              </div>
+              <div>
+                <p class="sidebar-label mb-0.5">X tick step</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={ps.xTickStep || ''}
+                  placeholder="count"
+                  className="w-full"
+                  title="Spacing in X units. Empty uses tick count."
+                  oninput={(e) =>
+                    patchStructuralPlot({
+                      xTickStep: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    })
+                  }
+                />
+              </div>
+              <div>
+                <p class="sidebar-label mb-0.5">Y tick step</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={ps.yTickStep || ''}
+                  placeholder="count"
+                  className="w-full"
+                  title="Spacing in Y units. Empty uses tick count."
+                  oninput={(e) =>
+                    patchStructuralPlot({
+                      yTickStep: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    })
+                  }
+                />
+              </div>
+            </div>
+            <p class="sidebar-label mb-0.5">Axis box</p>
+            <div class="grid grid-cols-2 gap-x-2 gap-y-1">
+              <label class="flex items-center gap-2">
+                <Checkbox
+                  name="overlay-spine-left"
+                  checked={plotEdit.spineLeft !== false}
+                  onchange={(e) => setPlotField({ spineLeft: e.currentTarget.checked })}
+                />
+                <span class="sidebar-label">Left</span>
+              </label>
+              <label class="flex items-center gap-2">
+                <Checkbox
+                  name="overlay-spine-bottom"
+                  checked={plotEdit.spineBottom !== false}
+                  onchange={(e) => setPlotField({ spineBottom: e.currentTarget.checked })}
+                />
+                <span class="sidebar-label">Bottom</span>
+              </label>
+              <label class="flex items-center gap-2">
+                <Checkbox
+                  name="overlay-spine-top"
+                  checked={plotEdit.spineTop === true}
+                  onchange={(e) => setPlotField({ spineTop: e.currentTarget.checked })}
+                />
+                <span class="sidebar-label">Top</span>
+              </label>
+              <label class="flex items-center gap-2">
+                <Checkbox
+                  name="overlay-spine-right"
+                  checked={plotEdit.spineRight === true}
+                  onchange={(e) => setPlotField({ spineRight: e.currentTarget.checked })}
+                />
+                <span class="sidebar-label">Right</span>
+              </label>
+            </div>
           {/if}
 
           <!-- Actions -->
@@ -6808,6 +8246,9 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                       ...structDefaults,
                       ...(structuralType === 'area_per_lipid' ? { yUnit: 'Å²' } : {})
                     }
+                  }
+                  if (compareLayout === 'grid') {
+                    gridLayout = clearCellPlotKeysFromOverrides(gridLayout, CELL_PLOT_KEYS)
                   }
                   bumpPlotData()
                 } else {
@@ -7042,21 +8483,6 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
     class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
     style={paneBackgroundStyle}
   >
-    {#if plotViewBusy || structuralTypeChanging}
-      <div
-        class="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-neutral-950/35"
-        style="backdrop-filter:blur(1px)"
-        aria-live="polite"
-        aria-busy="true"
-      >
-        <div
-          class="flex items-center gap-2 rounded-lg border border-neutral-600/50 bg-neutral-900/90 px-4 py-2 text-sm text-neutral-100 shadow-lg"
-        >
-          <Spinner className="size-5 text-blue-400" />
-          <span>{plotViewBusyLabel}</span>
-        </div>
-      </div>
-    {/if}
     <h1 class="m-4 mb-2 text-xl font-semibold">{displayTitle || 'Analysis'}</h1>
 
     {#if lastError}
@@ -7073,6 +8499,373 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             Copy
           </Button>
         </div>
+      </div>
+    {/if}
+
+    {#if mode === 'structural'}
+      <div class="mx-4 mb-2 space-y-2">
+        <div class="relative z-10 flex flex-wrap items-center gap-1">
+          <Button
+            size="sm"
+            variant={compareLayout === 'overlay' ? 'default' : 'outline'}
+            className="gap-1 px-2"
+            onclick={() => setCompareLayout('overlay')}
+            title="Overlay all sets on one plot"
+          >
+            <Layers className="size-3.5" />
+            Overlay
+          </Button>
+          <Button
+            size="sm"
+            variant={compareLayout === 'grid' ? 'default' : 'outline'}
+            className="gap-1 px-2"
+            onclick={() => setCompareLayout('grid')}
+            title="Custom grid of plots"
+          >
+            <Grid2x2Plus className="size-3.5" />
+            Grid
+          </Button>
+          {#if compareLayout === 'grid'}
+            <span class="mx-1 h-4 w-px bg-neutral-700" aria-hidden="true"></span>
+            <Button
+              size="sm"
+              variant="outline"
+              className="px-2"
+              disabled={(Number(gridLayout.cols) || 1) <= 1}
+              onclick={removeGridColumn}
+              title="Remove column"
+            >− Col</Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="px-2"
+              disabled={(Number(gridLayout.cols) || 1) >= 8}
+              onclick={addGridColumn}
+              title="Add column"
+            >+ Col</Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="px-2"
+              disabled={(Number(gridLayout.rows) || 1) <= 1}
+              onclick={removeGridRow}
+              title="Remove row"
+            >− Row</Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="px-2"
+              disabled={(Number(gridLayout.rows) || 1) >= 16}
+              onclick={addGridRow}
+              title="Add row"
+            >+ Row</Button>
+            <span class="px-1 text-[11px] text-neutral-500">{gridLayout.cols}×{gridLayout.rows}</span>
+            <Button
+              size="sm"
+              variant={plotGridOptionsOpen ? 'default' : 'outline'}
+              onclick={() => (plotGridOptionsOpen = !plotGridOptionsOpen)}
+              title="Gap, labels, legend, background"
+            >Grid options</Button>
+          {/if}
+        </div>
+        {#if compareLayout === 'overlay' && analysisSets.length > 1}
+          <div>
+            <p class="sidebar-label mb-0.5">Overlay draw order</p>
+            <OrderedSetChips
+              setIds={syncOrderedIds(gridLayout.overlaySetIds, analysisSets.map((s) => s.id))}
+              sets={gridChipSets}
+              onchange={setOverlaySetIds}
+            />
+          </div>
+        {/if}
+        {#if compareLayout === 'grid' && plotGridOptionsOpen}
+          <div class="space-y-2 rounded-md border border-neutral-800 p-2 text-xs">
+            <div class="grid grid-cols-2 gap-1 sm:grid-cols-4">
+              <div>
+                <p class="sidebar-label mb-0.5">Gap (px)</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="0"
+                  max="80"
+                  step="1"
+                  value={gridLayout.gapPx}
+                  className="w-full"
+                  oninput={(e) =>
+                    patchGridChrome({
+                      gapPx: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    })
+                  }
+                />
+              </div>
+              <div>
+                <p class="sidebar-label mb-0.5">Cell aspect (x/y)</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="0.4"
+                  max="5"
+                  step="0.1"
+                  value={gridLayout.aspectRatio}
+                  placeholder={String(ps.aspectRatio || '2.5')}
+                  className="w-full"
+                  oninput={(e) =>
+                    patchGridChrome({
+                      aspectRatio: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    })
+                  }
+                />
+              </div>
+              <div>
+                <p class="sidebar-label mb-0.5">Last incomplete row</p>
+                <Select
+                  size="sm"
+                  className="w-full"
+                  value={gridLayout.lastRowAlign}
+                  onchange={(e) =>
+                    patchGridChrome({
+                      lastRowAlign: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                    })
+                  }
+                >
+                  <option value="start">Left</option>
+                  <option value="center">Center</option>
+                </Select>
+              </div>
+              <div>
+                <p class="sidebar-label mb-0.5">Legend</p>
+                <Select
+                  size="sm"
+                  className="w-full"
+                  value={gridLayout.legendMode}
+                  onchange={(e) =>
+                    patchGridChrome({
+                      legendMode: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                    })
+                  }
+                >
+                  <option value="each">Each cell</option>
+                  <option value="one">One cell</option>
+                  <option value="outside">Outside strip</option>
+                  <option value="none">None</option>
+                </Select>
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-1 sm:grid-cols-4">
+              <div>
+                <p class="sidebar-label mb-0.5">X titles</p>
+                <Select
+                  size="sm"
+                  className="w-full"
+                  value={gridLayout.showXLabels}
+                  onchange={(e) =>
+                    patchGridChrome({
+                      showXLabels: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                    })
+                  }
+                >
+                  <option value="all">All</option>
+                  <option value="bottom">Last row only</option>
+                  <option value="none">None</option>
+                </Select>
+              </div>
+              <div>
+                <p class="sidebar-label mb-0.5">Y titles</p>
+                <Select
+                  size="sm"
+                  className="w-full"
+                  value={gridLayout.showYLabels}
+                  onchange={(e) =>
+                    patchGridChrome({
+                      showYLabels: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                    })
+                  }
+                >
+                  <option value="all">All</option>
+                  <option value="left">First column only</option>
+                  <option value="none">None</option>
+                </Select>
+              </div>
+              <div>
+                <p class="sidebar-label mb-0.5">X tick numbers</p>
+                <Select
+                  size="sm"
+                  className="w-full"
+                  value={gridLayout.showXTickLabels}
+                  onchange={(e) =>
+                    patchGridChrome({
+                      showXTickLabels: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                    })
+                  }
+                >
+                  <option value="all">All</option>
+                  <option value="bottom">Last row only</option>
+                  <option value="none">None</option>
+                </Select>
+              </div>
+              <div>
+                <p class="sidebar-label mb-0.5">Y tick numbers</p>
+                <Select
+                  size="sm"
+                  className="w-full"
+                  value={gridLayout.showYTickLabels}
+                  onchange={(e) =>
+                    patchGridChrome({
+                      showYTickLabels: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                    })
+                  }
+                >
+                  <option value="all">All</option>
+                  <option value="left">First column only</option>
+                  <option value="none">None</option>
+                </Select>
+              </div>
+            </div>
+            {#if gridLayout.legendMode === 'one'}
+              <div>
+                <p class="sidebar-label mb-0.5">Legend cell</p>
+                <Select
+                  size="sm"
+                  className="w-full"
+                  value={String(gridLayout.legendCell)}
+                  onchange={(e) =>
+                    patchGridChrome({
+                      legendCell: Number(
+                        /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                      )
+                    })
+                  }
+                >
+                  {#each gridLayout.cells as cell, i (i)}
+                    <option value={String(i)}>Cell {i + 1}{cell.title ? ` · ${cell.title}` : ''}</option>
+                  {/each}
+                </Select>
+              </div>
+            {/if}
+            {#if gridLayout.legendMode === 'outside'}
+              <div class="grid grid-cols-2 gap-1 sm:grid-cols-4">
+                <div>
+                  <p class="sidebar-label mb-0.5">Strip</p>
+                  <Select
+                    size="sm"
+                    className="w-full"
+                    value={gridLayout.legendOutside}
+                    onchange={(e) =>
+                      patchGridChrome({
+                        legendOutside: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                      })
+                    }
+                  >
+                    <option value="bottom">Bottom</option>
+                    <option value="top">Top</option>
+                    <option value="right">Right (side box)</option>
+                    <option value="left">Left (side box)</option>
+                  </Select>
+                </div>
+                <div>
+                  <p class="sidebar-label mb-0.5">Entries</p>
+                  <Select
+                    size="sm"
+                    className="w-full"
+                    value={gridLayout.legendEntries}
+                    onchange={(e) =>
+                      patchGridChrome({
+                        legendEntries: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                      })
+                    }
+                  >
+                    <option value="sets">Sets</option>
+                    <option value="roles">Series roles</option>
+                    <option value="both">Sets and roles</option>
+                  </Select>
+                </div>
+                <div>
+                  <p class="sidebar-label mb-0.5">Columns</p>
+                  <Input
+                    size="sm"
+                    type="number"
+                    min="1"
+                    max="8"
+                    step="1"
+                    value={gridLayout.legendColumns}
+                    className="w-full"
+                    oninput={(e) =>
+                      patchGridChrome({
+                        legendColumns: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                      })
+                    }
+                  />
+                </div>
+                <div>
+                  <p class="sidebar-label mb-0.5">Legend title</p>
+                  <Input
+                    size="sm"
+                    value={gridLayout.legendTitle}
+                    className="w-full"
+                    oninput={(e) =>
+                      patchGridChrome({
+                        legendTitle: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                      })
+                    }
+                  />
+                </div>
+              </div>
+            {/if}
+            <div class="grid grid-cols-2 gap-1 sm:grid-cols-4">
+              <div>
+                <p class="sidebar-label mb-0.5">Figure background</p>
+                <div class="flex items-center gap-1">
+                  <ColorInput
+                    size="sm"
+                    value={gridLayout.figureBg || resolvedStructColors.plotBg}
+                    oninput={(e) =>
+                      patchGridChrome({
+                        figureBg: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                      })
+                    }
+                  />
+                  <Button size="sm" variant="ghost" onclick={() => patchGridChrome({ figureBg: '' })}
+                    >Theme</Button
+                  >
+                </div>
+              </div>
+              <div>
+                <p class="sidebar-label mb-0.5">Cell background</p>
+                <div class="flex items-center gap-1">
+                  <ColorInput
+                    size="sm"
+                    value={gridLayout.cellBg || resolvedStructColors.plotBg}
+                    oninput={(e) =>
+                      patchGridChrome({
+                        cellBg: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                      })
+                    }
+                  />
+                  <Button size="sm" variant="ghost" onclick={() => patchGridChrome({ cellBg: '' })}
+                    >Theme</Button
+                  >
+                </div>
+              </div>
+              <label class="flex items-end gap-2 pb-1">
+                <Checkbox
+                  name="grid-cell-border"
+                  checked={gridLayout.cellBorder !== false}
+                  onchange={(e) =>
+                    patchGridChrome({
+                      cellBorder: /** @type {HTMLInputElement} */ (e.currentTarget).checked
+                    })
+                  }
+                />
+                <span class="sidebar-label">Cell border</span>
+              </label>
+              <div class="flex items-end">
+                <Button size="sm" variant="outline" className="w-full" onclick={resetGridToAuto}
+                  >Reset auto (one set / cell)</Button
+                >
+              </div>
+            </div>
+          </div>
+        {/if}
       </div>
     {/if}
 
@@ -7094,9 +8887,24 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
       </p>
     {:else}
       <div
-        class="mx-4 mb-4 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto"
+        class="relative mx-4 mb-4 flex min-h-0 flex-1 flex-col gap-3 overflow-x-hidden overflow-y-auto"
+        style="scrollbar-gutter: stable;"
         bind:this={plotExportRoot}
       >
+        {#if plotViewBusy || structuralTypeChanging}
+          <div
+            class="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-neutral-950/25"
+            aria-live="polite"
+            aria-busy="true"
+          >
+            <div
+              class="flex items-center gap-2 rounded-lg border border-neutral-600/50 bg-neutral-900/90 px-4 py-2 text-sm text-neutral-100 shadow-lg"
+            >
+              <Spinner className="size-5 text-blue-400" />
+              <span>{plotViewBusyLabel}</span>
+            </div>
+          </div>
+        {/if}
         {#if (mode === 'structural' ? chartView.series.length > 0 : energeticPanels.length > 0 || displaySeries.length > 0)}
           <div class="flex flex-wrap items-center gap-2">
             <span class="text-xs text-neutral-400">Tools:</span>
@@ -7115,7 +8923,58 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               variant={chartInteractionMode === 'rangeSelect' ? 'default' : 'outline'}
               onclick={() => (chartInteractionMode = 'rangeSelect')}>Range stats</Button
             >
-            <Button size="sm" variant="outline" onclick={resetChartView}>Reset</Button>
+            <div class="relative flex" bind:this={resetMenuWrapEl}>
+              <Button
+                size="sm"
+                variant="outline"
+                className="rounded-r-none"
+                onclick={resetChartView}
+                title="Undo zoom and pan. Plot Settings min/max stay."
+              >Reset view</Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="rounded-l-none border-l-0 px-1.5"
+                title="More reset options"
+                aria-haspopup="menu"
+                aria-expanded={resetMenuOpen}
+                onclick={(e) => {
+                  e.stopPropagation()
+                  resetMenuOpen = !resetMenuOpen
+                }}
+              >
+                <ChevronDown className="size-3.5" />
+              </Button>
+              {#if resetMenuOpen}
+                <div
+                  class="absolute top-full left-0 z-30 mt-1 min-w-[14rem] rounded-md border border-neutral-700 bg-neutral-900 py-1 text-xs shadow-lg"
+                  role="menu"
+                >
+                  <button
+                    type="button"
+                    class="block w-full px-3 py-1.5 text-left text-neutral-200 hover:bg-neutral-800"
+                    role="menuitem"
+                    onclick={resetChartView}
+                  >
+                    Reset view
+                    <span class="mt-0.5 block text-[10px] font-normal text-neutral-500"
+                      >Zoom and pan only</span
+                    >
+                  </button>
+                  <button
+                    type="button"
+                    class="block w-full px-3 py-1.5 text-left text-neutral-200 hover:bg-neutral-800"
+                    role="menuitem"
+                    onclick={resetChartViewAndLimits}
+                  >
+                    Reset view and axis limits
+                    <span class="mt-0.5 block text-[10px] font-normal text-neutral-500"
+                      >Also clear Plot Settings min/max</span
+                    >
+                  </button>
+                </div>
+              {/if}
+            </div>
             {#if hasChartTimeAxis && (chartInteractionMode === 'rangeSelect' || statsRange)}
               <span class="text-xs text-neutral-400">Range ({chartTimeUnitLabel}):</span>
               <Input
@@ -7146,49 +9005,88 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           </div>
         {/if}
 
-        {#key `${compareLayout}-${energeticCompareLayout}-${plotDataRevision}-${structuralType}-${mode}-${chartView.mode}-${chartView.series.length}-${energeticLayout}-${energeticPanels.length}-${selectedProperties.join('|')}-${compareEnergeticProperties.join('|')}`}
+        {#if pageActive}
         {#if mode === 'structural' && chartView.mode === 'grid'}
-          <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
-            {#each chartView.panels as panel (panel.key)}
-              <div class="rounded-lg border border-neutral-800 p-2" data-chart-export={panel.title}>
-                <LineChart
-                  series={panel.series}
-                  xLabel={displayXLabel}
-                  yLabel={displayYLabel}
-                  plotBg={resolvedStructColors.plotBg}
-                  tickColor={resolvedStructColors.textColor}
-                  labelColor={resolvedStructColors.textColor}
-                  axisColor={resolvedStructColors.textColor}
-                  gridColor={resolvedStructColors.textColor + '40'}
-                  showGrid={ps.showGrid}
-                  aspectRatio={Number(ps.aspectRatio) || 2.5}
-                  transparentBg={ps.transparentBg}
-                  fontFamily={ps.fontFamily || 'Roboto, sans-serif'}
-                  chartTitle={panel.title}
-                  chartSubtitle={displayTitle}
-                  xTickLabels={displayXTickLabels}
-                  xTicks={Number(ps.xTickCount) || 5}
-                  yTicks={Number(ps.yTickCount) || 5}
-                  xTickDecimals={ps.xTickDecimals}
-                  yTickDecimals={ps.yTickDecimals}
-                  extraLeftMargin={Number(ps.extraLeftMargin) || 0}
-                  extraBottomMargin={Number(ps.extraBottomMargin) || 0}
-                  legendPosition={ps.legendPosition || 'top-left'}
-                  legendSwatchSize={Number(ps.legendSwatchSize) || 12}
-                  legendFontSize={Number(ps.legendFontSize) || 10}
-                  axisFontSize={Number(ps.axisFontSize) || 12}
-                  titleFontSize={Number(ps.titleFontSize) || 13}
-                  xMinOverride={xMinO}
-                  xMaxOverride={xMaxO}
-                  yMinOverride={yMinO}
-                  yMaxOverride={yMaxO}
-                  interactionMode={hasChartTimeAxis ? chartInteractionMode : 'pan'}
-                  statsRange={hasChartTimeAxis ? statsRange : null}
-                  onAxisRange={applyStructAxisRange}
-                  onStatsRange={handleStatsRange}
-                />
-              </div>
-            {/each}
+          {@const outside = gridLayout.legendMode === 'outside'}
+          {@const loc = gridLayout.legendOutside}
+          {@const mosaicGap = `${Number(gridLayout.gapPx) || 0}px`}
+          {@const stripFlex =
+            outside && (loc === 'left' || loc === 'right') ? 'flex-row items-start' : 'flex-col'}
+          <div
+            class={`flex min-w-0 ${stripFlex}`}
+            data-chart-mosaic="1"
+            style={`gap: ${mosaicGap}; ${gridLayout.figureBg ? `background: ${gridLayout.figureBg};` : ''} padding: 0.25rem; overflow-anchor: none;`}
+          >
+            {#if outside && loc === 'top'}
+              <ChartLegend
+                series={outsideLegendSeries}
+                columns={gridLayout.legendColumns}
+                title={gridLayout.legendTitle}
+                fontFamily={ps.fontFamily || 'Roboto, sans-serif'}
+                fontSize={Number(ps.legendFontSize) || 10}
+                swatchSize={Number(ps.legendSwatchSize) || 12}
+                textColor={resolvedStructColors.textColor}
+              />
+            {/if}
+            {#if outside && loc === 'left'}
+              <ChartLegend
+                series={outsideLegendSeries}
+                columns={1}
+                title={gridLayout.legendTitle}
+                fontFamily={ps.fontFamily || 'Roboto, sans-serif'}
+                fontSize={Number(ps.legendFontSize) || 10}
+                swatchSize={Number(ps.legendSwatchSize) || 12}
+                textColor={resolvedStructColors.textColor}
+                boxed
+              />
+            {/if}
+            <div class="flex min-w-0 w-full flex-col" style={`gap: ${mosaicGap}`}>
+              {#each structuralMosaic.fullRows as row, ri (ri)}
+                <div
+                  class="grid min-w-0"
+                  style={`grid-template-columns: repeat(${gridLayout.cols}, minmax(0, 1fr)); gap: ${mosaicGap}; align-content: start;`}
+                >
+                  {#each row as panel (panel.key)}
+                    {@render structuralGridCell(panel)}
+                  {/each}
+                </div>
+              {/each}
+              {#if structuralMosaic.centerLast}
+                <div class="flex justify-center" style={`gap: ${mosaicGap}`}>
+                  {#each structuralMosaic.lastRow as panel (panel.key)}
+                    <div
+                      class="min-w-0"
+                      style={`width: calc((100% - ${(gridLayout.cols - 1) * (Number(gridLayout.gapPx) || 0)}px) / ${gridLayout.cols})`}
+                    >
+                      {@render structuralGridCell(panel)}
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+            {#if outside && loc === 'right'}
+              <ChartLegend
+                series={outsideLegendSeries}
+                columns={1}
+                title={gridLayout.legendTitle}
+                fontFamily={ps.fontFamily || 'Roboto, sans-serif'}
+                fontSize={Number(ps.legendFontSize) || 10}
+                swatchSize={Number(ps.legendSwatchSize) || 12}
+                textColor={resolvedStructColors.textColor}
+                boxed
+              />
+            {/if}
+            {#if outside && loc === 'bottom'}
+              <ChartLegend
+                series={outsideLegendSeries}
+                columns={gridLayout.legendColumns}
+                title={gridLayout.legendTitle}
+                fontFamily={ps.fontFamily || 'Roboto, sans-serif'}
+                fontSize={Number(ps.legendFontSize) || 10}
+                swatchSize={Number(ps.legendSwatchSize) || 12}
+                textColor={resolvedStructColors.textColor}
+              />
+            {/if}
           </div>
         {:else if mode === 'structural'}
           <div data-chart-export="">
@@ -7200,7 +9098,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             tickColor={resolvedStructColors.textColor}
             labelColor={resolvedStructColors.textColor}
             axisColor={resolvedStructColors.textColor}
-            gridColor={resolvedStructColors.textColor + '40'}
+            gridColor={plotGridColor(ps, resolvedStructColors.textColor)}
             showGrid={ps.showGrid}
             aspectRatio={Number(ps.aspectRatio) || 2.5}
             transparentBg={ps.transparentBg}
@@ -7212,13 +9110,17 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             yTicks={Number(ps.yTickCount) || 5}
             xTickDecimals={ps.xTickDecimals}
             yTickDecimals={ps.yTickDecimals}
-            extraLeftMargin={Number(ps.extraLeftMargin) || 0}
-            extraBottomMargin={Number(ps.extraBottomMargin) || 0}
+            {...lineChartExtraMarginProps(ps)}
+            tickLabelGap={Number(ps.tickLabelGap) || 8}
             legendPosition={ps.legendPosition || 'top-left'}
             legendSwatchSize={Number(ps.legendSwatchSize) || 12}
             legendFontSize={Number(ps.legendFontSize) || 10}
             axisFontSize={Number(ps.axisFontSize) || 12}
             titleFontSize={Number(ps.titleFontSize) || 13}
+            {...lineChartAxisProps(ps)}
+            xTickStep={plotTickStep('x')}
+            yTickStep={plotTickStep('y')}
+            referenceLines={structReferenceLines}
             xMinOverride={xMinO}
             xMaxOverride={xMaxO}
             yMinOverride={yMinO}
@@ -7264,16 +9166,17 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               yTicks={Number(ePlotGlobal.yTickCount) || 5}
               xTickDecimals={ePlotGlobal.xTickDecimals}
               yTickDecimals={ePlotGlobal.yTickDecimals}
-              extraLeftMargin={Number(ePlotGlobal.extraLeftMargin) || 0}
+              {...lineChartExtraMarginProps(ePlotGlobal)}
               legendPosition={ePlotGlobal.legendPosition || energPanelShell.legendPosition || 'top-left'}
               legendSwatchSize={Number(ePlotGlobal.legendSwatchSize) || 12}
               legendFontSize={Number(ePlotGlobal.legendFontSize) || 10}
               axisFontSize={Number(ePlotGlobal.axisFontSize) || 12}
               titleFontSize={Number(ePlotGlobal.titleFontSize) || 13}
-              xMinOverride={xMinP}
-              xMaxOverride={xMaxP}
-              yMinOverride={yMinP}
-              yMaxOverride={yMaxP}
+              {...lineChartAxisProps(ePlotGlobal)}
+              xMinOverride={energViewRangeByKey[pk]?.xMin ?? xMinP}
+              xMaxOverride={energViewRangeByKey[pk]?.xMax ?? xMaxP}
+              yMinOverride={energViewRangeByKey[pk]?.yMin ?? yMinP}
+              yMaxOverride={energViewRangeByKey[pk]?.yMax ?? yMaxP}
               interactionMode={chartInteractionMode}
               statsRange={statsRange}
               onAxisRange={(r) => applyPanelAxisRange(pk, r)}
@@ -7346,16 +9249,17 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     yTicks={Number(ePlotGlobal.yTickCount) || 5}
                     xTickDecimals={ePlotGlobal.xTickDecimals}
                     yTickDecimals={ePlotGlobal.yTickDecimals}
-                    extraLeftMargin={Number(ePlotGlobal.extraLeftMargin) || 0}
+                    {...lineChartExtraMarginProps(ePlotGlobal)}
                     legendPosition={ePlotGlobal.legendPosition || energPanelShell.legendPosition || 'top-left'}
                     legendSwatchSize={Number(ePlotGlobal.legendSwatchSize) || 12}
                     legendFontSize={Number(ePlotGlobal.legendFontSize) || 10}
                     axisFontSize={Number(ePlotGlobal.axisFontSize) || 12}
                     titleFontSize={Number(ePlotGlobal.titleFontSize) || 13}
-                    xMinOverride={xMinP}
-                    xMaxOverride={xMaxP}
-                    yMinOverride={yMinP}
-                    yMaxOverride={yMaxP}
+                    {...lineChartAxisProps(ePlotGlobal)}
+                    xMinOverride={energViewRangeByKey[pk]?.xMin ?? xMinP}
+                    xMaxOverride={energViewRangeByKey[pk]?.xMax ?? xMaxP}
+                    yMinOverride={energViewRangeByKey[pk]?.yMin ?? yMinP}
+                    yMaxOverride={energViewRangeByKey[pk]?.yMax ?? yMaxP}
                     interactionMode={chartInteractionMode}
                     statsRange={statsRange}
                     onAxisRange={(r) => applyPanelAxisRange(pk, r)}
@@ -7366,7 +9270,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             </div>
           {/if}
         {/if}
-        {/key}
+        {/if}
 
         {#if chartStatsRows.some((row) => row.stats && row.stats.count > 0)}
           <div class="rounded-md border border-neutral-200 dark:border-neutral-800">
