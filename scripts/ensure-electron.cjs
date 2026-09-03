@@ -112,6 +112,7 @@ async function main() {
   const platformPath = getPlatformPath()
   if (isInstalled()) {
     logStep(`Electron ${version} already installed (${platformPath}).`)
+    assertLinuxRuntimeLibs()
     return
   }
 
@@ -119,10 +120,17 @@ async function main() {
 
   if (process.platform === 'win32') {
     installWindows()
+    assertLinuxRuntimeLibs()
     return
   }
 
   await installGeneric()
+  assertLinuxRuntimeLibs()
+}
+
+function assertLinuxRuntimeLibs() {
+  const { assertLinuxElectronLibs } = require('./linux-runtime-libs.cjs')
+  assertLinuxElectronLibs(path.join(electronDir, 'dist', getPlatformPath()))
 }
 
 main()

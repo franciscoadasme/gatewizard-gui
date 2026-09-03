@@ -53,17 +53,29 @@ sudo apt install ./gatewizard-gui-*-linux-amd64.deb
 gatewizard-gui-linux
 ```
 
+Use `apt install ./…deb` (not `dpkg -i`) so Electron’s system libraries are pulled in — including **ALSA** (`libasound2t64` / `libasound2`). Chromium links `libasound.so.2` even though GateWizard does not play sound. A fresh Ubuntu 26.04 or a minimal WSL image often does not have it yet.
+
 **AppImage:**
 ```bash
 chmod +x gatewizard-gui-*-linux-x86_64.AppImage
 ./gatewizard-gui-*-linux-x86_64.AppImage
 ```
-**Fedora Linux:**
 
-Install FUSE support, then run the AppImage:
+AppImage does not install `.deb` dependencies. On a fresh Ubuntu / WSL box, install ALSA first if the launcher reports `libasound.so.2`:
 
 ```bash
-sudo dnf install -y fuse fuse-libs
+sudo apt update
+sudo apt install libasound2t64 || sudo apt install libasound2
+```
+
+If any other `.so` is missing, `gatewizard-gui-linux` (and the AppImage) print the `apt` / `dnf` command and exit instead of a raw loader error.
+
+**Fedora Linux:**
+
+Install FUSE and ALSA, then run the AppImage:
+
+```bash
+sudo dnf install -y fuse fuse-libs alsa-lib
 chmod +x gatewizard-gui-*-linux-x86_64.AppImage
 ./gatewizard-gui-*-linux-x86_64.AppImage
 ```
