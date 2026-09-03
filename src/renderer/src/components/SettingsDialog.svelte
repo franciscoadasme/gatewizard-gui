@@ -3,7 +3,7 @@
   import Spinner from './ui/Spinner.svelte'
   import SceneDefaultsForm from './SceneDefaultsForm.svelte'
   import ClusterSettingsPanel from './ClusterSettingsPanel.svelte'
-  import { appSettings, updateAppSettings } from '../lib/appSettings.svelte.js'
+  import { appSettings, applyUiScale, clampUiScale, updateAppSettings } from '../lib/appSettings.svelte.js'
   import {
     clearPersistedViewerSettings,
     persistViewerSettings
@@ -177,6 +177,13 @@
   /** @param {'dark' | 'light'} theme */
   function onThemePick(theme) {
     setPreferredTheme(theme)
+  }
+
+  /** @param {string | number} raw */
+  function onUiScaleChange(raw) {
+    const uiScale = clampUiScale(Number(raw) / 100)
+    updateAppSettings({ uiScale })
+    void applyUiScale(uiScale)
   }
 
   function onScenePersist() {
@@ -442,31 +449,59 @@
               </label>
             </section>
           {:else if section === 'appearance'}
-            <section class="space-y-3">
-              <h3 class="text-sm font-semibold text-neutral-800 dark:text-neutral-200">Appearance</h3>
-              <p class="text-neutral-500 dark:text-neutral-400">
-                Theme used when the app starts. The sidebar toggle only switches light/dark for the
-                current session and does not change this preference.
-              </p>
-              <div class="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  class="rounded px-3 py-1.5 text-[11px] transition-colors {themeState.preferred === 'dark'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-neutral-200 text-neutral-700 hover:bg-neutral-300 dark:bg-neutral-800 dark:text-neutral-300'}"
-                  onclick={() => onThemePick('dark')}
-                >
-                  Dark
-                </button>
-                <button
-                  type="button"
-                  class="rounded px-3 py-1.5 text-[11px] transition-colors {themeState.preferred === 'light'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-neutral-200 text-neutral-700 hover:bg-neutral-300 dark:bg-neutral-800 dark:text-neutral-300'}"
-                  onclick={() => onThemePick('light')}
-                >
-                  Light
-                </button>
+            <section class="space-y-5">
+              <div class="space-y-3">
+                <h3 class="text-sm font-semibold text-neutral-800 dark:text-neutral-200">Appearance</h3>
+                <p class="text-neutral-500 dark:text-neutral-400">
+                  Theme used when the app starts. The sidebar toggle only switches light/dark for the
+                  current session and does not change this preference.
+                </p>
+                <div class="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    class="rounded px-3 py-1.5 text-[11px] transition-colors {themeState.preferred === 'dark'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-neutral-200 text-neutral-700 hover:bg-neutral-300 dark:bg-neutral-800 dark:text-neutral-300'}"
+                    onclick={() => onThemePick('dark')}
+                  >
+                    Dark
+                  </button>
+                  <button
+                    type="button"
+                    class="rounded px-3 py-1.5 text-[11px] transition-colors {themeState.preferred === 'light'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-neutral-200 text-neutral-700 hover:bg-neutral-300 dark:bg-neutral-800 dark:text-neutral-300'}"
+                    onclick={() => onThemePick('light')}
+                  >
+                    Light
+                  </button>
+                </div>
+              </div>
+              <div class="space-y-2">
+                <div class="flex items-baseline justify-between gap-3">
+                  <h4 class="text-sm font-semibold text-neutral-800 dark:text-neutral-200">UI scale</h4>
+                  <span class="tabular-nums text-neutral-600 dark:text-neutral-300"
+                    >{Math.round(clampUiScale(appSettings.uiScale) * 100)}%</span
+                  >
+                </div>
+                <p class="text-neutral-500 dark:text-neutral-400">
+                  Startup size for the whole app. <kbd class="font-mono text-[10px]">Ctrl+=</kbd> /
+                  <kbd class="font-mono text-[10px]">Ctrl+-</kbd> zoom the current session;
+                  <kbd class="font-mono text-[10px]">Ctrl+0</kbd> resets to this value.
+                </p>
+                <input
+                  type="range"
+                  min="80"
+                  max="150"
+                  step="5"
+                  class="w-full accent-blue-600"
+                  value={Math.round(clampUiScale(appSettings.uiScale) * 100)}
+                  oninput={(e) => onUiScaleChange(e.currentTarget.value)}
+                />
+                <div class="flex justify-between text-[10px] text-neutral-500 dark:text-neutral-400">
+                  <span>80%</span>
+                  <span>150%</span>
+                </div>
               </div>
             </section>
           {:else if section === 'scene'}

@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Settings → Appearance:** UI scale (80–150%, default **110%**). Startup uses this value; **Ctrl+=** / **Ctrl+Shift+=** zoom in, **Ctrl+-** zoom out, **Ctrl+0** resets to the Settings scale (not always 100%).
 - **Analysis Run Analysis:** with multiple sets, the split-button menu can run the current set, all sets, or a checked subset (button label shows how many are selected).
 - **Collapsible side panels:** Preparation, Builder, Equilibration, Tools, and Analysis left options panels (and Visualize’s right Representations panel) can be drag-resized. Drag past the minimum to collapse to a thin rail; click or drag the rail to restore at the default width. Re-clicking the active activity-bar icon toggles the panel. Width and collapsed state are remembered per page.
 - **Visualize empty state:** when no structure is loaded, the viewer center shows a large muted GateWizard logo (theme-aware for light/dark) above a short hint to use **Open ▾**.

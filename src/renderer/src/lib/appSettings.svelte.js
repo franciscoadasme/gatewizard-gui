@@ -1,15 +1,22 @@
 /**
- * App-level preferences (notifications, updates, scene-defaults remember flag).
+ * App-level preferences (notifications, updates, scene-defaults remember flag, UI scale).
  * Theme stays in theme.svelte.js (`gw_theme`). Merge-with-defaults for forward compatibility.
  */
 
 const STORAGE_KEY = 'gw_app_settings'
 
+/** Chromium zoom step (~1.0905). */
+export const UI_ZOOM_STEP = 1.2 ** (1 / 3)
+
+export const UI_SCALE_MIN = 0.8
+export const UI_SCALE_MAX = 1.5
+
 /** @typedef {{
  *   jobNotificationsEnabled: boolean,
  *   updateCheckOnLaunch: boolean,
  *   rememberViewerDefaults: boolean,
- *   dismissedUpdateKey: string | null
+ *   dismissedUpdateKey: string | null,
+ *   uiScale: number
  * }} AppSettings */
 
 /** @type {AppSettings} */
@@ -17,7 +24,18 @@ export const DEFAULT_APP_SETTINGS = {
   jobNotificationsEnabled: true,
   updateCheckOnLaunch: true,
   rememberViewerDefaults: false,
-  dismissedUpdateKey: null
+  dismissedUpdateKey: null,
+  uiScale: 1.1
+}
+
+/**
+ * @param {unknown} n
+ * @returns {number}
+ */
+export function clampUiScale(n) {
+  const v = typeof n === 'number' ? n : Number(n)
+  if (!Number.isFinite(v)) return DEFAULT_APP_SETTINGS.uiScale
+  return Math.min(UI_SCALE_MAX, Math.max(UI_SCALE_MIN, v))
 }
 
 /**
@@ -43,7 +61,11 @@ function normalizeLoaded(raw) {
     dismissedUpdateKey:
       typeof o.dismissedUpdateKey === 'string' || o.dismissedUpdateKey === null
         ? /** @type {string | null} */ (o.dismissedUpdateKey)
-        : DEFAULT_APP_SETTINGS.dismissedUpdateKey
+        : DEFAULT_APP_SETTINGS.dismissedUpdateKey,
+    uiScale:
+      typeof o.uiScale === 'number'
+        ? clampUiScale(o.uiScale)
+        : DEFAULT_APP_SETTINGS.uiScale
   }
 }
 
@@ -58,7 +80,8 @@ export function persistAppSettings() {
         jobNotificationsEnabled: appSettings.jobNotificationsEnabled,
         updateCheckOnLaunch: appSettings.updateCheckOnLaunch,
         rememberViewerDefaults: appSettings.rememberViewerDefaults,
-        dismissedUpdateKey: appSettings.dismissedUpdateKey
+        dismissedUpdateKey: appSettings.dismissedUpdateKey,
+        uiScale: clampUiScale(appSettings.uiScale)
       })
     )
   } catch {
@@ -81,6 +104,24 @@ export function initAppSettings() {
  * @param {Partial<AppSettings>} patch
  */
 export function updateAppSettings(patch) {
-  Object.assign(appSettings, patch)
+  const next = { ...patch }
+  if ('uiScale' in next) {
+    next.uiScale = clampUiScale(next.uiScale)
+  }
+  Object.assign(appSettings, next)
   persistAppSettings()
+}
+
+/**
+ * Apply Settings uiScale to the main window (startup / reset target + live factor).
+ * @param {number} [factor]
+ */
+export async function applyUiScale(factor = appSettings.uiScale) {
+  const scale = clampUiScale(factor)
+  try {
+    await window.api?.setUiZoomDefault?.(scale)
+    await window.api?.setUiZoomFactor?.(scale)
+  } catch {
+    /* ignore when not in Electron */
+  }
 }

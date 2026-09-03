@@ -196,6 +196,83 @@ let splashClosing = false
 /** @type {Electron.Display | null} */
 let launchDisplay = null
 
+/** Chromium zoom step (~1.0905). */
+const UI_ZOOM_STEP = 1.2 ** (1 / 3)
+const UI_SCALE_MIN = 0.8
+const UI_SCALE_MAX = 1.5
+/** Startup / Ctrl+0 target; renderer updates via zoom:setDefault. */
+let defaultUiScale = 1.1
+
+/**
+ * @param {unknown} n
+ * @returns {number}
+ */
+function clampUiScale(n) {
+  const v = typeof n === 'number' ? n : Number(n)
+  if (!Number.isFinite(v)) return 1.1
+  return Math.min(UI_SCALE_MAX, Math.max(UI_SCALE_MIN, v))
+}
+
+/**
+ * @returns {Electron.WebContents | null}
+ */
+function mainWebContents() {
+  if (!mainWindow || mainWindow.isDestroyed()) return null
+  return mainWindow.webContents
+}
+
+/**
+ * @param {number} factor
+ */
+function setMainZoomFactor(factor) {
+  const wc = mainWebContents()
+  if (!wc) return
+  wc.setZoomFactor(clampUiScale(factor))
+}
+
+/**
+ * @param {number} deltaSteps positive = zoom in
+ */
+function stepMainZoom(deltaSteps) {
+  const wc = mainWebContents()
+  if (!wc) return
+  const next = clampUiScale(wc.getZoomFactor() * UI_ZOOM_STEP ** deltaSteps)
+  wc.setZoomFactor(next)
+}
+
+/**
+ * Own zoom shortcuts so Ctrl+= works (Electron's zoomIn role is only Ctrl+Shift+=).
+ * @param {BrowserWindow} win
+ */
+function attachUiZoomShortcuts(win) {
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return
+    if (!(input.control || input.meta)) return
+    if (input.alt) return
+
+    const code = input.code
+    const isZoomIn =
+      code === 'Equal' || code === 'NumpadAdd' || input.key === '+' || input.key === '='
+    const isZoomOut = code === 'Minus' || code === 'NumpadSubtract' || input.key === '-'
+    const isReset = code === 'Digit0' || code === 'Numpad0' || input.key === '0'
+
+    if (isZoomIn) {
+      event.preventDefault()
+      stepMainZoom(1)
+      return
+    }
+    if (isZoomOut) {
+      event.preventDefault()
+      stepMainZoom(-1)
+      return
+    }
+    if (isReset && !input.shift) {
+      event.preventDefault()
+      setMainZoomFactor(defaultUiScale)
+    }
+  })
+}
+
 /** @type {{ win: BrowserWindow, edge: string, startBounds: Electron.Rectangle, startPoint: { x: number, y: number } } | null} */
 let activeResize = null
 
@@ -997,6 +1074,7 @@ function createWindow() {
 
   setupWorkAreaFramelessWindow(mainWindow)
   attachWindowStateHandlers(mainWindow)
+  attachUiZoomShortcuts(mainWindow)
 
   mainWindow.on('ready-to-show', async () => {
     if (mainWindow && !mainWindow.isDestroyed() && launchDisplay) {
@@ -1549,6 +1627,22 @@ ipcMain.handle('runtime:upgrade-gatewizard', async (_event, installSpec) => {
 ipcMain.handle('theme:set', (_event, theme) => {
   if (theme !== 'light' && theme !== 'dark') return
   applyMainWindowTheme(theme)
+})
+
+ipcMain.handle('zoom:getFactor', () => {
+  const wc = mainWebContents()
+  return wc ? wc.getZoomFactor() : defaultUiScale
+})
+
+ipcMain.handle('zoom:setFactor', (_event, factor) => {
+  setMainZoomFactor(factor)
+  const wc = mainWebContents()
+  return wc ? wc.getZoomFactor() : clampUiScale(factor)
+})
+
+ipcMain.handle('zoom:setDefault', (_event, factor) => {
+  defaultUiScale = clampUiScale(factor)
+  return defaultUiScale
 })
 
 ipcMain.handle('window:isFocused', () => {

@@ -36,6 +36,10 @@ const api = {
 
   setAppTheme: (theme) => ipcRenderer.invoke('theme:set', theme),
 
+  getUiZoomFactor: () => ipcRenderer.invoke('zoom:getFactor'),
+  setUiZoomFactor: (factor) => ipcRenderer.invoke('zoom:setFactor', factor),
+  setUiZoomDefault: (factor) => ipcRenderer.invoke('zoom:setDefault', factor),
+
   loadClusterProfiles: () => ipcRenderer.invoke('clusters:load'),
   saveClusterProfiles: (payload) => ipcRenderer.invoke('clusters:save', payload),
   listSshIdentityFiles: () => ipcRenderer.invoke('ssh:listIdentityFiles'),
