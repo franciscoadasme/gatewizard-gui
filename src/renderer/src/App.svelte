@@ -3,6 +3,7 @@
   import AppErrorDialog from './components/AppErrorDialog.svelte'
   import Button from './components/ui/Button.svelte'
   import ActivitySidebar from './components/ActivitySidebar.svelte'
+  import { requestSidePanelToggle } from './lib/pageSidePanelStore.svelte.js'
   import SettingsDialog from './components/SettingsDialog.svelte'
   import TitleBarControls from './components/TitleBarControls.svelte'
   import WindowResizeHandles from './components/WindowResizeHandles.svelte'
@@ -79,6 +80,10 @@
   function loadPage(id) {
     const stage = stages.find((s) => s.id === id)
     if (!stage) return
+    if (id === currentId) {
+      requestSidePanelToggle(id)
+      return
+    }
     currentId = id
     if (typeof history !== 'undefined') {
       history.replaceState(null, '', `#${id}`)

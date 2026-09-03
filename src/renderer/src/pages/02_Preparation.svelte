@@ -5,6 +5,7 @@
   import Input from '../components/ui/Input.svelte'
   import OutputPathFields from '../components/OutputPathFields.svelte'
   import PrepStructureViewer from '../components/preparation/PrepStructureViewer.svelte'
+  import ResizableSidePanel from '../components/ResizableSidePanel.svelte'
   import {
     detectDisulfideBonds,
     detectTerminalCaps,
@@ -462,7 +463,10 @@
 </script>
 
 <div class="flex min-w-0 flex-1 divide-x divide-neutral-200 overflow-hidden select-none dark:divide-neutral-800">
-  <aside class="w-80 shrink-0 space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs">
+  <ResizableSidePanel
+    storageKey="preparation"
+    className="space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs"
+  >
     <div class="space-y-2">
       <h2 class="sidebar-heading">Input</h2>
       <div class="space-y-1">
@@ -604,7 +608,7 @@
       >
       <Button className="w-full" variant="ghost" onclick={onClear}>Clear</Button>
     </div>
-  </aside>
+  </ResizableSidePanel>
   <div
     class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
     style={paneBackgroundStyle}

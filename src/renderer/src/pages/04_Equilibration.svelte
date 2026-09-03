@@ -53,6 +53,7 @@
     isSlurmTerminalState
   } from '../lib/slurmState.js'
   import OutputPathFields from '../components/OutputPathFields.svelte'
+  import ResizableSidePanel from '../components/ResizableSidePanel.svelte'
   import {
     defaultEquilibrationFolderName,
     outputFolderPath,
@@ -3661,7 +3662,10 @@
 </script>
 
 <div class="flex min-w-0 flex-1 divide-x divide-neutral-200 overflow-hidden select-none dark:divide-neutral-800">
-  <aside class="w-80 shrink-0 space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs">
+  <ResizableSidePanel
+    storageKey="equilibration"
+    className="space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs"
+  >
     <div class="space-y-2">
       <h2 class="sidebar-heading">Input</h2>
       <div class="space-y-1">
@@ -4093,7 +4097,7 @@
       {/if}
       <Button className="w-full" variant="ghost" onclick={onClearForm}>Clear form</Button>
     </div>
-  </aside>
+  </ResizableSidePanel>
   <div
     class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
     style={paneBackgroundStyle}

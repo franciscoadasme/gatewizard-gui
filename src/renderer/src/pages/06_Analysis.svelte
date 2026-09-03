@@ -4,6 +4,7 @@
   import Protein from '../components/icons/Protein.svelte'
   import TopologyInfoModal from '../components/TopologyInfoModal.svelte'
   import OutputPathFields from '../components/OutputPathFields.svelte'
+  import ResizableSidePanel from '../components/ResizableSidePanel.svelte'
   import Button from '../components/ui/Button.svelte'
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Divider from '../components/ui/Divider.svelte'
@@ -6145,7 +6146,10 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
 <div class="flex min-w-0 flex-1 divide-x divide-neutral-200 overflow-hidden dark:divide-neutral-800">
   <!-- ===== SIDEBAR ===== -->
-  <aside class="w-80 shrink-0 space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs select-none">
+  <ResizableSidePanel
+    storageKey="analysis"
+    className="space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs select-none"
+  >
     <div class="space-y-2">
       <h2 class="sidebar-heading">Analysis</h2>
       <div class="flex items-center gap-1" role="tablist" aria-label="Analysis mode">
@@ -8703,7 +8707,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
     {/if}
 
     <Button className="w-full" variant="ghost" onclick={onClear}>Clear</Button>
-  </aside>
+  </ResizableSidePanel>
 
   <!-- ===== CHART AREA ===== -->
   <div

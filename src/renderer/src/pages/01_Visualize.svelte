@@ -106,6 +106,7 @@
   import { fadeSummary } from '../lib/animation/fade.js'
   import DetectIcon from '../components/icons/Detect.svelte'
   import Plus from '../components/icons/Plus.svelte'
+  import ResizableSidePanel from '../components/ResizableSidePanel.svelte'
   import ResetIcon from '../components/icons/Reset.svelte'
   import Sun from '../components/icons/Sun.svelte'
   import Spinner from '../components/ui/Spinner.svelte'
@@ -241,24 +242,6 @@
   let animExportCancelRequested = false
   /** @type {(() => void) | null} */
   let animStopPlayback = null
-
-  // Right panel resize
-  let rightW = $state(290)
-  let _rrX = 0,
-    _rrW = 0
-  function _startRightResize(e) {
-    _rrX = e.clientX
-    _rrW = rightW
-    window.addEventListener('pointermove', _doRightResize)
-    window.addEventListener('pointerup', _stopRightResize)
-  }
-  function _doRightResize(e) {
-    rightW = Math.max(160, Math.min(480, _rrW - (e.clientX - _rrX)))
-  }
-  function _stopRightResize() {
-    window.removeEventListener('pointermove', _doRightResize)
-    window.removeEventListener('pointerup', _stopRightResize)
-  }
 
   // Gear panel open state
   /** @type {{ kind: 'meas'|'label', id: string } | null} */
@@ -3969,19 +3952,33 @@
             </div>
           </div>
         </div>
+      {:else if !structure || !camera}
+        <div
+          class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-5 px-6"
+          aria-label="No structure loaded"
+        >
+          <img
+            src={getAppWindowIconUrl(themeState.current)}
+            alt=""
+            width="160"
+            height="160"
+            draggable="false"
+            class="size-28 max-h-[28vmin] max-w-[28vmin] select-none opacity-[0.14] sm:size-36 md:size-40 dark:opacity-[0.16]"
+          />
+          <p class="max-w-sm text-center text-sm text-neutral-500 dark:text-neutral-500">
+            Use Open ▾ to load a structure, animation, or saved view
+          </p>
+        </div>
       {/if}
     </div>
 
-    <!-- Right-panel resize handle -->
-    <div
-      class="w-1 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-yellow-500/50"
-      role="separator"
-      aria-orientation="vertical"
-      title="Drag to resize panel"
-      onpointerdown={_startRightResize}
-    ></div>
-
-    <div class="flex min-h-0 min-w-0 shrink-0 flex-col border-l border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950" style="width:{rightW}px">
+    <ResizableSidePanel
+      side="right"
+      storageKey="visualize"
+      defaultWidth={290}
+      minWidth={160}
+      className="flex min-h-0 min-w-0 flex-col border-l border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950"
+    >
       <h2 class="shrink-0 border-b border-neutral-200 p-2 text-xs font-semibold text-neutral-800 dark:border-neutral-800 dark:text-neutral-100">
         Representations
         {#if structure?.atoms?.length}
@@ -5134,25 +5131,12 @@
         </div>
       {:else}
         <div
-          class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-5 px-6"
-          aria-label="No structure loaded"
+          class="flex flex-1 items-center justify-center p-4 text-center text-xs text-neutral-500 dark:text-neutral-600"
         >
-          <img
-            src={getAppWindowIconUrl(themeState.current)}
-            alt=""
-            width="160"
-            height="160"
-            draggable="false"
-            class="size-28 max-h-[28vmin] max-w-[28vmin] select-none opacity-[0.14] sm:size-36 md:size-40 dark:opacity-[0.16]"
-          />
-          <p
-            class="max-w-sm text-center text-sm text-neutral-500 dark:text-neutral-500"
-          >
-            Use Open ▾ to load a structure, animation, or saved view
-          </p>
+          Load a structure to add representations
         </div>
       {/if}
-    </div>
+    </ResizableSidePanel>
   </div>
   <!-- end inner row -->
 

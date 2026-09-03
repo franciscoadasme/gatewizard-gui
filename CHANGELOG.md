@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Collapsible side panels:** Preparation, Builder, Equilibration, Tools, and Analysis left options panels (and Visualize’s right Representations panel) can be drag-resized. Drag past the minimum to collapse to a thin rail; click or drag the rail to restore at the default width. Re-clicking the active activity-bar icon toggles the panel. Width and collapsed state are remembered per page.
 - **Visualize empty state:** when no structure is loaded, the viewer center shows a large muted GateWizard logo (theme-aware for light/dark) above a short hint to use **Open ▾**.
 - **WSL D-Bus:** prefer the live default session bus at `/run/user/$UID/bus`; only start a private `gatewizard-bus` when that socket is missing. Never point Chromium at a dead `gatewizard-bus` socket (that caused packaged `.deb` launches to fail while `npm run dev` still worked).
 - **Display GPU policy (WSL / Linux / macOS):** before Chromium starts, WSL hosts that have `/dev/dxg` and `libd3d12.so` get `GALLIUM_DRIVER=d3d12` (Ubuntu 26.04 Mesa otherwise stays on llvmpipe). Native Linux and macOS are left on their normal stacks. The app never writes `MESA_D3D12_DEFAULT_ADAPTER_NAME`. If the GPU process dies, SwiftShader is persisted in `gpu-policy.json` until `GATEWIZARD_GPU_RETRY=1`. Overrides: `GATEWIZARD_GPU_SAFE_MODE`, `GATEWIZARD_GALLIUM_DRIVER`, existing `GALLIUM_DRIVER`.

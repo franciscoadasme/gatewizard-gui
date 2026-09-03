@@ -5,6 +5,7 @@
   import Spinner from '../components/ui/Spinner.svelte'
   import FollowLog from '../components/FollowLog.svelte'
   import OutputPathFields from '../components/OutputPathFields.svelte'
+  import ResizableSidePanel from '../components/ResizableSidePanel.svelte'
   import { builderStatus, logEvent } from '../lib/pageStatus.svelte.js'
   import {
     getAvailableLipids,
@@ -1016,7 +1017,10 @@
 
 <div class="flex min-w-0 flex-1 divide-x divide-neutral-200 overflow-hidden select-none dark:divide-neutral-800">
   <!-- ── Left: Options (scrollable) ── -->
-  <aside class="w-80 shrink-0 space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs">
+  <ResizableSidePanel
+    storageKey="builder"
+    className="space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs"
+  >
     <!-- Input -->
     <div class="space-y-2">
       <h2 class="sidebar-heading">Input</h2>
@@ -1760,7 +1764,7 @@
         onclick={onLoadDefaults}>Reset Defaults</button
       >
     </div>
-  </aside>
+  </ResizableSidePanel>
 
   <!-- ── Right: Ligand Preview & Job Tracker ── -->
   <div

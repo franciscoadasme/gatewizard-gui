@@ -4,6 +4,7 @@
   import Protein from '../components/icons/Protein.svelte'
   import TopologyInfoModal from '../components/TopologyInfoModal.svelte'
   import OutputPathFields from '../components/OutputPathFields.svelte'
+  import ResizableSidePanel from '../components/ResizableSidePanel.svelte'
   import Button from '../components/ui/Button.svelte'
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Divider from '../components/ui/Divider.svelte'
@@ -1140,7 +1141,10 @@
 {/if}
 
 <div class="flex min-w-0 flex-1 divide-x divide-neutral-200 overflow-hidden select-none dark:divide-neutral-800">
-  <aside class="w-80 shrink-0 space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs">
+  <ResizableSidePanel
+    storageKey="tools"
+    className="space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs"
+  >
     <div class="space-y-2">
       <h2 class="sidebar-heading">Tools</h2>
       <div class="flex items-center gap-1" role="tablist" aria-label="Tool categories">
@@ -1682,7 +1686,7 @@
       {/if}
     </Button>
     <Button className="w-full" variant="ghost" onclick={onClearForm}>Clear form</Button>
-  </aside>
+  </ResizableSidePanel>
 
   <div
     class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
