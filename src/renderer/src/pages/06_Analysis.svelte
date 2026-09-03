@@ -9517,9 +9517,9 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               </p>
             {/if}
             <div class="overflow-x-auto">
-              <table class="w-full min-w-[28rem] border-collapse text-[11px] tabular-nums">
+              <table class="w-full min-w-[28rem] border-collapse text-[11px] tabular-nums text-neutral-800 dark:text-neutral-200">
                 <thead>
-                  <tr class="border-b border-neutral-200 text-left text-neutral-500 dark:border-neutral-800">
+                  <tr class="border-b border-neutral-200 text-left text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
                     <th class="px-2 py-1 font-medium"
                       >{mode === 'energetic'
                         ? energeticMultiSetSession
@@ -9545,7 +9545,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                               class="inline-block h-2 w-2 shrink-0 rounded-full"
                               style={`background:${row.color}`}
                             ></span>
-                            <span class="truncate text-neutral-300" title={row.name}>{row.name}</span>
+                            <span class="truncate text-neutral-700 dark:text-neutral-300" title={row.name}>{row.name}</span>
                           </span>
                         </td>
                         <td class="px-2 py-1">{Number(row.stats.mean).toFixed(4)}</td>
