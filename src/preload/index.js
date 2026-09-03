@@ -38,6 +38,7 @@ const api = {
 
   loadClusterProfiles: () => ipcRenderer.invoke('clusters:load'),
   saveClusterProfiles: (payload) => ipcRenderer.invoke('clusters:save', payload),
+  listSshIdentityFiles: () => ipcRenderer.invoke('ssh:listIdentityFiles'),
 
   isWindowFocused: () => ipcRenderer.invoke('window:isFocused'),
   showJobNotification: (payload) => ipcRenderer.invoke('notifications:showJobFinished', payload),

@@ -60,6 +60,7 @@ import appWindowIcon from '../../resources/brand/logos/app-window-dark.png?asset
 import { resolveAppWindowIconPath } from '../../resources/brand/manifest.mjs'
 // Brand asset map: resources/brand/manifest.mjs (use getAppWindowIconUrl when theme toggle exists)
 import { loadClusterProfiles, saveClusterProfiles } from './cluster-profiles.js'
+import { listSshIdentityFiles } from './ssh-identity-files.js'
 import {
   abortRuntimeInstalls,
   ensureMambaRuntime,
@@ -1302,6 +1303,8 @@ ipcMain.handle('fs:readText', async (_event, filePath) => {
 ipcMain.handle('clusters:load', async () => loadClusterProfiles())
 
 ipcMain.handle('clusters:save', async (_event, payload) => saveClusterProfiles(payload || { profiles: [] }))
+
+ipcMain.handle('ssh:listIdentityFiles', async () => listSshIdentityFiles())
 
 ipcMain.handle('dialog:saveFile', async (_event, title, filters, defaultPath = undefined) => {
   filters = filters || []

@@ -61,6 +61,21 @@ export async function saveClusterProfiles(profiles) {
 }
 
 /**
+ * @returns {Promise<{ sshDir: string, exists: boolean, keys: { name: string, path: string }[] }>}
+ */
+export async function listSshIdentityFiles() {
+  if (!window.api?.listSshIdentityFiles) {
+    return { sshDir: '~/.ssh', exists: false, keys: [] }
+  }
+  const data = await window.api.listSshIdentityFiles()
+  return {
+    sshDir: typeof data?.sshDir === 'string' ? data.sshDir : '~/.ssh',
+    exists: Boolean(data?.exists),
+    keys: Array.isArray(data?.keys) ? data.keys : []
+  }
+}
+
+/**
  * @param {Partial<ClusterProfile>} [overrides]
  * @returns {ClusterProfile}
  */

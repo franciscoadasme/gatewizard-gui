@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Analysis:** **Cancel analysis** while a run is in progress (single set or all sets). The UI unblocks immediately and shows “Analysis cancelled” instead of a browser abort error.
 - **Analysis trajectories:** per-file time offset (ns) accepts **four decimal places** (e.g. `200.1234`, `2000.1234`); inputs use `0.0001` step and a wider field.
 - **Analysis run all sets:** skips hidden sets and sets missing trajectories/logs, then continues with every remaining set that has data (empty sets in between no longer stop the batch).
+- **Settings → Clusters:** scans `~/.ssh` for readable private keys (`id_ed25519`, `id_rsa`, …) and lists them under **SSH identity file** — click a name to fill the field, or pick from autocomplete. Shows a short hint when no keys or no `~/.ssh` folder exists (see README → Cluster profiles).
 
 ### Changed
 

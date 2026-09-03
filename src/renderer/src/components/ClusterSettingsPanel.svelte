@@ -6,6 +6,7 @@
   import {
     WORKDIR_STRATEGIES,
     emptyClusterProfile,
+    listSshIdentityFiles,
     loadClusterProfiles,
     saveClusterProfiles
   } from '../lib/clusterProfiles.js'
@@ -35,6 +36,10 @@
   let sessionId = $state(null)
   let showTemplate = $state(false)
   let templateDraft = $state('')
+  /** @type {{ name: string, path: string }[]} */
+  let sshIdentityOptions = $state([])
+  let sshIdentityScanned = $state(false)
+  let sshDirExists = $state(false)
 
   const selected = $derived(profiles.find((p) => p.id === selectedId) || null)
   const saveStatusLabel = $derived(
@@ -51,7 +56,21 @@
 
   onMount(() => {
     void reload()
+    void refreshSshIdentityFiles()
   })
+
+  async function refreshSshIdentityFiles() {
+    try {
+      const result = await listSshIdentityFiles()
+      sshIdentityOptions = result.keys
+      sshDirExists = result.exists
+    } catch {
+      sshIdentityOptions = []
+      sshDirExists = false
+    } finally {
+      sshIdentityScanned = true
+    }
+  }
 
   async function reload() {
     loading = true
@@ -318,8 +337,38 @@
                 class={fieldClass}
                 value={selected.identity_file || ''}
                 placeholder="~/.ssh/id_ed25519"
+                list="gw-ssh-identity-files"
                 oninput={(e) => patchSelected('identity_file', e.currentTarget.value)}
               />
+              <datalist id="gw-ssh-identity-files">
+                {#each sshIdentityOptions as key (key.path)}
+                  <option value={key.path}>{key.name}</option>
+                {/each}
+              </datalist>
+              {#if sshIdentityScanned && sshIdentityOptions.length > 0}
+                <p class="text-[10px] text-neutral-500">
+                  Detected on this computer:
+                  {#each sshIdentityOptions as key, index (key.path)}
+                    {#if index > 0},
+                    {/if}
+                    <button
+                      type="button"
+                      class="text-neutral-700 underline underline-offset-2 hover:text-neutral-900 dark:text-neutral-300 dark:hover:text-neutral-100"
+                      onclick={() => patchSelected('identity_file', key.path)}
+                    >
+                      {key.name}
+                    </button>
+                  {/each}
+                </p>
+              {:else if sshIdentityScanned && sshDirExists}
+                <p class="text-[10px] text-neutral-500">
+                  No private keys found in ~/.ssh. Generate one (see README → Cluster profiles).
+                </p>
+              {:else if sshIdentityScanned}
+                <p class="text-[10px] text-neutral-500">
+                  No ~/.ssh folder on this computer yet. Generate a key (see README → Cluster profiles).
+                </p>
+              {/if}
             </label>
             <label class="block space-y-0.5">
               <span class="sidebar-label">Scheduler</span>
