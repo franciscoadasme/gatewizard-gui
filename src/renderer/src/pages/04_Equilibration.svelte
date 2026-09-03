@@ -36,6 +36,7 @@
     getEquilibrationJobLog
   } from '../lib/backendApi'
   import { loadClusterProfiles } from '../lib/clusterProfiles.js'
+  import { clusterProfilesStore } from '../lib/clusterProfilesStore.svelte.js'
   import {
     connectSharedCluster,
     disconnectSharedCluster,
@@ -74,6 +75,10 @@
   import { syncProtocolToSidebarEnsemble } from '../lib/equilibrationStageFields.js'
 
   const clusterSession = getClusterSession()
+
+  /** Shown when Equilibration → Connect is disabled (no cluster profiles yet). */
+  const CLUSTER_CONNECT_DISABLED_HINT =
+    'Add a cluster profile in Settings (gear icon) → Clusters to connect to remote HPC systems.'
 
   /** @typedef {{ id: string, name: string, force_constant: number, selection: string }} Constraint */
 
@@ -2937,6 +2942,8 @@
   })
 
   $effect(() => {
+    void clusterProfilesStore.revision
+    if (!pageActive) return
     void loadClusterProfiles()
       .then((list) => {
         progressClusterProfiles = list
@@ -4184,9 +4191,9 @@
             <option value="ready">Ready</option>
           </select>
 
+          <span class="hidden h-4 w-px shrink-0 bg-neutral-300 sm:inline dark:bg-neutral-700" aria-hidden="true"></span>
+          <span class="font-medium text-neutral-600 dark:text-neutral-400">Cluster</span>
           {#if progressClusterProfiles.length > 0}
-            <span class="hidden h-4 w-px shrink-0 bg-neutral-300 sm:inline dark:bg-neutral-700" aria-hidden="true"></span>
-            <span class="font-medium text-neutral-600 dark:text-neutral-400">Cluster</span>
             <select
               class="max-w-[9rem] rounded-md border border-neutral-300 bg-white px-2 py-1 text-[11px] text-neutral-900 [color-scheme:light] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 disabled:opacity-50 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-50 dark:[color-scheme:dark] dark:focus-visible:ring-neutral-600"
               value={progressClusterProfileId}
@@ -4228,6 +4235,16 @@
                 Disconnect
               </Button>
             {/if}
+          {:else}
+            <span
+              class="inline-flex cursor-not-allowed"
+              title={CLUSTER_CONNECT_DISABLED_HINT}
+              aria-label={CLUSTER_CONNECT_DISABLED_HINT}
+            >
+              <Button variant="outline" size="sm" disabled className="pointer-events-none">
+                Connect
+              </Button>
+            </span>
           {/if}
 
           {#if clusterSession.statusMessage && progressClusterProfiles.length > 0}

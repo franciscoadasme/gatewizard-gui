@@ -2,6 +2,8 @@
  * Cluster profile helpers for Settings / Equilibration (Electron userData).
  */
 
+import { notifyClusterProfilesChanged } from './clusterProfilesStore.svelte.js'
+
 /** @typedef {{
  *   id: string,
  *   name: string,
@@ -57,6 +59,7 @@ export async function saveClusterProfiles(profiles) {
   }
   const plain = toPlain({ profiles: Array.isArray(profiles) ? profiles : [] })
   const data = await window.api.saveClusterProfiles(plain)
+  notifyClusterProfilesChanged()
   return Array.isArray(data?.profiles) ? data.profiles : plain.profiles
 }
 
