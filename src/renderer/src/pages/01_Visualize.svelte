@@ -105,7 +105,6 @@
   import { liveOverlayFadeDefaults } from '../lib/animation/serialize.js'
   import { fadeSummary } from '../lib/animation/fade.js'
   import DetectIcon from '../components/icons/Detect.svelte'
-  import Empty from '../components/ui/Empty.svelte'
   import Plus from '../components/icons/Plus.svelte'
   import ResetIcon from '../components/icons/Reset.svelte'
   import Sun from '../components/icons/Sun.svelte'
@@ -121,6 +120,7 @@
   import { syncGoodsellSceneLighting } from '../lib/goodsellSceneLighting.svelte.js'
   import { themeState } from '../lib/theme.svelte.js'
   import { themeBackgroundHex, viewerSettings } from '../lib/viewerSettings.svelte.js'
+  import { getAppWindowIconUrl } from '../../../shared/brand.js'
   import { clearLabelScreenOffset } from '../lib/viewer/labelStyle.js'
   import {
     applyPatchToAtoms,
@@ -5133,11 +5133,23 @@
         </div>
         </div>
       {:else}
-        <div class="flex-1 p-2">
-          <Empty
-            message="Use Open ▾ to load a structure, animation, or saved view"
-            className="text-sm h-full"
+        <div
+          class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-5 px-6"
+          aria-label="No structure loaded"
+        >
+          <img
+            src={getAppWindowIconUrl(themeState.current)}
+            alt=""
+            width="160"
+            height="160"
+            draggable="false"
+            class="size-28 max-h-[28vmin] max-w-[28vmin] select-none opacity-[0.14] sm:size-36 md:size-40 dark:opacity-[0.16]"
           />
+          <p
+            class="max-w-sm text-center text-sm text-neutral-500 dark:text-neutral-500"
+          >
+            Use Open ▾ to load a structure, animation, or saved view
+          </p>
         </div>
       {/if}
     </div>

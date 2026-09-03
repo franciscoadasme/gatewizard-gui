@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Visualize empty state:** when no structure is loaded, the viewer center shows a large muted GateWizard logo (theme-aware for light/dark) above a short hint to use **Open ▾**.
 - **WSL D-Bus:** prefer the live default session bus at `/run/user/$UID/bus`; only start a private `gatewizard-bus` when that socket is missing. Never point Chromium at a dead `gatewizard-bus` socket (that caused packaged `.deb` launches to fail while `npm run dev` still worked).
 - **Display GPU policy (WSL / Linux / macOS):** before Chromium starts, WSL hosts that have `/dev/dxg` and `libd3d12.so` get `GALLIUM_DRIVER=d3d12` (Ubuntu 26.04 Mesa otherwise stays on llvmpipe). Native Linux and macOS are left on their normal stacks. The app never writes `MESA_D3D12_DEFAULT_ADAPTER_NAME`. If the GPU process dies, SwiftShader is persisted in `gpu-policy.json` until `GATEWIZARD_GPU_RETRY=1`. Overrides: `GATEWIZARD_GPU_SAFE_MODE`, `GATEWIZARD_GALLIUM_DRIVER`, existing `GALLIUM_DRIVER`.
 - **Linux Electron runtime libs:** the `.deb` now Depends on ALSA (`libasound2t64 | libasound2`) and the usual GTK/NSS packages (t64 names first for Ubuntu 24.04+ / 26.04). `npm run dev` and the packaged launcher check `ldd` before starting Chromium and print `apt` / `dnf` install commands (plus a zenity/kdialog dialog when a display is available) instead of `error while loading shared libraries: libasound.so.2`.
