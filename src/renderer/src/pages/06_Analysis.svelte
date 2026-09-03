@@ -295,8 +295,10 @@
   let energeticGeom = $state([])
   let statsRangeStartInput = $state('')
   let statsRangeEndInput = $state('')
-  /** @type {'current' | 'all'} */
+  /** @type {'current' | 'all' | 'selected'} */
   let runAnalysisScope = $state('current')
+  /** Set ids to run when scope is `selected`. */
+  let runAnalysisSelectedIds = $state(/** @type {string[]} */ ([]))
   let runAnalysisMenuOpen = $state(false)
   /** @type {HTMLDivElement | null} */
   let runAnalysisMenuEl = $state(null)
@@ -342,6 +344,14 @@
     }
     document.addEventListener('pointerdown', onDoc)
     return () => document.removeEventListener('pointerdown', onDoc)
+  })
+
+  $effect(() => {
+    const ids = new Set(analysisSets.map((s) => s.id))
+    const next = runAnalysisSelectedIds.filter((id) => ids.has(id))
+    if (next.length !== runAnalysisSelectedIds.length) {
+      runAnalysisSelectedIds = next
+    }
   })
 
   $effect(() => {
@@ -4682,6 +4692,7 @@
     plotDataRevision += 1
     runProgressStages = []
     runAnalysisScope = 'current'
+    runAnalysisSelectedIds = []
     runAnalysisMenuOpen = false
     detectPropertiesScope = 'current'
     detectPropertiesMenuOpen = false
@@ -4889,10 +4900,19 @@
     return Boolean(set.topologyPath) && (set.trajectoryFiles || []).length > 0
   }
 
-  /** @param {'current' | 'all'} [scope] */
+  /** @param {'current' | 'all' | 'selected'} [scope] */
   async function runAnalysis(scope = runAnalysisScope) {
     if (scope === 'all' && analysisSets.length > 1) {
-      await runAnalysisAllSets()
+      await runAnalysisOnSets(analysisSets)
+      return
+    }
+    if (scope === 'selected' && analysisSets.length > 1) {
+      const chosen = analysisSets.filter((set) => runAnalysisSelectedIds.includes(set.id))
+      if (chosen.length === 0) {
+        lastError = 'Select at least one set in Run Analysis options.'
+        return
+      }
+      await runAnalysisOnSets(chosen)
       return
     }
     await runAnalysisCurrentSet()
@@ -4947,7 +4967,10 @@
     }
   }
 
-  async function runAnalysisAllSets() {
+  /**
+   * @param {import('../lib/analysisSets.js').AnalysisSet[]} sets
+   */
+  async function runAnalysisOnSets(sets) {
     persistActiveSetFields()
     const runStructuralType = structuralType
     startAnalysisAbort()
@@ -4964,7 +4987,7 @@
     let completed = 0
     // Only run visible sets that already have the needed inputs. Hidden / empty
     // sets in between must not stop the batch from reaching later sets with data.
-    const runnable = analysisSets.filter((set) => {
+    const runnable = sets.filter((set) => {
       if (!set.visible) {
         skipped.push(`${set.label}: hidden`)
         return false
@@ -5112,10 +5135,37 @@
     }
   }
 
+  function runAnalysisSelectedCount() {
+    const ids = new Set(analysisSets.map((s) => s.id))
+    return runAnalysisSelectedIds.filter((id) => ids.has(id)).length
+  }
+
+  function toggleRunAnalysisSelectedSet(id, checked) {
+    runAnalysisScope = 'selected'
+    if (checked) {
+      if (!runAnalysisSelectedIds.includes(id)) {
+        runAnalysisSelectedIds = [...runAnalysisSelectedIds, id]
+      }
+      return
+    }
+    runAnalysisSelectedIds = runAnalysisSelectedIds.filter((x) => x !== id)
+  }
+
+  function chooseRunAnalysisSelectedScope() {
+    runAnalysisScope = 'selected'
+    if (runAnalysisSelectedIds.length === 0 && activeSetId) {
+      runAnalysisSelectedIds = [activeSetId]
+    }
+  }
+
   function runAnalysisButtonLabel() {
     if (running) return null
     if (analysisSets.length > 1 && runAnalysisScope === 'all') {
       return `Run Analysis (all ${analysisSets.length} sets)`
+    }
+    if (analysisSets.length > 1 && runAnalysisScope === 'selected') {
+      const n = runAnalysisSelectedCount()
+      return n > 0 ? `Run Analysis (${n} selected)` : 'Run Analysis (select sets)'
     }
     return 'Run Analysis'
   }
@@ -8559,7 +8609,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               runAnalysisMenuOpen = false
               runAnalysis(runAnalysisScope)
             }}
-            disabled={running || !canRunAnalysis}
+            disabled={running || !canRunAnalysis || (runAnalysisScope === 'selected' && runAnalysisSelectedCount() === 0)}
           >
             {#if running}
               <Spinner className="mr-1" />Running...
@@ -8609,6 +8659,35 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               <span class="w-4 shrink-0 text-center text-xs">{runAnalysisScope === 'all' ? '✓' : ''}</span>
               <span>All sets ({analysisSets.length})</span>
             </button>
+            <button
+              type="button"
+              role="menuitem"
+              class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-neutral-800 hover:bg-neutral-100 dark:text-neutral-100 dark:hover:bg-neutral-800"
+              onclick={() => chooseRunAnalysisSelectedScope()}
+            >
+              <span class="w-4 shrink-0 text-center text-xs">{runAnalysisScope === 'selected' ? '✓' : ''}</span>
+              <span>Selected sets</span>
+            </button>
+            <div class="mx-2 my-1 border-t border-neutral-200 dark:border-neutral-700"></div>
+            <p class="px-3 pb-1 text-[10px] text-neutral-500 dark:text-neutral-400">Choose sets to run</p>
+            <div class="max-h-40 overflow-y-auto">
+              {#each analysisSets as set (set.id)}
+                <label
+                  class="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-neutral-800 hover:bg-neutral-100 dark:text-neutral-100 dark:hover:bg-neutral-800"
+                >
+                  <Checkbox
+                    size="sm"
+                    checked={runAnalysisSelectedIds.includes(set.id)}
+                    onchange={(e) =>
+                      toggleRunAnalysisSelectedSet(
+                        set.id,
+                        /** @type {HTMLInputElement} */ (e.currentTarget).checked
+                      )}
+                  />
+                  <span class="min-w-0 truncate" title={set.label}>{set.label}</span>
+                </label>
+              {/each}
+            </div>
           </div>
         {/if}
       </div>

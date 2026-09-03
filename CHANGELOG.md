@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Analysis Run Analysis:** with multiple sets, the split-button menu can run the current set, all sets, or a checked subset (button label shows how many are selected).
 - **Collapsible side panels:** Preparation, Builder, Equilibration, Tools, and Analysis left options panels (and Visualize’s right Representations panel) can be drag-resized. Drag past the minimum to collapse to a thin rail; click or drag the rail to restore at the default width. Re-clicking the active activity-bar icon toggles the panel. Width and collapsed state are remembered per page.
 - **Visualize empty state:** when no structure is loaded, the viewer center shows a large muted GateWizard logo (theme-aware for light/dark) above a short hint to use **Open ▾**.
 - **WSL D-Bus:** prefer the live default session bus at `/run/user/$UID/bus`; only start a private `gatewizard-bus` when that socket is missing. Never point Chromium at a dead `gatewizard-bus` socket (that caused packaged `.deb` launches to fail while `npm run dev` still worked).
