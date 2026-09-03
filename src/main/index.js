@@ -79,6 +79,8 @@ import {
   getPreferredLaunchDisplay
 } from './window-work-area.js'
 import { buildAugmentedPath } from './shell-path.js'
+import { applyDisplayGpuEnv, persistGpuSafeMode } from '../../scripts/display-gpu-policy.cjs'
+import { clearCorruptedGpuCache, getAppConfigDir } from '../../scripts/gpu-cache.cjs'
 import { ensureSessionDbus } from '../../scripts/session-dbus.cjs'
 import { ignoreBrokenStdio, isBrokenPipeError, writeStdioSafe } from '../../scripts/stdio-guard.cjs'
 
@@ -1157,7 +1159,9 @@ app.on('child-process-gone', (_event, details) => {
   process.stderr.write(
     `[gpu] child process gone: reason=${details.reason} exitCode=${details.exitCode}\n`
   )
-  relaunchInGpuSafeMode(`child-process-gone:${details.reason}`)
+  const reason = `child-process-gone:${details.reason}`
+  persistGpuSafeMode(reason)
+  relaunchInGpuSafeMode(reason)
 })
 
 app.on('before-quit', () => {

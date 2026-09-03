@@ -41,6 +41,7 @@ Native Windows installers are **not published**. On a Windows PC, install **WSL 
 | Environment | Ubuntu / Debian / Fedora | Notes |
 |-------------|-----------------|-------|
 | **WSL** | **24.04** | Recommended — WSLg, Electron, and the embedded runtime work reliably |
+| WSL | 26.04 | Supported when WSLg GPU files exist (`/dev/dxg`, `libd3d12.so`); the app selects Mesa d3d12 automatically |
 | WSL | 22.04 | Not recommended — GUI/display issues (WSLg, DBus) are common; upgrade to 24.04 |
 | **Native Linux** | 22.04 or newer | Full support on a standard desktop with X11 or Wayland |
 
@@ -75,7 +76,40 @@ Install log:
 ~/.config/gatewizard-gui/runtime-install.log
 ```
 
-If the splash screen appears but the main window never opens on WSL, try software rendering:
+#### Display GPU (splash and Visualize)
+
+This is the Electron / WebGL path, not OpenMM or GROMACS compute. There is no native Windows app — on Windows, use WSL.
+
+| Runtime | What the app does |
+|---------|-------------------|
+| WSL with `/dev/dxg` and `/usr/lib/wsl/lib/libd3d12.so` | Sets `GALLIUM_DRIVER=d3d12` before Chromium starts (fixes Ubuntu 26.04 Mesa defaulting to llvmpipe). Mesa picks the adapter — the app does **not** hardcode NVIDIA. |
+| WSL without those files | Leaves Mesa (often software GL; 3D is slower). |
+| Native Linux | Unchanged (Mesa or the NVIDIA driver). |
+| macOS | Unchanged (Metal). |
+
+If Chromium’s GPU process crashes, the app relaunches in software mode (SwiftShader) and writes `gpu-policy.json` so the next launch stays on software:
+
+- Linux / WSL: `~/.config/gatewizard-gui/gpu-policy.json`
+- macOS: `~/Library/gatewizard-gui/gpu-policy.json`
+
+Retry hardware:
+
+```bash
+GATEWIZARD_GPU_RETRY=1 gatewizard-gui-linux
+```
+
+Overrides (always win):
+
+| Variable | Effect |
+|----------|--------|
+| `GATEWIZARD_GPU_SAFE_MODE=1` | SwiftShader software rendering |
+| `GATEWIZARD_GALLIUM_DRIVER=llvmpipe` | Force Mesa software GL (empty value disables auto d3d12) |
+| `GALLIUM_DRIVER` | Left as-is if already set |
+| `MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA` | Optional, if Mesa picked the wrong GPU on a hybrid laptop |
+
+WSL often has no session D-Bus. The app starts one when needed so Chromium does not print `Failed to connect to socket /run/user/…/bus`.
+
+If the splash screen appears but the main window never opens on WSL, force software rendering:
 
 ```bash
 GATEWIZARD_GPU_SAFE_MODE=1 gatewizard-gui-linux --ozone-platform=wayland
@@ -258,7 +292,7 @@ npm install
 npm run dev
 ```
 
-On WSL if GPU/display issues appear:
+`npm run dev` applies the same display-GPU policy as the packaged app (WSL d3d12 when GPU files exist). `npm run dev:wsl` is an explicit **software-only** hammer (`LIBGL_ALWAYS_SOFTWARE` + SwiftShader) — use it only to debug a broken GPU stack, not as the default:
 
 ```bash
 npm run dev:wsl
