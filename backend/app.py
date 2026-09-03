@@ -114,6 +114,8 @@ from gatewizard.utils import amber_analysis
 from gatewizard.utils import namd_analysis
 from gatewizard.utils import gromacs_analysis
 from gatewizard.utils import openmm_analysis
+from gatewizard.utils import lipid_bilayer_analysis
+from gatewizard.utils import trajectory_analysis
 from gatewizard.utils import trajectory_tools
 from gatewizard.utils.equilibration_resume import (
     equilibration_script_supports_resume,
@@ -4268,7 +4270,7 @@ def run_structural_analysis(payload: StructuralAnalysisRequest) -> dict:
                 payload.leaflet_filter_sel,
             )
             try:
-                result = namd_analysis.run_bilayer_analysis(
+                result = lipid_bilayer_analysis.run_bilayer_analysis(
                     topology_file=str(top),
                     trajectory_files=[str(p) for p in coord_trajs],
                     analysis_type=payload.analysis_type,
@@ -4296,7 +4298,7 @@ def run_structural_analysis(payload: StructuralAnalysisRequest) -> dict:
                     _bilayer_analysis_error_message(bilayer_ex, lipid_sel)
                 ) from bilayer_ex
         else:
-            result = namd_analysis.run_structural_analysis(
+            result = trajectory_analysis.run_structural_analysis(
                 topology_file=str(top),
                 trajectory_files=[str(p) for p in coord_trajs],
                 analysis_type=payload.analysis_type,

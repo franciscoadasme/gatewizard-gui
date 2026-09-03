@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Analysis backend:** structural (RMSD/RMSF/distance/Rg) and bilayer calls now use `gatewizard.utils.trajectory_analysis` and `lipid_bilayer_analysis` instead of the historically named `namd_analysis` module. NAMD energetic analysis and equilibration progress still use `namd_analysis`.
+
 ### Added
 
 - **Analysis Run Analysis:** with multiple sets, the split-button menu can run the current set, all sets, or a checked subset (button label shows how many are selected).
