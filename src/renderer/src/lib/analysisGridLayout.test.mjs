@@ -16,7 +16,11 @@ import {
   normalizeGridLayout,
   plotSpecAxisChrome,
   plotSpecExtraMargins,
-  visibleSetIds
+  visibleSetIds,
+  mosaicRows,
+  gridSpecSlices,
+  resolveCellCountOnResize,
+  activeGridCells
 } from './analysisGridLayout.js'
 
 test('normalizeGridLayout defaults to left+bottom axis box', () => {
@@ -217,4 +221,74 @@ test('ensureEnergeticGridCells prunes missing ids only when edited', () => {
   assert.equal(fresh.edited, false)
   assert.deepEqual(fresh.cells[0].propertyKeys, ['Temperature'])
   assert.deepEqual(fresh.cells[0].setIds, ['s1'])
+})
+
+test('normalizeGridLayout defaults cellCount to full frame', () => {
+  const layout = normalizeGridLayout({ cols: 4, rows: 2 })
+  assert.equal(layout.cellCount, 8)
+  assert.equal(layout.cells.length, 8)
+  const trimmed = normalizeGridLayout({ cols: 4, rows: 2, cellCount: 7 })
+  assert.equal(trimmed.cellCount, 7)
+  const clamped = normalizeGridLayout({ cols: 2, rows: 1, cellCount: 99 })
+  assert.equal(clamped.cellCount, 2)
+})
+
+test('mosaicRows keeps empty cells in a full last row under center', () => {
+  const panels = Array.from({ length: 8 }, (_, i) => ({
+    key: String(i),
+    empty: i !== 4
+  }))
+  const centered = mosaicRows(panels, 4, 'center')
+  assert.equal(centered.lastAlign, null)
+  assert.equal(centered.fullRows.length, 2)
+  assert.equal(centered.fullRows[1].length, 4)
+  assert.equal(centered.fullRows[1].filter((p) => p.empty).length, 3)
+})
+
+test('mosaicRows center/end keep empties on a short last row', () => {
+  const panels = Array.from({ length: 7 }, (_, i) => ({
+    key: String(i),
+    empty: i !== 4
+  }))
+  const centered = mosaicRows(panels, 4, 'center')
+  assert.equal(centered.fullRows.length, 1)
+  assert.equal(centered.lastRow.length, 3)
+  assert.equal(centered.lastAlign, 'center')
+  assert.equal(centered.lastRow.filter((p) => p.empty).length, 2)
+
+  const right = mosaicRows(panels, 4, 'end')
+  assert.equal(right.lastRow.length, 3)
+  assert.equal(right.lastAlign, 'end')
+
+  const left = mosaicRows(panels, 4, 'start')
+  assert.equal(left.lastAlign, null)
+  assert.equal(left.fullRows.length, 2)
+  assert.equal(left.fullRows[1].length, 3)
+})
+
+test('gridSpecSlices end aligns short last row to the right', () => {
+  const { slices, rows, microCols } = gridSpecSlices(7, 4, 'end')
+  assert.equal(microCols, 8)
+  assert.equal(rows, 2)
+  assert.equal(slices.length, 7)
+  assert.deepEqual(slices[4], { row: 1, c0: 2, c1: 4 })
+  assert.deepEqual(slices[6], { row: 1, c0: 6, c1: 8 })
+})
+
+test('resolveCellCountOnResize keeps trim when growing frame', () => {
+  assert.equal(resolveCellCountOnResize(7, 4, 2, 4, 3), 7)
+  assert.equal(resolveCellCountOnResize(8, 4, 2, 4, 3), 12)
+  assert.equal(resolveCellCountOnResize(7, 4, 2, 2, 2), 4)
+})
+
+test('activeGridCells returns only the first cellCount entries', () => {
+  const layout = normalizeGridLayout({
+    cols: 4,
+    rows: 2,
+    cellCount: 5,
+    cells: Array.from({ length: 8 }, (_, i) => ({ setIds: [`s${i}`], title: '' }))
+  })
+  const active = activeGridCells(layout)
+  assert.equal(active.length, 5)
+  assert.deepEqual(active[4].setIds, ['s4'])
 })

@@ -11,8 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Analysis backend:** structural (RMSD/RMSF/distance/Rg) and bilayer calls now use `gatewizard.utils.trajectory_analysis` and `lipid_bilayer_analysis` instead of the historically named `namd_analysis` module. NAMD energetic analysis and equilibration progress still use `namd_analysis`.
 
+### Fixed
+
+- **Analysis custom grid:** with **Last incomplete row = Center**, filling the first cell of a short row no longer hides the other empty squares (they stay editable).
+
 ### Added
 
+- **Analysis Grid options:** **Cells** count (1…cols×rows) to leave unused trailing squares out of a frame (e.g. 4×2 with 7 cells), and **Right** last-row align alongside Left / Center.
 - **Settings → Appearance:** UI scale (80–150%, default **110%**). Startup uses this value; **Ctrl+=** / **Ctrl+Shift+=** zoom in, **Ctrl+-** zoom out, **Ctrl+0** resets to the Settings scale (not always 100%).
 - **Analysis Run Analysis:** with multiple sets, the split-button menu can run the current set, all sets, or a checked subset (button label shows how many are selected).
 - **Collapsible side panels:** Preparation, Builder, Equilibration, Tools, and Analysis left options panels (and Visualize’s right Representations panel) can be drag-resized. Drag past the minimum to collapse to a thin rail; click or drag the rail to restore at the default width. Re-clicking the active activity-bar icon toggles the panel. Width and collapsed state are remembered per page.

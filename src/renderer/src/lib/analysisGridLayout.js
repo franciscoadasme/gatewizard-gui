@@ -10,6 +10,11 @@ export const GRID_LAYOUT_DEFAULTS = {
   /** Empty string = use plot-settings aspect ratio */
   aspectRatio: '',
   lastRowAlign: 'start',
+  /**
+   * Active squares in the cols×rows frame (1…cols*rows).
+   * Null in raw input means “full frame”; stored value is always clamped.
+   */
+  cellCount: 2,
   showXLabels: 'all',
   showYLabels: 'all',
   showXTickLabels: 'all',
@@ -43,7 +48,7 @@ export const GRID_LAYOUT_DEFAULTS = {
 }
 
 const LABEL_PRESETS = new Set(['all', 'bottom', 'left', 'none'])
-const LAST_ROW = new Set(['start', 'center'])
+const LAST_ROW = new Set(['start', 'center', 'end'])
 const LEGEND_MODES = new Set(['each', 'one', 'outside', 'none'])
 const LEGEND_OUTSIDE = new Set(['bottom', 'top', 'right', 'left'])
 const LEGEND_ENTRIES = new Set(['sets', 'roles', 'both'])
@@ -159,6 +164,55 @@ export function normalizeGridCell(cell) {
  * @param {number} cols
  * @param {number} rows
  */
+export function gridCapacity(cols, rows) {
+  return Math.max(1, Math.round(Number(cols) || 1)) * Math.max(1, Math.round(Number(rows) || 1))
+}
+
+/**
+ * @param {unknown} n
+ * @param {number} cols
+ * @param {number} rows
+ */
+export function clampCellCount(n, cols, rows) {
+  const cap = gridCapacity(cols, rows)
+  return clampInt(n, 1, cap, cap)
+}
+
+/**
+ * When the frame grows/shrinks: stay full if it was full; otherwise keep a trimmed count.
+ * @param {unknown} prevCellCount
+ * @param {number} prevCols
+ * @param {number} prevRows
+ * @param {number} nextCols
+ * @param {number} nextRows
+ */
+export function resolveCellCountOnResize(prevCellCount, prevCols, prevRows, nextCols, nextRows) {
+  const oldCap = gridCapacity(prevCols, prevRows)
+  const newCap = gridCapacity(nextCols, nextRows)
+  const prev =
+    prevCellCount == null || prevCellCount === ''
+      ? oldCap
+      : clampCellCount(prevCellCount, prevCols, prevRows)
+  if (prev >= oldCap) return newCap
+  return Math.min(prev, newCap)
+}
+
+/**
+ * Active (visible/editable) cells for the mosaic — first `cellCount` entries.
+ * @param {object} layout
+ */
+export function activeGridCells(layout) {
+  const cols = clampInt(layout?.cols, 1, 8, 2)
+  const rows = clampInt(layout?.rows, 1, 16, 1)
+  const cells = Array.isArray(layout?.cells) ? layout.cells : []
+  const n = clampCellCount(layout?.cellCount, cols, rows)
+  return cells.slice(0, n).map(normalizeGridCell)
+}
+
+/**
+ * @param {number} cols
+ * @param {number} rows
+ */
 export function emptyGridCells(cols, rows) {
   const n = Math.max(1, cols) * Math.max(1, rows)
   return Array.from({ length: n }, () => ({ setIds: [], propertyKeys: [], title: '' }))
@@ -195,7 +249,7 @@ export function autoFillGridLayout(layout, setIds) {
     if (i < cells.length) cells[i] = { setIds: [id], title: '' }
   })
   return {
-    ...normalizeGridLayout({ ...layout, cols, rows, cells }),
+    ...normalizeGridLayout({ ...layout, cols, rows, cells, cellCount: cols * rows }),
     edited: false,
     overlaySetIds: ids
   }
@@ -241,7 +295,7 @@ export function autoFillEnergeticGrid(layout, setIds, propertyKeys) {
     if (i < cells.length) cells[i] = { setIds: [...ids], propertyKeys: [prop], title: '' }
   })
   return {
-    ...normalizeGridLayout({ ...layout, cols, rows, cells }),
+    ...normalizeGridLayout({ ...layout, cols, rows, cells, cellCount: cols * rows }),
     edited: false,
     overlaySetIds: ids
   }
@@ -264,7 +318,7 @@ export function autoFillEnergeticGridBySet(layout, setIds, propertyKeys) {
     if (i < cells.length) cells[i] = { setIds: [id], propertyKeys: [...props], title: '' }
   })
   return {
-    ...normalizeGridLayout({ ...layout, cols, rows, cells }),
+    ...normalizeGridLayout({ ...layout, cols, rows, cells, cellCount: cols * rows }),
     edited: false,
     overlaySetIds: ids
   }
@@ -329,6 +383,11 @@ export function normalizeGridLayout(raw) {
     cols,
     rows
   )
+  const capacity = gridCapacity(cols, rows)
+  const cellCount =
+    src.cellCount == null || src.cellCount === ''
+      ? capacity
+      : clampCellCount(src.cellCount, cols, rows)
   const overrides =
     src.cellOverrides && typeof src.cellOverrides === 'object' && !Array.isArray(src.cellOverrides)
       ? { ...src.cellOverrides }
@@ -339,6 +398,7 @@ export function normalizeGridLayout(raw) {
     gapPx: clampInt(src.gapPx, 0, 80, GRID_LAYOUT_DEFAULTS.gapPx),
     aspectRatio: src.aspectRatio == null ? '' : String(src.aspectRatio),
     lastRowAlign,
+    cellCount,
     showXLabels,
     showYLabels,
     showXTickLabels: LABEL_PRESETS.has(String(src.showXTickLabels))
@@ -362,7 +422,7 @@ export function normalizeGridLayout(raw) {
     cellBorder: src.cellBorder !== false,
     cellBorderColor: String(src.cellBorderColor || ''),
     legendMode,
-    legendCell: clampInt(src.legendCell, 0, Math.max(0, cells.length - 1), 0),
+    legendCell: clampInt(src.legendCell, 0, Math.max(0, cellCount - 1), 0),
     legendOutside,
     legendEntries,
     legendColumns: clampInt(src.legendColumns, 1, 8, 1),
@@ -575,11 +635,12 @@ export function moveIdInList(ids, index, dir) {
 }
 
 /**
- * Last-row centering: full rows of `cols`, remainder centered.
- * Trailing empty panels are omitted from a centered last row.
+ * Split panels into full rows and an optional short last row for alignment.
+ * Empty panels are kept so placeholders stay editable in the live mosaic.
  * @param {Array<{ empty?: boolean }>} panels
  * @param {number} cols
- * @param {'start' | 'center'} lastRowAlign
+ * @param {'start' | 'center' | 'end'} lastRowAlign
+ * @returns {{ fullRows: typeof panels[], lastRow: typeof panels, lastAlign: null | 'center' | 'end' }}
  */
 export function mosaicRows(panels, cols, lastRowAlign) {
   const nCols = Math.max(1, cols)
@@ -589,16 +650,18 @@ export function mosaicRows(panels, cols, lastRowAlign) {
   for (let i = 0; i < list.length; i += nCols) {
     rows.push(list.slice(i, i + nCols))
   }
-  if (!rows.length) return { fullRows: [], lastRow: [], centerLast: false }
-  if (lastRowAlign !== 'center') {
-    return { fullRows: rows, lastRow: [], centerLast: false }
+  if (!rows.length) return { fullRows: [], lastRow: [], lastAlign: null }
+  const align = LAST_ROW.has(String(lastRowAlign)) ? String(lastRowAlign) : 'start'
+  const last = rows[rows.length - 1]
+  const incomplete = last.length > 0 && last.length < nCols
+  if (!incomplete || align === 'start') {
+    return { fullRows: rows, lastRow: [], lastAlign: null }
   }
-  const last = [...rows[rows.length - 1]]
-  while (last.length && last[last.length - 1]?.empty) last.pop()
-  if (last.length === 0 || last.length >= nCols) {
-    return { fullRows: rows, lastRow: [], centerLast: false }
+  return {
+    fullRows: rows.slice(0, -1),
+    lastRow: last,
+    lastAlign: /** @type {'center' | 'end'} */ (align)
   }
-  return { fullRows: rows.slice(0, -1), lastRow: last, centerLast: true }
 }
 
 /**
@@ -762,7 +825,7 @@ export function assignedSetIdsInOrder(layout, compareLayout) {
   /** @type {string[]} */
   const out = []
   const seen = new Set()
-  for (const cell of layout?.cells || []) {
+  for (const cell of activeGridCells(layout || {})) {
     for (const id of cell?.setIds || []) {
       if (seen.has(id)) continue
       seen.add(id)
@@ -836,10 +899,10 @@ export function mplLineStyle(style) {
 }
 
 /**
- * GridSpec slices into a (rows × cols*2) micro-grid so a short last row can center.
+ * GridSpec slices into a (rows × cols*2) micro-grid so a short last row can align.
  * @param {number} nPanels
  * @param {number} cols
- * @param {'start' | 'center'} lastRowAlign
+ * @param {'start' | 'center' | 'end'} lastRowAlign
  * @returns {{ slices: Array<{ row: number, c0: number, c1: number }>, rows: number, microCols: number }}
  */
 export function gridSpecSlices(nPanels, cols, lastRowAlign) {
@@ -858,7 +921,12 @@ export function gridSpecSlices(nPanels, cols, lastRowAlign) {
   }
   if (rem) {
     const r = full
-    const start = lastRowAlign === 'center' ? nCols - rem : 0
+    const start =
+      lastRowAlign === 'center'
+        ? nCols - rem
+        : lastRowAlign === 'end'
+          ? 2 * (nCols - rem)
+          : 0
     for (let k = 0; k < rem; k++) {
       const c0 = start + k * 2
       slices.push({ row: r, c0, c1: c0 + 2 })

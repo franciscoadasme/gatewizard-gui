@@ -136,7 +136,11 @@
     lineChartAxisProps,
     plotSpecAxisChrome,
     lineChartExtraMarginProps,
-    plotSpecExtraMargins
+    plotSpecExtraMargins,
+    activeGridCells,
+    clampCellCount,
+    resolveCellCountOnResize,
+    gridCapacity
   } from '../lib/analysisGridLayout.js'
   import {
     applyPlotSourcesToResult,
@@ -555,7 +559,7 @@
       }
 
       if (layout === 'grid') {
-        const cells = gridLayout.cells || []
+        const cells = activeGridCells(gridLayout)
         const prevPanels = chartView.panels || []
         const panels = cells.map((cell, i) => {
           const ids = cell.setIds || []
@@ -650,7 +654,7 @@
       }
 
       if (energeticCompareLayout === 'grid') {
-        const cells = energeticGridLayout.cells || []
+        const cells = activeGridCells(energeticGridLayout)
         const panels = cells.map((cell, i) => {
           const ids = cell.setIds || []
           const cellProps =
@@ -748,15 +752,23 @@
     }
     const nextCols = Math.max(1, Math.min(8, Math.round(Number(cols) || gridLayout.cols)))
     const nextRows = Math.max(1, Math.min(16, Math.round(Number(rows) || gridLayout.rows)))
+    const cellCount = resolveCellCountOnResize(
+      gridLayout.cellCount,
+      gridLayout.cols,
+      gridLayout.rows,
+      nextCols,
+      nextRows
+    )
     let next = normalizeGridLayout({
       ...gridLayout,
       cols: nextCols,
       rows: nextRows,
+      cellCount,
       cells: resizeGridCells(gridLayout.cells, nextCols, nextRows)
     })
     if (!next.edited) next = autoFillGridLayout(next, analysisSetIds())
     gridLayout = next
-    const n = Math.max(1, (Number(next.cols) || 1) * (Number(next.rows) || 1))
+    const n = clampCellCount(next.cellCount, next.cols, next.rows)
     if (selectedGridCell >= n) selectedGridCell = n - 1
     if (gridCellEditorOpen != null && gridCellEditorOpen >= n) gridCellEditorOpen = null
     markSessionDirty()
@@ -871,10 +883,18 @@
   function setEnergeticGridColsRows(cols, rows) {
     const nextCols = Math.max(1, Math.min(8, Math.round(Number(cols) || energeticGridLayout.cols)))
     const nextRows = Math.max(1, Math.min(16, Math.round(Number(rows) || energeticGridLayout.rows)))
+    const cellCount = resolveCellCountOnResize(
+      energeticGridLayout.cellCount,
+      energeticGridLayout.cols,
+      energeticGridLayout.rows,
+      nextCols,
+      nextRows
+    )
     let next = normalizeGridLayout({
       ...energeticGridLayout,
       cols: nextCols,
       rows: nextRows,
+      cellCount,
       cells: resizeGridCells(energeticGridLayout.cells, nextCols, nextRows)
     })
     if (!next.edited) {
@@ -884,9 +904,36 @@
           : autoFillEnergeticGrid(next, analysisSetIds(), energeticPropertyKeys())
     }
     energeticGridLayout = next
-    const n = Math.max(1, (Number(next.cols) || 1) * (Number(next.rows) || 1))
+    const n = clampCellCount(next.cellCount, next.cols, next.rows)
     if (selectedGridCell >= n) selectedGridCell = n - 1
     if (gridCellEditorOpen != null && gridCellEditorOpen >= n) gridCellEditorOpen = null
+    markSessionDirty()
+    bumpPlotData()
+  }
+
+  /** @param {number|string} raw */
+  function setActiveGridCellCount(raw) {
+    if (mode === 'energetic') {
+      const cellCount = clampCellCount(raw, energeticGridLayout.cols, energeticGridLayout.rows)
+      energeticGridLayout = normalizeGridLayout({
+        ...energeticGridLayout,
+        cellCount,
+        edited: true
+      })
+      if (selectedGridCell >= cellCount) selectedGridCell = cellCount - 1
+      if (gridCellEditorOpen != null && gridCellEditorOpen >= cellCount) gridCellEditorOpen = null
+      markSessionDirty()
+      bumpPlotData()
+      return
+    }
+    const cellCount = clampCellCount(raw, gridLayout.cols, gridLayout.rows)
+    gridLayout = normalizeGridLayout({
+      ...gridLayout,
+      cellCount,
+      edited: true
+    })
+    if (selectedGridCell >= cellCount) selectedGridCell = cellCount - 1
+    if (gridCellEditorOpen != null && gridCellEditorOpen >= cellCount) gridCellEditorOpen = null
     markSessionDirty()
     bumpPlotData()
   }
@@ -2182,13 +2229,17 @@
     }))
   )
   const structuralMosaic = $derived(
-    mosaicRows(chartView.panels, gridLayout.cols, /** @type {'start' | 'center'} */ (gridLayout.lastRowAlign))
+    mosaicRows(
+      chartView.panels,
+      gridLayout.cols,
+      /** @type {'start' | 'center' | 'end'} */ (gridLayout.lastRowAlign)
+    )
   )
   const energeticMosaic = $derived(
     mosaicRows(
       energeticChartView.panels,
       energeticGridLayout.cols,
-      /** @type {'start' | 'center'} */ (energeticGridLayout.lastRowAlign)
+      /** @type {'start' | 'center' | 'end'} */ (energeticGridLayout.lastRowAlign)
     )
   )
   const activeMosaicLayout = $derived(mode === 'energetic' ? energeticGridLayout : gridLayout)
@@ -3800,7 +3851,11 @@
             layout: 'grid',
             cols,
             rows,
-            last_row_align: energeticGridLayout.lastRowAlign === 'center' ? 'center' : 'start',
+            last_row_align:
+              energeticGridLayout.lastRowAlign === 'center' ||
+              energeticGridLayout.lastRowAlign === 'end'
+                ? energeticGridLayout.lastRowAlign
+                : 'start',
             wspace: gapFrac,
             hspace: gapFrac,
             cell_aspect: aspect,
@@ -5788,7 +5843,10 @@
             layout: 'grid',
             cols,
             rows,
-            last_row_align: gridLayout.lastRowAlign === 'center' ? 'center' : 'start',
+            last_row_align:
+              gridLayout.lastRowAlign === 'center' || gridLayout.lastRowAlign === 'end'
+                ? gridLayout.lastRowAlign
+                : 'start',
             wspace: gapFrac,
             hspace: gapFrac,
             cell_aspect: aspect,
@@ -8866,7 +8924,11 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               onclick={addGridRow}
               title="Add row"
             >+ Row</Button>
-            <span class="px-1 text-[11px] text-neutral-500">{activeMosaicLayout.cols}×{activeMosaicLayout.rows}</span>
+            <span class="px-1 text-[11px] text-neutral-500"
+              >{activeMosaicLayout.cols}×{activeMosaicLayout.rows}{#if clampCellCount(activeMosaicLayout.cellCount, activeMosaicLayout.cols, activeMosaicLayout.rows) < gridCapacity(activeMosaicLayout.cols, activeMosaicLayout.rows)}
+                · {clampCellCount(activeMosaicLayout.cellCount, activeMosaicLayout.cols, activeMosaicLayout.rows)}
+              {/if}</span
+            >
             <Button
               size="sm"
               variant={plotGridOptionsOpen ? 'default' : 'outline'}
@@ -8924,6 +8986,31 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 />
               </div>
               <div>
+                <p class="sidebar-label mb-0.5">Cells</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="1"
+                  max={gridCapacity(activeMosaicLayout.cols, activeMosaicLayout.rows)}
+                  step="1"
+                  value={clampCellCount(
+                    activeMosaicLayout.cellCount,
+                    activeMosaicLayout.cols,
+                    activeMosaicLayout.rows
+                  )}
+                  className="w-full"
+                  oninput={(e) =>
+                    setActiveGridCellCount(
+                      /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    )
+                  }
+                />
+                <p class="mt-0.5 text-[10px] text-neutral-500 dark:text-neutral-400">
+                  Active squares in the {activeMosaicLayout.cols}×{activeMosaicLayout.rows} frame
+                  (max {gridCapacity(activeMosaicLayout.cols, activeMosaicLayout.rows)}).
+                </p>
+              </div>
+              <div>
                 <p class="sidebar-label mb-0.5">Last incomplete row</p>
                 <Select
                   size="sm"
@@ -8937,6 +9024,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 >
                   <option value="start">Left</option>
                   <option value="center">Center</option>
+                  <option value="end">Right</option>
                 </Select>
               </div>
               <div>
@@ -9360,8 +9448,13 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   {/each}
                 </div>
               {/each}
-              {#if structuralMosaic.centerLast}
-                <div class="flex justify-center" style={`gap: ${mosaicGap}`}>
+              {#if structuralMosaic.lastAlign}
+                <div
+                  class="flex {structuralMosaic.lastAlign === 'end'
+                    ? 'justify-end'
+                    : 'justify-center'}"
+                  style={`gap: ${mosaicGap}`}
+                >
                   {#each structuralMosaic.lastRow as panel (panel.key)}
                     <div
                       class="min-w-0"
@@ -9485,8 +9578,13 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   {/each}
                 </div>
               {/each}
-              {#if energeticMosaic.centerLast}
-                <div class="flex justify-center" style={`gap: ${mosaicGap}`}>
+              {#if energeticMosaic.lastAlign}
+                <div
+                  class="flex {energeticMosaic.lastAlign === 'end'
+                    ? 'justify-end'
+                    : 'justify-center'}"
+                  style={`gap: ${mosaicGap}`}
+                >
                   {#each energeticMosaic.lastRow as panel (panel.key)}
                     <div
                       class="min-w-0"
