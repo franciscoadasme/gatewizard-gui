@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Notices / toasts:** finished, saved, warning, and error cards use a solid theme-aware fill (green / yellow / red / blue, no translucent overlay) so they no longer blend into the page.
 - **Analysis plot tools:** Pan is off by default so page scroll works over charts; click **Pan** to enable (click again to turn off). Wheel zoom only runs when a plot tool is active.
 - **Analysis light theme:** Reset view menu and grid-cell set picker (and OrderedSetChips) use light/dark styles instead of always-dark chrome.
 - **Analysis light theme:** stats table set names and mean/std/min/max values use theme-aware text colors (no longer light gray on a white background).

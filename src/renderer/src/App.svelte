@@ -1055,7 +1055,7 @@
   >
     {#each jobToastState.items as toast (toast.id)}
       <div
-        class="gw-notice gw-notice-success pointer-events-auto flex w-full items-start gap-2 p-3 text-left transition-opacity hover:opacity-90"
+        class="gw-notice gw-notice-success pointer-events-auto flex w-full items-start gap-2 p-3 text-left shadow-lg transition-opacity hover:opacity-90"
         role="status"
       >
         <button
