@@ -70,8 +70,8 @@
     yTickStep = '',
     /** @type {Array<{ axis?: string, value: number, color?: string, width?: number, style?: string, label?: string }>} */
     referenceLines = [],
-    /** @type {'pan' | 'boxZoom' | 'rangeSelect'} */
-    interactionMode = 'pan',
+    /** @type {'none' | 'pan' | 'boxZoom' | 'rangeSelect'} */
+    interactionMode = 'none',
     /** Highlight band for range stats [t0, t1] in data x units */
     statsRange = null,
     /** @type {((range: { xMin?: number, xMax?: number, yMin?: number, yMax?: number }) => void) | null} */
@@ -455,6 +455,8 @@
   }
 
   function onWheel(e) {
+    // Allow normal page scroll unless an interaction tool is active.
+    if (interactionMode === 'none') return
     e.preventDefault()
     const rect = e.currentTarget.getBoundingClientRect()
     const svgX = ((e.clientX - rect.left) / rect.width) * width
@@ -490,6 +492,7 @@
   /** @param {MouseEvent} e */
   function onMouseDown(e) {
     if (e.button !== 0) return
+    if (interactionMode === 'none') return
     const rect = e.currentTarget.getBoundingClientRect()
     const svgX = ((e.clientX - rect.left) / rect.width) * width
     const svgY = ((e.clientY - rect.top) / rect.height) * height
@@ -519,6 +522,8 @@
           : { x0: svgX, y0: svgY, x1: svgX, y1: svgY }
       return
     }
+
+    if (interactionMode !== 'pan') return
 
     dragging = true
     rangeHandleDrag = null
@@ -697,7 +702,9 @@
           : 'crosshair'
         : interactionMode === 'boxZoom'
           ? 'crosshair'
-          : 'grab'
+          : interactionMode === 'pan'
+            ? 'grab'
+            : 'default'
   )
 </script>
 

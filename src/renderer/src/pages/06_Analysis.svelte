@@ -1684,8 +1684,8 @@
   let ePlotGlobal = $state({ ...energGlobalDefaults, ...energPanelShell })
   /** @type {Record<string, ReturnType<typeof defaultPanelSettings>>} */
   let ePlotPanels = $state({})
-  /** @type {'pan' | 'boxZoom' | 'rangeSelect'} */
-  let chartInteractionMode = $state('pan')
+  /** @type {'none' | 'pan' | 'boxZoom' | 'rangeSelect'} */
+  let chartInteractionMode = $state(/** @type {'none' | 'pan' | 'boxZoom' | 'rangeSelect'} */ ('none'))
   let focusedPanelKey = $state('')
   /** @type {{ t0: number, t1: number } | null} */
   let statsRange = $state(null)
@@ -2680,7 +2680,7 @@
   }
 
   function resetChartView() {
-    chartInteractionMode = 'pan'
+    chartInteractionMode = 'none'
     statsRange = null
     panelRangeStats = {}
     statsRangeStartInput = ''
@@ -4669,10 +4669,7 @@
     }
     ePlotGlobal = { ...energGlobalDefaults, ...energPanelShell }
     ePlotPanels = {}
-    chartInteractionMode = 'pan'
-    focusedPanelKey = ''
-    statsRange = null
-    panelRangeStats = {}
+    chartInteractionMode = 'none'
     structResults = {
       rmsd: null,
       rmsf: null,
@@ -9142,7 +9139,9 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             <Button
               size="sm"
               variant={chartInteractionMode === 'pan' ? 'default' : 'outline'}
-              onclick={() => (chartInteractionMode = 'pan')}>Pan</Button
+              title={chartInteractionMode === 'pan' ? 'Pan is on — click again to turn off' : 'Enable pan on plots'}
+              onclick={() =>
+                (chartInteractionMode = chartInteractionMode === 'pan' ? 'none' : 'pan')}>Pan</Button
             >
             <Button
               size="sm"
@@ -9178,12 +9177,12 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               </Button>
               {#if resetMenuOpen}
                 <div
-                  class="absolute top-full left-0 z-30 mt-1 min-w-[14rem] rounded-md border border-neutral-700 bg-neutral-900 py-1 text-xs shadow-lg"
+                  class="absolute top-full left-0 z-30 mt-1 min-w-[14rem] rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
                   role="menu"
                 >
                   <button
                     type="button"
-                    class="block w-full px-3 py-1.5 text-left text-neutral-200 hover:bg-neutral-800"
+                    class="block w-full px-3 py-1.5 text-left text-neutral-800 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800"
                     role="menuitem"
                     onclick={resetChartView}
                   >
@@ -9194,7 +9193,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   </button>
                   <button
                     type="button"
-                    class="block w-full px-3 py-1.5 text-left text-neutral-200 hover:bg-neutral-800"
+                    class="block w-full px-3 py-1.5 text-left text-neutral-800 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800"
                     role="menuitem"
                     onclick={resetChartViewAndLimits}
                   >
@@ -9356,7 +9355,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             xMaxOverride={xMaxO}
             yMinOverride={yMinO}
             yMaxOverride={yMaxO}
-            interactionMode={hasChartTimeAxis ? chartInteractionMode : 'pan'}
+            interactionMode={chartInteractionMode}
             statsRange={hasChartTimeAxis ? statsRange : null}
             onAxisRange={applyStructAxisRange}
             onStatsRange={handleStatsRange}

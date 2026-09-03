@@ -32,7 +32,7 @@
     yMinO = null,
     yMaxO = null,
     hasChartTimeAxis = false,
-    chartInteractionMode = 'pan',
+    chartInteractionMode = 'none',
     statsRange = null,
     xTickStep = '',
     yTickStep = '',
@@ -168,7 +168,7 @@
   <button
     type="button"
     data-grid-cell-chrome="1"
-    class="absolute top-1.5 right-1.5 z-20 flex size-7 items-center justify-center rounded-md border border-neutral-600/80 bg-neutral-900/90 text-neutral-200 shadow-sm hover:bg-neutral-800"
+    class="absolute top-1.5 right-1.5 z-20 flex size-7 items-center justify-center rounded-md border border-neutral-300 bg-white/95 text-neutral-700 shadow-sm hover:bg-neutral-100 dark:border-neutral-600/80 dark:bg-neutral-900/90 dark:text-neutral-200 dark:hover:bg-neutral-800"
     class:ring-1={editing}
     class:ring-amber-400={editing}
     title={availableProperties.length ? 'Sets and properties in this square' : 'Sets and order in this square'}
@@ -186,10 +186,10 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       data-grid-cell-chrome="1"
-      class="absolute top-9 right-1.5 z-30 w-[min(18rem,calc(100%-0.75rem))] space-y-1.5 rounded-md border border-neutral-700 bg-neutral-900 p-2 shadow-xl"
+      class="absolute top-9 right-1.5 z-30 w-[min(18rem,calc(100%-0.75rem))] space-y-1.5 rounded-md border border-neutral-200 bg-white p-2 shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
       onclick={(e) => e.stopPropagation()}
     >
-      <p class="text-[11px] font-medium text-neutral-300">Sets in this square</p>
+      <p class="text-[11px] font-medium text-neutral-700 dark:text-neutral-300">Sets in this square</p>
       <Input
         size="sm"
         value={cellTitle}
@@ -205,11 +205,11 @@
         onchange={(ids) => onCellSetIds?.(ids)}
       />
       {#if availableProperties.length}
-        <p class="sidebar-label mt-1 text-[11px] font-medium text-neutral-300">Properties</p>
+        <p class="sidebar-label mt-1 text-[11px] font-medium text-neutral-700 dark:text-neutral-300">Properties</p>
         <div class="max-h-36 space-y-0.5 overflow-y-auto">
           {#each availableProperties as prop (prop)}
             {@const implicitKeys = propertyKeys.length > 0 ? propertyKeys : availableProperties}
-            <label class="flex items-center gap-1.5 text-[11px] text-neutral-300">
+            <label class="flex items-center gap-1.5 text-[11px] text-neutral-700 dark:text-neutral-300">
               <Checkbox
                 name={`cell-prop-${idx}-${prop}`}
                 checked={implicitKeys.includes(prop)}

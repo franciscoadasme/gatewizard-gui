@@ -39,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Analysis plot tools:** Pan is off by default so page scroll works over charts; click **Pan** to enable (click again to turn off). Wheel zoom only runs when a plot tool is active.
+- **Analysis light theme:** Reset view menu and grid-cell set picker (and OrderedSetChips) use light/dark styles instead of always-dark chrome.
 - **Linux launcher:** the packaged `gatewizard-gui-linux` wrapper no longer embeds nested backticks in the D-Bus snippet (dash reported `Syntax error: Unterminated quoted string` and the app never started).
 - **WSL display logs:** `write EPIPE` on a closed stderr socket no longer pops a stack of “A JavaScript error occurred in the main process” dialogs (clicking OK used to log again and open another).
 - **Equilibration startup:** a Python-style `.lower()` call crashed on launch (`String(...).lower is not a function` in `isSidebarControlledStage`). Every page stays mounted, so that uncaught `$effect` error froze tab switching even if Equilibration was never opened.
