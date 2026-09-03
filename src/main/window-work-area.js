@@ -1,6 +1,7 @@
 import { accessSync, readFileSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { screen } from 'electron'
+import { writeStdioSafe } from '../../scripts/stdio-guard.cjs'
 
 const MIN_WINDOW_WIDTH = 640
 const MIN_WINDOW_HEIGHT = 480
@@ -151,13 +152,14 @@ export function captureLaunchAnchorEarly() {
   if (process.platform === 'linux' && isRunningUnderWsl()) {
     cachedWinLayout = probeWindowsLayout()
     if (cachedWinLayout) {
-      process.stderr.write(
+      writeStdioSafe(
+        process.stderr,
         `[display] wsl layout monitors=${cachedWinLayout.monitors.length} ` +
           `origin=(${cachedWinLayout.originX},${cachedWinLayout.originY}) ` +
           `anchor=(${cachedWinLayout.anchorX},${cachedWinLayout.anchorY})\n`
       )
     } else {
-      process.stderr.write('[display] wsl layout probe failed\n')
+      writeStdioSafe(process.stderr, '[display] wsl layout probe failed\n')
     }
   }
 }
@@ -195,7 +197,8 @@ function boundsFromWindowsLayout(width, height) {
   // WSLg X11 origin = top-left of the bounding box of all Windows monitors.
   const x = winX - layout.originX
   const y = winY - layout.originY
-  process.stderr.write(
+  writeStdioSafe(
+    process.stderr,
     `[display] place ${width}x${height} on Windows (${winX},${winY}) → X11 (${x},${y}) ` +
       `monitor=${mon.primary ? 'primary' : 'secondary'} ` +
       `work=${mon.workX},${mon.workY} ${mon.workWidth}x${mon.workHeight}\n`

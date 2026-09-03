@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **WSL D-Bus:** prefer the live default session bus at `/run/user/$UID/bus`; only start a private `gatewizard-bus` when that socket is missing. Never point Chromium at a dead `gatewizard-bus` socket (that caused packaged `.deb` launches to fail while `npm run dev` still worked).
 - **Analysis custom plot grid:** Overlay uses an ordered set list (add / up / down / remove). Custom grid is a session-persisted mosaic (columns × rows, gap, aspect, last-row align, legends, reference lines). Plot settings can target **All cells** or **This cell**; each square has a list button for that cell’s sets, draw order, and title. Line width/dash apply to structural and energetic plots. Live SVG matches publication PNG.
 - **Analysis RMSD reference PDB:** optional starting structure instead of Ref. frame. PDB/GRO files in the trajectory list are ignored when DCD/XTC files are present (they have no periodic box and were breaking membrane thickness).
 - **Analysis area per lipid:** show/hide Average, Upper leaflet, and Lower leaflet on the plot (and publication PNG). CSV still stores all three.
@@ -27,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Linux launcher:** the packaged `gatewizard-gui-linux` wrapper no longer embeds nested backticks in the D-Bus snippet (dash reported `Syntax error: Unterminated quoted string` and the app never started).
+- **WSL display logs:** `write EPIPE` on a closed stderr socket no longer pops a stack of “A JavaScript error occurred in the main process” dialogs (clicking OK used to log again and open another).
 - **Equilibration startup:** a Python-style `.lower()` call crashed on launch (`String(...).lower is not a function` in `isSidebarControlledStage`). Every page stays mounted, so that uncaught `$effect` error froze tab switching even if Equilibration was never opened.
 - **Analysis Overlay/Grid:** clicking Grid or loading a session no longer freezes the app. Mosaic cells use padding-bottom instead of CSS `aspect-ratio` (Chromium could tight-loop layout in a flex + overflow pane). Chart-width observers no longer retrigger layout every frame.
 - **Analysis custom grid:** set checkboxes hide or show series in mosaic cells (not only overlay). X/Y tick counts and the axis box apply to overlay and grid.

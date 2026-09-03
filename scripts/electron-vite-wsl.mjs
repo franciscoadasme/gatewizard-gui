@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const require = createRequire(import.meta.url)
+const { attachChromiumStderrFilter, ensureSessionDbus } = require('./session-dbus.cjs')
 
 function isWsl() {
   if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) return true
@@ -48,6 +49,10 @@ const child = spawn(process.execPath, [electronViteBin, ...args], {
   env,
   shell: false
 })
+if (child.stderr) {
+  child.stderr.on('error', () => {})
+  attachChromiumStderrFilter(child.stderr)
+}
 
 function forwardSignal(signal) {
   if (child.exitCode != null || child.signalCode) return

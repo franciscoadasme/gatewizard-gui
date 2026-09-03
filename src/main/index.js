@@ -79,6 +79,8 @@ import {
   getPreferredLaunchDisplay
 } from './window-work-area.js'
 import { buildAugmentedPath } from './shell-path.js'
+import { ensureSessionDbus } from '../../scripts/session-dbus.cjs'
+import { ignoreBrokenStdio, isBrokenPipeError, writeStdioSafe } from '../../scripts/stdio-guard.cjs'
 
 const BACKEND_URL = 'http://127.0.0.1:8765'
 const GPU_SAFE_MODE_FLAG = '--gatewizard-gpu-safe-mode=1'
@@ -754,6 +756,34 @@ function relaunchInGpuSafeMode(reason) {
   return true
 }
 
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.exit(0)
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.focus()
+    }
+  })
+}
+
+ignoreBrokenStdio()
+process.on('uncaughtException', (err) => {
+  if (isBrokenPipeError(err)) return
+  const text = err && err.stack ? err.stack : String(err)
+  try {
+    dialog.showErrorBox('A JavaScript error occurred in the main process', text)
+  } catch {
+    writeStdioSafe(process.stderr, `${text}\n`)
+  }
+})
+
+ensureSessionDbus(process.env)
+applyDisplayGpuEnv(process.env)
+if (process.platform === 'linux') {
+  clearCorruptedGpuCache(getAppConfigDir())
+}
 applyGpuStartupMode()
 
 // WSL/WSLg: capture console monitor before Electron steals focus, and use X11 so
