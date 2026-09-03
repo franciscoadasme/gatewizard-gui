@@ -292,32 +292,57 @@
   }
 
   /*
-   * Notices — solid card + brand accent bar so they sit off the page chrome.
-   * Readable in light and dark (no translucent fills).
+   * In-page notices — neutral surface + brand accent bar.
+   * Transparent fill so they sit lightly inside tabs / sidebars.
    */
   .gw-notice {
-    @apply min-w-0 break-words rounded-md border border-neutral-300 bg-neutral-100 px-3 py-2 text-xs text-neutral-800 shadow-sm dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-200;
+    @apply min-w-0 break-words rounded-md border border-neutral-300 bg-transparent px-3 py-2 text-xs text-neutral-800 dark:border-neutral-700 dark:text-neutral-200;
     overflow-wrap: anywhere;
   }
 
   .gw-notice-warning {
-    @apply border-l-[5px] border-l-yellow-500 bg-yellow-100 dark:bg-yellow-900;
+    @apply border-l-[5px] border-l-yellow-500;
   }
 
   .gw-notice-success {
-    @apply border-l-[5px] border-l-green-500 bg-green-100 dark:bg-green-900;
+    @apply border-l-[5px] border-l-green-500;
   }
 
   .gw-notice-error {
-    @apply border-l-[5px] border-l-red-500 bg-red-100 select-text dark:bg-red-900;
+    @apply border-l-[5px] border-l-red-500 select-text;
   }
 
   .gw-notice-info {
+    @apply border-l-[5px] border-l-blue-500;
+  }
+
+  /*
+   * Floating job toasts (bottom-right when the app is unfocused).
+   * Solid fill so they read clearly over the page chrome.
+   */
+  .gw-toast {
+    @apply min-w-0 break-words rounded-md border border-neutral-300 bg-neutral-100 px-3 py-2 text-xs text-neutral-800 shadow-lg dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-200;
+    overflow-wrap: anywhere;
+  }
+
+  .gw-toast-success {
+    @apply border-l-[5px] border-l-green-500 bg-green-100 dark:bg-green-900;
+  }
+
+  .gw-toast-error {
+    @apply border-l-[5px] border-l-red-500 bg-red-100 dark:bg-red-900;
+  }
+
+  .gw-toast-warning {
+    @apply border-l-[5px] border-l-yellow-500 bg-yellow-100 dark:bg-yellow-900;
+  }
+
+  .gw-toast-info {
     @apply border-l-[5px] border-l-blue-500 bg-blue-100 dark:bg-blue-900;
   }
 
   .gw-chip {
-    @apply flex shrink-0 items-center gap-1.5 rounded border border-neutral-300 bg-neutral-100 px-2 py-1 text-neutral-700 dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-300;
+    @apply flex shrink-0 items-center gap-1.5 rounded border border-neutral-300 bg-transparent px-2 py-1 text-neutral-700 dark:border-neutral-700 dark:text-neutral-300;
   }
 
   .gw-chip-running {
