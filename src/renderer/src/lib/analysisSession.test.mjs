@@ -15,6 +15,7 @@ import {
   hydrateAnalysisSetsFromCsv,
   setsHaveAnyPlottableResults,
   normalizeEnergeticCompareLayout,
+  inferEnergeticGridFill,
   deserializeAnalysisSession,
   hydratePlotColorFlags,
   resolvePlotColors,
@@ -144,10 +145,13 @@ test('slimSetsForSessionSave strips energetic series arrays', () => {
   assert.equal(csvFileNameForEnergeticSet({ csvStem: 'set2', label: 'Prod' }, 1), 'set2_energetic.csv')
 })
 
-test('normalizeEnergeticCompareLayout maps legacy grid to by_set', () => {
-  assert.equal(normalizeEnergeticCompareLayout('grid'), 'by_set')
-  assert.equal(normalizeEnergeticCompareLayout('by_property'), 'by_property')
+test('normalizeEnergeticCompareLayout maps legacy names to overlay|grid', () => {
+  assert.equal(normalizeEnergeticCompareLayout('grid'), 'grid')
+  assert.equal(normalizeEnergeticCompareLayout('by_property'), 'grid')
+  assert.equal(normalizeEnergeticCompareLayout('by_set'), 'grid')
   assert.equal(normalizeEnergeticCompareLayout('overlay'), 'overlay')
+  assert.equal(inferEnergeticGridFill('by_set'), 'by_set')
+  assert.equal(inferEnergeticGridFill('by_property'), 'by_property')
 })
 
 test('deserializeAnalysisSession keeps structural compareLayout and energetic layout', () => {
@@ -161,7 +165,39 @@ test('deserializeAnalysisSession keeps structural compareLayout and energetic la
     sets: [{ id: 'a', label: 'A' }]
   })
   assert.equal(session.compareLayout, 'overlay')
-  assert.equal(session.energeticCompareLayout, 'by_property')
+  assert.equal(session.energeticCompareLayout, 'grid')
+  assert.equal(session.energeticGridFill, 'by_property')
+})
+
+test('deserializeAnalysisSession migrates by_set and round-trips energeticGridLayout', () => {
+  const old = deserializeAnalysisSession({
+    version: 1,
+    mode: 'energetic',
+    compareLayout: 'overlay',
+    energeticCompareLayout: 'by_set',
+    outputFolderName: '04_analysis',
+    activeSetId: 'a',
+    sets: [{ id: 'a', label: 'A' }]
+  })
+  assert.equal(old.energeticCompareLayout, 'grid')
+  assert.equal(old.energeticGridFill, 'by_set')
+  const session = serializeAnalysisSession({
+    mode: 'energetic',
+    compareLayout: 'overlay',
+    energeticCompareLayout: 'grid',
+    outputFolderName: '04_analysis',
+    activeSetId: 'set-1',
+    sets: [{ id: 'set-1', label: 'A' }],
+    energeticGridLayout: {
+      cols: 2,
+      rows: 1,
+      cells: [{ setIds: ['set-1'], propertyKeys: ['Temperature'] }],
+      edited: true
+    }
+  })
+  const loaded = deserializeAnalysisSession(session)
+  assert.equal(loaded.energeticCompareLayout, 'grid')
+  assert.deepEqual(loaded.energeticGridLayout.cells[0].propertyKeys, ['Temperature'])
 })
 
 test('serializeAnalysisSession round-trips gridLayout', () => {

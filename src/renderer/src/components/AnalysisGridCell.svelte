@@ -2,6 +2,7 @@
   import LineChart from './LineChart.svelte'
   import OrderedSetChips from './OrderedSetChips.svelte'
   import Input from './ui/Input.svelte'
+  import Checkbox from './ui/Checkbox.svelte'
   import ListOrdered from './icons/ListOrdered.svelte'
   import {
     aspectPaddingBottom,
@@ -39,11 +40,14 @@
     cellTitle = '',
     cellSetIds = [],
     sets = [],
+    propertyKeys = [],
+    availableProperties = [],
     onSelectCell = null,
     onEditCell = null,
     onCloseEditor = null,
     onCellSetIds = null,
     onCellTitle = null,
+    onCellPropertyKeys = null,
     onAxisRange = null,
     onStatsRange = null
   } = $props()
@@ -101,7 +105,7 @@
         <div class="flex h-full items-center justify-center text-xs text-neutral-500">
           {#if panel.emptyReason === 'hidden'}
             Hidden
-          {:else if (panel.setIds || []).length}
+          {:else if (panel.setIds || []).length || (panel.propertyKeys || []).length}
             Waiting for data…
           {:else}
             No sets
@@ -167,8 +171,8 @@
     class="absolute top-1.5 right-1.5 z-20 flex size-7 items-center justify-center rounded-md border border-neutral-600/80 bg-neutral-900/90 text-neutral-200 shadow-sm hover:bg-neutral-800"
     class:ring-1={editing}
     class:ring-amber-400={editing}
-    title="Sets and order in this square"
-    aria-label="Sets and order in this square"
+    title={availableProperties.length ? 'Sets and properties in this square' : 'Sets and order in this square'}
+    aria-label={availableProperties.length ? 'Sets and properties in this square' : 'Sets and order in this square'}
     aria-expanded={editing}
     onclick={(e) => {
       e.stopPropagation()
@@ -200,6 +204,31 @@
         {sets}
         onchange={(ids) => onCellSetIds?.(ids)}
       />
+      {#if availableProperties.length}
+        <p class="sidebar-label mt-1 text-[11px] font-medium text-neutral-300">Properties</p>
+        <div class="max-h-36 space-y-0.5 overflow-y-auto">
+          {#each availableProperties as prop (prop)}
+            {@const implicitKeys = propertyKeys.length > 0 ? propertyKeys : availableProperties}
+            <label class="flex items-center gap-1.5 text-[11px] text-neutral-300">
+              <Checkbox
+                name={`cell-prop-${idx}-${prop}`}
+                checked={implicitKeys.includes(prop)}
+                onchange={(e) => {
+                  const checked = /** @type {HTMLInputElement} */ (e.currentTarget).checked
+                  const base = propertyKeys.length > 0 ? propertyKeys : availableProperties
+                  const next = checked
+                    ? base.includes(prop)
+                      ? [...base]
+                      : [...base, prop]
+                    : base.filter((p) => p !== prop)
+                  onCellPropertyKeys?.(next)
+                }}
+              />
+              <span class="min-w-0 truncate" title={prop}>{prop}</span>
+            </label>
+          {/each}
+        </div>
+      {/if}
     </div>
   {/if}
 </div>

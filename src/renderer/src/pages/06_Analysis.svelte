@@ -106,6 +106,9 @@
   import {
     defaultGridLayout,
     ensureGridCellsForSets,
+    autoFillEnergeticGrid,
+    autoFillEnergeticGridBySet,
+    ensureEnergeticGridCells,
     normalizeGridLayout,
     normalizeReferenceLines,
     emptyReferenceLine,
@@ -113,6 +116,7 @@
     cellShowsLegend,
     mosaicRows,
     autoFillGridLayout,
+    normalizeIdList,
     resizeGridCells,
     concatInSetIdOrder,
     figureLegendItems,
@@ -126,6 +130,7 @@
     patchCellPlotOverride,
     clearCellPlotKeysFromOverrides,
     CELL_PLOT_KEYS,
+    ENERGETIC_CELL_PLOT_KEYS,
     strokeDashForStyle,
     lineChartAxisProps,
     plotSpecAxisChrome,
@@ -136,6 +141,15 @@
     applyPlotSourcesToResult,
     capturePlotSourceFiles
   } from '../lib/analysisPlotSources.js'
+  import {
+    energeticEnginesToTry,
+    inferEnergeticEngineFromLogText,
+    remapEnergeticSeries,
+    remapPropertyList,
+    seriesMatchesProperty,
+    setHasEnergeticProperty,
+    unionEnergeticProperties
+  } from '../lib/energeticProperties.js'
   import { themeState } from '../lib/theme.svelte.js'
   import { themeBackgroundHex } from '../lib/viewerSettings.svelte.js'
 
@@ -247,10 +261,20 @@
   let energViewRangeByKey = $state({})
   let resetMenuOpen = $state(false)
   let resetMenuWrapEl = $state(/** @type {HTMLElement | null} */ (null))
-  /** Energetic multi-set layout: by_property | by_set | overlay */
+  /** Energetic overlay vs custom mosaic (session-persisted). */
   let energeticCompareLayout = $state(
-    /** @type {import('../lib/analysisSession.js').EnergeticCompareLayout} */ ('by_property')
+    /** @type {import('../lib/analysisSession.js').EnergeticCompareLayout} */ ('grid')
   )
+  let energeticGridLayout = $state(defaultGridLayout())
+  /** Used only when loading old sessions that have no energeticGridLayout. */
+  let energeticGridFill = $state(
+    /** @type {import('../lib/analysisSession.js').EnergeticGridFill} */ ('by_property')
+  )
+  /**
+   * Energetic chart snapshot — parallel to structural chartView.
+   * @type {{ mode: 'empty' | 'overlay' | 'grid', series: object[], panels: object[] }}
+   */
+  let energeticChartView = $state({ mode: 'empty', series: [], panels: [] })
   /** Bumped when plot arrays change so chart view rebuilds. */
   let plotDataRevision = $state(0)
   /** Right-panel plot update overlay (mode/type/set/property changes). */
@@ -463,6 +487,7 @@
   function bumpPlotData(changedSetIds) {
     plotDataRevision += 1
     syncChartViewFromSets(changedSetIds)
+    syncEnergeticChartViewFromSets()
     syncEnergeticGeom()
   }
 
@@ -588,21 +613,128 @@
     }
   }
 
+  /**
+   * Snapshot energetic overlay/grid from analysisSets into energeticChartView.
+   */
+  function syncEnergeticChartViewFromSets() {
+    if (mode !== 'energetic') return
+    try {
+      const setsPlain = analysisSets
+      const byId = new Map(setsPlain.map((s) => [s.id, s]))
+      const allIds = setsPlain.map((s) => s.id)
+      const props = compareEnergeticProperties
+      const seriesFor = (setIds, propertyKeys, nameMode) => {
+        const visibleIds = visibleSetIds(setIds, setsPlain).filter((id) => {
+          const set = byId.get(id)
+          return set && energeticResultHasPlotData(set.energeticResult)
+        })
+          const keys = normalizeIdList(propertyKeys)
+        return visibleIds.flatMap((id) =>
+          seriesFromEnergeticSet(byId.get(id), keys, {
+            maxPoints: DEFAULT_CHART_MAX_POINTS,
+            colorBySet: visibleIds.length > 1,
+            nameMode
+          })
+        )
+      }
+
+      if (energeticCompareLayout === 'grid') {
+        const cells = energeticGridLayout.cells || []
+        const panels = cells.map((cell, i) => {
+          const ids = cell.setIds || []
+          const cellProps =
+            (cell.propertyKeys || []).length > 0
+              ? cell.propertyKeys
+              : props.filter((p) =>
+                  ids.some((id) => setHasEnergeticProperty(byId.get(id), p))
+                )
+          const visibleIds = visibleSetIds(ids, setsPlain)
+          const multiSet = visibleIds.length > 1
+          const multiProp = cellProps.length > 1
+          const nameMode = multiSet && multiProp ? 'set_prop' : multiSet ? 'set' : 'prop'
+          const series = seriesFor(ids, cellProps, nameMode)
+          const title =
+            String(cell.title || '').trim() ||
+            (cellProps.length === 1 ? cellProps[0] : cellProps.join(', ')) ||
+            visibleIds
+              .map((id) => {
+                const set = byId.get(id)
+                return set ? setLegendName(set) : ''
+              })
+              .filter(Boolean)
+              .join(', ')
+          return {
+            key: `energ-cell-${i}`,
+            cellIndex: i,
+            title: title || `Panel ${i + 1}`,
+            series,
+            setIds: ids,
+            propertyKeys: cellProps,
+            visibleSetIds: visibleIds,
+            empty: series.length === 0,
+            emptyReason: gridCellEmptyReason(ids, visibleIds, series.length)
+          }
+        })
+        energeticChartView = {
+          mode: 'grid',
+          series: panels.flatMap((p) => p.series),
+          panels
+        }
+        return
+      }
+
+      const overlayIds = syncOrderedIds(energeticGridLayout.overlaySetIds, allIds)
+      const visibleIds = overlayIds.filter((id) => {
+        const set = byId.get(id)
+        return set && set.visible && energeticResultHasPlotData(set.energeticResult)
+      })
+      if (visibleIds.length === 0 || props.length === 0) {
+        energeticChartView = { mode: 'empty', series: [], panels: [] }
+        return
+      }
+      const nameMode =
+        visibleIds.length > 1 && props.length > 1
+          ? 'set_prop'
+          : visibleIds.length > 1
+            ? 'set'
+            : 'prop'
+      const series = seriesFor(visibleIds, props, nameMode)
+      energeticChartView = { mode: series.length ? 'overlay' : 'empty', series, panels: [] }
+    } catch (err) {
+      logEvent(
+        'error',
+        'analysis',
+        'Failed to rebuild energetic chart view',
+        err instanceof Error ? err.message : String(err)
+      )
+      energeticChartView = { mode: 'empty', series: [], panels: [] }
+    }
+  }
+
   function analysisSetIds() {
     return analysisSets.map((s) => s.id)
   }
 
   function syncSetsIntoGridLayout() {
     gridLayout = ensureGridCellsForSets(gridLayout, analysisSetIds())
+    syncSetsIntoEnergeticGridLayout()
   }
 
   /** Layout chrome (gap, ticks, legend placement) — live, no chart remount. */
   function patchGridChrome(partial) {
+    if (mode === 'energetic') {
+      patchEnergeticGridChrome(partial)
+      return
+    }
     gridLayout = normalizeGridLayout({ ...gridLayout, ...partial })
     markSessionDirty()
   }
 
   function setGridColsRows(cols, rows) {
+    if (mode === 'energetic') {
+      setEnergeticGridColsRows(cols, rows)
+      return
+    }
     const nextCols = Math.max(1, Math.min(8, Math.round(Number(cols) || gridLayout.cols)))
     const nextRows = Math.max(1, Math.min(16, Math.round(Number(rows) || gridLayout.rows)))
     let next = normalizeGridLayout({
@@ -621,19 +753,19 @@
   }
 
   function addGridColumn() {
-    setGridColsRows((Number(gridLayout.cols) || 1) + 1, gridLayout.rows)
+    setGridColsRows((Number(activeMosaicLayout.cols) || 1) + 1, activeMosaicLayout.rows)
   }
 
   function removeGridColumn() {
-    setGridColsRows((Number(gridLayout.cols) || 1) - 1, gridLayout.rows)
+    setGridColsRows((Number(activeMosaicLayout.cols) || 1) - 1, activeMosaicLayout.rows)
   }
 
   function addGridRow() {
-    setGridColsRows(gridLayout.cols, (Number(gridLayout.rows) || 1) + 1)
+    setGridColsRows(activeMosaicLayout.cols, (Number(activeMosaicLayout.rows) || 1) + 1)
   }
 
   function removeGridRow() {
-    setGridColsRows(gridLayout.cols, (Number(gridLayout.rows) || 1) - 1)
+    setGridColsRows(activeMosaicLayout.cols, (Number(activeMosaicLayout.rows) || 1) - 1)
   }
 
   /** Tick step from plot settings (empty = use tick count). */
@@ -642,6 +774,10 @@
   }
 
   function setOverlaySetIds(ids) {
+    if (mode === 'energetic') {
+      setEnergeticOverlaySetIds(ids)
+      return
+    }
     const nextIds = syncOrderedIds(ids, analysisSetIds())
     if (
       nextIds.length === (gridLayout.overlaySetIds || []).length &&
@@ -690,6 +826,10 @@
   }
 
   function resetGridToAuto() {
+    if (mode === 'energetic') {
+      resetEnergeticGridToAuto()
+      return
+    }
     const ids = analysisSetIds()
     const cols = gridLayout.cols || 2
     const rows = Math.max(1, Math.ceil(Math.max(ids.length, 1) / cols))
@@ -698,8 +838,144 @@
     bumpPlotData()
   }
 
+  function energeticPropertyKeys() {
+    const union = unionEnergeticProperties(analysisSets)
+    return union.length ? union : remapPropertyList(availableProperties)
+  }
+
+  function syncSetsIntoEnergeticGridLayout() {
+    energeticGridLayout = ensureEnergeticGridCells(
+      energeticGridLayout,
+      analysisSetIds(),
+      energeticPropertyKeys(),
+      energeticGridFill
+    )
+  }
+
+  function patchEnergeticGridChrome(partial) {
+    energeticGridLayout = normalizeGridLayout({ ...energeticGridLayout, ...partial })
+    markSessionDirty()
+  }
+
+  function setEnergeticGridColsRows(cols, rows) {
+    const nextCols = Math.max(1, Math.min(8, Math.round(Number(cols) || energeticGridLayout.cols)))
+    const nextRows = Math.max(1, Math.min(16, Math.round(Number(rows) || energeticGridLayout.rows)))
+    let next = normalizeGridLayout({
+      ...energeticGridLayout,
+      cols: nextCols,
+      rows: nextRows,
+      cells: resizeGridCells(energeticGridLayout.cells, nextCols, nextRows)
+    })
+    if (!next.edited) {
+      next =
+        energeticGridFill === 'by_set'
+          ? autoFillEnergeticGridBySet(next, analysisSetIds(), energeticPropertyKeys())
+          : autoFillEnergeticGrid(next, analysisSetIds(), energeticPropertyKeys())
+    }
+    energeticGridLayout = next
+    const n = Math.max(1, (Number(next.cols) || 1) * (Number(next.rows) || 1))
+    if (selectedGridCell >= n) selectedGridCell = n - 1
+    if (gridCellEditorOpen != null && gridCellEditorOpen >= n) gridCellEditorOpen = null
+    markSessionDirty()
+    bumpPlotData()
+  }
+
+  function addEnergeticGridColumn() {
+    setEnergeticGridColsRows((Number(energeticGridLayout.cols) || 1) + 1, energeticGridLayout.rows)
+  }
+  function removeEnergeticGridColumn() {
+    setEnergeticGridColsRows((Number(energeticGridLayout.cols) || 1) - 1, energeticGridLayout.rows)
+  }
+  function addEnergeticGridRow() {
+    setEnergeticGridColsRows(energeticGridLayout.cols, (Number(energeticGridLayout.rows) || 1) + 1)
+  }
+  function removeEnergeticGridRow() {
+    setEnergeticGridColsRows(energeticGridLayout.cols, (Number(energeticGridLayout.rows) || 1) - 1)
+  }
+
+  function setEnergeticOverlaySetIds(ids) {
+    const nextIds = syncOrderedIds(ids, analysisSetIds())
+    if (
+      nextIds.length === (energeticGridLayout.overlaySetIds || []).length &&
+      nextIds.every((id, i) => id === energeticGridLayout.overlaySetIds[i])
+    ) {
+      return
+    }
+    energeticGridLayout = normalizeGridLayout({
+      ...energeticGridLayout,
+      overlaySetIds: nextIds
+    })
+    markSessionDirty()
+    bumpPlotData()
+  }
+
+  function setEnergeticCellSetIds(index, ids) {
+    const cells = (energeticGridLayout.cells || []).map((c, i) =>
+      i === index ? { ...c, setIds: ids } : c
+    )
+    energeticGridLayout = normalizeGridLayout({
+      ...energeticGridLayout,
+      cells,
+      edited: true
+    })
+    energeticGridFill = 'by_property'
+    markSessionDirty()
+    bumpPlotData()
+  }
+
+  function setEnergeticCellPropertyKeys(index, keys) {
+    const cells = (energeticGridLayout.cells || []).map((c, i) =>
+      i === index ? { ...c, propertyKeys: keys } : c
+    )
+    energeticGridLayout = normalizeGridLayout({
+      ...energeticGridLayout,
+      cells,
+      edited: true
+    })
+    energeticGridFill = 'by_property'
+    markSessionDirty()
+    bumpPlotData()
+  }
+
+  function setEnergeticCellTitle(index, title) {
+    const cells = (energeticGridLayout.cells || []).map((c, i) =>
+      i === index ? { ...c, title } : c
+    )
+    energeticGridLayout = normalizeGridLayout({
+      ...energeticGridLayout,
+      cells,
+      edited: true
+    })
+    if (energeticChartView.panels[index]) {
+      energeticChartView.panels[index].title =
+        String(title || '').trim() || energeticChartView.panels[index].title
+    }
+    markSessionDirty()
+  }
+
+  function resetEnergeticGridToAuto() {
+    const ids = analysisSetIds()
+    const props = energeticPropertyKeys()
+    const cols = energeticGridLayout.cols || 2
+    const rows = Math.max(1, Math.ceil(Math.max(props.length, 1) / cols))
+    energeticGridFill = 'by_property'
+    energeticGridLayout = autoFillEnergeticGrid(
+      { ...energeticGridLayout, cols, rows, edited: false },
+      ids,
+      props
+    )
+    markSessionDirty()
+    bumpPlotData()
+  }
+
   function patchReferenceLines(next) {
-    patchStructuralPlot({ referenceLines: normalizeReferenceLines(next) })
+    const lines = normalizeReferenceLines(next)
+    if (mode === 'energetic') {
+      ePlotGlobal = { ...ePlotGlobal, referenceLines: lines }
+      markSessionDirty()
+      return
+    }
+    patchStructuralPlot({ referenceLines: lines })
   }
 
   /** Display names matching the Structural Options dropdown. */
@@ -956,13 +1232,33 @@
     mode = session.mode
     compareLayout = session.compareLayout === 'grid' ? 'grid' : 'overlay'
     energeticCompareLayout = normalizeEnergeticCompareLayout(
-      session.energeticCompareLayout ?? 'by_property'
+      session.energeticCompareLayout ?? 'grid'
     )
+    energeticGridFill = session.energeticGridFill === 'by_set' ? 'by_set' : 'by_property'
     outputFolderName = session.outputFolderName || defaultAnalysisFolderName('')
     sessionName = String(session.sessionName || '').trim()
     analysisSets = assignCsvStems(
       (session.sets || []).map((s) => normalizeAnalysisSetStructuralResults(s))
-    )
+    ).map((s) => {
+      if (!s.energeticResult?.rawSeries?.length && !s.energeticOptions) return s
+      return {
+        ...s,
+        energeticResult: s.energeticResult
+          ? {
+              ...s.energeticResult,
+              rawSeries: remapEnergeticSeries(s.energeticResult.rawSeries),
+              selectedProperties: remapPropertyList(s.energeticResult.selectedProperties)
+            }
+          : s.energeticResult,
+        energeticOptions: s.energeticOptions
+          ? {
+              ...s.energeticOptions,
+              availableProperties: remapPropertyList(s.energeticOptions.availableProperties),
+              selectedProperties: remapPropertyList(s.energeticOptions.selectedProperties)
+            }
+          : s.energeticOptions
+      }
+    })
     activeSetId =
       session.activeSetId && analysisSets.some((s) => s.id === session.activeSetId)
         ? session.activeSetId
@@ -979,6 +1275,14 @@
     gridLayout = ensureGridCellsForSets(
       session.gridLayout ? normalizeGridLayout(session.gridLayout) : defaultGridLayout(),
       analysisSets.map((s) => s.id)
+    )
+    energeticGridLayout = ensureEnergeticGridCells(
+      session.energeticGridLayout
+        ? normalizeGridLayout(session.energeticGridLayout)
+        : defaultGridLayout(),
+      analysisSets.map((s) => s.id),
+      unionEnergeticProperties(analysisSets),
+      energeticGridFill
     )
     // Mosaic used to own tick spacing. Copy X only — Y step "1" from this session
     // would draw ~20 ticks on APL (55–75) and stall the plot flush.
@@ -1379,8 +1683,6 @@
   let ePlotGlobal = $state({ ...energGlobalDefaults, ...energPanelShell })
   /** @type {Record<string, ReturnType<typeof defaultPanelSettings>>} */
   let ePlotPanels = $state({})
-  /** @type {'overlay' | 'grid'} */
-  let energeticLayout = $state('grid')
   /** @type {'pan' | 'boxZoom' | 'rangeSelect'} */
   let chartInteractionMode = $state('pan')
   let focusedPanelKey = $state('')
@@ -1454,14 +1756,20 @@
     return text.length > max ? `${text.slice(0, max - 1)}…` : text
   }
 
-  // Derived: active plot settings for structural mode
-  const ps = $derived(mode === 'structural' ? sPlots[structuralType] : sPlots.rmsd)
+  // Derived: active plot settings for the open tab
+  const ps = $derived(mode === 'structural' ? sPlots[structuralType] : ePlotGlobal)
   const gridPlotApplyCell = $derived(
-    mode === 'structural' && compareLayout === 'grid' && gridLayout.plotApplyScope === 'cell'
+    mode === 'structural'
+      ? compareLayout === 'grid' && gridLayout.plotApplyScope === 'cell'
+      : energeticCompareLayout === 'grid' && energeticGridLayout.plotApplyScope === 'cell'
   )
   const plotEdit = $derived(
     gridPlotApplyCell
-      ? mergeCellPlotSettings(ps, cellOverride(gridLayout, selectedGridCell))
+      ? mergeCellPlotSettings(
+          ps,
+          cellOverride(mode === 'energetic' ? energeticGridLayout : gridLayout, selectedGridCell),
+          mode === 'energetic' ? ENERGETIC_CELL_PLOT_KEYS : CELL_PLOT_KEYS
+        )
       : ps
   )
   const resolvedStructColors = $derived(resolvePlotColors(ps, themeState.current))
@@ -1546,6 +1854,7 @@
       compareLayout,
       energeticCompareLayout,
       gridLayout,
+      energeticGridLayout,
       structuralType,
       selection,
       selection2,
@@ -1864,15 +2173,27 @@
   const structuralMosaic = $derived(
     mosaicRows(chartView.panels, gridLayout.cols, /** @type {'start' | 'center'} */ (gridLayout.lastRowAlign))
   )
+  const energeticMosaic = $derived(
+    mosaicRows(
+      energeticChartView.panels,
+      energeticGridLayout.cols,
+      /** @type {'start' | 'center'} */ (energeticGridLayout.lastRowAlign)
+    )
+  )
+  const activeMosaicLayout = $derived(mode === 'energetic' ? energeticGridLayout : gridLayout)
+  const toolbarIsGrid = $derived(
+    mode === 'energetic' ? energeticCompareLayout === 'grid' : compareLayout === 'grid'
+  )
   const gridCellAspect = $derived(
-    Number(gridLayout.aspectRatio) > 0
-      ? Number(gridLayout.aspectRatio)
-      : Number(ps.aspectRatio) || 2.5
+    Number(activeMosaicLayout.aspectRatio) > 0
+      ? Number(activeMosaicLayout.aspectRatio)
+      : Number(ps.aspectRatio) || Number(energPanelShell.aspectRatio) || 2.5
   )
   const outsideLegendSeries = $derived.by(() => {
-    if (mode !== 'structural' || compareLayout !== 'grid' || gridLayout.legendMode !== 'outside') {
-      return []
-    }
+    const layout = mode === 'energetic' ? energeticGridLayout : gridLayout
+    const compare = mode === 'energetic' ? energeticCompareLayout : compareLayout
+    const series = mode === 'energetic' ? energeticChartView.series : chartView.series
+    if (compare !== 'grid' || layout.legendMode !== 'outside') return []
     /** @type {Record<string, string>} */
     const setNames = {}
     /** @type {Record<string, string>} */
@@ -1881,7 +2202,7 @@
       setNames[s.id] = setLegendName(s)
       setColors[s.id] = s.color
     }
-    return figureLegendItems(chartView.series, gridLayout, { setNames, setColors })
+    return figureLegendItems(series, layout, { setNames, setColors })
   })
   const structReferenceLines = $derived(normalizeReferenceLines(ps.referenceLines))
   /**
@@ -1907,20 +2228,16 @@
 
   /**
    * Properties shown on energetic charts.
-   * Uses the Properties checkboxes (selectedProperties) only — empty means hide all plots.
-   * In compare mode, restricted to props that exist in every visible set's result data.
+   * Checkboxes are visibility-only. A checked name plots on every set that has it
+   * (union / canonical match — not an intersection of exact strings).
    */
   const compareEnergeticProperties = $derived.by(() => {
     if (mode !== 'energetic') return selectedProperties
-    // Unchecking every property must clear the chart (no fallback to all props).
     if (selectedProperties.length === 0) return []
     if (energeticMultiSetSession && visibleCompareSets.length === 0) return []
-    if (!energeticMultiSetSession) return selectedProperties
-    // Keep props that exist on every currently visible set.
-    return selectedProperties.filter((prop) =>
-      visibleCompareSets.every((set) =>
-        (set.energeticResult?.rawSeries || []).some((s) => s.baseName === prop)
-      )
+    const sets = energeticMultiSetSession ? visibleCompareSets : analysisSets.filter((s) => s.id === activeSetId)
+    return remapPropertyList(selectedProperties).filter((prop) =>
+      sets.some((set) => setHasEnergeticProperty(set, prop))
     )
   })
 
@@ -1973,7 +2290,7 @@
     /** @type {Array<{ name: string, x: number[], y: number[], color?: string, baseName?: string, propLabel?: string }>} */
     const out = []
     for (const prop of props) {
-      const s = res.rawSeries.find((r) => r.baseName === prop)
+      const s = res.rawSeries.find((r) => seriesMatchesProperty(r, prop))
       if (!s) continue
       const n = Math.min(rawXs.length, s.y?.length ?? 0)
       const idx = maxPoints > 0 ? downsampleIndices(n, maxPoints) : null
@@ -2010,7 +2327,7 @@
     const propLabel = s.propLabel || s.baseName || 'Series'
     const name =
       nameMode === 'set' ? setName : nameMode === 'set_prop' ? `${setName} · ${propLabel}` : propLabel
-    const colorBySet = energeticMultiSetSession && energeticCompareLayout !== 'by_set'
+    const colorBySet = optsColorBySet(s)
     const color = colorBySet
       ? set?.color
       : ePlotPanels[s.baseName]?.lineColor || set?.color
@@ -2025,10 +2342,19 @@
   }
 
   function energeticNameMode() {
-    if (!energeticMultiSetSession) return 'prop'
-    if (energeticCompareLayout === 'by_property') return 'set'
-    if (energeticCompareLayout === 'by_set') return 'prop'
-    return 'set_prop'
+    if (energeticCompareLayout === 'overlay') {
+      if (!energeticMultiSetSession) return selectedProperties.length > 1 ? 'prop' : 'prop'
+      return selectedProperties.length > 1 ? 'set_prop' : 'set'
+    }
+    return energeticGridFill === 'by_set' ? 'prop' : 'set'
+  }
+
+  function optsColorBySet(s) {
+    if (energeticCompareLayout === 'overlay') return energeticMultiSetSession
+    const cell = energeticChartView.panels.find((p) =>
+      (p.series || []).some((row) => row.key === s.key)
+    )
+    return (cell?.visibleSetIds || []).length > 1
   }
 
   /** Heavy downsample/unit conversion for energetic plots. Call on data/unit/visibility changes only. */
@@ -2065,7 +2391,9 @@
       energeticGeom = []
       return
     }
-    const visible = rawSeries.filter((s) => selectedProperties.includes(s.baseName))
+    const visible = rawSeries.filter((s) =>
+      selectedProperties.some((p) => seriesMatchesProperty(s, p))
+    )
     energeticGeom = visible.map((s) => {
       const n = Math.min(rawX.length, s.y?.length ?? 0)
       const idx = downsampleIndices(n, DEFAULT_CHART_MAX_POINTS)
@@ -2091,12 +2419,12 @@
   function energeticPropYLabel(baseName) {
     if (!baseName) return 'Value'
     for (const set of visibleCompareSets.length ? visibleCompareSets : analysisSets) {
-      const s = set.energeticResult?.rawSeries?.find((r) => r.baseName === baseName)
+      const s = set.energeticResult?.rawSeries?.find((r) => seriesMatchesProperty(r, baseName))
       if (!s) continue
       const tUnit = getTargetUnit(s.unit)
       return tUnit ? `${baseName} (${tUnit})` : baseName
     }
-    const local = rawSeries.find((r) => r.baseName === baseName)
+    const local = rawSeries.find((r) => seriesMatchesProperty(r, baseName))
     if (local) {
       const tUnit = getTargetUnit(local.unit)
       return tUnit ? `${baseName} (${tUnit})` : baseName
@@ -2193,9 +2521,14 @@
     if (mode === 'structural') {
       return chartView.series
     }
-    const nameMode = energeticNameMode()
-    return energeticGeom.map((s) => {
+    const source = energeticChartView.series.length ? energeticChartView.series : energeticGeom
+    return source.map((s) => {
       const set = analysisSets.find((x) => x.id === s.setId)
+      const nameMode =
+        s.nameMode ||
+        (energeticCompareLayout === 'overlay' && energeticMultiSetSession && selectedProperties.length > 1
+          ? 'set_prop'
+          : energeticNameMode())
       return { ...s, ...energeticSeriesAppearance(s, set, nameMode) }
     })
   })
@@ -2238,39 +2571,17 @@
 
   const energeticPanels = $derived.by(() => {
     if (mode !== 'energetic') return []
-    // Multi-set session: panels always follow checked (visible) sets only.
-    if (energeticMultiSetSession) {
-      if (displaySeries.length === 0) return []
-      if (energeticCompareLayout === 'overlay') {
-        return [{ key: '__compare__', title: displayTitle || chartTitle, series: displaySeries }]
-      }
-      if (energeticCompareLayout === 'by_set') {
-        return visibleCompareSets
-          .map((set) => ({
-            key: set.id,
-            title: set.label,
-            series: displaySeries.filter((s) => s.setId === set.id)
-          }))
-          .filter((p) => p.series.length > 0)
-      }
-      // by_property (default): one panel per property; each visible set keeps its own color
-      return compareEnergeticProperties
-        .map((prop) => ({
-          key: prop,
-          title: prop,
-          series: displaySeries.filter((s) => s.baseName === prop)
-        }))
-        .filter((p) => p.series.length > 0)
+    if (energeticCompareLayout === 'grid') {
+      return energeticChartView.panels || []
     }
     if (displaySeries.length === 0) return []
-    if (energeticLayout === 'overlay') {
-      return [{ key: '__overlay__', title: displayTitle || chartTitle, series: displaySeries }]
-    }
-    return displaySeries.map((s) => ({
-      key: s.baseName ?? s.key ?? s.name,
-      title: s.baseName ?? s.name,
-      series: [s]
-    }))
+    return [
+      {
+        key: '__overlay__',
+        title: displayTitle || chartTitle || 'Energetic Analysis',
+        series: displaySeries
+      }
+    ]
   })
 
   const energeticChartIsEmpty = $derived(
@@ -2338,12 +2649,12 @@
     }
     const t0 = Math.min(range.t0, range.t1)
     const t1 = Math.max(range.t0, range.t1)
-    if (mode === 'structural' || energeticLayout === 'overlay') {
+    if (mode === 'structural' || energeticCompareLayout === 'overlay') {
       panelRangeStats = computeMultiSeriesStats(displaySeries, t0, t1)
       return
     }
-    const key = focusedPanelKey || energeticPanels[0]?.key
-    const panel = energeticPanels.find((p) => p.key === key) ?? energeticPanels[0]
+    const panel =
+      energeticPanels.find((p) => p.cellIndex === selectedGridCell) ?? energeticPanels[0]
     if (panel) {
       panelRangeStats = computeMultiSeriesStats(panel.series, t0, t1)
     }
@@ -2394,11 +2705,18 @@
       }
       sPlots = { ...sPlots, [type]: plot }
     } else {
+      ePlotGlobal = { ...ePlotGlobal, xMin: '', xMax: '', yMin: '', yMax: '' }
       const next = { ...ePlotPanels }
       for (const k of Object.keys(next)) {
         next[k] = { ...next[k], xMin: '', xMax: '', yMin: '', yMax: '' }
       }
       ePlotPanels = next
+      if (gridPlotApplyCell) {
+        energeticGridLayout = clearCellPlotKeysFromOverrides(energeticGridLayout, [
+          'yMin',
+          'yMax'
+        ])
+      }
     }
   }
 
@@ -2548,9 +2866,9 @@
     chartTitle = res.chartTitle || chartTitle || 'Energetic Analysis'
     chartXLabel = res.chartXLabel || 'Time'
     // All series names stay available for checkboxes; selectedProperties is visibility only.
-    const allNames = rawSeries.map((s) => s.baseName).filter(Boolean)
+    const allNames = remapPropertyList(rawSeries.map((s) => s.baseName).filter(Boolean))
     if (allNames.length) {
-      availableProperties = [...new Set([...availableProperties, ...allNames])]
+      availableProperties = [...new Set([...remapPropertyList(availableProperties), ...allNames])]
     }
     const fromResult = res.selectedProperties?.length
       ? [...res.selectedProperties]
@@ -2620,9 +2938,12 @@
     } else if (allSeriesProps.length && selectedProperties.length === 0) {
       selectedProperties = [...allSeriesProps]
     }
+    availableProperties = remapPropertyList(availableProperties)
+    selectedProperties = remapPropertyList(selectedProperties)
     applyEnergeticResultToView(set.energeticResult)
     for (const p of selectedProperties) ensureEPlotPanel(p)
     focusedPanelKey = selectedProperties[0] ?? focusedPanelKey
+    syncSetsIntoEnergeticGridLayout()
     // Touch analysisSets so $derived charts re-subscribe after async hydrate.
     analysisSets = analysisSets.map((s) => ({ ...s }))
     bumpPlotData()
@@ -2725,17 +3046,50 @@
    */
   function setPlotField(patch) {
     markSessionDirty()
+    const globalOnly = {}
+    const rest = { ...patch }
+    for (const key of ['xTickStep', 'yTickStep', 'xTickCount', 'yTickCount', 'xTickDecimals', 'yTickDecimals', 'xMin', 'xMax']) {
+      if (key in rest) {
+        globalOnly[key] = rest[key]
+        delete rest[key]
+      }
+    }
+    if (Object.keys(globalOnly).length) {
+      if (mode === 'energetic') ePlotGlobal = { ...ePlotGlobal, ...globalOnly }
+      else patchStructuralPlot(globalOnly)
+    }
+    if (Object.keys(rest).length === 0) return
+    if (mode === 'energetic') {
+      if (gridPlotApplyCell) {
+        const n = Math.max(
+          1,
+          (Number(energeticGridLayout.cols) || 1) * (Number(energeticGridLayout.rows) || 1)
+        )
+        const idx = Math.max(0, Math.min(n - 1, selectedGridCell))
+        energeticGridLayout = patchCellPlotOverride(energeticGridLayout, idx, rest)
+      } else {
+        ePlotGlobal = { ...ePlotGlobal, ...rest }
+        if (energeticCompareLayout === 'grid') {
+          energeticGridLayout = clearCellPlotKeysFromOverrides(
+            energeticGridLayout,
+            Object.keys(rest)
+          )
+        }
+      }
+      if ('lineWidth' in rest || 'lineStyle' in rest) applyChartAppearance()
+      return
+    }
     if (gridPlotApplyCell) {
       const n = Math.max(1, (Number(gridLayout.cols) || 1) * (Number(gridLayout.rows) || 1))
       const idx = Math.max(0, Math.min(n - 1, selectedGridCell))
-      gridLayout = patchCellPlotOverride(gridLayout, idx, patch)
+      gridLayout = patchCellPlotOverride(gridLayout, idx, rest)
     } else {
-      patchStructuralPlot(patch)
-      if (mode === 'structural' && compareLayout === 'grid') {
-        gridLayout = clearCellPlotKeysFromOverrides(gridLayout, Object.keys(patch))
+      patchStructuralPlot(rest)
+      if (compareLayout === 'grid') {
+        gridLayout = clearCellPlotKeysFromOverrides(gridLayout, Object.keys(rest))
       }
     }
-    if ('lineWidth' in patch || 'lineStyle' in patch) applyChartAppearance()
+    if ('lineWidth' in rest || 'lineStyle' in rest) applyChartAppearance()
   }
 
   /** @param {object} plotSettings */
@@ -2746,6 +3100,13 @@
 
   /** @param {number} cellIndex */
   function cellPlotSettings(cellIndex) {
+    if (mode === 'energetic') {
+      return mergeCellPlotSettings(
+        ePlotGlobal,
+        cellOverride(energeticGridLayout, cellIndex),
+        ENERGETIC_CELL_PLOT_KEYS
+      )
+    }
     return mergeCellPlotSettings(ps, cellOverride(gridLayout, cellIndex))
   }
 
@@ -2889,7 +3250,10 @@
       ePlotGlobal = hydratePlotColorFlags({
         ...energGlobalDefaults,
         ...energPanelShell,
-        ...plotSettings.energeticGlobal
+        ...plotSettings.energeticGlobal,
+        referenceLines: normalizeReferenceLines(
+          plotSettings.energeticGlobal.referenceLines ?? []
+        )
       })
     }
     if (plotSettings.energeticPanels && typeof plotSettings.energeticPanels === 'object') {
@@ -2998,6 +3362,15 @@
   }
 
   /** @param {'overlay' | 'grid'} layout */
+  function setActiveCompareLayout(layout) {
+    if (mode === 'energetic') {
+      setEnergeticCompareLayout(layout)
+      return
+    }
+    setCompareLayout(layout)
+  }
+
+  /** @param {'overlay' | 'grid'} layout */
   function setCompareLayout(layout) {
     compareLayout = layout === 'grid' ? 'grid' : 'overlay'
     if (compareLayout !== 'grid') gridCellEditorOpen = null
@@ -3010,6 +3383,17 @@
   /** @param {import('../lib/analysisSession.js').EnergeticCompareLayout | string} layout */
   function setEnergeticCompareLayout(layout) {
     energeticCompareLayout = normalizeEnergeticCompareLayout(layout)
+    if (energeticCompareLayout !== 'grid') gridCellEditorOpen = null
+    if (energeticCompareLayout === 'grid' && !energeticGridLayout.edited) {
+      energeticGridLayout =
+        energeticGridFill === 'by_set'
+          ? autoFillEnergeticGridBySet(
+              energeticGridLayout,
+              analysisSetIds(),
+              energeticPropertyKeys()
+            )
+          : autoFillEnergeticGrid(energeticGridLayout, analysisSetIds(), energeticPropertyKeys())
+    }
     bumpPlotData()
   }
 
@@ -3149,19 +3533,48 @@
     })
   }
 
+  /**
+   * Detect native log properties for the active set. Tries the stored engine first,
+   * then sniffs the log and the other engines. Returns native names (API labels).
+   * @returns {Promise<{ engine: string, properties: string[] }>}
+   */
+  async function detectNativePropertiesForActiveSet() {
+    const paths = logFiles.map((f) => f.path)
+    if (paths.length === 0) return { engine: energeticEngine, properties: [] }
+    let sniff = ''
+    try {
+      const text = await window.api.readText(paths[0])
+      sniff = inferEnergeticEngineFromLogText(text)
+    } catch {
+      sniff = ''
+    }
+    const preferred = sniff || energeticEngine
+    let lastErrorMsg = ''
+    for (const engine of energeticEnginesToTry(preferred)) {
+      try {
+        const { properties } = await getEnergeticProperties({
+          logPaths: paths,
+          fileTimes: makeFileTimes(logFiles),
+          engine
+        })
+        if ((properties || []).length > 0) {
+          energeticEngine = engine
+          return { engine, properties: properties || [] }
+        }
+      } catch (error) {
+        lastErrorMsg = error instanceof Error ? error.message : String(error)
+      }
+    }
+    throw new Error(lastErrorMsg || 'Could not detect energetic properties for this set.')
+  }
+
   async function runEnergeticForActiveSet() {
     const setLabel = analysisSets.find((s) => s.id === activeSetId)?.label ?? 'Set'
     if (logFiles.length === 0) throw new Error(`Set "${setLabel}": add at least one log file.`)
-    // Analyze every detected property so CSV/session keep full data; checkboxes only control plots.
-    const propsToAnalyze =
-      availableProperties.length > 0 ? [...availableProperties] : [...selectedProperties]
+    const detected = await detectNativePropertiesForActiveSet()
+    const propsToAnalyze = detected.properties
     if (propsToAnalyze.length === 0) {
-      throw new Error(
-        `Set "${setLabel}": detect properties first (or select at least one property).`
-      )
-    }
-    if (selectedProperties.length === 0) {
-      selectedProperties = [...propsToAnalyze]
+      throw new Error(`Set "${setLabel}": no energetic properties found in the log files.`)
     }
 
     const result = await runEnergeticAnalysis(
@@ -3175,32 +3588,35 @@
         pressureUnits,
         temperatureUnits,
         volumeUnits,
-        engine: energeticEngine
+        engine: detected.engine
       },
       analysisRunOpts()
     )
 
     const engineLabels = { namd: 'NAMD', openmm: 'OpenMM', gromacs: 'GROMACS', amber: 'Amber' }
-    const rawSeriesLocal = (result.series || []).map((s) => ({
-      baseName: s.name,
-      unit: s.unit || '',
-      y: s.y || [],
-      key: s.key
-    }))
+    const rawSeriesLocal = remapEnergeticSeries(
+      (result.series || []).map((s) => ({
+        baseName: s.name,
+        nativeName: s.name,
+        unit: s.unit || '',
+        y: s.y || [],
+        key: s.key
+      }))
+    )
     const analyzedNames = rawSeriesLocal.map((s) => s.baseName).filter(Boolean)
-    availableProperties = [...new Set([...availableProperties, ...analyzedNames])]
-    // Keep visibility selection; drop names that were not returned.
-    selectedProperties = selectedProperties.filter((p) => analyzedNames.includes(p))
+    const priorSelected = remapPropertyList(selectedProperties)
+    availableProperties = [...new Set([...remapPropertyList(availableProperties), ...analyzedNames])]
+    selectedProperties = priorSelected.filter((p) => analyzedNames.includes(p))
     if (selectedProperties.length === 0) selectedProperties = [...analyzedNames]
 
     storeEnergeticResult({
       rawX: result.x || [],
       rawXTimeUnit: timeUnits,
       rawSeries: rawSeriesLocal,
-      chartTitle: `${engineLabels[energeticEngine] || energeticEngine.toUpperCase()} Energetic Analysis`,
+      chartTitle: `${engineLabels[detected.engine] || detected.engine.toUpperCase()} Energetic Analysis`,
       chartXLabel: result.x_label || 'Time',
       selectedProperties: [...selectedProperties],
-      energeticEngine,
+      energeticEngine: detected.engine,
       statistics: result.statistics || {},
       sourceFiles: capturePlotSourceFiles(result.x || [], logFiles, { coordinateOnly: false })
     })
@@ -3209,19 +3625,18 @@
       ensureEPlotPanel(s.baseName)
     }
     focusedPanelKey = selectedProperties[0] ?? ''
-    if (!isCompareOverlay) {
-      energeticLayout = selectedProperties.length >= 2 ? 'grid' : 'overlay'
-    }
+    availableProperties = unionEnergeticProperties(analysisSets)
+    syncSetsIntoEnergeticGridLayout()
   }
 
   function energeticPlotPanelSettingsKey(panel) {
     if (panel.key === '__compare__' || panel.key === '__overlay__') {
       return focusedPanelKey || selectedProperties[0] || panel.key
     }
-    const propKey =
+    return (
       panel.series?.[0]?.baseName ||
-      (selectedProperties.includes(panel.key) ? panel.key : focusedPanelKey || selectedProperties[0] || '')
-    return energeticCompareLayout === 'by_property' ? panel.key : propKey || panel.key
+      (selectedProperties.includes(panel.key) ? panel.key : focusedPanelKey || selectedProperties[0] || panel.key)
+    )
   }
 
   function resolveEnergeticPanelPset(panel) {
@@ -3235,14 +3650,15 @@
   }
 
   function energeticPublicationLimits(panel) {
-    const { pset, propPset } = resolveEnergeticPanelPset(panel)
+    const idx = Number.isFinite(panel?.cellIndex) ? panel.cellIndex : null
+    const cps = idx != null ? cellPlotSettings(idx) : ePlotGlobal
     const series = (panel.series || []).filter((s) => (s.y?.length ?? 0) > 0)
     const ext = dataExtentsFromSeries(series)
     if (!ext) return { xlim: null, ylim: null }
-    const xMinStr = pset.xMin !== '' ? pset.xMin : propPset.xMin
-    const xMaxStr = pset.xMax !== '' ? pset.xMax : propPset.xMax
-    const yMinStr = pset.yMin !== '' ? pset.yMin : propPset.yMin
-    const yMaxStr = pset.yMax !== '' ? pset.yMax : propPset.yMax
+    const xMinStr = ePlotGlobal.xMin
+    const xMaxStr = ePlotGlobal.xMax
+    const yMinStr = cps.yMin !== '' && cps.yMin != null ? cps.yMin : ePlotGlobal.yMin
+    const yMaxStr = cps.yMax !== '' && cps.yMax != null ? cps.yMax : ePlotGlobal.yMax
     const xMinEff =
       xMinStr !== '' && Number.isFinite(Number(xMinStr)) ? Number(xMinStr) : ext.xMin
     const xMaxEff =
@@ -3292,80 +3708,77 @@
   }
 
   function buildEnergeticPlotPayload() {
+    const refs = normalizeReferenceLines(ePlotGlobal.referenceLines)
+    const lineColors = ['#f59e0b', '#22c55e', '#38bdf8', '#f87171', '#a78bfa', '#f472b6']
     const panels = energeticPanels
-    if (panels.length > 0) {
-      const allDataSeries = panels.flatMap((panel) => seriesToPublicationData(panel.series))
-      if (allDataSeries.length === 0) {
-        // fall through to rawSeries fallback below
-      } else {
-        const layout = panels.length === 1 ? 'overlay' : 'grid'
-        const lineColors = ['#f59e0b', '#22c55e', '#38bdf8', '#f87171', '#a78bfa', '#f472b6']
+    const allDataSeries = panels.flatMap((panel) => seriesToPublicationData(panel.series))
 
-        if (layout === 'overlay') {
-          const panel = panels[0]
-          const { pset } = resolveEnergeticPanelPset(panel)
+    if (
+      energeticCompareLayout === 'grid' &&
+      panels.length > 0 &&
+      allDataSeries.length > 0
+    ) {
+      const plotPanels = panels
+        .map((panel, i) => {
+          const series = seriesToPublicationData(panel.series)
+          if (series.length === 0) return null
+          const idx = Number.isFinite(panel.cellIndex) ? panel.cellIndex : i
+          const cps = cellPlotSettings(idx)
+          const ylabel = energeticPanelYLabel(panel, { ylabel: cps.yLabel })
+          const title = String(panel.title || '').trim() || energeticPanelChartTitle(panel, cps)
           const { xlim, ylim } = energeticPublicationLimits(panel)
-          const ylabel = energeticPanelYLabel(panel, pset)
-          const title = energeticPanelChartTitle(panel, pset)
+          const labels = cellLabelVisibility(energeticGridLayout, idx)
+          const loc =
+            cps.legendPosition === 'top-right'
+              ? 'upper right'
+              : cps.legendPosition === 'bottom-left'
+                ? 'lower left'
+                : cps.legendPosition === 'bottom-right'
+                  ? 'lower right'
+                  : 'upper left'
           return {
-            data: {
-              x: allDataSeries[0]?.x || [],
-              series: allDataSeries
-            },
-            plotSpec: {
-              version: 1,
-              layout: 'overlay',
-              cols: 2,
-              sync_x: false,
-              global: {
-                ...energeticPublicationGlobalStyle(),
-                title,
-                ylabel,
-                xlim,
-                ylim
-              },
-              panels: allDataSeries.map((s, i) => ({
-                key: s.key,
-                name: s.name,
-                title: s.name,
-                ylabel,
-                line_color: s.color || lineColors[i % lineColors.length],
-                linewidth: Number(s.linewidth) || Number(ePlotGlobal.lineWidth) || 1.5,
-                linestyle: s.linestyle || ePlotGlobal.lineStyle || 'solid'
-              }))
-            }
+            key: panel.key,
+            name: title,
+            title,
+            ylabel,
+            series_keys: series.map((s) => s.key),
+            line_color: series[0]?.color || lineColors[0],
+            linewidth: Number(cps.lineWidth) || Number(ePlotGlobal.lineWidth) || 1.5,
+            linestyle: cps.lineStyle || ePlotGlobal.lineStyle || 'solid',
+            xlim,
+            ylim,
+            show_xlabel: labels.showXLabel,
+            show_ylabel: labels.showYLabel,
+            show_ticks: ePlotGlobal.showTicks !== false,
+            show_xticklabels: labels.showXTickLabels,
+            show_yticklabels: labels.showYTickLabels,
+            show_legend: cellShowsLegend(energeticGridLayout, idx) && cps.legendPosition !== 'none',
+            show_grid: cps.showGrid !== false,
+            legend_loc: loc,
+            legend_fontsize: guiSvgFontToMpl(cps.legendFontSize, 8)
+          }
+        })
+        .filter(Boolean)
+
+      if (plotPanels.length > 0) {
+        const cols = Math.max(1, Number(energeticGridLayout.cols) || 2)
+        const n = plotPanels.length
+        const { rows } = gridSpecSlices(n, cols, energeticGridLayout.lastRowAlign)
+        const aspect = gridCellAspect
+        const cellW = 3.6
+        let figW = Math.max(6, cols * cellW)
+        let figH = Math.max(3, rows * (cellW / Math.max(0.4, aspect)))
+        if (energeticGridLayout.legendMode === 'outside') {
+          if (
+            energeticGridLayout.legendOutside === 'top' ||
+            energeticGridLayout.legendOutside === 'bottom'
+          ) {
+            figH += 0.55
+          } else {
+            figW += 1.15
           }
         }
-
-        const plotPanels = panels
-          .map((panel) => {
-            const series = seriesToPublicationData(panel.series)
-            if (series.length === 0) return null
-            const { pset, propPset, propKey, pk } = resolveEnergeticPanelPset(panel)
-            const ylabel = energeticPanelYLabel(panel, {
-              ...propPset,
-              ylabel: pset.ylabel || propPset.ylabel
-            })
-            const title = energeticPanelChartTitle(panel, {
-              ...pset,
-              title: pset.title || (propKey === pk ? propPset.title : '')
-            })
-            const { xlim, ylim } = energeticPublicationLimits(panel)
-            return {
-              key: panel.key,
-              name: title,
-              title,
-              ylabel,
-              series_keys: series.map((s) => s.key),
-              line_color: series[0]?.color || lineColors[0],
-              linewidth: Number(ePlotGlobal.lineWidth) || 1.5,
-              linestyle: ePlotGlobal.lineStyle || 'solid',
-              xlim,
-              ylim
-            }
-          })
-          .filter(Boolean)
-
+        const gapFrac = Math.max(0.02, Math.min(0.45, (Number(energeticGridLayout.gapPx) || 16) / 80))
         return {
           data: {
             x: allDataSeries[0]?.x || [],
@@ -3374,11 +3787,65 @@
           plotSpec: {
             version: 1,
             layout: 'grid',
-            cols: 2,
+            cols,
+            rows,
+            last_row_align: energeticGridLayout.lastRowAlign === 'center' ? 'center' : 'start',
+            wspace: gapFrac,
+            hspace: gapFrac,
+            cell_aspect: aspect,
             sync_x: ePlotGlobal.syncX !== false,
-            global: energeticPublicationGlobalStyle(),
+            legend: {
+              mode: energeticGridLayout.legendMode,
+              cell: Number(energeticGridLayout.legendCell) || 0,
+              loc: energeticGridLayout.legendOutside,
+              entries: energeticGridLayout.legendEntries,
+              fontsize: guiSvgFontToMpl(ePlotGlobal.legendFontSize, 8),
+              ncol: Number(energeticGridLayout.legendColumns) || 1,
+              title: energeticGridLayout.legendTitle || ''
+            },
+            reference_lines: refs,
+            global: {
+              ...energeticPublicationGlobalStyle(),
+              figsize: [figW, figH]
+            },
             panels: plotPanels
           }
+        }
+      }
+    }
+
+    if (panels.length > 0 && allDataSeries.length > 0) {
+      const panel = panels[0]
+      const { xlim, ylim } = energeticPublicationLimits(panel)
+      const ylabel = energeticPanelYLabel(panel, ePlotGlobal)
+      const title = energeticPanelChartTitle(panel, ePlotGlobal)
+      return {
+        data: {
+          x: allDataSeries[0]?.x || [],
+          series: allDataSeries
+        },
+        plotSpec: {
+          version: 1,
+          layout: 'overlay',
+          cols: 2,
+          sync_x: false,
+          reference_lines: refs,
+          global: {
+            ...energeticPublicationGlobalStyle(),
+            title,
+            ylabel,
+            xlim,
+            ylim
+          },
+          panels: allDataSeries.map((s, i) => ({
+            key: s.key,
+            name: s.name,
+            title: s.name,
+            ylabel,
+            line_color: s.color || lineColors[i % lineColors.length],
+            linewidth: Number(s.linewidth) || Number(ePlotGlobal.lineWidth) || 1.5,
+            linestyle: s.linestyle || ePlotGlobal.lineStyle || 'solid'
+          }))
         }
       }
     }
@@ -3395,7 +3862,7 @@
         }))
       },
       plotSpec: buildPlotSpecFromGui({
-        layout: energeticLayout,
+        layout: energeticCompareLayout === 'grid' ? 'grid' : 'overlay',
         globalSettings: {
           ...ePlotGlobal,
           plotBg: resolvedEnergColors.plotBg,
@@ -4165,7 +4632,10 @@
     activeSetId = 'set-1'
     compareLayout = 'overlay'
     gridLayout = defaultGridLayout()
-    energeticCompareLayout = 'by_property'
+    energeticCompareLayout = 'grid'
+    energeticGridLayout = defaultGridLayout()
+    energeticGridFill = 'by_property'
+    energeticChartView = { mode: 'empty', series: [], panels: [] }
     statsRangeStartInput = ''
     statsRangeEndInput = ''
     logFiles = []
@@ -4198,7 +4668,6 @@
     }
     ePlotGlobal = { ...energGlobalDefaults, ...energPanelShell }
     ePlotPanels = {}
-    energeticLayout = 'grid'
     chartInteractionMode = 'pan'
     focusedPanelKey = ''
     statsRange = null
@@ -4272,12 +4741,13 @@
         fileTimes: makeFileTimes(logFiles),
         engine: energeticEngine
       })
-      availableProperties = properties || []
+      availableProperties = remapPropertyList(properties || [])
       if (selectAll || selectedProperties.length === 0) {
         selectedProperties = [...availableProperties]
       } else {
-        // Keep prior selection that still exists; add newly found props only if none selected
-        selectedProperties = selectedProperties.filter((p) => availableProperties.includes(p))
+        selectedProperties = remapPropertyList(selectedProperties).filter((p) =>
+          availableProperties.includes(p)
+        )
         if (selectedProperties.length === 0) selectedProperties = [...availableProperties]
       }
       for (const p of selectedProperties) ensureEPlotPanel(p)
@@ -4319,7 +4789,7 @@
             fileTimes: makeFileTimes(logFiles),
             engine: energeticEngine
           })
-          availableProperties = properties || []
+          availableProperties = remapPropertyList(properties || [])
           selectedProperties = [...availableProperties]
           for (const p of selectedProperties) ensureEPlotPanel(p)
           persistActiveSetFields()
@@ -5058,11 +5528,13 @@
           mode,
           compareLayout,
           energeticCompareLayout,
+          energeticGridFill,
           outputFolderName: folderName,
           sessionName,
           activeSetId,
           sets: slimSetsForSessionSave(analysisSets, 'all'),
           gridLayout: clonePlainAnalysisData(gridLayout),
+          energeticGridLayout: clonePlainAnalysisData(energeticGridLayout),
           plotSettings: {
             structural: clonePlainAnalysisData(sPlots),
             energeticGlobal: clonePlainAnalysisData(ePlotGlobal),
@@ -5520,6 +5992,73 @@
   />
 {/snippet}
 
+{#snippet energeticGridCell(panel)}
+  {@const idx = panel.cellIndex ?? 0}
+  {@const cps = cellPlotSettings(idx)}
+  {@const view = energViewRangeByKey[String(idx)]}
+  {@const xMinE =
+    view?.xMin ??
+    (ePlotGlobal.xMin !== '' && Number.isFinite(Number(ePlotGlobal.xMin))
+      ? Number(ePlotGlobal.xMin)
+      : null)}
+  {@const xMaxE =
+    view?.xMax ??
+    (ePlotGlobal.xMax !== '' && Number.isFinite(Number(ePlotGlobal.xMax))
+      ? Number(ePlotGlobal.xMax)
+      : null)}
+  {@const yMinE =
+    view?.yMin ??
+    (cps.yMin !== '' && Number.isFinite(Number(cps.yMin)) ? Number(cps.yMin) : null)}
+  {@const yMaxE =
+    view?.yMax ??
+    (cps.yMax !== '' && Number.isFinite(Number(cps.yMax)) ? Number(cps.yMax) : null)}
+  {@const yLabel = String(cps.yLabel || '').trim() || energeticPanelYLabel(panel, cps)}
+  <AnalysisGridCell
+    {panel}
+    gridLayout={energeticGridLayout}
+    {gridCellAspect}
+    selected={gridPlotApplyCell && selectedGridCell === idx}
+    {cps}
+    series={panel.empty ? [] : seriesWithCellLine(panel.series, cps, 'energetic')}
+    {displayXLabel}
+    displayYLabel={yLabel}
+    {displayXTickLabels}
+    resolvedStructColors={resolvedEnergColors}
+    ps={ePlotGlobal}
+    plotEdit={cps}
+    xMinO={xMinE}
+    xMaxO={xMaxE}
+    yMinO={yMinE}
+    yMaxO={yMaxE}
+    hasChartTimeAxis={true}
+    {chartInteractionMode}
+    {statsRange}
+    xTickStep={ePlotGlobal.xTickStep || ''}
+    yTickStep={ePlotGlobal.yTickStep || ''}
+    {structReferenceLines}
+    editing={gridCellEditorOpen === idx}
+    cellTitle={energeticGridLayout.cells?.[idx]?.title || ''}
+    cellSetIds={energeticGridLayout.cells?.[idx]?.setIds || []}
+    propertyKeys={energeticGridLayout.cells?.[idx]?.propertyKeys || []}
+    availableProperties={energeticPropertyKeys()}
+    sets={gridChipSets}
+    onSelectCell={(i) => {
+      selectedGridCell = i
+      if (gridCellEditorOpen != null && gridCellEditorOpen !== i) gridCellEditorOpen = null
+    }}
+    onEditCell={() => {
+      selectedGridCell = idx
+      gridCellEditorOpen = gridCellEditorOpen === idx ? null : idx
+    }}
+    onCloseEditor={() => (gridCellEditorOpen = null)}
+    onCellSetIds={(ids) => setEnergeticCellSetIds(idx, ids)}
+    onCellTitle={(title) => setEnergeticCellTitle(idx, title)}
+    onCellPropertyKeys={(keys) => setEnergeticCellPropertyKeys(idx, keys)}
+    onAxisRange={(r) => applyPanelAxisRange(String(idx), r)}
+    onStatsRange={handleStatsRange}
+  />
+{/snippet}
+
 <!-- Selection help modal -->
 {#if showSelectionHelp}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -5815,21 +6354,9 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           </div>
         {/each}
       </div>
-      {#if showCompareLayoutControl && mode === 'energetic'}
-        <Select
-          size="sm"
-          className="w-full"
-          value={energeticCompareLayout}
-          onchange={(e) => setEnergeticCompareLayout(e.currentTarget.value)}
-        >
-          <option value="by_property">Compare: one panel per property</option>
-          <option value="by_set">Compare: one panel per set</option>
-          <option value="overlay">Compare: all on one plot</option>
-        </Select>
-      {/if}
-      {#if mode === 'energetic' && isCompareOverlay && visibleCompareSets.length > 0 && selectedProperties.length > 0 && compareEnergeticProperties.length === 0}
+      {#if mode === 'energetic' && selectedProperties.length > 0 && compareEnergeticProperties.length === 0 && visibleCompareSets.length > 0}
         <p class="sidebar-hint text-amber-600 dark:text-amber-400">
-          Checked properties are missing from one or more visible sets — uncheck them or re-run analysis with matching properties.
+          Checked properties were not found on the visible sets. Run analysis to detect each set’s log properties.
         </p>
       {/if}
       <p class="sidebar-hint">
@@ -6633,26 +7160,26 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
       {#if plotSettingsOpen}
         <div class="sidebar-panel space-y-2 p-2">
-          {#if mode === 'structural' && compareLayout === 'grid'}
+          {#if toolbarIsGrid}
             <div>
               <p class="sidebar-label mb-0.5">Apply settings</p>
               <div class="flex gap-1">
                 <Button
                   size="sm"
-                  variant={gridLayout.plotApplyScope !== 'cell' ? 'default' : 'outline'}
+                  variant={activeMosaicLayout.plotApplyScope !== 'cell' ? 'default' : 'outline'}
                   className="flex-1"
                   onclick={() => patchGridChrome({ plotApplyScope: 'all' })}>All cells</Button
                 >
                 <Button
                   size="sm"
-                  variant={gridLayout.plotApplyScope === 'cell' ? 'default' : 'outline'}
+                  variant={activeMosaicLayout.plotApplyScope === 'cell' ? 'default' : 'outline'}
                   className="flex-1"
                   onclick={() => patchGridChrome({ plotApplyScope: 'cell' })}
                   >This cell ({selectedGridCell + 1})</Button
                 >
               </div>
               <p class="sidebar-hint">
-                {gridLayout.plotApplyScope === 'cell'
+                {activeMosaicLayout.plotApplyScope === 'cell'
                   ? 'Applies to the selected square (click a plot to choose it).'
                   : 'Applies to every square.'}
               </p>
@@ -6706,151 +7233,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           {/if}
           {#if mode === 'energetic'}
             <div>
-              <p class="sidebar-label mb-0.5">Layout</p>
-              <Select size="sm" bind:value={energeticLayout} className="w-full">
-                <option value="grid">Separate panels</option>
-                <option value="overlay">Overlay</option>
-              </Select>
-            </div>
-            <div>
-              <p class="sidebar-label mb-0.5">Focused panel</p>
-              <Select
-                size="sm"
-                value={focusedPanelKey || selectedProperties[0] || ''}
-                onchange={(e) => focusPanel(e.currentTarget.value)}
-                className="w-full"
-              >
-                {#each selectedProperties as prop (prop)}
-                  <option value={prop}>{prop}</option>
-                {/each}
-              </Select>
-            </div>
-            <label class="flex items-center gap-2">
-              <Checkbox name="sync-x" bind:checked={ePlotGlobal.syncX} />
-              <span class="sidebar-label">Sync X limits across panels</span>
-            </label>
-            <div class="grid grid-cols-2 gap-1">
-              <div>
-                <p class="sidebar-label mb-0.5">X ticks</p>
-                <Input
-                  size="sm"
-                  type="number"
-                  min="2"
-                  max="20"
-                  step="1"
-                  bind:value={ePlotGlobal.xTickCount}
-                  className="w-full"
-                />
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">Y ticks</p>
-                <Input
-                  size="sm"
-                  type="number"
-                  min="2"
-                  max="20"
-                  step="1"
-                  bind:value={ePlotGlobal.yTickCount}
-                  className="w-full"
-                />
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">X decimals</p>
-                <Input
-                  size="sm"
-                  type="number"
-                  min="0"
-                  max="8"
-                  step="1"
-                  bind:value={ePlotGlobal.xTickDecimals}
-                  placeholder="auto"
-                  className="w-full"
-                  title="Decimal places on X axis ticks. Empty = auto."
-                />
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">Y decimals</p>
-                <Input
-                  size="sm"
-                  type="number"
-                  min="0"
-                  max="8"
-                  step="1"
-                  bind:value={ePlotGlobal.yTickDecimals}
-                  placeholder="auto"
-                  className="w-full"
-                  title="Decimal places on Y axis ticks. Empty = auto."
-                />
-              </div>
-            </div>
-            {#if focusedPanelKey || selectedProperties[0]}
-              {@const pk = focusedPanelKey || selectedProperties[0]}
-              {@const panelPlaceholderTitle = pk}
-              {@const panelPlaceholderY = energeticPropYLabel(pk)}
-              <div>
-                <p class="sidebar-label mb-0.5">Panel title</p>
-                <Input
-                  size="sm"
-                  value={ePlotPanels[pk]?.title ?? ''}
-                  placeholder={panelPlaceholderTitle}
-                  className="w-full"
-                  oninput={(e) => {
-                    ensureEPlotPanel(pk)
-                    ePlotPanels = {
-                      ...ePlotPanels,
-                      [pk]: { ...ePlotPanels[pk], title: e.currentTarget.value }
-                    }
-                  }}
-                />
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">Y label</p>
-                <Input
-                  size="sm"
-                  value={ePlotPanels[pk]?.ylabel ?? ''}
-                  placeholder={panelPlaceholderY}
-                  className="w-full"
-                  oninput={(e) => {
-                    ensureEPlotPanel(pk)
-                    ePlotPanels = {
-                      ...ePlotPanels,
-                      [pk]: { ...ePlotPanels[pk], ylabel: e.currentTarget.value }
-                    }
-                  }}
-                />
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">Line color</p>
-                <div class="flex items-center gap-1">
-                  <input
-                    type="color"
-                    bind:value={ePlotPanels[pk].lineColor}
-                    class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
-                  />
-                  <Input
-                    size="sm"
-                    bind:value={ePlotPanels[pk].lineColor}
-                    className="min-w-0 flex-1 font-mono"
-                  />
-                </div>
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">X min / max</p>
-                <div class="flex gap-1">
-                  <Input size="sm" bind:value={ePlotPanels[pk].xMin} placeholder="auto" className="w-full" />
-                  <Input size="sm" bind:value={ePlotPanels[pk].xMax} placeholder="auto" className="w-full" />
-                </div>
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">Y min / max</p>
-                <div class="flex gap-1">
-                  <Input size="sm" bind:value={ePlotPanels[pk].yMin} placeholder="auto" className="w-full" />
-                  <Input size="sm" bind:value={ePlotPanels[pk].yMax} placeholder="auto" className="w-full" />
-                </div>
-              </div>
-            {/if}
-            <div>
-              <p class="sidebar-label mb-0.5">Global title</p>
+              <p class="sidebar-label mb-0.5">Title</p>
               <Input
                 size="sm"
                 value={ePlotGlobal.title}
@@ -6858,9 +7241,36 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 className="w-full"
                 oninput={(e) => {
                   ePlotGlobal = { ...ePlotGlobal, title: e.currentTarget.value }
+                  markSessionDirty()
                 }}
               />
             </div>
+            {#if energeticCompareLayout === 'grid'}
+              <label class="flex items-center gap-2">
+                <Checkbox name="sync-x" bind:checked={ePlotGlobal.syncX} />
+                <span class="sidebar-label">Sync X limits across panels</span>
+              </label>
+            {/if}
+            {#if selectedProperties[0]}
+              {@const pk = selectedProperties[0]}
+              <div>
+                <p class="sidebar-label mb-0.5">Line color ({pk})</p>
+                <div class="flex items-center gap-1">
+                  <input
+                    type="color"
+                    value={ePlotPanels[pk]?.lineColor || '#f59e0b'}
+                    class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
+                    oninput={(e) => {
+                      ensureEPlotPanel(pk)
+                      ePlotPanels = {
+                        ...ePlotPanels,
+                        [pk]: { ...ePlotPanels[pk], lineColor: e.currentTarget.value }
+                      }
+                    }}
+                  />
+                </div>
+              </div>
+            {/if}
             <div class="grid grid-cols-2 gap-1">
               <div>
                 <p class="sidebar-label mb-0.5">Plot bg</p>
@@ -6917,156 +7327,6 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 >Auto</Button>
               </div>
             </div>
-            <label class="flex items-center gap-2">
-              <Checkbox name="show-grid-global" bind:checked={ePlotGlobal.showGrid} />
-              <span class="sidebar-label">Show grid</span>
-            </label>
-            <div class="grid grid-cols-2 gap-1">
-              <div>
-                <p class="sidebar-label mb-0.5">Line width</p>
-                <Input
-                  size="sm"
-                  type="number"
-                  min="0.5"
-                  max="12"
-                  step="0.5"
-                  bind:value={ePlotGlobal.lineWidth}
-                  className="w-full"
-                />
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">Line style</p>
-                <Select size="sm" bind:value={ePlotGlobal.lineStyle} className="w-full">
-                  <option value="solid">Solid</option>
-                  <option value="dashed">Dashed</option>
-                  <option value="dotted">Dotted</option>
-                  <option value="dashdot">Dash-dot</option>
-                </Select>
-              </div>
-            </div>
-            <label class="flex items-center gap-2">
-              <Checkbox name="energ-show-ticks" bind:checked={ePlotGlobal.showTicks} />
-              <span class="sidebar-label">Show tick marks</span>
-            </label>
-            <div class="grid grid-cols-2 gap-1">
-              <div>
-                <p class="sidebar-label mb-0.5">Tick length</p>
-                <Input
-                  size="sm"
-                  type="number"
-                  min="0"
-                  max="16"
-                  step="1"
-                  bind:value={ePlotGlobal.tickLength}
-                  className="w-full"
-                />
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">Tick width</p>
-                <Input
-                  size="sm"
-                  type="number"
-                  min="0.2"
-                  max="8"
-                  step="0.2"
-                  bind:value={ePlotGlobal.tickWidth}
-                  className="w-full"
-                />
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">Axis line width</p>
-                <Input
-                  size="sm"
-                  type="number"
-                  min="0.2"
-                  max="8"
-                  step="0.2"
-                  bind:value={ePlotGlobal.spineWidth}
-                  className="w-full"
-                />
-              </div>
-            </div>
-            <p class="sidebar-label mb-0.5">Axis box</p>
-            <div class="grid grid-cols-2 gap-x-2 gap-y-1">
-              <label class="flex items-center gap-2">
-                <Checkbox name="energ-spine-left" bind:checked={ePlotGlobal.spineLeft} />
-                <span class="sidebar-label">Left</span>
-              </label>
-              <label class="flex items-center gap-2">
-                <Checkbox name="energ-spine-bottom" bind:checked={ePlotGlobal.spineBottom} />
-                <span class="sidebar-label">Bottom</span>
-              </label>
-              <label class="flex items-center gap-2">
-                <Checkbox name="energ-spine-top" bind:checked={ePlotGlobal.spineTop} />
-                <span class="sidebar-label">Top</span>
-              </label>
-              <label class="flex items-center gap-2">
-                <Checkbox name="energ-spine-right" bind:checked={ePlotGlobal.spineRight} />
-                <span class="sidebar-label">Right</span>
-              </label>
-            </div>
-            <div class="grid grid-cols-2 gap-1">
-              <div>
-                <p class="sidebar-label mb-0.5">Extra left margin</p>
-                <Input
-                  size="sm"
-                  type="number"
-                  min="-80"
-                  max="240"
-                  step="1"
-                  bind:value={ePlotGlobal.extraLeftMargin}
-                  className="w-full"
-                  placeholder="0"
-                />
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">Extra right margin</p>
-                <Input
-                  size="sm"
-                  type="number"
-                  min="-80"
-                  max="240"
-                  step="1"
-                  bind:value={ePlotGlobal.extraRightMargin}
-                  className="w-full"
-                  placeholder="0"
-                />
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">Extra top margin</p>
-                <Input
-                  size="sm"
-                  type="number"
-                  min="-80"
-                  max="240"
-                  step="1"
-                  bind:value={ePlotGlobal.extraTopMargin}
-                  className="w-full"
-                  placeholder="0"
-                />
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">Extra bottom margin</p>
-                <Input
-                  size="sm"
-                  type="number"
-                  min="-80"
-                  max="240"
-                  step="1"
-                  bind:value={ePlotGlobal.extraBottomMargin}
-                  className="w-full"
-                  placeholder="0"
-                />
-              </div>
-            </div>
-            <div>
-              <p class="sidebar-label mb-0.5">Export DPI (publication PNG)</p>
-              <Select size="sm" bind:value={ePlotGlobal.dpi} className="w-full">
-                <option value="150">150 dpi</option>
-                <option value="300">300 dpi (print)</option>
-                <option value="600">600 dpi</option>
-              </Select>
-            </div>
           {/if}
           <div class="grid grid-cols-2 gap-1">
             {#if mode === 'structural' && (activeStructRes?.lastAnalysisHasTimeX ?? false)}
@@ -7121,8 +7381,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             </div>
           {/if}
 
-          <!-- Axis limits (structural) -->
-          {#if mode === 'structural'}
+          <!-- Axis limits -->
           <div class="min-w-0 space-y-1">
             <div
               class="grid min-w-0 grid-cols-[1.15rem_minmax(0,1.35fr)_minmax(0,1.35fr)_2.35rem_2.85rem] items-end gap-1"
@@ -7166,11 +7425,31 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               <p class="sidebar-label pb-1.5">Y</p>
               <div class="min-w-0">
                 <p class="sidebar-label mb-0.5">Min</p>
-                <Input size="sm" bind:value={ps.yMin} placeholder="auto" className="w-full min-w-0" />
+                <Input
+                  size="sm"
+                  value={mode === 'energetic' ? plotEdit.yMin ?? '' : ps.yMin}
+                  placeholder="auto"
+                  className="w-full min-w-0"
+                  oninput={(e) => {
+                    const v = /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    if (mode === 'energetic') setPlotField({ yMin: v })
+                    else ps.yMin = v
+                  }}
+                />
               </div>
               <div class="min-w-0">
                 <p class="sidebar-label mb-0.5">Max</p>
-                <Input size="sm" bind:value={ps.yMax} placeholder="auto" className="w-full min-w-0" />
+                <Input
+                  size="sm"
+                  value={mode === 'energetic' ? plotEdit.yMax ?? '' : ps.yMax}
+                  placeholder="auto"
+                  className="w-full min-w-0"
+                  oninput={(e) => {
+                    const v = /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    if (mode === 'energetic') setPlotField({ yMax: v })
+                    else ps.yMax = v
+                  }}
+                />
               </div>
               <div class="min-w-0">
                 <p class="sidebar-label mb-0.5">Ticks</p>
@@ -7327,7 +7606,6 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               </div>
             {/each}
           </div>
-          {/if}
 
           {#if mode === 'structural'}
           <div class="grid grid-cols-2 gap-1">
@@ -7414,74 +7692,75 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 onclick={clearStructuralTextColorCustom}
               >Auto</Button>
             </div>
-            <div class="flex flex-wrap items-end gap-2 pb-1">
-              <label class="flex items-center gap-2">
-                <Checkbox
-                  name="show-grid"
-                  checked={plotEdit.showGrid !== false}
-                  onchange={(e) => setPlotField({ showGrid: e.currentTarget.checked })}
+          </div>
+          {/if}
+          <div class="flex flex-wrap items-end gap-2 pb-1">
+            <label class="flex items-center gap-2">
+              <Checkbox
+                name="show-grid"
+                checked={plotEdit.showGrid !== false}
+                onchange={(e) => setPlotField({ showGrid: e.currentTarget.checked })}
+              />
+              <span class="sidebar-label">Show grid</span>
+            </label>
+            <div>
+              <p class="sidebar-label mb-0.5">Grid color</p>
+              <div class="flex items-center gap-1">
+                <input
+                  type="color"
+                  value={String(plotEdit.gridColor || '').trim() || (mode === 'energetic' ? resolvedEnergColors.textColor : resolvedStructColors.textColor)}
+                  disabled={plotEdit.showGrid === false}
+                  class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0 disabled:opacity-40"
+                  oninput={(e) => setPlotField({ gridColor: e.currentTarget.value })}
+                  title="Background grid line color"
                 />
-                <span class="sidebar-label">Show grid</span>
-              </label>
-              <div>
-                <p class="sidebar-label mb-0.5">Grid color</p>
-                <div class="flex items-center gap-1">
-                  <input
-                    type="color"
-                    value={String(plotEdit.gridColor || '').trim() || resolvedStructColors.textColor}
-                    disabled={plotEdit.showGrid === false}
-                    class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0 disabled:opacity-40"
-                    oninput={(e) => setPlotField({ gridColor: e.currentTarget.value })}
-                    title="Background grid line color"
-                  />
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={!String(plotEdit.gridColor || '').trim()}
-                    onclick={() => setPlotField({ gridColor: '' })}
-                  >Auto</Button>
-                </div>
-              </div>
-            </div>
-            <div class="grid grid-cols-2 gap-1">
-              <div>
-                <p class="sidebar-label mb-0.5">Line width</p>
-                <Input
+                <Button
                   size="sm"
-                  type="number"
-                  min="0.5"
-                  max="12"
-                  step="0.5"
-                  value={plotEdit.lineWidth}
-                  className="w-full"
-                  oninput={(e) =>
-                    setPlotField({
-                      lineWidth: /** @type {HTMLInputElement} */ (e.currentTarget).value
-                    })
-                  }
-                />
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">Line style</p>
-                <Select
-                  size="sm"
-                  className="w-full"
-                  value={plotEdit.lineStyle || 'solid'}
-                  onchange={(e) =>
-                    setPlotField({
-                      lineStyle: /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                    })
-                  }
-                >
-                  <option value="solid">Solid</option>
-                  <option value="dashed">Dashed</option>
-                  <option value="dotted">Dotted</option>
-                  <option value="dashdot">Dash-dot</option>
-                </Select>
+                  variant="ghost"
+                  disabled={!String(plotEdit.gridColor || '').trim()}
+                  onclick={() => setPlotField({ gridColor: '' })}
+                >Auto</Button>
               </div>
             </div>
           </div>
-          {#if structuralType === 'area_per_lipid'}
+          <div class="grid grid-cols-2 gap-1">
+            <div>
+              <p class="sidebar-label mb-0.5">Line width</p>
+              <Input
+                size="sm"
+                type="number"
+                min="0.5"
+                max="12"
+                step="0.5"
+                value={plotEdit.lineWidth}
+                className="w-full"
+                oninput={(e) =>
+                  setPlotField({
+                    lineWidth: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                  })
+                }
+              />
+            </div>
+            <div>
+              <p class="sidebar-label mb-0.5">Line style</p>
+              <Select
+                size="sm"
+                className="w-full"
+                value={plotEdit.lineStyle || 'solid'}
+                onchange={(e) =>
+                  setPlotField({
+                    lineStyle: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                  })
+                }
+              >
+                <option value="solid">Solid</option>
+                <option value="dashed">Dashed</option>
+                <option value="dotted">Dotted</option>
+                <option value="dashdot">Dash-dot</option>
+              </Select>
+            </div>
+          </div>
+          {#if mode === 'structural' && structuralType === 'area_per_lipid'}
             <div class="space-y-1 rounded border border-neutral-800 p-2">
               <p class="sidebar-label">Area per lipid series (this set)</p>
               <p class="sidebar-hint">
@@ -7789,26 +8068,25 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               </div>
             </div>
           {/if}
-          {/if}
 
-          {#if mode === 'structural'}
-            <button
-              type="button"
-              class="flex w-full items-center gap-1.5 rounded-md border border-neutral-800 px-2 py-1 text-left text-xs text-neutral-300 hover:bg-neutral-900"
-              onclick={() => (plotSettingsAdvancedOpen = !plotSettingsAdvancedOpen)}
-            >
-              <Gear className="size-3.5" />
-              <span class="sidebar-label">Advanced</span>
-              <span class="ml-auto sidebar-hint">{plotSettingsAdvancedOpen ? '▲' : '▼'}</span>
-            </button>
-          {/if}
-          {#if mode === 'structural' && plotSettingsAdvancedOpen}
+          <button
+            type="button"
+            class="flex w-full items-center gap-1.5 rounded-md border border-neutral-800 px-2 py-1 text-left text-xs text-neutral-300 hover:bg-neutral-900"
+            onclick={() => (plotSettingsAdvancedOpen = !plotSettingsAdvancedOpen)}
+          >
+            <Gear className="size-3.5" />
+            <span class="sidebar-label">Advanced</span>
+            <span class="ml-auto sidebar-hint">{plotSettingsAdvancedOpen ? '▲' : '▼'}</span>
+          </button>
+          {#if plotSettingsAdvancedOpen}
+            {#if mode === 'structural'}
             <label class="flex items-center gap-2">
               <Checkbox name="show-selection-subtitle" bind:checked={ps.showSelectionSubtitle} />
               <span class="sidebar-label">Show selection on plot</span>
             </label>
+            {/if}
 
-          <!-- Aspect ratio + transparent bg + DPI + font (structural) -->
+          <!-- Aspect ratio + transparent bg + DPI + font -->
           <div class="grid grid-cols-2 gap-1">
             <div>
               <p class="sidebar-label mb-0.5">Aspect ratio (W/H)</p>
@@ -7855,8 +8133,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           </div>
           {/if}
 
-          {#if mode === 'structural'}
-          {#if compareLayout !== 'grid' || gridLayout.legendMode === 'each' || gridLayout.legendMode === 'one'}
+          {#if !toolbarIsGrid || activeMosaicLayout.legendMode === 'each' || activeMosaicLayout.legendMode === 'one'}
           <div>
             <p class="sidebar-label mb-0.5">Legend position</p>
             <Select
@@ -7948,62 +8225,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               />
             </div>
           </div>
-          {/if}
 
-          {#if mode === 'energetic'}
-          <div class="grid grid-cols-2 gap-1">
-            <div>
-              <p class="sidebar-label mb-0.5">Legend square (px)</p>
-              <Input
-                size="sm"
-                type="number"
-                min="6"
-                max="48"
-                step="1"
-                bind:value={ePlotGlobal.legendSwatchSize}
-                className="w-full"
-              />
-            </div>
-            <div>
-              <p class="sidebar-label mb-0.5">Legend font (px)</p>
-              <Input
-                size="sm"
-                type="number"
-                min="7"
-                max="48"
-                step="1"
-                bind:value={ePlotGlobal.legendFontSize}
-                className="w-full"
-              />
-            </div>
-            <div>
-              <p class="sidebar-label mb-0.5">Axis font (px)</p>
-              <Input
-                size="sm"
-                type="number"
-                min="7"
-                max="64"
-                step="1"
-                bind:value={ePlotGlobal.axisFontSize}
-                className="w-full"
-              />
-            </div>
-            <div>
-              <p class="sidebar-label mb-0.5">Title font (px)</p>
-              <Input
-                size="sm"
-                type="number"
-                min="8"
-                max="64"
-                step="1"
-                bind:value={ePlotGlobal.titleFontSize}
-                className="w-full"
-              />
-            </div>
-          </div>
-          {/if}
-
-          {#if mode === 'structural'}
           <div class="grid grid-cols-2 gap-1">
             <div>
               <p class="sidebar-label mb-0.5">Extra left margin</p>
@@ -8170,7 +8392,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   className="w-full"
                   title="Spacing in X units. Empty uses tick count."
                   oninput={(e) =>
-                    patchStructuralPlot({
+                    setPlotField({
                       xTickStep: /** @type {HTMLInputElement} */ (e.currentTarget).value
                     })
                   }
@@ -8188,7 +8410,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   className="w-full"
                   title="Spacing in Y units. Empty uses tick count."
                   oninput={(e) =>
-                    patchStructuralPlot({
+                    setPlotField({
                       yTickStep: /** @type {HTMLInputElement} */ (e.currentTarget).value
                     })
                   }
@@ -8230,7 +8452,6 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 <span class="sidebar-label">Right</span>
               </label>
             </div>
-          {/if}
 
           <!-- Actions -->
           <div class="flex flex-wrap gap-1 pt-1">
@@ -8254,6 +8475,12 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 } else {
                   ePlotGlobal = { ...energGlobalDefaults, ...energPanelShell }
                   ePlotPanels = {}
+                  if (energeticCompareLayout === 'grid') {
+                    energeticGridLayout = clearCellPlotKeysFromOverrides(
+                      energeticGridLayout,
+                      ENERGETIC_CELL_PLOT_KEYS
+                    )
+                  }
                   for (const p of selectedProperties) ensureEPlotPanel(p)
                   statsRange = null
                   panelRangeStats = {}
@@ -8502,14 +8729,14 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
       </div>
     {/if}
 
-    {#if mode === 'structural'}
+    {#if mode === 'structural' || mode === 'energetic'}
       <div class="mx-4 mb-2 space-y-2">
         <div class="relative z-10 flex flex-wrap items-center gap-1">
           <Button
             size="sm"
-            variant={compareLayout === 'overlay' ? 'default' : 'outline'}
+            variant={!toolbarIsGrid ? 'default' : 'outline'}
             className="gap-1 px-2"
-            onclick={() => setCompareLayout('overlay')}
+            onclick={() => setActiveCompareLayout('overlay')}
             title="Overlay all sets on one plot"
           >
             <Layers className="size-3.5" />
@@ -8517,21 +8744,21 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           </Button>
           <Button
             size="sm"
-            variant={compareLayout === 'grid' ? 'default' : 'outline'}
+            variant={toolbarIsGrid ? 'default' : 'outline'}
             className="gap-1 px-2"
-            onclick={() => setCompareLayout('grid')}
+            onclick={() => setActiveCompareLayout('grid')}
             title="Custom grid of plots"
           >
             <Grid2x2Plus className="size-3.5" />
             Grid
           </Button>
-          {#if compareLayout === 'grid'}
+          {#if toolbarIsGrid}
             <span class="mx-1 h-4 w-px bg-neutral-700" aria-hidden="true"></span>
             <Button
               size="sm"
               variant="outline"
               className="px-2"
-              disabled={(Number(gridLayout.cols) || 1) <= 1}
+              disabled={(Number(activeMosaicLayout.cols) || 1) <= 1}
               onclick={removeGridColumn}
               title="Remove column"
             >− Col</Button>
@@ -8539,7 +8766,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               size="sm"
               variant="outline"
               className="px-2"
-              disabled={(Number(gridLayout.cols) || 1) >= 8}
+              disabled={(Number(activeMosaicLayout.cols) || 1) >= 8}
               onclick={addGridColumn}
               title="Add column"
             >+ Col</Button>
@@ -8547,7 +8774,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               size="sm"
               variant="outline"
               className="px-2"
-              disabled={(Number(gridLayout.rows) || 1) <= 1}
+              disabled={(Number(activeMosaicLayout.rows) || 1) <= 1}
               onclick={removeGridRow}
               title="Remove row"
             >− Row</Button>
@@ -8555,11 +8782,11 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               size="sm"
               variant="outline"
               className="px-2"
-              disabled={(Number(gridLayout.rows) || 1) >= 16}
+              disabled={(Number(activeMosaicLayout.rows) || 1) >= 16}
               onclick={addGridRow}
               title="Add row"
             >+ Row</Button>
-            <span class="px-1 text-[11px] text-neutral-500">{gridLayout.cols}×{gridLayout.rows}</span>
+            <span class="px-1 text-[11px] text-neutral-500">{activeMosaicLayout.cols}×{activeMosaicLayout.rows}</span>
             <Button
               size="sm"
               variant={plotGridOptionsOpen ? 'default' : 'outline'}
@@ -8568,17 +8795,17 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             >Grid options</Button>
           {/if}
         </div>
-        {#if compareLayout === 'overlay' && analysisSets.length > 1}
+        {#if !toolbarIsGrid && analysisSets.length > 1}
           <div>
             <p class="sidebar-label mb-0.5">Overlay draw order</p>
             <OrderedSetChips
-              setIds={syncOrderedIds(gridLayout.overlaySetIds, analysisSets.map((s) => s.id))}
+              setIds={syncOrderedIds(activeMosaicLayout.overlaySetIds, analysisSets.map((s) => s.id))}
               sets={gridChipSets}
               onchange={setOverlaySetIds}
             />
           </div>
         {/if}
-        {#if compareLayout === 'grid' && plotGridOptionsOpen}
+        {#if toolbarIsGrid && plotGridOptionsOpen}
           <div class="space-y-2 rounded-md border border-neutral-800 p-2 text-xs">
             <div class="grid grid-cols-2 gap-1 sm:grid-cols-4">
               <div>
@@ -8589,7 +8816,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   min="0"
                   max="80"
                   step="1"
-                  value={gridLayout.gapPx}
+                  value={activeMosaicLayout.gapPx}
                   className="w-full"
                   oninput={(e) =>
                     patchGridChrome({
@@ -8606,7 +8833,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   min="0.4"
                   max="5"
                   step="0.1"
-                  value={gridLayout.aspectRatio}
+                  value={activeMosaicLayout.aspectRatio}
                   placeholder={String(ps.aspectRatio || '2.5')}
                   className="w-full"
                   oninput={(e) =>
@@ -8621,7 +8848,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 <Select
                   size="sm"
                   className="w-full"
-                  value={gridLayout.lastRowAlign}
+                  value={activeMosaicLayout.lastRowAlign}
                   onchange={(e) =>
                     patchGridChrome({
                       lastRowAlign: /** @type {HTMLSelectElement} */ (e.currentTarget).value
@@ -8637,7 +8864,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 <Select
                   size="sm"
                   className="w-full"
-                  value={gridLayout.legendMode}
+                  value={activeMosaicLayout.legendMode}
                   onchange={(e) =>
                     patchGridChrome({
                       legendMode: /** @type {HTMLSelectElement} */ (e.currentTarget).value
@@ -8657,7 +8884,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 <Select
                   size="sm"
                   className="w-full"
-                  value={gridLayout.showXLabels}
+                  value={activeMosaicLayout.showXLabels}
                   onchange={(e) =>
                     patchGridChrome({
                       showXLabels: /** @type {HTMLSelectElement} */ (e.currentTarget).value
@@ -8674,7 +8901,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 <Select
                   size="sm"
                   className="w-full"
-                  value={gridLayout.showYLabels}
+                  value={activeMosaicLayout.showYLabels}
                   onchange={(e) =>
                     patchGridChrome({
                       showYLabels: /** @type {HTMLSelectElement} */ (e.currentTarget).value
@@ -8691,7 +8918,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 <Select
                   size="sm"
                   className="w-full"
-                  value={gridLayout.showXTickLabels}
+                  value={activeMosaicLayout.showXTickLabels}
                   onchange={(e) =>
                     patchGridChrome({
                       showXTickLabels: /** @type {HTMLSelectElement} */ (e.currentTarget).value
@@ -8708,7 +8935,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 <Select
                   size="sm"
                   className="w-full"
-                  value={gridLayout.showYTickLabels}
+                  value={activeMosaicLayout.showYTickLabels}
                   onchange={(e) =>
                     patchGridChrome({
                       showYTickLabels: /** @type {HTMLSelectElement} */ (e.currentTarget).value
@@ -8721,13 +8948,13 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 </Select>
               </div>
             </div>
-            {#if gridLayout.legendMode === 'one'}
+            {#if activeMosaicLayout.legendMode === 'one'}
               <div>
                 <p class="sidebar-label mb-0.5">Legend cell</p>
                 <Select
                   size="sm"
                   className="w-full"
-                  value={String(gridLayout.legendCell)}
+                  value={String(activeMosaicLayout.legendCell)}
                   onchange={(e) =>
                     patchGridChrome({
                       legendCell: Number(
@@ -8736,20 +8963,20 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     })
                   }
                 >
-                  {#each gridLayout.cells as cell, i (i)}
+                  {#each activeMosaicLayout.cells as cell, i (i)}
                     <option value={String(i)}>Cell {i + 1}{cell.title ? ` · ${cell.title}` : ''}</option>
                   {/each}
                 </Select>
               </div>
             {/if}
-            {#if gridLayout.legendMode === 'outside'}
+            {#if activeMosaicLayout.legendMode === 'outside'}
               <div class="grid grid-cols-2 gap-1 sm:grid-cols-4">
                 <div>
                   <p class="sidebar-label mb-0.5">Strip</p>
                   <Select
                     size="sm"
                     className="w-full"
-                    value={gridLayout.legendOutside}
+                    value={activeMosaicLayout.legendOutside}
                     onchange={(e) =>
                       patchGridChrome({
                         legendOutside: /** @type {HTMLSelectElement} */ (e.currentTarget).value
@@ -8767,7 +8994,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   <Select
                     size="sm"
                     className="w-full"
-                    value={gridLayout.legendEntries}
+                    value={activeMosaicLayout.legendEntries}
                     onchange={(e) =>
                       patchGridChrome({
                         legendEntries: /** @type {HTMLSelectElement} */ (e.currentTarget).value
@@ -8787,7 +9014,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     min="1"
                     max="8"
                     step="1"
-                    value={gridLayout.legendColumns}
+                    value={activeMosaicLayout.legendColumns}
                     className="w-full"
                     oninput={(e) =>
                       patchGridChrome({
@@ -8800,7 +9027,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   <p class="sidebar-label mb-0.5">Legend title</p>
                   <Input
                     size="sm"
-                    value={gridLayout.legendTitle}
+                    value={activeMosaicLayout.legendTitle}
                     className="w-full"
                     oninput={(e) =>
                       patchGridChrome({
@@ -8817,7 +9044,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 <div class="flex items-center gap-1">
                   <ColorInput
                     size="sm"
-                    value={gridLayout.figureBg || resolvedStructColors.plotBg}
+                    value={activeMosaicLayout.figureBg || displayPlotBg}
                     oninput={(e) =>
                       patchGridChrome({
                         figureBg: /** @type {HTMLInputElement} */ (e.currentTarget).value
@@ -8834,7 +9061,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 <div class="flex items-center gap-1">
                   <ColorInput
                     size="sm"
-                    value={gridLayout.cellBg || resolvedStructColors.plotBg}
+                    value={activeMosaicLayout.cellBg || displayPlotBg}
                     oninput={(e) =>
                       patchGridChrome({
                         cellBg: /** @type {HTMLInputElement} */ (e.currentTarget).value
@@ -8849,7 +9076,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               <label class="flex items-end gap-2 pb-1">
                 <Checkbox
                   name="grid-cell-border"
-                  checked={gridLayout.cellBorder !== false}
+                  checked={activeMosaicLayout.cellBorder !== false}
                   onchange={(e) =>
                     patchGridChrome({
                       cellBorder: /** @type {HTMLInputElement} */ (e.currentTarget).checked
@@ -8860,7 +9087,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               </label>
               <div class="flex items-end">
                 <Button size="sm" variant="outline" className="w-full" onclick={resetGridToAuto}
-                  >Reset auto (one set / cell)</Button
+                  >{mode === 'energetic' ? 'Reset auto (one property / cell)' : 'Reset auto (one set / cell)'}</Button
                 >
               </div>
             </div>
@@ -9131,144 +9358,150 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             onStatsRange={handleStatsRange}
           />
           </div>
-        {:else if mode === 'energetic'}
-          {#if energeticPanels.length === 1}
-            {@const panel = energeticPanels[0]}
-            {@const pk =
-              panel.key === '__compare__' || panel.key === '__overlay__'
-                ? focusedPanelKey || selectedProperties[0] || panel.key
-                : panel.key}
-            {@const pset = ePlotPanels[pk] ?? defaultPanelSettings()}
-            {@const xMinP =
-              pset.xMin !== '' && Number.isFinite(Number(pset.xMin)) ? Number(pset.xMin) : null}
-            {@const xMaxP =
-              pset.xMax !== '' && Number.isFinite(Number(pset.xMax)) ? Number(pset.xMax) : null}
-            {@const yMinP =
-              pset.yMin !== '' && Number.isFinite(Number(pset.yMin)) ? Number(pset.yMin) : null}
-            {@const yMaxP =
-              pset.yMax !== '' && Number.isFinite(Number(pset.yMax)) ? Number(pset.yMax) : null}
-            {@const titleResolved = energeticPanelChartTitle(panel, pset)}
-            <div data-chart-export={titleResolved || panel.title || ''}>
-            <LineChart
-              series={panel.series}
-              xLabel={displayXLabel}
-              yLabel={energeticPanelYLabel(panel, pset)}
-              plotBg={resolvedEnergColors.plotBg}
-              tickColor={resolvedEnergColors.textColor}
-              labelColor={resolvedEnergColors.textColor}
-              axisColor={resolvedEnergColors.textColor}
-              gridColor={(ePlotGlobal.gridColor || resolvedEnergColors.textColor) + '40'}
-              showGrid={ePlotGlobal.showGrid !== false}
-              aspectRatio={Number(energPanelShell.aspectRatio) || 2.5}
-              fontFamily={ePlotGlobal.fontFamily || 'Roboto, sans-serif'}
-              chartTitle={titleResolved}
-              xTicks={Number(ePlotGlobal.xTickCount) || 5}
-              yTicks={Number(ePlotGlobal.yTickCount) || 5}
-              xTickDecimals={ePlotGlobal.xTickDecimals}
-              yTickDecimals={ePlotGlobal.yTickDecimals}
-              {...lineChartExtraMarginProps(ePlotGlobal)}
-              legendPosition={ePlotGlobal.legendPosition || energPanelShell.legendPosition || 'top-left'}
-              legendSwatchSize={Number(ePlotGlobal.legendSwatchSize) || 12}
-              legendFontSize={Number(ePlotGlobal.legendFontSize) || 10}
-              axisFontSize={Number(ePlotGlobal.axisFontSize) || 12}
-              titleFontSize={Number(ePlotGlobal.titleFontSize) || 13}
-              {...lineChartAxisProps(ePlotGlobal)}
-              xMinOverride={energViewRangeByKey[pk]?.xMin ?? xMinP}
-              xMaxOverride={energViewRangeByKey[pk]?.xMax ?? xMaxP}
-              yMinOverride={energViewRangeByKey[pk]?.yMin ?? yMinP}
-              yMaxOverride={energViewRangeByKey[pk]?.yMax ?? yMaxP}
-              interactionMode={chartInteractionMode}
-              statsRange={statsRange}
-              onAxisRange={(r) => applyPanelAxisRange(pk, r)}
-              onStatsRange={handleStatsRange}
-            />
-            </div>
-          {:else}
-            <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
-              {#each energeticPanels as panel (panel.key)}
-                {@const pk = panel.key}
-                {@const pset = ePlotPanels[pk] ?? defaultPanelSettings()}
-                {@const propKey =
-                  panel.series?.[0]?.baseName ||
-                  (selectedProperties.includes(pk) ? pk : focusedPanelKey || selectedProperties[0] || '')}
-                {@const propPset = propKey ? ePlotPanels[propKey] ?? defaultPanelSettings() : pset}
-                {@const xMinP =
-                  pset.xMin !== '' && Number.isFinite(Number(pset.xMin))
-                    ? Number(pset.xMin)
-                    : propPset.xMin !== '' && Number.isFinite(Number(propPset.xMin))
-                      ? Number(propPset.xMin)
-                      : null}
-                {@const xMaxP =
-                  pset.xMax !== '' && Number.isFinite(Number(pset.xMax))
-                    ? Number(pset.xMax)
-                    : propPset.xMax !== '' && Number.isFinite(Number(propPset.xMax))
-                      ? Number(propPset.xMax)
-                      : null}
-                {@const yMinP =
-                  pset.yMin !== '' && Number.isFinite(Number(pset.yMin))
-                    ? Number(pset.yMin)
-                    : propPset.yMin !== '' && Number.isFinite(Number(propPset.yMin))
-                      ? Number(propPset.yMin)
-                      : null}
-                {@const yMaxP =
-                  pset.yMax !== '' && Number.isFinite(Number(pset.yMax))
-                    ? Number(pset.yMax)
-                    : propPset.yMax !== '' && Number.isFinite(Number(propPset.yMax))
-                      ? Number(propPset.yMax)
-                      : null}
-                {@const yLabelResolved = energeticPanelYLabel(panel, {
-                  ...propPset,
-                  ylabel: pset.ylabel || propPset.ylabel
-                })}
-                {@const titleResolved = energeticPanelChartTitle(panel, {
-                  ...pset,
-                  title: pset.title || (propKey === pk ? propPset.title : '')
-                })}
+        {:else if mode === 'energetic' && energeticCompareLayout === 'grid'}
+          {@const outside = energeticGridLayout.legendMode === 'outside'}
+          {@const loc = energeticGridLayout.legendOutside}
+          {@const mosaicGap = `${Number(energeticGridLayout.gapPx) || 0}px`}
+          {@const stripFlex =
+            outside && (loc === 'left' || loc === 'right') ? 'flex-row items-start' : 'flex-col'}
+          <div
+            class={`flex min-w-0 ${stripFlex}`}
+            data-chart-mosaic="1"
+            style={`gap: ${mosaicGap}; ${energeticGridLayout.figureBg ? `background: ${energeticGridLayout.figureBg};` : ''} padding: 0.25rem; overflow-anchor: none;`}
+          >
+            {#if outside && loc === 'top'}
+              <ChartLegend
+                series={outsideLegendSeries}
+                columns={energeticGridLayout.legendColumns}
+                title={energeticGridLayout.legendTitle}
+                fontFamily={ePlotGlobal.fontFamily || 'Roboto, sans-serif'}
+                fontSize={Number(ePlotGlobal.legendFontSize) || 10}
+                swatchSize={Number(ePlotGlobal.legendSwatchSize) || 12}
+                textColor={resolvedEnergColors.textColor}
+              />
+            {/if}
+            {#if outside && loc === 'left'}
+              <ChartLegend
+                series={outsideLegendSeries}
+                columns={1}
+                title={energeticGridLayout.legendTitle}
+                fontFamily={ePlotGlobal.fontFamily || 'Roboto, sans-serif'}
+                fontSize={Number(ePlotGlobal.legendFontSize) || 10}
+                swatchSize={Number(ePlotGlobal.legendSwatchSize) || 12}
+                textColor={resolvedEnergColors.textColor}
+                boxed
+              />
+            {/if}
+            <div class="flex min-w-0 w-full flex-col" style={`gap: ${mosaicGap}`}>
+              {#each energeticMosaic.fullRows as row, ri (ri)}
                 <div
-                  class={`rounded-lg border p-2 ${focusedPanelKey === pk || focusedPanelKey === propKey ? 'border-amber-500/60' : 'border-neutral-800'}`}
-                  role="button"
-                  tabindex="0"
-                  data-chart-export={titleResolved || panel.title || ''}
-                  onclick={() => focusPanel(propKey || pk)}
-                  onkeydown={(e) => e.key === 'Enter' && focusPanel(propKey || pk)}
+                  class="grid min-w-0"
+                  style={`grid-template-columns: repeat(${energeticGridLayout.cols}, minmax(0, 1fr)); gap: ${mosaicGap}; align-content: start;`}
                 >
-                  <LineChart
-                    series={panel.series}
-                    xLabel={displayXLabel}
-                    yLabel={yLabelResolved}
-                    plotBg={resolvedEnergColors.plotBg}
-                    tickColor={resolvedEnergColors.textColor}
-                    labelColor={resolvedEnergColors.textColor}
-                    axisColor={resolvedEnergColors.textColor}
-                    gridColor={(ePlotGlobal.gridColor || resolvedEnergColors.textColor) + '40'}
-                    showGrid={ePlotGlobal.showGrid !== false}
-                    aspectRatio={Number(energPanelShell.aspectRatio) || 2.5}
-                    fontFamily={ePlotGlobal.fontFamily || 'Roboto, sans-serif'}
-                    chartTitle={titleResolved}
-                    xTicks={Number(ePlotGlobal.xTickCount) || 5}
-                    yTicks={Number(ePlotGlobal.yTickCount) || 5}
-                    xTickDecimals={ePlotGlobal.xTickDecimals}
-                    yTickDecimals={ePlotGlobal.yTickDecimals}
-                    {...lineChartExtraMarginProps(ePlotGlobal)}
-                    legendPosition={ePlotGlobal.legendPosition || energPanelShell.legendPosition || 'top-left'}
-                    legendSwatchSize={Number(ePlotGlobal.legendSwatchSize) || 12}
-                    legendFontSize={Number(ePlotGlobal.legendFontSize) || 10}
-                    axisFontSize={Number(ePlotGlobal.axisFontSize) || 12}
-                    titleFontSize={Number(ePlotGlobal.titleFontSize) || 13}
-                    {...lineChartAxisProps(ePlotGlobal)}
-                    xMinOverride={energViewRangeByKey[pk]?.xMin ?? xMinP}
-                    xMaxOverride={energViewRangeByKey[pk]?.xMax ?? xMaxP}
-                    yMinOverride={energViewRangeByKey[pk]?.yMin ?? yMinP}
-                    yMaxOverride={energViewRangeByKey[pk]?.yMax ?? yMaxP}
-                    interactionMode={chartInteractionMode}
-                    statsRange={statsRange}
-                    onAxisRange={(r) => applyPanelAxisRange(pk, r)}
-                    onStatsRange={handleStatsRange}
-                  />
+                  {#each row as panel (panel.key)}
+                    {@render energeticGridCell(panel)}
+                  {/each}
                 </div>
               {/each}
+              {#if energeticMosaic.centerLast}
+                <div class="flex justify-center" style={`gap: ${mosaicGap}`}>
+                  {#each energeticMosaic.lastRow as panel (panel.key)}
+                    <div
+                      class="min-w-0"
+                      style={`width: calc((100% - ${(energeticGridLayout.cols - 1) * (Number(energeticGridLayout.gapPx) || 0)}px) / ${energeticGridLayout.cols})`}
+                    >
+                      {@render energeticGridCell(panel)}
+                    </div>
+                  {/each}
+                </div>
+              {/if}
             </div>
-          {/if}
+            {#if outside && loc === 'right'}
+              <ChartLegend
+                series={outsideLegendSeries}
+                columns={1}
+                title={energeticGridLayout.legendTitle}
+                fontFamily={ePlotGlobal.fontFamily || 'Roboto, sans-serif'}
+                fontSize={Number(ePlotGlobal.legendFontSize) || 10}
+                swatchSize={Number(ePlotGlobal.legendSwatchSize) || 12}
+                textColor={resolvedEnergColors.textColor}
+                boxed
+              />
+            {/if}
+            {#if outside && loc === 'bottom'}
+              <ChartLegend
+                series={outsideLegendSeries}
+                columns={energeticGridLayout.legendColumns}
+                title={energeticGridLayout.legendTitle}
+                fontFamily={ePlotGlobal.fontFamily || 'Roboto, sans-serif'}
+                fontSize={Number(ePlotGlobal.legendFontSize) || 10}
+                swatchSize={Number(ePlotGlobal.legendSwatchSize) || 12}
+                textColor={resolvedEnergColors.textColor}
+              />
+            {/if}
+          </div>
+        {:else if mode === 'energetic'}
+          {@const overlayView = energViewRangeByKey.__overlay__}
+          {@const xMinP =
+            overlayView?.xMin ??
+            (ePlotGlobal.xMin !== '' && Number.isFinite(Number(ePlotGlobal.xMin))
+              ? Number(ePlotGlobal.xMin)
+              : null)}
+          {@const xMaxP =
+            overlayView?.xMax ??
+            (ePlotGlobal.xMax !== '' && Number.isFinite(Number(ePlotGlobal.xMax))
+              ? Number(ePlotGlobal.xMax)
+              : null)}
+          {@const yMinP =
+            overlayView?.yMin ??
+            (ePlotGlobal.yMin !== '' && Number.isFinite(Number(ePlotGlobal.yMin))
+              ? Number(ePlotGlobal.yMin)
+              : null)}
+          {@const yMaxP =
+            overlayView?.yMax ??
+            (ePlotGlobal.yMax !== '' && Number.isFinite(Number(ePlotGlobal.yMax))
+              ? Number(ePlotGlobal.yMax)
+              : null)}
+          <div data-chart-export="">
+          <LineChart
+            series={displaySeries}
+            xLabel={displayXLabel}
+            yLabel={displayYLabel}
+            plotBg={resolvedEnergColors.plotBg}
+            tickColor={resolvedEnergColors.textColor}
+            labelColor={resolvedEnergColors.textColor}
+            axisColor={resolvedEnergColors.textColor}
+            gridColor={plotGridColor(ePlotGlobal, resolvedEnergColors.textColor)}
+            showGrid={ePlotGlobal.showGrid !== false}
+            aspectRatio={Number(ePlotGlobal.aspectRatio) || Number(energPanelShell.aspectRatio) || 2.5}
+            transparentBg={ePlotGlobal.transparentBg}
+            fontFamily={ePlotGlobal.fontFamily || 'Roboto, sans-serif'}
+            chartTitle={displayTitle}
+            xTicks={Number(ePlotGlobal.xTickCount) || 5}
+            yTicks={Number(ePlotGlobal.yTickCount) || 5}
+            xTickDecimals={ePlotGlobal.xTickDecimals}
+            yTickDecimals={ePlotGlobal.yTickDecimals}
+            {...lineChartExtraMarginProps(ePlotGlobal)}
+            tickLabelGap={Number(ePlotGlobal.tickLabelGap) || 8}
+            legendPosition={ePlotGlobal.legendPosition || energPanelShell.legendPosition || 'top-left'}
+            legendSwatchSize={Number(ePlotGlobal.legendSwatchSize) || 12}
+            legendFontSize={Number(ePlotGlobal.legendFontSize) || 10}
+            axisFontSize={Number(ePlotGlobal.axisFontSize) || 12}
+            titleFontSize={Number(ePlotGlobal.titleFontSize) || 13}
+            {...lineChartAxisProps(ePlotGlobal)}
+            xTickStep={ePlotGlobal.xTickStep || ''}
+            yTickStep={ePlotGlobal.yTickStep || ''}
+            referenceLines={structReferenceLines}
+            xMinOverride={xMinP}
+            xMaxOverride={xMaxP}
+            yMinOverride={yMinP}
+            yMaxOverride={yMaxP}
+            interactionMode={chartInteractionMode}
+            statsRange={statsRange}
+            onAxisRange={(r) => applyPanelAxisRange('__overlay__', r)}
+            onStatsRange={handleStatsRange}
+          />
+          </div>
         {/if}
         {/if}
 

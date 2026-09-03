@@ -3,12 +3,16 @@ import assert from 'node:assert/strict'
 import {
   GRID_LAYOUT_DEFAULTS,
   aspectPaddingBottom,
+  autoFillEnergeticGrid,
+  autoFillEnergeticGridBySet,
+  ensureEnergeticGridCells,
   extraMarginPx,
   gridCellEmptyReason,
   lineChartAxisProps,
   lineChartExtraMarginProps,
   MAX_AXIS_TICKS,
   axisTickFractions,
+  normalizeGridCell,
   normalizeGridLayout,
   plotSpecAxisChrome,
   plotSpecExtraMargins,
@@ -143,4 +147,74 @@ test('axisTickFractions caps a tiny step so the loop cannot freeze', () => {
   const ticks = axisTickFractions(0, 1e6, 1e-9, 5)
   assert.ok(ticks.length <= MAX_AXIS_TICKS)
   assert.ok(ticks.length >= 2)
+})
+
+test('normalizeGridCell keeps propertyKeys and defaults them to []', () => {
+  const empty = normalizeGridCell(null)
+  assert.deepEqual(empty, { setIds: [], propertyKeys: [], title: '' })
+  const cell = normalizeGridCell({
+    setIds: ['a', 'b'],
+    propertyKeys: ['Temperature', 'Temperature', ''],
+    title: ' T '
+  })
+  assert.deepEqual(cell.setIds, ['a', 'b'])
+  assert.deepEqual(cell.propertyKeys, ['Temperature'])
+  assert.equal(cell.title, 'T')
+})
+
+test('autoFillEnergeticGrid seeds one property per cell with all sets', () => {
+  const layout = autoFillEnergeticGrid({ cols: 2 }, ['s1', 's2'], [
+    'Temperature',
+    'Total Energy',
+    'Density'
+  ])
+  assert.equal(layout.edited, false)
+  assert.equal(layout.rows, 2)
+  assert.deepEqual(layout.cells[0], {
+    setIds: ['s1', 's2'],
+    propertyKeys: ['Temperature'],
+    title: ''
+  })
+  assert.deepEqual(layout.cells[2].propertyKeys, ['Density'])
+  assert.deepEqual(layout.overlaySetIds, ['s1', 's2'])
+})
+
+test('autoFillEnergeticGridBySet seeds one set per cell with all properties', () => {
+  const layout = autoFillEnergeticGridBySet({ cols: 2 }, ['s1', 's2'], [
+    'Temperature',
+    'Pressure'
+  ])
+  assert.deepEqual(layout.cells[0], {
+    setIds: ['s1'],
+    propertyKeys: ['Temperature', 'Pressure'],
+    title: ''
+  })
+  assert.deepEqual(layout.cells[1].setIds, ['s2'])
+})
+
+test('ensureEnergeticGridCells prunes missing ids only when edited', () => {
+  const edited = ensureEnergeticGridCells(
+    {
+      edited: true,
+      cols: 2,
+      rows: 1,
+      cells: [
+        { setIds: ['s1', 'gone'], propertyKeys: ['Temperature', 'Missing'] },
+        { setIds: ['s2'], propertyKeys: ['Pressure'] }
+      ]
+    },
+    ['s1', 's2'],
+    ['Temperature', 'Pressure']
+  )
+  assert.equal(edited.edited, true)
+  assert.deepEqual(edited.cells[0].setIds, ['s1'])
+  assert.deepEqual(edited.cells[0].propertyKeys, ['Temperature'])
+  const fresh = ensureEnergeticGridCells(
+    { edited: false, cols: 2, cells: [{ setIds: ['old'], propertyKeys: ['x'] }] },
+    ['s1'],
+    ['Temperature', 'Pressure']
+  )
+  assert.equal(fresh.edited, false)
+  assert.deepEqual(fresh.cells[0].propertyKeys, ['Temperature'])
+  assert.deepEqual(fresh.cells[0].setIds, ['s1'])
 })

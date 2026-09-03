@@ -137,18 +137,22 @@ export function syncOrderedIds(stored, allIds) {
 
 /**
  * @param {unknown} cell
- * @returns {{ setIds: string[], title: string }}
+ * @returns {{ setIds: string[], propertyKeys: string[], title: string }}
  */
 export function normalizeGridCell(cell) {
-  if (!cell || typeof cell !== 'object') return { setIds: [], title: '' }
+  if (!cell || typeof cell !== 'object') {
+    return { setIds: [], propertyKeys: [], title: '' }
+  }
   const obj = /** @type {Record<string, unknown>} */ (cell)
+  const propertyKeys = normalizeIdList(obj.propertyKeys)
+  const title = String(obj.title || '').trim()
   if (Array.isArray(obj.setIds)) {
-    return { setIds: normalizeIdList(obj.setIds), title: String(obj.title || '').trim() }
+    return { setIds: normalizeIdList(obj.setIds), propertyKeys, title }
   }
   if (obj.setId != null && String(obj.setId).trim()) {
-    return { setIds: [String(obj.setId).trim()], title: String(obj.title || '').trim() }
+    return { setIds: [String(obj.setId).trim()], propertyKeys, title }
   }
-  return { setIds: [], title: String(obj.title || '').trim() }
+  return { setIds: [], propertyKeys, title }
 }
 
 /**
@@ -157,13 +161,13 @@ export function normalizeGridCell(cell) {
  */
 export function emptyGridCells(cols, rows) {
   const n = Math.max(1, cols) * Math.max(1, rows)
-  return Array.from({ length: n }, () => ({ setIds: [], title: '' }))
+  return Array.from({ length: n }, () => ({ setIds: [], propertyKeys: [], title: '' }))
 }
 
 /**
  * Grow/shrink the cell list when cols×rows change. Extra cells are empty;
  * truncated cells are dropped from the end.
- * @param {{ setIds: string[], title?: string }[]} cells
+ * @param {{ setIds: string[], propertyKeys?: string[], title?: string }[]} cells
  * @param {number} cols
  * @param {number} rows
  */
@@ -218,6 +222,81 @@ export function ensureGridCellsForSets(layout, setIds) {
     }
   }
   return autoFillGridLayout(normalized, ids)
+}
+
+/**
+ * One cell per property; every set is assigned to that cell. Does not mark edited.
+ * @param {object} layout
+ * @param {string[]} setIds
+ * @param {string[]} propertyKeys
+ */
+export function autoFillEnergeticGrid(layout, setIds, propertyKeys) {
+  const ids = normalizeIdList(setIds)
+  const props = normalizeIdList(propertyKeys)
+  const cols = clampInt(layout?.cols, 1, 8, 2)
+  const minRows = Math.max(1, Math.ceil(Math.max(props.length, 1) / cols))
+  const rows = Math.max(minRows, clampInt(layout?.rows, 1, 16, minRows))
+  const cells = emptyGridCells(cols, rows)
+  props.forEach((prop, i) => {
+    if (i < cells.length) cells[i] = { setIds: [...ids], propertyKeys: [prop], title: '' }
+  })
+  return {
+    ...normalizeGridLayout({ ...layout, cols, rows, cells }),
+    edited: false,
+    overlaySetIds: ids
+  }
+}
+
+/**
+ * One cell per set; every property is assigned to that cell. Does not mark edited.
+ * @param {object} layout
+ * @param {string[]} setIds
+ * @param {string[]} propertyKeys
+ */
+export function autoFillEnergeticGridBySet(layout, setIds, propertyKeys) {
+  const ids = normalizeIdList(setIds)
+  const props = normalizeIdList(propertyKeys)
+  const cols = clampInt(layout?.cols, 1, 8, 2)
+  const minRows = Math.max(1, Math.ceil(Math.max(ids.length, 1) / cols))
+  const rows = Math.max(minRows, clampInt(layout?.rows, 1, 16, minRows))
+  const cells = emptyGridCells(cols, rows)
+  ids.forEach((id, i) => {
+    if (i < cells.length) cells[i] = { setIds: [id], propertyKeys: [...props], title: '' }
+  })
+  return {
+    ...normalizeGridLayout({ ...layout, cols, rows, cells }),
+    edited: false,
+    overlaySetIds: ids
+  }
+}
+
+/**
+ * If the energetic mosaic was never edited, keep one-property-per-cell auto layout.
+ * @param {object} layout
+ * @param {string[]} setIds
+ * @param {string[]} propertyKeys
+ * @param {'by_property' | 'by_set'} [fill]
+ */
+export function ensureEnergeticGridCells(layout, setIds, propertyKeys, fill = 'by_property') {
+  const normalized = normalizeGridLayout(layout)
+  const ids = normalizeIdList(setIds)
+  const props = normalizeIdList(propertyKeys)
+  if (normalized.edited) {
+    const allowSets = new Set(ids)
+    const allowProps = new Set(props)
+    const cells = normalized.cells.map((c) => ({
+      ...c,
+      setIds: (c.setIds || []).filter((id) => allowSets.has(id)),
+      propertyKeys: (c.propertyKeys || []).filter((p) => allowProps.has(p))
+    }))
+    return {
+      ...normalized,
+      cells,
+      overlaySetIds: syncOrderedIds(normalized.overlaySetIds, ids)
+    }
+  }
+  if (fill === 'by_set') return autoFillEnergeticGridBySet(normalized, ids, props)
+  return autoFillEnergeticGrid(normalized, ids, props)
 }
 
 /**
@@ -607,15 +686,19 @@ export const CELL_PLOT_KEYS = [
   'lineStyle'
 ]
 
+/** Extra per-cell keys for energetic mosaics (mixed Y units). */
+export const ENERGETIC_CELL_PLOT_KEYS = [...CELL_PLOT_KEYS, 'yMin', 'yMax', 'yLabel', 'title']
+
 /**
  * Overlay per-cell plot settings on the analysis-type defaults.
  * @param {object} base
  * @param {object} override
+ * @param {string[]} [keys]
  */
-export function mergeCellPlotSettings(base, override) {
+export function mergeCellPlotSettings(base, override, keys = CELL_PLOT_KEYS) {
   const o = override && typeof override === 'object' ? override : {}
   const out = { ...(base || {}) }
-  for (const key of CELL_PLOT_KEYS) {
+  for (const key of keys) {
     if (o[key] === undefined || o[key] === '') continue
     out[key] = o[key]
   }

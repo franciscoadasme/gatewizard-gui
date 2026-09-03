@@ -147,6 +147,10 @@ export const energGlobalDefaults = {
   extraBottomMargin: '0',
   xMin: '',
   xMax: '',
+  yMin: '',
+  yMax: '',
+  yLabel: '',
+  referenceLines: [],
   dpi: '300',
   fontFamily: 'Roboto, sans-serif'
 }

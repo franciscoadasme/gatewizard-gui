@@ -10,6 +10,11 @@ import {
   structuralResultHasPlotData,
   structuralResultNeedsCsvHydration
 } from './analysisSets.js'
+import {
+  canonicalizeEnergeticProperty,
+  remapEnergeticSeries,
+  seriesMatchesProperty
+} from './energeticProperties.js'
 
 export const ANALYSIS_SESSION_FILENAME = 'analysis_session.json'
 export const ANALYSIS_SESSION_VERSION = 1
@@ -270,24 +275,32 @@ export function applyCsvToEnergeticResult(res, parsed) {
   const rawSeries = (res.rawSeries || []).map((s) => {
     const y = byName.get(s.baseName)
     if (y) return { ...s, y }
-    // Fallback: strip unit suffix from CSV headers like "Temperature (K)"
     for (const [name, values] of byName) {
       if (name === s.baseName || name.startsWith(`${s.baseName} (`)) {
+        return { ...s, y: values }
+      }
+      if (seriesMatchesProperty(s, name) || seriesMatchesProperty({ baseName: name }, s.baseName)) {
         return { ...s, y: values }
       }
     }
     return s
   })
-  // Columns present in CSV but missing from metadata
   for (const col of parsed.series) {
-    if (!rawSeries.some((s) => s.baseName === col.baseName)) {
-      rawSeries.push({ baseName: col.baseName, unit: '', y: col.y })
+    if (!rawSeries.some((s) => seriesMatchesProperty(s, col.baseName))) {
+      const canon = canonicalizeEnergeticProperty(col.baseName)
+      rawSeries.push({
+        baseName: canon.displayName,
+        key: canon.key,
+        nativeName: col.baseName,
+        unit: '',
+        y: col.y
+      })
     }
   }
   return {
     ...res,
     rawX: parsed.rawX,
-    rawSeries
+    rawSeries: remapEnergeticSeries(rawSeries)
   }
 }
 
@@ -387,7 +400,8 @@ export async function hydrateAnalysisSetsFromCsv(sets, sessionDir, readText, mod
 }
 
 /**
- * @typedef {'overlay' | 'by_property' | 'by_set'} EnergeticCompareLayout
+ * @typedef {'overlay' | 'grid'} EnergeticCompareLayout
+ * @typedef {'by_property' | 'by_set'} EnergeticGridFill
  */
 
 /**
@@ -396,12 +410,14 @@ export async function hydrateAnalysisSetsFromCsv(sets, sessionDir, readText, mod
  * @property {string} savedAt ISO timestamp
  * @property {'structural' | 'energetic'} mode
  * @property {'overlay' | 'grid'} compareLayout structural multi-set layout
- * @property {EnergeticCompareLayout} [energeticCompareLayout] energetic multi-set layout
+ * @property {EnergeticCompareLayout} [energeticCompareLayout] energetic overlay vs mosaic
+ * @property {EnergeticGridFill} [energeticGridFill] seed used when energeticGridLayout is missing
  * @property {string} outputFolderName
  * @property {string} [sessionName] Optional human label (independent of folder name)
  * @property {string} activeSetId
  * @property {AnalysisSet[]} sets
  * @property {object} [gridLayout] Custom mosaic (cols/rows, per-cell setIds, legends)
+ * @property {object} [energeticGridLayout] Energetic mosaic (setIds + propertyKeys)
  * @property {{
  *   structural?: Record<string, Record<string, unknown>>,
  *   energeticGlobal?: Record<string, unknown>,
@@ -572,9 +588,28 @@ export function resolvePlotColors(plot, theme) {
  * @returns {EnergeticCompareLayout}
  */
 export function normalizeEnergeticCompareLayout(raw) {
-  if (raw === 'by_property' || raw === 'property') return 'by_property'
-  if (raw === 'by_set' || raw === 'grid') return 'by_set'
   if (raw === 'overlay') return 'overlay'
+  if (
+    raw === 'grid' ||
+    raw === 'by_property' ||
+    raw === 'by_set' ||
+    raw === 'property'
+  ) {
+    return 'grid'
+  }
+  return 'grid'
+}
+
+/**
+ * How to auto-fill an energetic mosaic when the session has no stored grid.
+ * Old `by_set` (and leftover compareLayout=grid) → one cell per set.
+ * @param {unknown} rawLayout
+ * @param {unknown} [legacyCompareLayout]
+ * @returns {EnergeticGridFill}
+ */
+export function inferEnergeticGridFill(rawLayout, legacyCompareLayout) {
+  if (rawLayout === 'by_set') return 'by_set'
+  if (rawLayout == null && legacyCompareLayout === 'grid') return 'by_set'
   return 'by_property'
 }
 
@@ -583,11 +618,13 @@ export function normalizeEnergeticCompareLayout(raw) {
  *   mode: 'structural' | 'energetic',
  *   compareLayout: 'overlay' | 'grid',
  *   energeticCompareLayout?: EnergeticCompareLayout,
+ *   energeticGridFill?: EnergeticGridFill,
  *   outputFolderName: string,
  *   sessionName?: string,
  *   activeSetId: string,
  *   sets: AnalysisSet[],
  *   gridLayout?: object,
+ *   energeticGridLayout?: object,
  *   plotSettings?: AnalysisSessionV1['plotSettings'],
  * }} state
  * @returns {AnalysisSessionV1}
@@ -599,13 +636,17 @@ export function serializeAnalysisSession(state) {
     mode: state.mode,
     compareLayout: state.compareLayout,
     energeticCompareLayout: normalizeEnergeticCompareLayout(
-      state.energeticCompareLayout ?? 'by_property'
+      state.energeticCompareLayout ?? 'grid'
     ),
+    energeticGridFill: state.energeticGridFill === 'by_set' ? 'by_set' : 'by_property',
     outputFolderName: state.outputFolderName,
     sessionName: String(state.sessionName || '').trim(),
     activeSetId: state.activeSetId,
     sets: clonePlainAnalysisData(state.sets).map(normalizeAnalysisSetFiles),
     gridLayout: state.gridLayout ? clonePlainAnalysisData(state.gridLayout) : null,
+    energeticGridLayout: state.energeticGridLayout
+      ? clonePlainAnalysisData(state.energeticGridLayout)
+      : null,
     plotSettings: state.plotSettings ? clonePlainAnalysisData(state.plotSettings) : null
   }
 }
@@ -636,14 +677,19 @@ export function deserializeAnalysisSession(raw) {
       throw new Error('Invalid analysis session: compareLayout must be overlay or grid.')
     }
   }
+  const rawEnergetic = obj.energeticCompareLayout
   const energeticCompareLayout = normalizeEnergeticCompareLayout(
-    obj.energeticCompareLayout ??
-      (obj.compareLayout === 'grid'
-        ? 'by_set'
+    rawEnergetic ??
+      (obj.compareLayout === 'by_set'
+        ? 'grid'
         : obj.compareLayout === 'by_property'
-          ? 'by_property'
-          : 'by_property')
+          ? 'grid'
+          : 'grid')
   )
+  const energeticGridFill =
+    obj.energeticGridFill === 'by_set'
+      ? 'by_set'
+      : inferEnergeticGridFill(rawEnergetic, obj.compareLayout)
   if (!Array.isArray(obj.sets) || obj.sets.length === 0) {
     throw new Error('Invalid analysis session: sets array is missing or empty.')
   }
@@ -653,11 +699,16 @@ export function deserializeAnalysisSession(raw) {
     mode,
     compareLayout,
     energeticCompareLayout,
+    energeticGridFill,
     outputFolderName: String(obj.outputFolderName || ''),
     sessionName: String(obj.sessionName || obj.session_name || '').trim(),
     activeSetId: String(obj.activeSetId || obj.sets[0]?.id || ''),
     sets: /** @type {AnalysisSet[]} */ (obj.sets).map(normalizeAnalysisSetFiles),
     gridLayout: obj.gridLayout && typeof obj.gridLayout === 'object' ? obj.gridLayout : null,
+    energeticGridLayout:
+      obj.energeticGridLayout && typeof obj.energeticGridLayout === 'object'
+        ? obj.energeticGridLayout
+        : null,
     plotSettings:
       obj.plotSettings && typeof obj.plotSettings === 'object'
         ? normalizeSessionPlotSettings(obj.plotSettings)
