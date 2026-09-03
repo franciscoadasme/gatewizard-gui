@@ -1,5 +1,5 @@
 <script>
-  import { onDestroy, onMount, untrack } from 'svelte'
+  import { onDestroy, onMount, tick, untrack } from 'svelte'
   import Button from '../components/ui/Button.svelte'
   import { equilibrationPageStatus, logEvent } from '../lib/pageStatus.svelte.js'
   import ConstraintEditor from '../components/ConstraintEditor.svelte'
@@ -73,6 +73,7 @@
   import { themeBackgroundHex } from '../lib/viewerSettings.svelte.js'
   import { formEnsembleValue } from '../lib/ensemble.js'
   import { syncProtocolToSidebarEnsemble } from '../lib/equilibrationStageFields.js'
+  import { summarizeProtocolStage } from '../lib/equilibrationProtocolSummary.js'
 
   const clusterSession = getClusterSession()
 
@@ -228,6 +229,8 @@
   let protocol = $state(prepareProtocolForRendering(structuredClone(baseProtocol)))
   /** Bumped when loading a job into the form so stage cards remount with new values. */
   let protocolFormKey = $state(0)
+  /** Protocol stage cards expanded; when false, show compact step summary strip. */
+  let protocolSectionExpanded = $state(true)
 
   function resolveOutputFolderName() {
     if (outputName.trim()) return outputName.trim()
@@ -2337,6 +2340,85 @@
   let protocolCanScrollRight = $state(false)
   let protocolScrollSyncLock = false
 
+  /**
+   * Expand the protocol cards and scroll the given stage into view in the strip.
+   * @param {number} index
+   */
+  async function expandProtocolSectionToStage(index) {
+    protocolSectionExpanded = true
+    await tick()
+    // The strip mounts after expand; poll a few frames until bind:this + layout are ready.
+    let scrolled = false
+    for (let attempt = 0; attempt < 30; attempt++) {
+      await new Promise((resolve) => requestAnimationFrame(resolve))
+      if (scrollProtocolStripToStage(index, { behavior: 'smooth' })) {
+        scrolled = true
+        break
+      }
+    }
+    if (!scrolled) return
+    // Overflow arrows add px-10 after the first scroll; remeasure and snap again so the
+    // last card (Production) is fully visible, not clipped by the right control.
+    await tick()
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+    syncProtocolScrollWidth()
+    await tick()
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+    scrollProtocolStripToStage(index, { behavior: 'auto' })
+  }
+
+  /**
+   * @param {number} index
+   * @param {{ behavior?: ScrollBehavior }} [opts]
+   * @returns {boolean} true when the stage card was found and scrolled
+   */
+  function scrollProtocolStripToStage(index, opts = {}) {
+    const behavior = opts.behavior ?? 'smooth'
+    const scrollEl = protocolStagesScrollEl
+    if (!scrollEl) return false
+    const card = scrollEl.querySelector(`[data-eq-stage-index="${index}"]`)
+    if (!(card instanceof HTMLElement)) return false
+    syncProtocolScrollWidth()
+    const cardRect = card.getBoundingClientRect()
+    const scrollRect = scrollEl.getBoundingClientRect()
+    if (cardRect.width < 1 || scrollRect.width < 1) return false
+
+    const max = Math.max(0, scrollEl.scrollWidth - scrollEl.clientWidth)
+    const cardLeft = scrollEl.scrollLeft + (cardRect.left - scrollRect.left)
+    // Scroll range that keeps the whole card inside the viewport.
+    const minToShow = cardLeft + cardRect.width - scrollEl.clientWidth
+    const maxToShow = cardLeft
+    const center = cardLeft - (scrollEl.clientWidth - cardRect.width) / 2
+    let next = Math.min(maxToShow, Math.max(minToShow, center))
+    next = Math.max(0, Math.min(max, next))
+
+    const stageCount = scrollEl.querySelectorAll('[data-eq-stage-index]').length
+    // Last stage: always go to the end so Production is not left partially clipped.
+    if (stageCount > 0 && index >= stageCount - 1) {
+      next = max
+    }
+
+    const top = protocolStagesTopScrollEl
+    protocolScrollSyncLock = true
+    scrollEl.scrollTo({ left: next, behavior })
+    top?.scrollTo({ left: next, behavior })
+    updateProtocolScrollButtons()
+    const unlock = () => {
+      protocolScrollSyncLock = false
+      updateProtocolScrollButtons()
+      scrollEl.removeEventListener('scrollend', unlock)
+      top?.removeEventListener('scrollend', unlock)
+    }
+    if (behavior === 'smooth') {
+      scrollEl.addEventListener('scrollend', unlock, { once: true })
+      top?.addEventListener('scrollend', unlock, { once: true })
+      setTimeout(unlock, 400)
+    } else {
+      queueMicrotask(unlock)
+    }
+    return true
+  }
+
   function updateProtocolScrollButtons() {
     const el = protocolStagesScrollEl
     if (!el) {
@@ -4025,7 +4107,19 @@
           development and validation only.
         </p>
       </div>
-      <h1 id="eq-protocol-panel" class="text-xl font-semibold">Equilibration protocol</h1>
+      <button
+        type="button"
+        id="eq-protocol-panel"
+        class="flex w-full items-center justify-between gap-2 text-left"
+        aria-expanded={protocolSectionExpanded}
+        aria-controls="eq-protocol-stages"
+        onclick={() => (protocolSectionExpanded = !protocolSectionExpanded)}
+      >
+        <h1 class="text-xl font-semibold">Equilibration protocol</h1>
+        <span class="text-sm text-neutral-500" aria-hidden="true"
+          >{protocolSectionExpanded ? '▾' : '▸'}</span
+        >
+      </button>
       <div>
         {#if isProtocolValid}
           <p class="text-sm font-medium text-neutral-800 dark:text-neutral-200">
@@ -4049,60 +4143,99 @@
         </div>
       </div>
       {#if isProtocolValid}
-        {@const protocolStagesOverflow = protocolCanScrollLeft || protocolCanScrollRight}
-        <div class="relative {protocolStagesOverflow ? 'px-10' : ''}">
-          {#if protocolCanScrollLeft}
-            <button
-              type="button"
-              class="absolute left-0 top-1/2 z-10 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full border border-neutral-300 bg-white/95 text-neutral-800 shadow-md hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900/95 dark:text-neutral-100 dark:hover:bg-neutral-800"
-              title="Scroll stages left"
-              aria-label="Scroll stages left"
-              onclick={() => scrollProtocolStages(-1)}
+        <div id="eq-protocol-stages">
+          {#if protocolSectionExpanded}
+            {@const protocolStagesOverflow = protocolCanScrollLeft || protocolCanScrollRight}
+            <div class="relative {protocolStagesOverflow ? 'px-10' : ''}">
+              {#if protocolCanScrollLeft}
+                <button
+                  type="button"
+                  class="absolute left-0 top-1/2 z-10 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full border border-neutral-300 bg-white/95 text-neutral-800 shadow-md hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900/95 dark:text-neutral-100 dark:hover:bg-neutral-800"
+                  title="Scroll stages left"
+                  aria-label="Scroll stages left"
+                  onclick={() => scrollProtocolStages(-1)}
+                >
+                  <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path d="M15 18l-6-6 6-6" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </button>
+              {/if}
+              {#if protocolCanScrollRight}
+                <button
+                  type="button"
+                  class="absolute right-0 top-1/2 z-10 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full border border-neutral-300 bg-white/95 text-neutral-800 shadow-md hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900/95 dark:text-neutral-100 dark:hover:bg-neutral-800"
+                  title="Scroll stages right"
+                  aria-label="Scroll stages right"
+                  onclick={() => scrollProtocolStages(1)}
+                >
+                  <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path d="M9 18l6-6-6-6" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </button>
+              {/if}
+              <!-- Top horizontal scrollbar (synced with the stage strip below). -->
+              <div
+                bind:this={protocolStagesTopScrollEl}
+                class="mb-1 overflow-x-auto overflow-y-hidden {protocolStagesOverflow
+                  ? ''
+                  : 'invisible mb-0 h-0'}"
+                aria-hidden="true"
+              >
+                <div style="width: {protocolStagesScrollWidth}px; height: 1px;"></div>
+              </div>
+              <div
+                bind:this={protocolStagesScrollEl}
+                class="flex w-full items-start gap-4 overflow-x-auto pb-2"
+              >
+                {#key protocolFormKey}
+                  {#each protocol.stages as _, i (protocol.stages[i].name + '-' + i)}
+                    <div data-eq-stage-index={i} class="shrink-0">
+                      <EquilibrationStage
+                        bind:stage={protocol.stages[i]}
+                        {ensemble}
+                        {engine}
+                        onAddConstraint={() => openConstraintEditorForAdd(i)}
+                        onEditConstraint={(ci) => openConstraintEditorForEdit(i, ci)}
+                      />
+                    </div>
+                  {/each}
+                {/key}
+              </div>
+            </div>
+          {:else}
+            <div
+              class="flex w-full items-stretch gap-2 overflow-x-auto pb-2"
+              aria-label="Protocol stage summary"
             >
-              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <path d="M15 18l-6-6 6-6" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
-            </button>
-          {/if}
-          {#if protocolCanScrollRight}
-            <button
-              type="button"
-              class="absolute right-0 top-1/2 z-10 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full border border-neutral-300 bg-white/95 text-neutral-800 shadow-md hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900/95 dark:text-neutral-100 dark:hover:bg-neutral-800"
-              title="Scroll stages right"
-              aria-label="Scroll stages right"
-              onclick={() => scrollProtocolStages(1)}
-            >
-              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <path d="M9 18l6-6-6-6" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
-            </button>
-          {/if}
-          <!-- Top horizontal scrollbar (synced with the stage strip below). -->
-          <div
-            bind:this={protocolStagesTopScrollEl}
-            class="mb-1 overflow-x-auto overflow-y-hidden {protocolStagesOverflow
-              ? ''
-              : 'invisible mb-0 h-0'}"
-            aria-hidden="true"
-          >
-            <div style="width: {protocolStagesScrollWidth}px; height: 1px;"></div>
-          </div>
-          <div
-            bind:this={protocolStagesScrollEl}
-            class="flex w-full items-start gap-4 overflow-x-auto pb-2"
-          >
-            {#key protocolFormKey}
-              {#each protocol.stages as _, i (protocol.stages[i].name + '-' + i)}
-                <EquilibrationStage
-                  bind:stage={protocol.stages[i]}
-                  {ensemble}
-                  {engine}
-                  onAddConstraint={() => openConstraintEditorForAdd(i)}
-                  onEditConstraint={(ci) => openConstraintEditorForEdit(i, ci)}
-                />
+              {#each protocol.stages as stage, i (stage.name + '-summary-' + i)}
+                {@const summary = summarizeProtocolStage(stage, ensemble)}
+                <button
+                  type="button"
+                  class="flex min-w-[9.5rem] shrink-0 flex-col gap-0.5 rounded-md border border-neutral-200 bg-neutral-50 px-2.5 py-2 text-left text-neutral-900 hover:bg-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:hover:bg-neutral-800 dark:focus-visible:ring-neutral-600"
+                  title="Expand and show {summary.name}"
+                  aria-label="Expand protocol and show {summary.name}"
+                  onclick={() => expandProtocolSectionToStage(i)}
+                >
+                  <span class="truncate text-sm font-semibold">{summary.name}</span>
+                  <span class="font-mono text-[11px] text-neutral-600 dark:text-neutral-300">
+                    {summary.durationLabel}
+                    {#if summary.ensembleLabel !== '—'}
+                      <span class="text-neutral-400"> · </span>{summary.ensembleLabel}
+                    {/if}
+                  </span>
+                  <span
+                    class="w-fit rounded bg-neutral-200 px-1.5 py-0.5 font-mono text-[10px] text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"
+                    >{summary.resourceLabel}</span
+                  >
+                  {#if summary.restraintLabel}
+                    <span class="text-[10px] text-neutral-500 dark:text-neutral-400"
+                      >{summary.restraintLabel}</span
+                    >
+                  {/if}
+                </button>
               {/each}
-            {/key}
-          </div>
+            </div>
+          {/if}
         </div>
       {:else}
         <Empty message="No protocol loaded" />

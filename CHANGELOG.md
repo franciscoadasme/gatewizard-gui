@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Equilibration protocol:** the stage card strip can collapse via the section heading (▸/▾). Collapsed view keeps a compact summary chip per stage (name, duration, ensemble, resources, restraint count); click a chip to expand and scroll to that card. Ensemble / Load / Save stay visible while collapsed.
+
 - **Equilibration Progress:** the cluster **Connect** control stays visible when no profiles exist; it is disabled with a hover hint to add a profile in **Settings → Clusters**. New or edited profiles are picked up when you open Equilibration or save in **Settings → Clusters** — no app restart.
 
 - **Analysis plot layout:** Overlay vs grid is a toolbar (icons + add/remove column/row) for both Structural and Energetic. Mosaic extras live under **Grid options**; **Advanced** holds margins, tick chrome, and fonts. Min/max fields are wider than ticks/decimals; reference lines stay in the sidebar (value/width, then style/label). **Reset view** clears zoom/pan only; a menu also resets axis limits. Trajectory/log list and Time (ns) are inputs for the next Run (the plot comes from the last analysis CSV). Dash gaps scale with line width. Energetic no longer has a sidebar Compare select or Focused panel / Separate panels layout.
