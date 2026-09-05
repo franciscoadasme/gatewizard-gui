@@ -105,8 +105,8 @@
     },
     amber: {
       // MD/production on GPU (pmemd.cuda); first packing barostat forced to CPU below.
-      sidebar: { totalCpus: 6, totalGpus: 1, gpuId: 0, computeTarget: /** @type {const} */ ('auto') },
-      minimization: { cpu_cores: 6, gpu_id: 0, num_gpus: 0, use_gpu: false },
+      sidebar: { totalCpus: 1, totalGpus: 1, gpuId: 0, computeTarget: /** @type {const} */ ('auto') },
+      minimization: { cpu_cores: 1, gpu_id: 0, num_gpus: 0, use_gpu: false },
       md: { cpu_cores: 1, gpu_id: 0, num_gpus: 1, use_gpu: true },
       production: { cpu_cores: 1, gpu_id: 0, num_gpus: 1, use_gpu: true }
     },
@@ -117,20 +117,20 @@
       production: { cpu_cores: 6, gpu_id: 0, num_gpus: 1, use_gpu: true }
     },
     openmm: {
-      // OpenMM uses a single host thread; GPU for minimization + all MD stages.
+      // Mini + first packing barostat on CPU×1; later MD/production on GPU.
       sidebar: { totalCpus: 1, totalGpus: 1, gpuId: 0, computeTarget: /** @type {const} */ ('auto') },
-      minimization: { cpu_cores: 1, gpu_id: 0, num_gpus: 1, use_gpu: true },
+      minimization: { cpu_cores: 1, gpu_id: 0, num_gpus: 0, use_gpu: false },
       md: { cpu_cores: 1, gpu_id: 0, num_gpus: 1, use_gpu: true },
       production: { cpu_cores: 1, gpu_id: 0, num_gpus: 1, use_gpu: true }
     }
   }
 
   /**
-   * Amber: first packing barostat (NPT/NPAT/NPgT) defaults to CPU×6 pmemd;
+   * Amber / OpenMM: first packing barostat (NPT/NPAT/NPgT) defaults to CPU×1;
    * later MD stages stay on GPU. Matches API resolve_all_stage_resources.
    * @param {object} p
    */
-  function applyAmberFirstBarostatCpuDefault(p) {
+  function applyFirstBarostatCpuDefault(p) {
     if (!p?.stages) return
     for (const stage of p.stages) {
       const kind = String(stage.stage_kind || '').toLowerCase()
@@ -139,7 +139,7 @@
       if (kind === 'production' || name === 'production') continue
       const ens = String(stage.ensemble || '').trim().toLowerCase()
       if (!['npt', 'npat', 'npgt'].includes(ens)) continue
-      stage.cpu_cores = Math.max(Number(stage.cpu_cores) || 1, 6)
+      stage.cpu_cores = 1
       stage.use_gpu = false
       stage.num_gpus = 0
       stage.resources_inherit = false
@@ -155,7 +155,8 @@
     gpuDevice = profile.sidebar.gpuId ?? 0
     computeTarget = profile.sidebar.computeTarget
     protocol.compute_defaults = {
-      cpu_cores: eng === 'amber' ? profile.md.cpu_cores : profile.sidebar.totalCpus,
+      cpu_cores:
+        eng === 'amber' || eng === 'openmm' ? profile.md.cpu_cores : profile.sidebar.totalCpus,
       gpu_id: gpuDevice,
       num_gpus: profile.sidebar.totalGpus,
       use_gpu: profile.sidebar.computeTarget !== 'CPU',
@@ -174,7 +175,7 @@
       stage.use_gpu = res.use_gpu
       stage.resources_inherit = false
     }
-    if (eng === 'amber') applyAmberFirstBarostatCpuDefault(protocol)
+    if (eng === 'amber' || eng === 'openmm') applyFirstBarostatCpuDefault(protocol)
     // After Use in form, Production must re-bind to the sidebar ensemble
     // and engine-specific fields (margin, γ, …) must be available for the new engine.
     syncProtocolToSidebarEnsemble(protocol, ensemble, eng)
@@ -2328,7 +2329,7 @@
       stage.use_gpu = defaults.use_gpu ?? true
       stage.resources_inherit = false
     }
-    if (engine === 'amber') applyAmberFirstBarostatCpuDefault(protocol)
+    if (engine === 'amber' || engine === 'openmm') applyFirstBarostatCpuDefault(protocol)
     protocolFormKey += 1
   }
 
