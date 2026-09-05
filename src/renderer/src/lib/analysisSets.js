@@ -54,7 +54,7 @@ export const APL_METHODS = [
   {
     id: 'evapl',
     label: 'EVAPL (default)',
-    hint: 'Exclusion-aware Voronoi Area Per Lipid: one periodic Voronoi; exclude atoms (protein, peptide, DNA, ligands, …) in a lipid cell shrink that cell (one COM clip).'
+    hint: 'Exclusion-aware Voronoi Area Per Lipid: periodic Voronoi; protein (etc.) atoms in the leaflet headgroup Z-range shrink each owning cell with successive half-plane clips. No exclude cutoff.'
   },
   {
     id: 'lipyphilic',

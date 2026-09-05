@@ -1116,6 +1116,8 @@
    */
   function applyChartAppearance() {
     if (mode !== 'structural') return
+    // Drop cached series copies so grid cells pick up new set colors.
+    cellLineCache = new WeakMap()
     const lists = [chartView.series, ...chartView.panels.map((p) => p.series)]
     if (lists.some((list) => list.some((s) => !s.setId))) {
       syncChartViewFromSets()
@@ -1160,6 +1162,15 @@
           })
         )
       }
+    }
+    // New array identities so Svelte/LineChart see the color change.
+    chartView = {
+      ...chartView,
+      series: chartView.series.map((s) => ({ ...s })),
+      panels: chartView.panels.map((p) => ({
+        ...p,
+        series: (p.series || []).map((s) => ({ ...s }))
+      }))
     }
   }
 
@@ -2243,6 +2254,22 @@
     )
   )
   const activeMosaicLayout = $derived(mode === 'energetic' ? energeticGridLayout : gridLayout)
+  /** Plot settings / this-cell merge for Plot bg controls */
+  const scopedPlotSettings = $derived.by(() => {
+    if (!gridPlotApplyCell) return mode === 'energetic' ? ePlotGlobal : ps
+    return cellPlotSettings(selectedGridCell)
+  })
+  const scopedPlotBgCustomized = $derived(Boolean(scopedPlotSettings.plotBgCustomized))
+  const scopedPlotBgValue = $derived(
+    scopedPlotBgCustomized ? String(scopedPlotSettings.plotBg || '') : ''
+  )
+  const scopedPlotBgDisplay = $derived(
+    scopedPlotBgCustomized && scopedPlotBgValue
+      ? scopedPlotBgValue
+      : mode === 'energetic'
+        ? resolvedEnergColors.plotBg
+        : resolvedStructColors.plotBg
+  )
   const toolbarIsGrid = $derived(
     mode === 'energetic' ? energeticCompareLayout === 'grid' : compareLayout === 'grid'
   )
@@ -3081,6 +3108,11 @@
   function patchAnalysisSet(id, patch) {
     markSessionDirty()
     analysisSets = analysisSets.map((s) => (s.id === id ? { ...s, ...patch } : s))
+    if (mode === 'energetic') {
+      cellLineCache = new WeakMap()
+      syncEnergeticChartViewFromSets()
+      return
+    }
     applyChartAppearance()
   }
 
@@ -3123,9 +3155,10 @@
     if (Object.keys(rest).length === 0) return
     if (mode === 'energetic') {
       if (gridPlotApplyCell) {
-        const n = Math.max(
-          1,
-          (Number(energeticGridLayout.cols) || 1) * (Number(energeticGridLayout.rows) || 1)
+        const n = clampCellCount(
+          energeticGridLayout.cellCount,
+          energeticGridLayout.cols,
+          energeticGridLayout.rows
         )
         const idx = Math.max(0, Math.min(n - 1, selectedGridCell))
         energeticGridLayout = patchCellPlotOverride(energeticGridLayout, idx, rest)
@@ -3138,11 +3171,14 @@
           )
         }
       }
-      if ('lineWidth' in rest || 'lineStyle' in rest) applyChartAppearance()
+      if ('lineWidth' in rest || 'lineStyle' in rest) {
+        cellLineCache = new WeakMap()
+        syncEnergeticChartViewFromSets()
+      }
       return
     }
     if (gridPlotApplyCell) {
-      const n = Math.max(1, (Number(gridLayout.cols) || 1) * (Number(gridLayout.rows) || 1))
+      const n = clampCellCount(gridLayout.cellCount, gridLayout.cols, gridLayout.rows)
       const idx = Math.max(0, Math.min(n - 1, selectedGridCell))
       gridLayout = patchCellPlotOverride(gridLayout, idx, rest)
     } else {
@@ -3151,7 +3187,10 @@
         gridLayout = clearCellPlotKeysFromOverrides(gridLayout, Object.keys(rest))
       }
     }
-    if ('lineWidth' in rest || 'lineStyle' in rest) applyChartAppearance()
+    if ('lineWidth' in rest || 'lineStyle' in rest) {
+      cellLineCache = new WeakMap()
+      applyChartAppearance()
+    }
   }
 
   /** @param {object} plotSettings */
@@ -3172,8 +3211,8 @@
     return mergeCellPlotSettings(ps, cellOverride(gridLayout, cellIndex))
   }
 
-  /** @type {WeakMap<object[], { width: number, style: string, type: string, out: object[] }>} */
-  const cellLineCache = new WeakMap()
+  /** @type {WeakMap<object[], { width: number, style: string, type: string, colors: string, out: object[] }>} */
+  let cellLineCache = new WeakMap()
 
   /**
    * Apply per-cell line width/style on top of the type-level series appearance.
@@ -3185,8 +3224,17 @@
     const list = series || []
     const width = Number(cps.lineWidth) || 2
     const style = cps.lineStyle || 'solid'
+    const colors = list.map((s) => String(s?.color || '')).join('\0')
     const hit = list.length ? cellLineCache.get(list) : null
-    if (hit && hit.width === width && hit.style === style && hit.type === type) return hit.out
+    if (
+      hit &&
+      hit.width === width &&
+      hit.style === style &&
+      hit.type === type &&
+      hit.colors === colors
+    ) {
+      return hit.out
+    }
     const out = list.map((s) => {
       const keepRoleDash =
         type === 'area_per_lipid' && (s.seriesRole === 'upper' || s.seriesRole === 'lower')
@@ -3197,18 +3245,17 @@
         ...(keepRoleDash ? {} : { lineStyle: style })
       }
     })
-    if (list.length) cellLineCache.set(list, { width, style, type, out })
+    if (list.length) cellLineCache.set(list, { width, style, type, colors, out })
     return out
   }
 
   function setStructuralPlotBg(hex) {
     const raw = String(hex || '').trim()
-    markSessionDirty()
     if (!raw) {
-      patchStructuralPlot({ plotBg: '', plotBgCustomized: false })
+      setPlotField({ plotBg: '', plotBgCustomized: false })
       return
     }
-    patchStructuralPlot({
+    setPlotField({
       plotBg: normalizeHexColor(raw, raw),
       plotBgCustomized: true
     })
@@ -3228,8 +3275,7 @@
   }
 
   function clearStructuralPlotBgCustom() {
-    markSessionDirty()
-    patchStructuralPlot({ plotBg: '', plotBgCustomized: false })
+    setPlotField({ plotBg: '', plotBgCustomized: false })
   }
 
   function clearStructuralTextColorCustom() {
@@ -3252,16 +3298,14 @@
 
   function setEnergeticPlotBg(hex) {
     const raw = String(hex || '').trim()
-    markSessionDirty()
     if (!raw) {
-      ePlotGlobal = { ...ePlotGlobal, plotBg: '', plotBgCustomized: false }
+      setPlotField({ plotBg: '', plotBgCustomized: false })
       return
     }
-    ePlotGlobal = {
-      ...ePlotGlobal,
+    setPlotField({
       plotBg: normalizeHexColor(raw, raw),
       plotBgCustomized: true
-    }
+    })
   }
 
   function setEnergeticTextColor(hex) {
@@ -3423,6 +3467,60 @@
     bumpPlotData()
   }
 
+  /** Commit set-list order to overlay layouts + charts (after live drag). */
+  function commitAnalysisSetOrder() {
+    markSessionDirty()
+    const ids = analysisSets.map((s) => s.id)
+    syncSetsIntoGridLayout()
+    gridLayout = normalizeGridLayout({ ...gridLayout, overlaySetIds: ids })
+    energeticGridLayout = normalizeGridLayout({
+      ...energeticGridLayout,
+      overlaySetIds: ids
+    })
+    bumpPlotData()
+  }
+
+  function onSetDragStart(index, e) {
+    const set = analysisSets[index]
+    if (!set) return
+    setDragId = set.id
+    setDragOrderDirty = false
+    if (e?.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move'
+      e.dataTransfer.setData('text/plain', set.id)
+    }
+  }
+
+  function onSetDragOver(e, index) {
+    e.preventDefault()
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+    if (!setDragId) return
+    const from = analysisSets.findIndex((s) => s.id === setDragId)
+    if (from < 0 || from === index) return
+    // Only move when the pointer crosses the row midpoint (avoids flicker).
+    const el = /** @type {HTMLElement} */ (e.currentTarget)
+    const rect = el.getBoundingClientRect()
+    const midY = rect.top + rect.height / 2
+    if (from < index && e.clientY < midY) return
+    if (from > index && e.clientY > midY) return
+    const next = [...analysisSets]
+    const [item] = next.splice(from, 1)
+    next.splice(index, 0, item)
+    analysisSets = next
+    setDragOrderDirty = true
+  }
+
+  function onSetDragEnd() {
+    if (setDragOrderDirty) commitAnalysisSetOrder()
+    setDragId = null
+    setDragOrderDirty = false
+  }
+
+  function onDropAnalysisSet(e) {
+    e.preventDefault()
+    onSetDragEnd()
+  }
+
   /** @param {'overlay' | 'grid'} layout */
   function setActiveCompareLayout(layout) {
     if (mode === 'energetic') {
@@ -3512,6 +3610,8 @@
       throw new Error('Distance analysis requires two atom selections.')
     if (isBilayerType(structuralType)) {
       await ensureBilayerSelectionReady()
+    } else {
+      await ensureNonBilayerSelectionReady()
     }
 
     const result = await runStructuralAnalysis(
@@ -4475,6 +4575,40 @@
     }
   }
 
+  /**
+   * Count selection on topology (+ companion PDB) before loading trajectories.
+   * Fails fast when the default protein selection is used on lipid-only systems.
+   */
+  async function ensureNonBilayerSelectionReady() {
+    if (isBilayerType(structuralType)) return
+    const sel = selection.trim()
+    if (!sel) throw new Error('Enter an atom selection for this analysis.')
+    if (!topologyPath) return
+    const result = await countAnalysisSelection({
+      topologyPath,
+      // Empty traj list → topology/companion only (do not open DCDs).
+      trajectoryPaths: [],
+      selection: sel,
+      selection2:
+        structuralType === 'distance' && selection2.trim() ? selection2.trim() : null
+    })
+    selectionAtomCount = result.count
+    if (structuralType === 'distance') {
+      selection2AtomCount = result.count2 ?? null
+    }
+    if (result.count === 0) {
+      const lipidHint = looksLikeProteinSelection(sel)
+        ? ' For lipid-only systems use a lipid selection (e.g. name P31 or resname PC), not a protein selection.'
+        : ''
+      throw new Error(`Selection ${JSON.stringify(sel)} matched 0 atoms.${lipidHint}`)
+    }
+    if (structuralType === 'distance' && (result.count2 ?? 0) === 0) {
+      throw new Error(
+        `Second selection ${JSON.stringify(selection2.trim())} matched 0 atoms.`
+      )
+    }
+  }
+
   /** File picker filters for energetic logs — Amber uses mdout, others use .log. */
   function energeticLogFilters() {
     if (energeticEngine === 'amber') {
@@ -4528,9 +4662,15 @@
     await detectEnergeticColumns({ quiet: true })
   }
 
-  // ---- Drag-to-reorder state ----
+  // ---- Drag-to-reorder state (trajectory / log files) ----
   let dragIdx = $state(-1)
   let dragOverIdx = $state(-1)
+
+  // ---- Simulation sets list ----
+  let setsListCollapsed = $state(false)
+  /** @type {string | null} */
+  let setDragId = $state(null)
+  let setDragOrderDirty = $state(false)
 
   function onDragStart(index) {
     dragIdx = index
@@ -4977,6 +5117,7 @@
     resetAnalysisProgress()
     startAnalysisAbort()
     let cancelled = false
+    let runOk = false
     try {
       running = true
       lastError = ''
@@ -4994,6 +5135,7 @@
         panelRangeStats = {}
         await runEnergeticForActiveSet()
       }
+      runOk = true
     } catch (error) {
       if (isAnalysisCancelled(error)) {
         lastError = 'Analysis cancelled'
@@ -5007,7 +5149,9 @@
       analysisAbort = null
       resetAnalysisProgress()
     }
-    if (cancelled) return
+    // Do not auto-save after a failed run — saveAnalysisSessionToOutputFolder
+    // calls showSessionActionNotice which clears lastError and hides the message.
+    if (cancelled || !runOk) return
     try {
       await saveAnalysisCsvToOutputFolder()
       // Save both structural + energetic results present on sets (mixed sessions).
@@ -6393,83 +6537,128 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
     <!-- Simulation sets (structural + energetic compare) -->
     <div class="space-y-2">
-      <div class="flex items-center justify-between">
+      <div class="flex items-center justify-between gap-2">
         <h2 class="sidebar-heading">Simulation sets</h2>
-        <div class="flex gap-1">
-          <Button size="sm" variant="outline" onclick={addAnalysisSet} title="Add set">+</Button>
-          <Button size="sm" variant="outline" onclick={duplicateActiveSet} title="Duplicate active set">⧉</Button>
-        </div>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="px-1.5 text-[11px]"
+          onclick={() => (setsListCollapsed = !setsListCollapsed)}
+          title={setsListCollapsed ? 'Expand set list' : 'Collapse set list'}
+        >
+          {setsListCollapsed ? '▸ Expand' : '▾ Collapse'}
+        </Button>
       </div>
-      <div class="space-y-1">
-        {#each analysisSets as set (set.id)}
-          {@const isActive = activeSetId === set.id}
-          <div
-            class={`flex items-center gap-1.5 rounded-md border px-1.5 py-1 transition-colors ${
-              isActive
-                ? 'border-amber-500 bg-amber-50 ring-1 ring-amber-500/30 dark:border-amber-500/80 dark:bg-amber-500/15 dark:ring-amber-500/40'
-                : 'border-neutral-200 hover:border-neutral-300 hover:bg-neutral-50 dark:border-neutral-700 dark:hover:border-neutral-600 dark:hover:bg-neutral-800/50'
-            }`}
-          >
-            {#if isActive}
+      {#if setsListCollapsed}
+        <button
+          type="button"
+          class="flex w-full items-center gap-2 rounded-md border border-neutral-200 px-2 py-1.5 text-left text-xs text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800/50"
+          onclick={() => (setsListCollapsed = false)}
+          title="Expand set list"
+        >
+          <span class="font-medium">{analysisSets.length} set{analysisSets.length === 1 ? '' : 's'}</span>
+          <span class="min-w-0 flex-1 truncate text-neutral-500">
+            {analysisSets.map((s) => s.label).join(', ')}
+          </span>
+          <span class="shrink-0 text-neutral-500">▸</span>
+        </button>
+      {:else}
+        <div class="max-h-64 space-y-1 overflow-y-auto pr-0.5">
+          {#each analysisSets as set, i (set.id)}
+            {@const isActive = activeSetId === set.id}
+            <div
+              role="listitem"
+              ondragover={(e) => onSetDragOver(e, i)}
+              ondrop={onDropAnalysisSet}
+              class={`flex items-center gap-1.5 rounded-md border px-1.5 py-1 transition-[opacity,transform] duration-100 ${
+                isActive
+                  ? 'border-amber-500 bg-amber-50 ring-1 ring-amber-500/30 dark:border-amber-500/80 dark:bg-amber-500/15 dark:ring-amber-500/40'
+                  : 'border-neutral-200 hover:border-neutral-300 hover:bg-neutral-50 dark:border-neutral-700 dark:hover:border-neutral-600 dark:hover:bg-neutral-800/50'
+              } ${setDragId === set.id ? 'opacity-50 ring-2 ring-amber-400/60' : ''}`}
+            >
               <span
-                class="h-2 w-2 shrink-0 rounded-full"
-                style={`background:${set.color}`}
-                aria-hidden="true"
-              ></span>
-              <Input
-                size="sm"
-                blurOnEnter
-                value={set.label}
-                oninput={(e) => updateSetLabel(set.id, e.currentTarget.value)}
-                onblur={applyChartAppearance}
-                className="min-w-0 flex-1 border-amber-300/60 bg-white dark:border-amber-500/40 dark:bg-neutral-950"
-                onclick={(e) => e.stopPropagation()}
-              />
-            {:else}
-              <button
-                type="button"
-                class="min-w-0 flex-1 truncate rounded px-1 py-0.5 text-left text-neutral-800 transition-colors hover:bg-neutral-100 hover:text-neutral-950 dark:text-neutral-300 dark:hover:bg-neutral-800 dark:hover:text-neutral-50"
-                onclick={() => selectAnalysisSet(set.id)}
-                title={mode === 'structural' ? set.topologyPath || 'No topology' : `${set.energeticOptions.logFiles.length} log file(s)`}
+                role="button"
+                tabindex="0"
+                draggable="true"
+                ondragstart={(e) => onSetDragStart(i, e)}
+                ondragend={onSetDragEnd}
+                class="shrink-0 cursor-grab text-neutral-500 select-none active:cursor-grabbing"
+                title="Drag to reorder"
+                >⠿</span
               >
+              {#if isActive}
                 <span
-                  class="mr-1 inline-block h-2 w-2 shrink-0 rounded-full align-middle"
+                  class="h-2 w-2 shrink-0 rounded-full"
                   style={`background:${set.color}`}
                   aria-hidden="true"
                 ></span>
-                {set.label}
-                {#if setHasResult(set, mode, structuralType)}
-                  <span class="text-emerald-600 dark:text-emerald-400"> ✓</span>
-                {/if}
-              </button>
-            {/if}
-            <Checkbox
-              name={`set-vis-${set.id}`}
-              checked={set.visible}
-              onchange={(e) => {
-                const checked = /** @type {HTMLInputElement} */ (e.currentTarget).checked
-                toggleSetVisible(set.id, checked)
-              }}
-              title="Show in chart"
-            />
-            {#if analysisSets.length > 1}
-              <button
-                type="button"
-                class="shrink-0 rounded px-1 text-red-600 transition-colors hover:bg-red-50 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-950/40 dark:hover:text-red-300"
-                onclick={() => removeAnalysisSet(set.id)}
-                title="Remove set">✕</button
-              >
-            {/if}
-          </div>
-        {/each}
-      </div>
+                <Input
+                  size="sm"
+                  blurOnEnter
+                  value={set.label}
+                  oninput={(e) => updateSetLabel(set.id, e.currentTarget.value)}
+                  onblur={applyChartAppearance}
+                  className="min-w-0 flex-1 border-amber-300/60 bg-white dark:border-amber-500/40 dark:bg-neutral-950"
+                  onclick={(e) => e.stopPropagation()}
+                />
+              {:else}
+                <button
+                  type="button"
+                  class="min-w-0 flex-1 truncate rounded px-1 py-0.5 text-left text-neutral-800 transition-colors hover:bg-neutral-100 hover:text-neutral-950 dark:text-neutral-300 dark:hover:bg-neutral-800 dark:hover:text-neutral-50"
+                  onclick={() => selectAnalysisSet(set.id)}
+                  title={mode === 'structural' ? set.topologyPath || 'No topology' : `${set.energeticOptions.logFiles.length} log file(s)`}
+                >
+                  <span
+                    class="mr-1 inline-block h-2 w-2 shrink-0 rounded-full align-middle"
+                    style={`background:${set.color}`}
+                    aria-hidden="true"
+                  ></span>
+                  {set.label}
+                  {#if setHasResult(set, mode, structuralType)}
+                    <span class="text-emerald-600 dark:text-emerald-400"> ✓</span>
+                  {/if}
+                </button>
+              {/if}
+              <Checkbox
+                name={`set-vis-${set.id}`}
+                checked={set.visible}
+                onchange={(e) => {
+                  const checked = /** @type {HTMLInputElement} */ (e.currentTarget).checked
+                  toggleSetVisible(set.id, checked)
+                }}
+                title="Show in chart"
+              />
+              {#if analysisSets.length > 1}
+                <button
+                  type="button"
+                  class="shrink-0 rounded px-1 text-red-600 transition-colors hover:bg-red-50 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-950/40 dark:hover:text-red-300"
+                  onclick={() => removeAnalysisSet(set.id)}
+                  title="Remove set">✕</button
+                >
+              {/if}
+            </div>
+          {/each}
+        </div>
+        <div class="flex flex-wrap gap-1">
+          <Button size="sm" variant="outline" onclick={addAnalysisSet} title="Add set"
+            >+ Add set</Button
+          >
+          <Button
+            size="sm"
+            variant="outline"
+            onclick={duplicateActiveSet}
+            title="Duplicate active set"
+            >⧉ Duplicate</Button
+          >
+        </div>
+      {/if}
       {#if mode === 'energetic' && selectedProperties.length > 0 && compareEnergeticProperties.length === 0 && visibleCompareSets.length > 0}
         <p class="sidebar-hint text-amber-600 dark:text-amber-400">
           Checked properties were not found on the visible sets. Run analysis to detect each set’s log properties.
         </p>
       {/if}
       <p class="sidebar-hint">
-        Each set keeps its own files, analysis options, and results. Use the checkbox to show or hide a set on the chart.
+        Each set keeps its own files, options, and results. Drag ⠿ to reorder; use Collapse when the list is long.
       </p>
     </div>
 
@@ -6723,18 +6912,10 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 {/if}
 
                 {#if aplMethod === 'evapl'}
-                  <div class="flex items-center gap-2">
-                    <span class="sidebar-label shrink-0">Exclude cutoff (Å)</span>
-                    <Input
-                      size="sm"
-                      type="number"
-                      min="0"
-                      step="0.5"
-                      bind:value={excludeCutoff}
-                      className="w-20"
-                      title="Only exclude atoms within this distance of the leaflet (default 30 Å)"
-                    />
-                  </div>
+                  <p class="sidebar-hint">
+                    Exclude atoms are limited to the leaflet headgroup Z-range automatically
+                    (no cutoff to set).
+                  </p>
                 {/if}
 
                 {#if aplMethod === 'gridmat'}
@@ -7371,10 +7552,13 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
                     oninput={(e) => {
                       ensureEPlotPanel(pk)
+                      markSessionDirty()
                       ePlotPanels = {
                         ...ePlotPanels,
                         [pk]: { ...ePlotPanels[pk], lineColor: e.currentTarget.value }
                       }
+                      cellLineCache = new WeakMap()
+                      syncEnergeticChartViewFromSets()
                     }}
                   />
                 </div>
@@ -7386,13 +7570,13 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 <div class="flex items-center gap-1">
                   <input
                     type="color"
-                    value={resolvedEnergColors.plotBg}
+                    value={scopedPlotBgDisplay}
                     class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
                     oninput={(e) => setEnergeticPlotBg(e.currentTarget.value)}
                   />
                   <Input
                     size="sm"
-                    value={ePlotGlobal.plotBgCustomized ? ePlotGlobal.plotBg : ''}
+                    value={scopedPlotBgValue}
                     placeholder={resolvedEnergColors.plotBg}
                     className="min-w-0 flex-1 font-mono"
                     oninput={(e) => setEnergeticPlotBg(e.currentTarget.value)}
@@ -7401,11 +7585,8 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 <Button
                   size="sm"
                   variant="ghost"
-                  disabled={!ePlotGlobal.plotBgCustomized}
-                  onclick={() => {
-                    markSessionDirty()
-                    ePlotGlobal = { ...ePlotGlobal, plotBg: '', plotBgCustomized: false }
-                  }}
+                  disabled={!scopedPlotBgCustomized}
+                  onclick={() => setEnergeticPlotBg('')}
                 >Auto</Button>
               </div>
               <div>
@@ -7749,13 +7930,13 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               <div class="flex items-center gap-1">
                 <input
                   type="color"
-                  value={resolvedStructColors.plotBg}
+                  value={scopedPlotBgDisplay}
                   class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
                   oninput={(e) => setStructuralPlotBg(e.currentTarget.value)}
                 />
                 <Input
                   size="sm"
-                  value={ps.plotBgCustomized ? ps.plotBg : ''}
+                  value={scopedPlotBgValue}
                   placeholder={resolvedStructColors.plotBg}
                   className="min-w-0 flex-1 font-mono"
                   oninput={(e) => setStructuralPlotBg(e.currentTarget.value)}
@@ -7765,7 +7946,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 <Button
                   size="sm"
                   variant="ghost"
-                  disabled={!ps.plotBgCustomized}
+                  disabled={!scopedPlotBgCustomized}
                   onclick={clearStructuralPlotBgCustom}
                 >Auto</Button>
                 <Button
@@ -7775,7 +7956,10 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   title="Copy this plot's background and text colors to every structural analysis type"
                 >All types</Button>
               </div>
-              <p class="sidebar-hint">Auto follows light/dark theme.</p>
+              <p class="sidebar-hint">
+                Auto follows light/dark theme. With a custom grid, Apply settings (All cells / This
+                cell) scopes Plot bg.
+              </p>
             </div>
             <div>
               <p class="sidebar-label mb-0.5">Text/axes color</p>

@@ -7,13 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- **Analysis backend:** structural (RMSD/RMSF/distance/Rg) and bilayer calls now use `gatewizard.utils.trajectory_analysis` and `lipid_bilayer_analysis` instead of the historically named `namd_analysis` module. NAMD energetic analysis and equilibration progress still use `namd_analysis`.
-
 ### Fixed
 
+- **Analysis RMSD:** empty protein selections on lipid-only systems no longer produce a blank plot; the run fails with a clear message (selection checked on topology before trajectories load). Failed runs no longer auto-save the session (that was clearing the error banner).
+- **Analysis Plot settings:** changing a set’s **Line color** updates the live plot (including mosaic cells). **Plot bg** respects **Apply settings → This cell** vs **All cells** instead of always painting every square.
 - **Analysis custom grid:** with **Last incomplete row = Center**, filling the first cell of a short row no longer hides the other empty squares (they stay editable).
+
+### Changed
+
+- **Equilibration (OpenMM):** with updated gatewizard, mini + first packing barostat default to CPU; later stages GPU; eq `p_freq=15` → production `100`; cutoff stays 9 Å + LRC like other engines.
+- **Analysis EVAPL:** replaced the old COM half-plane clip. Exclude atoms in the **leaflet headgroup Z-range** shrink each owning Voronoi cell with **successive per-atom** clips. The **Exclude cutoff** control is removed for EVAPL (not used).
+- **Analysis Simulation sets:** **Add set** / **Duplicate** sit under the set list; the list can be collapsed, scrolled, and live drag-reordered (⠿ moves chips as you drag).
+- **Analysis backend:** structural (RMSD/RMSF/distance/Rg) and bilayer calls now use `gatewizard.utils.trajectory_analysis` and `lipid_bilayer_analysis` instead of the historically named `namd_analysis` module. NAMD energetic analysis and equilibration progress still use `namd_analysis`.
 
 ### Added
 
@@ -31,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Analysis RMSD reference PDB:** optional starting structure instead of Ref. frame. PDB/GRO files in the trajectory list are ignored when DCD/XTC files are present (they have no periodic box and were breaking membrane thickness).
 - **Analysis area per lipid:** show/hide Average, Upper leaflet, and Lower leaflet on the plot (and publication PNG). CSV still stores all three.
 - **Builder:** bilayer-only packing (uncheck **Include protein**, set **Membrane XY**) and **Free molecules** (`--solute` / `--solute_con`, optional in-membrane and protein distance). Protein+membrane jobs are unchanged.
-- **Analysis area per lipid:** exclusion-aware Voronoi APL (**EVAPL**, default) — **Exclude selection** (default `protein`; also peptide, DNA, ligands) and **Exclude cutoff (Å)** (default **30**) so occupants reduce mean APL instead of tiling the full box.
+- **Analysis area per lipid:** exclusion-aware Voronoi APL (**EVAPL**, default) — **Exclude selection** (default `protein`; also peptide, DNA, ligands). Occupants in the leaflet headgroup Z-range reduce mean APL instead of tiling the full box.
 - **Analysis:** **Cancel analysis** while a run is in progress (single set or all sets). The UI unblocks immediately and shows “Analysis cancelled” instead of a browser abort error.
 - **Analysis trajectories:** per-file time offset (ns) accepts **four decimal places** (e.g. `200.1234`, `2000.1234`); inputs use `0.0001` step and a wider field.
 - **Analysis run all sets:** skips hidden sets and sets missing trajectories/logs, then continues with every remaining set that has data (empty sets in between no longer stop the batch).
@@ -44,7 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Equilibration Progress:** the cluster **Connect** control stays visible when no profiles exist; it is disabled with a hover hint to add a profile in **Settings → Clusters**. New or edited profiles are picked up when you open Equilibration or save in **Settings → Clusters** — no app restart.
 
 - **Analysis plot layout:** Overlay vs grid is a toolbar (icons + add/remove column/row) for both Structural and Energetic. Mosaic extras live under **Grid options**; **Advanced** holds margins, tick chrome, and fonts. Min/max fields are wider than ticks/decimals; reference lines stay in the sidebar (value/width, then style/label). **Reset view** clears zoom/pan only; a menu also resets axis limits. Trajectory/log list and Time (ns) are inputs for the next Run (the plot comes from the last analysis CSV). Dash gaps scale with line width. Energetic no longer has a sidebar Compare select or Focused panel / Separate panels layout.
-- **Analysis area per lipid:** the GUI now picks the algorithm — **EVAPL** (Exclusion-aware Voronoi Area Per Lipid, default), **Box Voronoi (lipyphilic)**, **GridMAT-MD**, or **VTMC** — with the matching settings (exclude cutoff, grid points/precision, MC samples/protein radius). LiPyphilic shows a warning that it is for **pure lipids only** (not systems with protein or other leaflet occupants).
+- **Analysis area per lipid:** the GUI now picks the algorithm — **EVAPL** (Exclusion-aware Voronoi Area Per Lipid, default), **Box Voronoi (lipyphilic)**, **GridMAT-MD**, or **VTMC** — with method-specific settings (GridMAT grid/precision, VTMC samples/radius). EVAPL uses the leaflet headgroup Z-range (no exclude cutoff). LiPyphilic shows a warning that it is for **pure lipids only** (not systems with protein or other leaflet occupants).
 - **Equilibration Pull progress:** local-size poll no longer skips updates when integer % is unchanged (large files were freezing the ring/status for long stretches). Status line prefers live on-disk bytes over stale stream text; pull start reports existing local size instead of `0 / remote`.
 - **Tools Fix PBC (GROMACS):** no longer shows yellow “no .tpr / provide index” warnings as soon as a PDB topology is chosen. Detect uses the GROMACS TPR / Index browse fields, and also looks for `step*.tpr` / `index.ndx` next to the topology (not only next to trajectories).
 

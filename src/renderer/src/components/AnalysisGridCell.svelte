@@ -62,6 +62,17 @@
     const c = String(cps?.gridColor || '').trim()
     return c || `${resolvedStructColors.textColor}40`
   })
+  /** Per-cell Plot bg (scoped) → Grid options cellBg → theme plot bg */
+  const cellPlotBg = $derived.by(() => {
+    if (cps?.plotBgCustomized && String(cps.plotBg || '').trim()) return String(cps.plotBg).trim()
+    if (String(cps?.plotBg || '').trim()) return String(cps.plotBg).trim()
+    return gridLayout.cellBg || resolvedStructColors.plotBg
+  })
+  const cellChromeBg = $derived(
+    cps?.plotBgCustomized && String(cps.plotBg || '').trim()
+      ? String(cps.plotBg).trim()
+      : gridLayout.cellBg || ''
+  )
 
   $effect(() => {
     if (!editing) return
@@ -95,7 +106,7 @@
   class:border-neutral-800={gridLayout.cellBorder && !gridLayout.cellBorderColor}
   class:ring-2={selected || editing}
   class:ring-amber-400={selected || editing}
-  style={`${gridLayout.cellBorder && gridLayout.cellBorderColor ? `border: 1px solid ${gridLayout.cellBorderColor};` : ''} ${gridLayout.cellBg ? `background:${gridLayout.cellBg};` : ''}`}
+  style={`${gridLayout.cellBorder && gridLayout.cellBorderColor ? `border: 1px solid ${gridLayout.cellBorderColor};` : ''} ${cellChromeBg ? `background:${cellChromeBg};` : ''}`}
   onclick={() => onSelectCell?.(idx)}
 >
   <!-- Height from width only. CSS aspect-ratio inside flex+overflow freezes Chromium with no console error. -->
@@ -117,7 +128,7 @@
           {series}
           xLabel={displayXLabel}
           yLabel={displayYLabel}
-          plotBg={gridLayout.cellBg || resolvedStructColors.plotBg}
+          plotBg={cellPlotBg}
           tickColor={resolvedStructColors.textColor}
           labelColor={resolvedStructColors.textColor}
           axisColor={resolvedStructColors.textColor}

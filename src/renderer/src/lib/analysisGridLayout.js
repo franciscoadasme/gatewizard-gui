@@ -746,7 +746,9 @@ export const CELL_PLOT_KEYS = [
   'gridColor',
   'tickLabelGap',
   'lineWidth',
-  'lineStyle'
+  'lineStyle',
+  'plotBg',
+  'plotBgCustomized'
 ]
 
 /** Extra per-cell keys for energetic mosaics (mixed Y units). */
