@@ -718,6 +718,12 @@ def _execute_cluster_submit_locked(
         "*.pyc",
         "_previous_cluster_run",
     ]
+    _emit_submit_progress(
+        on_progress,
+        phase="prepare",
+        percent=14,
+        message="Measuring local job folder size…",
+    )
     local_file_count = sum(1 for p in local.rglob("*") if p.is_file())
     local_bytes = local_dir_byte_size(local, excludes=upload_excludes)
     try:
@@ -863,19 +869,18 @@ async def cluster_submit_job_stream(payload: ClusterSubmitRequest) -> StreamingR
 
     async def event_stream():
         progress_q: queue.Queue = queue.Queue()
+        last_progress: Dict[str, Any] = {
+            "phase": "prepare",
+            "percent": 2,
+            "message": "Starting upload & submit…",
+        }
 
         def on_progress(evt: Dict[str, Any]) -> None:
             progress_q.put(("progress", evt))
 
         def worker() -> None:
             try:
-                on_progress(
-                    {
-                        "phase": "prepare",
-                        "percent": 2,
-                        "message": "Starting upload & submit…",
-                    }
-                )
+                on_progress(dict(last_progress))
                 result = _execute_cluster_submit(payload, on_progress=on_progress)
                 progress_q.put(("done", result))
             except HTTPException as ex:
@@ -893,12 +898,31 @@ async def cluster_submit_job_stream(payload: ClusterSubmitRequest) -> StreamingR
 
         threading.Thread(target=worker, daemon=True).start()
         loop = asyncio.get_running_loop()
+
+        def _qget():
+            try:
+                return progress_q.get(timeout=0.25)
+            except queue.Empty:
+                return ("keepalive", None)
+
         while True:
-            item = await loop.run_in_executor(None, progress_q.get)
-            if item is None:
+            # Timed queue get (not wait_for on a bare get): keeps the ASGI loop awake so
+            # small NDJSON chunks flush, and avoids orphaning thread-pool workers on timeout.
+            # Electron otherwise can sit on ~2% until a window resize/focus.
+            kind_item = await loop.run_in_executor(None, _qget)
+            if kind_item is None:
                 break
-            kind, payload_evt = item
+            kind, payload_evt = kind_item
+            if kind == "keepalive":
+                keep = dict(last_progress)
+                keep["keepalive"] = True
+                yield json.dumps(keep, ensure_ascii=False) + "\n"
+                await asyncio.sleep(0)
+                continue
             if kind == "progress":
+                if isinstance(payload_evt, dict):
+                    last_progress = dict(payload_evt)
+                    last_progress.pop("keepalive", None)
                 yield json.dumps(payload_evt, ensure_ascii=False) + "\n"
             elif kind == "done":
                 job_id = ""
@@ -925,6 +949,7 @@ async def cluster_submit_job_stream(payload: ClusterSubmitRequest) -> StreamingR
                     },
                     ensure_ascii=False,
                 ) + "\n"
+            # Let the event loop flush the chunk to the client immediately.
             await asyncio.sleep(0)
 
     return StreamingResponse(

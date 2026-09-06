@@ -45,8 +45,10 @@
   let preparationJobDir = $state('')
   /** Warning when Cap is on but the structure already has ACE/NME (or *_capped name). */
   let cappingWarning = $state('')
-  /** Caps detected in the working PDB (ACE / NME / NMA). */
+  /** Caps detected in the working PDB (ACE / NME / NMA / FVA / ETA). */
   let detectedCaps = $state(/** @type {string[]} */ ([]))
+  let propKaEmptyMessage = $state('')
+  let propKaParsedCount = $state(0)
 
   const looksAlreadyCapped = $derived(
     detectedCaps.length > 0 ||
@@ -312,6 +314,9 @@
         ...r,
         original_res_id: r.original_res_id ?? r.res_id
       }))
+      propKaParsedCount = typeof data.parsed_count === 'number' ? data.parsed_count : protonationStates.length
+      propKaEmptyMessage =
+        typeof data.empty_editable_message === 'string' ? data.empty_editable_message : ''
       adoptJobDir(data.job_dir)
       if (data.working_path) activeWorkingFile = data.working_path
       if (data.capping_warning) {
@@ -326,6 +331,9 @@
       lastPropKaCap = capProtein
       if (data.job_dir) {
         logEvent('info', 'prep', `PropKa output folder: "${outputFolderName}"`, data.job_dir)
+      }
+      if (propKaEmptyMessage) {
+        logEvent('info', 'prep', propKaEmptyMessage)
       }
       scheduleGhostPreview()
     } catch (error) {
@@ -349,6 +357,8 @@
     }
     workingFile = filePath
     cappingWarning = ''
+    propKaEmptyMessage = ''
+    propKaParsedCount = 0
     lastPropKaFile = ''
     lastPropKaPh = null
     lastPropKaCap = null
@@ -431,6 +441,8 @@
     disulfideBonds = []
     preparationOutput = ''
     protonationStates = []
+    propKaEmptyMessage = ''
+    propKaParsedCount = 0
     selectedResidueKeys = []
     ghostAtoms = []
     removedMarkers = []
@@ -680,6 +692,31 @@
             class="shrink-0 border-t border-neutral-200 px-2 py-1 text-[10px] text-neutral-500 dark:border-neutral-800 dark:text-neutral-400"
           >
             Click a row to focus in 3D; Ctrl+click to multi-select.
+          </p>
+        </div>
+        <div class="flex min-h-0 min-w-0 flex-[0.55] flex-col">
+          <PrepStructureViewer
+            pdbPath={viewerPdbPath}
+            selectedKeys={selectedResidueKeys}
+            {ghostAtoms}
+            {removedMarkers}
+          />
+        </div>
+      {:else if preparationStatus.propkaDone && viewerPdbPath}
+        <div
+          class="flex min-h-0 min-w-0 flex-[0.45] flex-col justify-center gap-2 rounded-lg border border-dashed border-neutral-300 p-4 text-sm text-neutral-600 dark:border-neutral-700 dark:text-neutral-400"
+        >
+          <p class="font-medium text-neutral-800 dark:text-neutral-200">
+            No editable protonation states
+          </p>
+          <p class="text-xs leading-snug">
+            {propKaEmptyMessage ||
+              (propKaParsedCount > 0
+                ? `PropKa reported ${propKaParsedCount} group(s), but none have multiple Amber protonation options (e.g. only termini).`
+                : 'PropKa found no protonable groups.')}
+          </p>
+          <p class="text-xs leading-snug text-neutral-500">
+            You can still run Prepare — the structure will be written without protonation renames.
           </p>
         </div>
         <div class="flex min-h-0 min-w-0 flex-[0.55] flex-col">

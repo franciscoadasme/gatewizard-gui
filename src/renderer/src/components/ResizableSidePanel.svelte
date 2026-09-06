@@ -37,6 +37,7 @@
   /** @type {'resize' | 'expand' | null} */
   let _mode = null
   let _seenToggleToken = 0
+  let _seenExpandToken = 0
 
   function storageId() {
     return storageKey ? `gatewizard.sidePanel.${storageKey}` : ''
@@ -85,6 +86,7 @@
     lastExpandedWidth = width
     loadState()
     _seenToggleToken = pageSidePanelStore.toggleToken
+    _seenExpandToken = pageSidePanelStore.expandToken
   })
 
   /** Activity-bar re-click on the current stage toggles this panel when storageKey matches. */
@@ -96,6 +98,16 @@
     _seenToggleToken = token
     if (collapsed) expandToDefault()
     else collapsePanel()
+  })
+
+  /** Expand-only request (e.g. Visualize after structure load). */
+  $effect(() => {
+    const token = pageSidePanelStore.expandToken
+    const pageId = pageSidePanelStore.pageId
+    if (!storageKey || pageId !== storageKey) return
+    if (token === 0 || token === _seenExpandToken) return
+    _seenExpandToken = token
+    if (collapsed) expandToDefault()
   })
 
   function expandToDefault() {

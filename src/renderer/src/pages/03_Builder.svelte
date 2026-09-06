@@ -136,6 +136,7 @@
    */
   /** @type {LigandRow[]} */
   let ligands = $state([])
+  let peptideAmberWarning = $state('')
   let detectingLigands = $state(false)
 
   // ── Jobs ──
@@ -414,6 +415,12 @@
         finalImageBase64: '',
         imageLoading: false
       }))
+      const warn = Array.isArray(data.peptide_amber_warnings)
+        ? data.peptide_amber_warnings
+        : []
+      peptideAmberWarning = warn.length
+        ? `Peptide residues ${warn.join(', ')} are part of the polymer (not GAFF ligands) but may need extra Amber libraries / frcmod for tleap (formyl / ethanolamine).`
+        : ''
 
       // Check if any ligands were already parametrized in a previous run
       const names = ligands.map((l) => l.name)
@@ -1090,6 +1097,11 @@
       {#if ligands.length === 0}
         <p class="sidebar-hint">
           No ligands. Click "Detect" after selecting a PDB, or add manually.
+        </p>
+      {/if}
+      {#if peptideAmberWarning}
+        <p class="gw-notice gw-notice-warning text-[11px] leading-snug">
+          {peptideAmberWarning}
         </p>
       {/if}
       {#each ligands as lig, i (i)}

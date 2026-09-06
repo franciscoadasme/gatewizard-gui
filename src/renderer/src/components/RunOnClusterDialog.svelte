@@ -797,10 +797,15 @@
         },
         (evt) => {
           if (typeof evt?.percent === 'number') {
-            submitPercent = Math.max(0, Math.min(100, evt.percent))
+            const next = Math.max(0, Math.min(100, evt.percent))
+            // Stream opens at 2% after script render already set ~8% — never jump back.
+            submitPercent =
+              submitPercent == null ? next : Math.max(submitPercent, next)
           }
-          if (evt?.phase) submitPhase = String(evt.phase)
-          if (evt?.message) setStatus(String(evt.message), evt.phase === 'error')
+          if (evt?.phase && !evt?.keepalive) submitPhase = String(evt.phase)
+          if (evt?.message && !evt?.keepalive) {
+            setStatus(String(evt.message), evt.phase === 'error')
+          }
         }
       )
       schedulerJobId = res.job_id

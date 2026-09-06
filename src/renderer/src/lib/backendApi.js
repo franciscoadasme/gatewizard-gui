@@ -692,6 +692,7 @@ export async function clusterSubmitJobStream(props, onProgress) {
     buffer += decoder.decode(value, { stream: true })
     const lines = buffer.split('\n')
     buffer = lines.pop() || ''
+    let sawEvent = false
     for (const line of lines) {
       const trimmed = line.trim()
       if (!trimmed) continue
@@ -701,12 +702,24 @@ export async function clusterSubmitJobStream(props, onProgress) {
       } catch {
         continue
       }
+      sawEvent = true
       emit(evt)
       if (evt?.phase === 'done') {
         finalResult = evt.result || { ok: true }
       } else if (evt?.phase === 'error') {
         streamError = evt.error || evt.message || 'Submit failed'
       }
+    }
+    // Yield to the renderer so % / status paint while the next chunk is in flight.
+    // Without this, Electron can sit on the first percent until a resize/focus.
+    if (sawEvent) {
+      await new Promise((resolve) => {
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(() => resolve())
+        } else {
+          setTimeout(resolve, 0)
+        }
+      })
     }
   }
 

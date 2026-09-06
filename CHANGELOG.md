@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Visualize Open:** bilayer PDBs with Amber-style ``Cl-`` (or other ions) no longer fail with “vdw radii for types: Cl”. Bond guessing excludes ions and supplies Cl/Na/K/… radii; if guessing still fails, the structure loads without bonds instead of aborting.
+- **Preparation PropKa (peptides):** empty editable protonation list no longer hides the structure viewer or blocks Prepare (e.g. gramicidin 1jno with only N+/C−). Shows a clear empty-state message + 3D.
+- **Visualize / Prep representations:** D-aa and formyl/ethanolamine residues (FVA, DLE, DVA, ETA, …) fold into a single biopolymer view — labeled **Peptide** when D-aa/formyl/ETA are present, otherwise **Protein** — instead of separate `resname …` ligand views.
+- **Visualize side panel:** Representations panel expands automatically after a successful structure load (stays collapsed on empty startup).
+- **Run on cluster upload %:** submit NDJSON is excluded from GZip (same as Pull) so progress no longer freezes near ~2% until the window is resized; stream keepalives + a paint yield keep the spinner/% updating during prepare/rsync.
 - **Analysis RMSD:** empty protein selections on lipid-only systems no longer produce a blank plot; the run fails with a clear message (selection checked on topology before trajectories load). Failed runs no longer auto-save the session (that was clearing the error banner).
 - **Analysis Plot settings:** changing a set’s **Line color** updates the live plot (including mosaic cells). **Plot bg** respects **Apply settings → This cell** vs **All cells** instead of always painting every square.
 - **Analysis custom grid:** with **Last incomplete row = Center**, filling the first cell of a short row no longer hides the other empty squares (they stay editable).
@@ -16,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Equilibration (OpenMM):** mini + first packing barostat default to **CPU×1**; later eq/production stay **CPU×1 + GPU** (same soft-pack idea as Amber). Eq `p_freq=15` → production `100`; cutoff stays 9 Å + LRC (needs updated gatewizard).
+- **Analysis defaults:** RMSD selection / APL exclude use `protein or resname …` including common D-aa and peptide caps (needs updated gatewizard).
 - **Equilibration (Amber):** minimization and first packing barostat default to **CPU×1** (was ×6); later stages stay on GPU.
 - **Analysis EVAPL:** replaced the old COM half-plane clip. Exclude atoms in the **leaflet headgroup Z-range** shrink each owning Voronoi cell with **successive per-atom** clips. The **Exclude cutoff** control is removed for EVAPL (not used).
 - **Analysis Simulation sets:** **Add set** / **Duplicate** sit under the set list; the list can be collapsed, scrolled, and live drag-reordered (⠿ moves chips as you drag).

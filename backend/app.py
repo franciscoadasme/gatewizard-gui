@@ -44,7 +44,10 @@ class SelectiveGZipMiddleware:
         app: ASGIApp,
         *,
         minimum_size: int = 1000,
-        exclude_path_suffixes: tuple[str, ...] = ("/pull-job-stream",),
+        exclude_path_suffixes: tuple[str, ...] = (
+            "/pull-job-stream",
+            "/submit-job-stream",
+        ),
     ) -> None:
         self.app = app
         self.exclude_path_suffixes = exclude_path_suffixes
@@ -62,6 +65,14 @@ from pydantic import BaseModel, Field
 from gatewizard.utils.protein_capping import (
     cap_protein,
     detect_terminal_caps,
+)
+from gatewizard.utils.peptide_residues import (
+    amber_unsupported_peptide_names_in_pdb,
+    classify_polymer_kind,
+    detect_peptide_caps_in_pdb,
+    is_peptide_polymer_residue,
+    mda_peptide_or_protein_selection,
+    remap_pdb_peptide_resnames,
 )
 from gatewizard.utils.helpers import resolve_pdb_chain_id
 from gatewizard.utils.logger import get_logger
@@ -140,11 +151,21 @@ from gatewizard.utils.optional_deps import (
 
 ION_NAMES = [
     "NA",
+    "NA+",
     "CL",
+    "CL-",
+    "Cl-",
+    "CLA",
     "K",
+    "K+",
+    "POT",
     "MG",
+    "MG2",
     "ZN",
+    "ZN2",
     "CA",
+    "CA2",
+    "CAL",
     "MN",
     "FE",
     "FE2",
@@ -169,17 +190,32 @@ ION_NAMES = [
     "AU",
     "PB",
     "SOD",
-    "POT",
-    "CLA",
-    "CAL",
     "CES",
     "BAR",
     "LIT",
     "RUB",
-    "ZN2",
     "NH4",
 ]
 ION_SELECTION = "resname " + " ".join(ION_NAMES)
+
+# Extra VdW radii for guess_bonds — MDA tables often miss ion element types (Cl, …).
+_GUESS_BOND_VDWRADII = {
+    "Cl": 1.75,
+    "CL": 1.75,
+    "Br": 1.85,
+    "BR": 1.85,
+    "I": 1.98,
+    "F": 1.47,
+    "Na": 2.27,
+    "NA": 2.27,
+    "K": 2.75,
+    "Mg": 1.73,
+    "MG": 1.73,
+    "Ca": 1.97,
+    "CA": 1.97,
+    "Zn": 1.39,
+    "ZN": 1.39,
+}
 LIPID_NAMES = [
     "DPPC",
     "DMPC",
@@ -223,15 +259,22 @@ LIPID_NAMES = [
     "CHLM",
 ]
 LIPID_SELECTION = "resname " + " ".join(LIPID_NAMES)
+# Include D-aa / formyl / ETA polymer residues (MDA bare "protein" misses them).
+PROTEIN_OR_PEPTIDE_SELECTION = mda_peptide_or_protein_selection()
 NAMED_SELECTIONS = {
     "all": "all",
-    "protein": "protein",
-    "backbone": "backbone",
-    "sidechain": "protein and not backbone",
+    # Both resolve to the full biopolymer set; detect-molecules picks the label.
+    "protein": PROTEIN_OR_PEPTIDE_SELECTION,
+    "peptide": PROTEIN_OR_PEPTIDE_SELECTION,
+    "backbone": f"({PROTEIN_OR_PEPTIDE_SELECTION}) and name N CA C O",
+    "sidechain": f"({PROTEIN_OR_PEPTIDE_SELECTION}) and not name N CA C O H HN HA* OXT",
     "water": "water",
     "lipid": LIPID_SELECTION,
     "ion": ION_SELECTION,
-    "ligand": f"not (protein or nucleic or water or ({ION_SELECTION}) or ({LIPID_SELECTION}))",
+    "ligand": (
+        f"not (({PROTEIN_OR_PEPTIDE_SELECTION}) or nucleic or water "
+        f"or ({ION_SELECTION}) or ({LIPID_SELECTION}))"
+    ),
 }
 
 
@@ -334,29 +377,46 @@ def _add_water_template_bonds(u: mda.Universe) -> int:
 def _ensure_bonds_efficient(u: mda.Universe) -> str:
     """Ensure covalent bonds without a full-system guess_bonds when possible.
 
-    Returns a short source label: ``topology``, ``solute+water``, or ``guessed``.
+    Returns a short source label: ``topology``, ``solute+water``, ``guessed``, or ``none``.
+    Ions (e.g. Amber ``Cl-``) are excluded from guessing — MDA lacks default VdW for
+    type ``Cl`` and would abort the whole structure load.
     """
     if _universe_has_bonds(u):
         return "topology"
+
+    def _guess(ag: mda.AtomGroup) -> None:
+        ag.guess_bonds(vdwradii=_GUESS_BOND_VDWRADII)
+
     # Prefer guessing on solute only — water dominates atom count in prepared systems.
+    # Exclude ions: they are monoatomic and break guess_bonds without vdwradii.
     solute = None
     try:
         solute = u.select_atoms(
-            "not (water or resname HOH WAT TIP3 TIP3P TIP4 TIP4P TIP4PEW OPC OPC3 SOL)"
+            "not (water or resname HOH WAT TIP3 TIP3P TIP4 TIP4P TIP4PEW OPC OPC3 SOL "
+            f"or ({ION_SELECTION}))"
         )
     except Exception:
         solute = None
-    if solute is not None and len(solute) > 0 and len(solute) < len(u.atoms):
-        print(
-            f"INFO:     /get-structure guessing bonds for solute "
-            f"({len(solute)}/{len(u.atoms)} atoms)"
-        )
-        solute.guess_bonds()
-        _add_water_template_bonds(u)
-        return "solute+water"
-    print(f"INFO:     /get-structure guessing bonds for all {len(u.atoms)} atoms")
-    u.atoms.guess_bonds()
-    return "guessed"
+    try:
+        if solute is not None and len(solute) > 0 and len(solute) < len(u.atoms):
+            print(
+                f"INFO:     /get-structure guessing bonds for solute "
+                f"({len(solute)}/{len(u.atoms)} atoms; ions excluded)"
+            )
+            _guess(solute)
+            _add_water_template_bonds(u)
+            return "solute+water"
+        print(f"INFO:     /get-structure guessing bonds for all {len(u.atoms)} atoms")
+        _guess(u.atoms)
+        return "guessed"
+    except Exception as ex:
+        # Never fail the whole Open / get-structure on a missing VdW type.
+        print(f"WARNING:  /get-structure bond guess failed ({ex}); loading without bonds")
+        try:
+            _add_water_template_bonds(u)
+        except Exception:
+            pass
+        return "none"
 
 
 def _ensure_elements(atoms: mda.AtomGroup) -> None:
@@ -696,11 +756,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 # Compress large structure payloads (columnar atoms + bonds) over localhost.
-# Skip /cluster/pull-job-stream — GZip buffers small NDJSON chunks and freezes the Pull %.
+# Skip cluster NDJSON streams — GZip buffers small chunks and freezes live %.
 app.add_middleware(
     SelectiveGZipMiddleware,
     minimum_size=1000,
-    exclude_path_suffixes=("/pull-job-stream",),
+    exclude_path_suffixes=("/pull-job-stream", "/submit-job-stream"),
 )
 
 from cluster_routes import router as cluster_router  # noqa: E402
@@ -980,9 +1040,47 @@ def run_propka(payload: RunPropKaRequest) -> dict:
                 rid = data["res_id"]
             orig = new_to_old.get((data["residue"], data["chain"], rid))
             data["original_res_id"] = orig if orig is not None else rid
-        residues = [it for it in residues if len(it["all_states"]) > 1]
+        parsed_count = len(residues)
+        dropped = [
+            {
+                "residue": it.get("residue"),
+                "res_id": it.get("res_id"),
+                "chain": it.get("chain"),
+                "reason": "single_or_no_amber_states",
+            }
+            for it in residues
+            if len(it.get("all_states") or []) <= 1
+        ]
+        editable = [it for it in residues if len(it["all_states"]) > 1]
+        empty_message = None
+        if parsed_count > 0 and not editable:
+            empty_message = (
+                "PropKa found no editable protonation states "
+                f"({parsed_count} group(s) were termini or single-state only). "
+                "You can still Prepare the structure without changing protonation."
+            )
+        elif parsed_count == 0:
+            empty_message = (
+                "PropKa found no protonable groups. "
+                "You can still Prepare the structure."
+            )
+        # Native peptide caps make PropKa N+/C− misleading; surface a soft warning.
+        native_caps = [
+            c
+            for c in detect_peptide_caps_in_pdb(path)
+            if c in {"FVA", "FOR", "ETA"}
+        ]
+        if native_caps and not capping_warning:
+            capping_warning = (
+                f"Native peptide caps detected ({', '.join(native_caps)}). "
+                "Do not add ACE/NME — PropKa N+/C− for this structure may be misleading."
+            )
         return dict(
-            residues=residues,
+            residues=editable,
+            parsed_count=parsed_count,
+            dropped=dropped,
+            propka_ok=True,
+            empty_editable_message=empty_message,
             residue_renumbering_table=residue_renumbering_table,
             job_dir=str(job_dir),
             working_path=path,
@@ -1013,7 +1111,8 @@ def detect_ligands_endpoint(payload: DetectLigandsRequest) -> dict:
                     "pdb_lines": lig.pdb_lines,
                 }
                 for lig in ligands
-            ]
+            ],
+            "peptide_amber_warnings": amber_unsupported_peptide_names_in_pdb(path),
         }
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
@@ -1021,7 +1120,7 @@ def detect_ligands_endpoint(payload: DetectLigandsRequest) -> dict:
 
 @app.post("/detect-terminal-caps")
 def detect_terminal_caps_endpoint(payload: DetectLigandsRequest) -> dict:
-    """Report ACE/NME/NMA caps already present in a PDB (skip re-capping)."""
+    """Report ACE/NME/NMA / native peptide caps already present in a PDB."""
     path = os.path.abspath(os.path.expanduser(payload.path))
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
@@ -2406,6 +2505,9 @@ def prepare_pdb(payload: PreparePDBRequest) -> dict:
             payload.protonation_states,
         )
 
+        # Normalize known peptide CCD names toward Amber-oriented labels (NMA→NME, …).
+        remap_pdb_peptide_resnames(tmp_path, tmp_path)
+
         manager.apply_disulfide_bonds(tmp_path, tmp_path, payload.disulfide_bonds)
 
         removed_h = 0
@@ -2421,12 +2523,22 @@ def prepare_pdb(payload: PreparePDBRequest) -> dict:
         note = ""
         if payload.remove_protein_hydrogens:
             note = f"\nRemoved {removed_h} protein hydrogen atom(s) before pdb4amber."
+        amber_warn_names = amber_unsupported_peptide_names_in_pdb(str(output_path))
+        amber_note = ""
+        if amber_warn_names:
+            amber_note = (
+                "\nNote: peptide residues "
+                + ", ".join(amber_warn_names)
+                + " may need extra Amber libraries / frcmod for tleap "
+                "(formyl / ethanolamine are not in stock ff19SB)."
+            )
         return dict(
-            output=result["stdout"] + "\n" + result["stderr"] + note,
+            output=result["stdout"] + "\n" + result["stderr"] + note + amber_note,
             output_path=str(output_path),
             job_dir=str(job_dir),
             working_path=path,
             protein_hydrogens_removed=removed_h,
+            amber_peptide_warnings=amber_warn_names,
         )
     except (PreparationError, FileNotFoundError, OSError, ValueError) as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
@@ -4978,32 +5090,51 @@ def detect_molecules(payload: DetectMoleculesRequest) -> list[dict]:
     u, _, _ = load_structure(payload.path)
 
     datalist = []
-
     idxs = []
-    for name in ["protein", "water", "lipid", "ion"]:
+
+    # Biopolymer: one Protein *or* Peptide group (D-aa / formyl / ETA → peptide).
+    polymer_atoms = u.select_atoms(NAMED_SELECTIONS["protein"])
+    if len(polymer_atoms) > 0:
+        resnames = [str(r.resname) for r in polymer_atoms.residues]
+        kind = classify_polymer_kind(resnames)
+        polymer_indices = {int(i) for i in polymer_atoms.indices}
+        all_residues = get_residues(
+            u, needs_secondary_structure=True, source_path=payload.path
+        )
+        data = dict(
+            selection=kind,
+            label="Peptide" if kind == "peptide" else "Protein",
+            atoms=get_atoms(polymer_atoms),
+            residues=[
+                r
+                for r in all_residues
+                if r.get("ca_index") is not None and int(r["ca_index"]) in polymer_indices
+            ],
+        )
+        datalist.append(data)
+        idxs.extend(polymer_atoms.indices)
+
+    for name in ["water", "lipid", "ion"]:
         atoms = u.select_atoms(NAMED_SELECTIONS[name])
         if len(atoms) == 0:
             continue
-        data = dict(
-            selection=name,
-            atoms=get_atoms(atoms),
-        )
-        if name == "protein":
-            protein_indices = {int(i) for i in atoms.indices}
-            all_residues = get_residues(
-                u, needs_secondary_structure=True, source_path=payload.path
+        datalist.append(
+            dict(
+                selection=name,
+                atoms=get_atoms(atoms),
             )
-            data["residues"] = [
-                r
-                for r in all_residues
-                if r.get("ca_index") is not None and int(r["ca_index"]) in protein_indices
-            ]
-        datalist.append(data)
+        )
         idxs.extend(atoms.indices)
 
-    atoms = u.atoms.select_atoms(f"not (index {' '.join(map(str, idxs))})")
-    for resname in set(res.resname for res in atoms.residues):
-        residues = atoms.select_atoms(f"resname {resname}")
+    if idxs:
+        leftover = u.atoms.select_atoms(f"not (index {' '.join(map(str, idxs))})")
+    else:
+        leftover = u.atoms
+    for resname in set(res.resname for res in leftover.residues):
+        # Polymer HETs already in protein/peptide — never emit resname FVA/DLE/…
+        if is_peptide_polymer_residue(str(resname)):
+            continue
+        residues = leftover.select_atoms(f"resname {resname}")
         if len(residues) == 0:
             continue
         datalist.append(

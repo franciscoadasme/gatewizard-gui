@@ -118,6 +118,7 @@
   import TransformGizmo from '../components/TransformGizmo.svelte'
   import HydrationBoxManipulatorOverlay from '../components/viewer/HydrationBoxManipulatorOverlay.svelte'
   import { visualizeStatus, logEvent } from '../lib/pageStatus.svelte.js'
+  import { requestSidePanelExpand } from '../lib/pageSidePanelStore.svelte.js'
   import { syncGoodsellSceneLighting } from '../lib/goodsellSceneLighting.svelte.js'
   import { themeState } from '../lib/theme.svelte.js'
   import { themeBackgroundHex, viewerSettings } from '../lib/viewerSettings.svelte.js'
@@ -668,14 +669,16 @@
       const next = []
       const globalBonds = structure?.bonds ?? []
       for (const [i, struc] of data.entries()) {
-        const representation = struc.selection === 'protein' ? { type: 'cartoon' } : { type: 'vdw' }
+        const representation = isBiopolymerSelection(struc.selection)
+          ? { type: 'cartoon' }
+          : { type: 'vdw' }
         const atomIdx = new Set((struc.atoms || []).map((a) => a.index))
         const molBonds =
           (struc.bonds && struc.bonds.length
             ? struc.bonds
             : globalBonds.filter(([ai, bi]) => atomIdx.has(ai) && atomIdx.has(bi)))
         let colorScheme
-        if (struc.selection === 'protein' && struc.residues?.length) {
+        if (isBiopolymerSelection(struc.selection) && struc.residues?.length) {
           colorScheme = { name: 'ss', resolver: ssScheme(struc.residues, {}) }
         } else if (struc.selection.startsWith('resname')) {
           const color = `#${COLOR_PALETTE[i % COLOR_PALETTE.length].getHexString()}`
@@ -936,6 +939,8 @@
           ? { ...base, framingZoom: 1, framingGeneration: 0, poseResetGeneration: 0 }
           : null
       }
+      // Reveal Representations dock so users notice views after Open.
+      requestSidePanelExpand('visualize')
     } catch (ex) {
       structure = null
       alert(ex instanceof Error ? ex.message : String(ex))
@@ -1757,9 +1762,11 @@
           const extras = []
           for (const [i, mol] of detected.entries()) {
             if (!coveredSels.has(mol.selection)) {
-              const repr = mol.selection === 'protein' ? { type: 'cartoon' } : { type: 'vdw' }
+              const repr = isBiopolymerSelection(mol.selection)
+                ? { type: 'cartoon' }
+                : { type: 'vdw' }
               let colorScheme
-              if (mol.selection === 'protein' && mol.residues?.length) {
+              if (isBiopolymerSelection(mol.selection) && mol.residues?.length) {
                 colorScheme = { name: 'ss', resolver: ssScheme(mol.residues, {}) }
               } else if (mol.selection.startsWith('resname')) {
                 const color = `#${COLOR_PALETTE[(views.length + i) % COLOR_PALETTE.length].getHexString()}`
@@ -2721,6 +2728,7 @@
   const NAMED_VIEW_SELECTIONS = new Set([
     'all',
     'protein',
+    'peptide',
     'backbone',
     'sidechain',
     'water',
@@ -2729,6 +2737,11 @@
     'ligand',
     'other'
   ])
+
+  /** Cartoon / SS coloring for protein and peptide biopolymers. */
+  function isBiopolymerSelection(sel) {
+    return sel === 'protein' || sel === 'peptide'
+  }
 
   /** Reload per-view atom subsets after animation load (split/custom selections). */
   async function refreshAnimationViewAtoms() {

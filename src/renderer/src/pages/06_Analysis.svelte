@@ -9,6 +9,7 @@
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Divider from '../components/ui/Divider.svelte'
   import { analysisStatus, logEvent } from '../lib/pageStatus.svelte.js'
+  import { defaultPeptideExcludeSelection, peptideOrProteinSelection } from '../lib/peptideResidues.js'
   import Input from '../components/ui/Input.svelte'
   import Select from '../components/ui/Select.svelte'
   import Spinner from '../components/ui/Spinner.svelte'
@@ -209,8 +210,8 @@
   /** @type {Array<{ path: string, timeNs: string, stride: string }>} */
   let trajectoryFiles = $state([])
   let structuralType = $state('rmsd')
-  let selection = $state('protein and backbone')
-  let selection2 = $state('protein and resid 50')
+  let selection = $state(`${peptideOrProteinSelection()} and backbone`)
+  let selection2 = $state(`${peptideOrProteinSelection()} and resid 50`)
   /** @type {number | null} */
   let selectionAtomCount = $state(null)
   /** @type {number | null} */
@@ -224,8 +225,8 @@
   let leafletLipidSel = $state('')
   let leafletFilterSel = $state('')
   let nBins = $state('1')
-  /** Non-lipid atoms for protein-aware APL (empty = no exclusion). */
-  let excludeSel = $state('protein')
+  /** Non-lipid atoms for protein/peptide-aware APL (empty = no exclusion). */
+  let excludeSel = $state(defaultPeptideExcludeSelection())
   let excludeCutoff = $state('30')
   let aplMethod = $state(APL_METHOD_DEFAULTS.aplMethod)
   let gridmatN = $state(APL_METHOD_DEFAULTS.gridmatN)
@@ -2057,7 +2058,7 @@
     leafletFilterSel = snap.leafletFilterSel ?? ''
     if (snap.nBins != null) nBins = String(snap.nBins)
     if (snap.interpolate != null) interpolate = Boolean(snap.interpolate)
-    excludeSel = snap.excludeSel ?? 'protein'
+    excludeSel = snap.excludeSel ?? defaultPeptideExcludeSelection()
     excludeCutoff = snap.excludeCutoff != null ? String(snap.excludeCutoff) : '30'
     aplMethod = normalizeAplMethod(snap.aplMethod)
     gridmatN = snap.gridmatN != null ? String(snap.gridmatN) : APL_METHOD_DEFAULTS.gridmatN
@@ -2902,7 +2903,7 @@
         leafletFilterSel = opts.leafletFilterSel
         nBins = opts.nBins != null ? String(opts.nBins) : nBins
         interpolate = opts.interpolate
-        excludeSel = opts.excludeSel ?? 'protein'
+        excludeSel = opts.excludeSel ?? defaultPeptideExcludeSelection()
         excludeCutoff = opts.excludeCutoff != null ? String(opts.excludeCutoff) : '30'
         aplMethod = normalizeAplMethod(opts.aplMethod)
         gridmatN = opts.gridmatN != null ? String(opts.gridmatN) : APL_METHOD_DEFAULTS.gridmatN
@@ -4491,7 +4492,7 @@
           leafletFilterSel: nextSnap.leafletFilterSel ?? '',
           nBins: nextSnap.nBins ?? s.structuralOptions.nBins,
           interpolate: nextSnap.interpolate ?? s.structuralOptions.interpolate,
-          excludeSel: nextSnap.excludeSel ?? s.structuralOptions.excludeSel ?? 'protein',
+          excludeSel: nextSnap.excludeSel ?? s.structuralOptions.excludeSel ?? defaultPeptideExcludeSelection(),
           excludeCutoff: nextSnap.excludeCutoff ?? s.structuralOptions.excludeCutoff ?? '30',
           aplMethod: normalizeAplMethod(nextSnap.aplMethod ?? s.structuralOptions.aplMethod),
           gridmatN: nextSnap.gridmatN ?? s.structuralOptions.gridmatN ?? APL_METHOD_DEFAULTS.gridmatN,
@@ -4809,8 +4810,8 @@
     topologyPath = ''
     trajectoryFiles = []
     structuralType = 'rmsd'
-    selection = 'protein and backbone'
-    selection2 = 'protein and resid 50'
+    selection = `${peptideOrProteinSelection()} and backbone`
+    selection2 = `${peptideOrProteinSelection()} and resid 50`
     selectionAtomCount = null
     selection2AtomCount = null
     selectionCountError = ''
@@ -4822,7 +4823,7 @@
     leafletFilterSel = ''
     nBins = '1'
     interpolate = false
-    excludeSel = 'protein'
+    excludeSel = defaultPeptideExcludeSelection()
     excludeCutoff = '30'
     aplMethod = APL_METHOD_DEFAULTS.aplMethod
     gridmatN = APL_METHOD_DEFAULTS.gridmatN
