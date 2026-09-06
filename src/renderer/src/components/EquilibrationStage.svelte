@@ -59,7 +59,13 @@
   })
 
   const isMinimization = $derived(stageKind === 'minimization')
-  const useGpu = $derived(isMinimization ? false : stage.use_gpu !== false)
+  const engKey = $derived(String(engine || '').toLowerCase())
+  /** OpenMM folds mini into Eq1 (NVT) on GPU; other engines keep mini CPU-only. */
+  const forceMiniCpu = $derived(isMinimization && engKey !== 'openmm')
+  const forceOpenmmMiniGpu = $derived(isMinimization && engKey === 'openmm')
+  const useGpu = $derived(
+    forceMiniCpu ? false : forceOpenmmMiniGpu ? true : stage.use_gpu !== false
+  )
 
   // Only expose fields the selected engine actually writes into inputs.
   const fields = $derived(
@@ -68,7 +74,7 @@
 
   const resourceChip = $derived.by(() => {
     const cpu = stage.cpu_cores ?? (isMinimization ? 4 : 1)
-    if (isMinimization) return `CPU×${cpu}`
+    if (forceMiniCpu) return `CPU×${cpu}`
     if (useGpu) return `CPU×${cpu} · GPU×${stage.num_gpus ?? 1}`
     return `CPU×${cpu}`
   })
@@ -100,10 +106,16 @@
     if (!stage.stage_kind) {
       stage.stage_kind = stageKind
     }
-    if (isMinimization) {
+    if (forceMiniCpu) {
       stage.use_gpu = false
       stage.num_gpus = 0
       if (stage.cpu_cores == null) stage.cpu_cores = 4
+    } else if (forceOpenmmMiniGpu) {
+      // Mini shares Eq1's OpenMM run (GPU); do not leave base.json CPU-only flags.
+      stage.use_gpu = true
+      if (stage.cpu_cores == null) stage.cpu_cores = 1
+      if (stage.gpu_id == null) stage.gpu_id = 0
+      if (stage.num_gpus == null || stage.num_gpus < 1) stage.num_gpus = 1
     } else {
       if (stage.cpu_cores == null) stage.cpu_cores = 1
       if (stage.gpu_id == null) stage.gpu_id = 0

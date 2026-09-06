@@ -21,6 +21,8 @@ export function stageKindOf(stage) {
 }
 
 /**
+ * Match EquilibrationStage resource chips (including OpenMM folded-mini → GPU).
+ *
  * @param {{
  *   name?: string,
  *   stage_kind?: string,
@@ -28,14 +30,19 @@ export function stageKindOf(stage) {
  *   num_gpus?: number,
  *   use_gpu?: boolean
  * } | null | undefined} stage
+ * @param {string|null|undefined} [engine]
  */
-export function stageResourceLabel(stage) {
+export function stageResourceLabel(stage, engine) {
   const kind = stageKindOf(stage)
   const isMini = kind === 'minimization'
+  const eng = String(engine || '').toLowerCase()
   const cpu = stage?.cpu_cores ?? (isMini ? 4 : 1)
-  if (isMini) return `CPU×${cpu}`
-  const useGpu = stage?.use_gpu !== false
-  if (useGpu) return `CPU×${cpu} · GPU×${stage?.num_gpus ?? 1}`
+  // Amber / NAMD / GROMACS: mini is CPU-only.
+  if (isMini && eng !== 'openmm') return `CPU×${cpu}`
+  // OpenMM: mini is folded into Eq1 and runs on GPU (even if protocol JSON still says CPU).
+  const useGpu =
+    isMini && eng === 'openmm' ? true : !isMini ? stage?.use_gpu !== false : stage?.use_gpu === true
+  if (useGpu) return `CPU×${cpu} · GPU×${stage?.num_gpus && stage.num_gpus > 0 ? stage.num_gpus : 1}`
   return `CPU×${cpu}`
 }
 
@@ -97,13 +104,14 @@ export function stageRestraintLabel(stage) {
 /**
  * @param {Record<string, unknown> | null | undefined} stage
  * @param {string|null|undefined} sidebarEnsemble
+ * @param {string|null|undefined} [engine]
  */
-export function summarizeProtocolStage(stage, sidebarEnsemble) {
+export function summarizeProtocolStage(stage, sidebarEnsemble, engine) {
   return {
     name: String(stage?.name || 'Stage'),
     durationLabel: stageDurationLabel(stage),
     ensembleLabel: stageEnsembleLabel(stage, sidebarEnsemble),
-    resourceLabel: stageResourceLabel(stage),
+    resourceLabel: stageResourceLabel(stage, engine),
     restraintLabel: stageRestraintLabel(stage)
   }
 }

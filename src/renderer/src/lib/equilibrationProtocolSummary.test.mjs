@@ -28,14 +28,33 @@ test('stageEnsembleLabel inherits sidebar for production', () => {
 })
 
 test('stageResourceLabel matches EquilibrationStage chips', () => {
-  assert.equal(stageResourceLabel({ stage_kind: 'minimization', cpu_cores: 8 }), 'CPU×8')
+  // Amber / NAMD / GROMACS mini: CPU-only
+  assert.equal(stageResourceLabel({ stage_kind: 'minimization', cpu_cores: 8 }, 'amber'), 'CPU×8')
+  assert.equal(stageResourceLabel({ stage_kind: 'minimization', cpu_cores: 6 }, 'namd'), 'CPU×6')
+  assert.equal(stageResourceLabel({ stage_kind: 'minimization', cpu_cores: 6 }, 'gromacs'), 'CPU×6')
+  // OpenMM mini is folded into Eq1 → GPU even if JSON still says use_gpu false
+  assert.equal(
+    stageResourceLabel(
+      { stage_kind: 'minimization', cpu_cores: 1, use_gpu: false, num_gpus: 0 },
+      'openmm'
+    ),
+    'CPU×1 · GPU×1'
+  )
   assert.equal(
     stageResourceLabel({ stage_kind: 'equilibration', cpu_cores: 1, use_gpu: true, num_gpus: 2 }),
     'CPU×1 · GPU×2'
   )
   assert.equal(
-    stageResourceLabel({ stage_kind: 'equilibration', cpu_cores: 4, use_gpu: false }),
+    stageResourceLabel({ stage_kind: 'equilibration', cpu_cores: 4, use_gpu: false }, 'amber'),
     'CPU×4'
+  )
+  // Amber/OpenMM first packing barostat
+  assert.equal(
+    stageResourceLabel(
+      { stage_kind: 'equilibration', ensemble: 'NPgT', cpu_cores: 1, use_gpu: false },
+      'openmm'
+    ),
+    'CPU×1'
   )
 })
 

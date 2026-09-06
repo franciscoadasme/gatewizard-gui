@@ -117,9 +117,9 @@
       production: { cpu_cores: 6, gpu_id: 0, num_gpus: 1, use_gpu: true }
     },
     openmm: {
-      // Mini + first packing barostat on CPU×1; later MD/production on GPU.
+      // Mini is folded into Eq1 (NVT, fixed box) → GPU with Eq1; only Eq3 first pack is CPU.
       sidebar: { totalCpus: 1, totalGpus: 1, gpuId: 0, computeTarget: /** @type {const} */ ('auto') },
-      minimization: { cpu_cores: 1, gpu_id: 0, num_gpus: 0, use_gpu: false },
+      minimization: { cpu_cores: 1, gpu_id: 0, num_gpus: 1, use_gpu: true },
       md: { cpu_cores: 1, gpu_id: 0, num_gpus: 1, use_gpu: true },
       production: { cpu_cores: 1, gpu_id: 0, num_gpus: 1, use_gpu: true }
     }
@@ -4213,7 +4213,7 @@
               aria-label="Protocol stage summary"
             >
               {#each protocol.stages as stage, i (stage.name + '-summary-' + i)}
-                {@const summary = summarizeProtocolStage(stage, ensemble)}
+                {@const summary = summarizeProtocolStage(stage, ensemble, engine)}
                 <button
                   type="button"
                   class="flex min-w-[9.5rem] shrink-0 flex-col gap-0.5 rounded-md border border-neutral-200 bg-neutral-50 px-2.5 py-2 text-left text-neutral-900 hover:bg-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:hover:bg-neutral-800 dark:focus-visible:ring-neutral-600"
