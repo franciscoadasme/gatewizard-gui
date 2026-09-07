@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Analysis defaults:** RMSD selection / APL exclude use `protein or resname …` including common D-aa and peptide caps.
+- **Equilibration (OpenMM):** mini is folded into Eq1 (**GPU**, NVT fixed box); only first packing (Eq3) is **CPU×1**. Collapsed protocol chips match expanded cards (OpenMM mini no longer shows CPU-only). Later eq/production stay **CPU×1 + GPU**. Eq `p_freq=15` → production `100`; cutoff stays 9 Å + LRC.
 - **Equilibration (Amber):** minimization and first packing barostat default to **CPU×1** (was ×6); later stages stay on GPU.
 - **Analysis EVAPL:** replaced the old COM half-plane clip. Exclude atoms in the **leaflet headgroup Z-range** shrink each owning Voronoi cell with **successive per-atom** clips.
 - **Analysis Simulation sets:** **Add set** / **Duplicate** sit under the set list; the list can be collapsed, scrolled, and live drag-reordered (⠿ moves chips as you drag).
@@ -32,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Builder peptide caps:** Detect lists FVA/FOR/ETA polymer caps separately from free ligands; **Parametrize caps** runs GAFF with head/tail libs into `peptide_cap_params/` and passes them into packmol-memgen / tleap. Caps are **auto-scanned when a PDB is selected** (shown above Ligand Parametrization), so users who skip free-ligand Detect still see ETA/FVA.
 - **Analysis Grid options:** **Cells** count (1…cols×rows) to leave unused trailing squares out of a frame (e.g. 4×2 with 7 cells), and **Right** last-row align alongside Left / Center.
 - **Settings → Appearance:** UI scale (80–150%, default **110%**). Startup uses this value; **Ctrl+=** / **Ctrl+Shift+=** zoom in, **Ctrl+-** zoom out, **Ctrl+0** resets to the Settings scale (not always 100%).
 - **Analysis Run Analysis:** with multiple sets, the split-button menu can run the current set, all sets, or a checked subset (button label shows how many are selected).
