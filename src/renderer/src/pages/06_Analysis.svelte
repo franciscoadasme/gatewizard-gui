@@ -1,5 +1,6 @@
 <script>
   import { tick, untrack } from 'svelte'
+  import { flip } from 'svelte/animate'
   import Beaker from '../components/icons/Beaker.svelte'
   import Protein from '../components/icons/Protein.svelte'
   import TopologyInfoModal from '../components/TopologyInfoModal.svelte'
@@ -10,6 +11,7 @@
   import Divider from '../components/ui/Divider.svelte'
   import { analysisStatus, logEvent } from '../lib/pageStatus.svelte.js'
   import { defaultPeptideExcludeSelection, peptideOrProteinSelection } from '../lib/peptideResidues.js'
+  import { liveReorderAtMidpoint, LIST_REORDER_FLIP } from '../lib/liveListReorder.js'
   import Input from '../components/ui/Input.svelte'
   import Select from '../components/ui/Select.svelte'
   import Spinner from '../components/ui/Spinner.svelte'
@@ -4663,9 +4665,14 @@
     await detectEnergeticColumns({ quiet: true })
   }
 
-  // ---- Drag-to-reorder state (trajectory / log files) ----
+  // ---- Drag-to-reorder: logs (highlight drop target) ----
   let dragIdx = $state(-1)
   let dragOverIdx = $state(-1)
+
+  // ---- Drag-to-reorder: trajectories (live move; sky style ≠ amber sets) ----
+  /** @type {string | null} */
+  let trajDragPath = $state(null)
+  let trajDragOrderDirty = $state(false)
 
   // ---- Simulation sets list ----
   let setsListCollapsed = $state(false)
@@ -4685,6 +4692,59 @@
   function onDragEnd() {
     dragIdx = -1
     dragOverIdx = -1
+  }
+
+  function onTrajDragStart(index, e) {
+    const row = trajectoryFiles[index]
+    if (!row?.path) return
+    trajDragPath = row.path
+    trajDragOrderDirty = false
+    if (e?.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move'
+      e.dataTransfer.setData('text/plain', row.path)
+    }
+  }
+
+  function onTrajDragOver(e, index) {
+    e.preventDefault()
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+    if (!trajDragPath) return
+    const from = trajectoryFiles.findIndex((f) => f.path === trajDragPath)
+    const next = liveReorderAtMidpoint(
+      trajectoryFiles,
+      from,
+      index,
+      e.clientY,
+      /** @type {Element} */ (e.currentTarget)
+    )
+    if (!next) return
+    trajectoryFiles = next
+    trajDragOrderDirty = true
+  }
+
+  function clearStructuralResultsAfterTrajReorder() {
+    structResults = {
+      rmsd: null,
+      rmsf: null,
+      distance: null,
+      radius_of_gyration: null,
+      area_per_lipid: null,
+      membrane_thickness: null
+    }
+  }
+
+  function onTrajDragEnd() {
+    if (trajDragOrderDirty) {
+      markSessionDirty()
+      clearStructuralResultsAfterTrajReorder()
+    }
+    trajDragPath = null
+    trajDragOrderDirty = false
+  }
+
+  function onDropTrajectory(e) {
+    e.preventDefault()
+    onTrajDragEnd()
   }
 
   function clearAnalysisActionNotice() {
@@ -4732,28 +4792,6 @@
       markClean: true
     })
     sessionSavedClean = true
-  }
-
-  function onDropTrajectory(e, index) {
-    e.preventDefault()
-    if (dragIdx === -1 || dragIdx === index) {
-      onDragEnd()
-      return
-    }
-    const arr = [...trajectoryFiles]
-    const [moved] = arr.splice(dragIdx, 1)
-    arr.splice(index, 0, moved)
-    trajectoryFiles = arr
-    onDragEnd()
-    // Clear all structural results — order changed, must re-run
-    structResults = {
-      rmsd: null,
-      rmsf: null,
-      distance: null,
-      radius_of_gyration: null,
-      area_per_lipid: null,
-      membrane_thickness: null
-    }
   }
 
   function onDropLog(e, index) {
@@ -6567,15 +6605,21 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
         <div class="max-h-64 space-y-1 overflow-y-auto pr-0.5">
           {#each analysisSets as set, i (set.id)}
             {@const isActive = activeSetId === set.id}
+            {@const isDragging = setDragId === set.id}
             <div
               role="listitem"
+              animate:flip={LIST_REORDER_FLIP}
               ondragover={(e) => onSetDragOver(e, i)}
               ondrop={onDropAnalysisSet}
-              class={`flex items-center gap-1.5 rounded-md border px-1.5 py-1 transition-[opacity,transform] duration-100 ${
+              class={`relative flex items-center gap-1.5 rounded-md border px-1.5 py-1 transition-[opacity,box-shadow,border-color,background-color] duration-150 ${
                 isActive
                   ? 'border-amber-500 bg-amber-50 ring-1 ring-amber-500/30 dark:border-amber-500/80 dark:bg-amber-500/15 dark:ring-amber-500/40'
                   : 'border-neutral-200 hover:border-neutral-300 hover:bg-neutral-50 dark:border-neutral-700 dark:hover:border-neutral-600 dark:hover:bg-neutral-800/50'
-              } ${setDragId === set.id ? 'opacity-50 ring-2 ring-amber-400/60' : ''}`}
+              } ${
+                isDragging
+                  ? 'z-10 border-amber-400 bg-amber-100/90 opacity-95 shadow-md ring-2 ring-amber-400/70 dark:border-amber-400/80 dark:bg-amber-500/25'
+                  : ''
+              }`}
             >
               <span
                 role="button"
@@ -6672,7 +6716,15 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
         <div class="space-y-1">
           <p class="sidebar-label">Topology file</p>
           <div class="flex gap-1">
-            <Input size="sm" value={basename(topologyPath) || '—'} disabled className="min-w-0 flex-1" />
+            <span class="min-w-0 flex-1" title={topologyPath || undefined}>
+              <Input
+                size="sm"
+                value={basename(topologyPath) || '—'}
+                disabled
+                title={topologyPath || undefined}
+                className="w-full"
+              />
+            </span>
             <Button size="sm" variant="outline" onclick={pickTopologyFile}>Browse</Button>
             <Button
               size="sm"
@@ -6721,18 +6773,23 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               {#each trajectoryFiles as file, i (file.path)}
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
-                  ondragover={(e) => onDragOver(e, i)}
-                  ondrop={(e) => onDropTrajectory(e, i)}
-                  class="flex items-center gap-1 rounded border border-neutral-200 px-1.5 py-1 transition-opacity dark:border-neutral-800
-                    {dragIdx === i ? 'opacity-40' : ''}
-                    {dragOverIdx === i && dragIdx !== i ? 'border-amber-500 bg-amber-500/10' : ''}"
+                  animate:flip={LIST_REORDER_FLIP}
+                  ondragover={(e) => onTrajDragOver(e, i)}
+                  ondrop={onDropTrajectory}
+                  class="relative flex items-center gap-1 rounded border border-neutral-200 px-1.5 py-1 transition-[opacity,box-shadow,border-color,background-color] duration-150 dark:border-neutral-800
+                    {trajDragPath === file.path
+                      ? 'z-10 border-dashed border-sky-500 bg-sky-500/15 opacity-95 shadow-md dark:border-sky-400 dark:bg-sky-500/20'
+                      : ''}"
                 >
                   <span
+                    role="button"
+                    tabindex="0"
                     draggable="true"
-                    ondragstart={() => onDragStart(i)}
-                    ondragend={onDragEnd}
-                    class="shrink-0 cursor-grab text-neutral-600 select-none active:cursor-grabbing"
-                    title="Drag to reorder">⠿</span
+                    ondragstart={(e) => onTrajDragStart(i, e)}
+                    ondragend={onTrajDragEnd}
+                    class="shrink-0 cursor-grab text-sky-700/80 select-none active:cursor-grabbing dark:text-sky-400/90"
+                    title="Drag to reorder"
+                    >⠿</span
                   >
                   <span class="min-w-0 flex-1 truncate text-neutral-700 dark:text-neutral-300" title={file.path}
                     >{basename(file.path)}</span
@@ -6774,7 +6831,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             </div>
           {/if}
           <p class="sidebar-hint">
-            Stride loads and analyzes every Nth frame only (e.g. 10 ≈ 10× fewer frames). Applies per file when trajectories are concatenated.
+            Stride loads and analyzes every Nth frame only (e.g. 10 ≈ 10× fewer frames). Applies per file when trajectories are concatenated. Drag ⠿ to live-reorder files.
           </p>
           {#if trajectoryFiles.some((f) => /\.(pdb|ent|gro)$/i.test(f.path))}
             <p class="sidebar-hint text-amber-600 dark:text-amber-400">
@@ -7109,13 +7166,18 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           <div class="space-y-1">
             <p class="sidebar-label">Reference PDB (optional)</p>
             <div class="flex gap-1">
-              <Input
-                size="sm"
-                value={basename(referenceStructurePath) || '—'}
-                disabled
-                className="min-w-0 flex-1"
+              <span
+                class="min-w-0 flex-1"
                 title={referenceStructurePath || 'Not set — uses Ref. frame'}
-              />
+              >
+                <Input
+                  size="sm"
+                  value={basename(referenceStructurePath) || '—'}
+                  disabled
+                  className="w-full"
+                  title={referenceStructurePath || 'Not set — uses Ref. frame'}
+                />
+              </span>
               <Button size="sm" variant="outline" onclick={pickReferenceStructure}>Select</Button>
               {#if referenceStructurePath}
                 <button

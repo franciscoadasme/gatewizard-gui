@@ -1,5 +1,6 @@
 <script>
   import { onDestroy } from 'svelte'
+  import { flip } from 'svelte/animate'
   import Beaker from '../components/icons/Beaker.svelte'
   import Protein from '../components/icons/Protein.svelte'
   import TopologyInfoModal from '../components/TopologyInfoModal.svelte'
@@ -31,6 +32,7 @@
     uniqueDirList
   } from '../lib/outputFolders.js'
   import { logEvent, toolsStatus } from '../lib/pageStatus.svelte.js'
+  import { liveReorderAtMidpoint, LIST_REORDER_FLIP } from '../lib/liveListReorder.js'
   import { themeState } from '../lib/theme.svelte.js'
   import { themeBackgroundHex } from '../lib/viewerSettings.svelte.js'
 
@@ -140,9 +142,9 @@
   /** @type {any} */
   let pruneIntervalId = $state(null)
 
-  // Drag-to-reorder
-  let dragIdx = $state(-1)
-  let dragOverIdx = $state(-1)
+  // Drag-to-reorder trajectories (live move; sky style, same as Analysis traj list)
+  /** @type {string | null} */
+  let trajDragPath = $state(null)
 
   /** @type {{
    *   engine: string
@@ -941,34 +943,42 @@
     refreshDetect()
   }
 
-  /** @param {number} index */
-  function onDragStart(index) {
-    dragIdx = index
-  }
-
-  /** @param {DragEvent} e @param {number} index */
-  function onDragOver(e, index) {
-    e.preventDefault()
-    dragOverIdx = index
-  }
-
-  function onDragEnd() {
-    dragIdx = -1
-    dragOverIdx = -1
-  }
-
-  /** @param {DragEvent} e @param {number} index */
-  function onDropTrajectory(e, index) {
-    e.preventDefault()
-    if (dragIdx === -1 || dragIdx === index) {
-      onDragEnd()
-      return
+  /** @param {number} index @param {DragEvent} [e] */
+  function onTrajDragStart(index, e) {
+    const row = fixPbc.trajectoryFiles[index]
+    if (!row?.path) return
+    trajDragPath = row.path
+    if (e?.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move'
+      e.dataTransfer.setData('text/plain', row.path)
     }
-    const arr = [...fixPbc.trajectoryFiles]
-    const [moved] = arr.splice(dragIdx, 1)
-    arr.splice(index, 0, moved)
-    fixPbc.trajectoryFiles = arr
-    onDragEnd()
+  }
+
+  /** @param {DragEvent} e @param {number} index */
+  function onTrajDragOver(e, index) {
+    e.preventDefault()
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+    if (!trajDragPath) return
+    const from = fixPbc.trajectoryFiles.findIndex((f) => f.path === trajDragPath)
+    const next = liveReorderAtMidpoint(
+      fixPbc.trajectoryFiles,
+      from,
+      index,
+      e.clientY,
+      /** @type {Element} */ (e.currentTarget)
+    )
+    if (!next) return
+    fixPbc.trajectoryFiles = next
+  }
+
+  function onTrajDragEnd() {
+    trajDragPath = null
+  }
+
+  /** @param {DragEvent} e */
+  function onDropTrajectory(e) {
+    e.preventDefault()
+    onTrajDragEnd()
   }
 
   function onClearForm() {
@@ -1220,12 +1230,15 @@
         <div class="space-y-1">
           <p class="sidebar-label">{isGromacs ? 'Topology / TPR' : 'Topology file'}</p>
           <div class="flex gap-1">
-            <Input
-              size="sm"
-              value={basename(fixPbc.topologyPath) || '—'}
-              disabled
-              className="min-w-0 flex-1"
-            />
+            <span class="min-w-0 flex-1" title={fixPbc.topologyPath || undefined}>
+              <Input
+                size="sm"
+                value={basename(fixPbc.topologyPath) || '—'}
+                disabled
+                title={fixPbc.topologyPath || undefined}
+                className="w-full"
+              />
+            </span>
             <Button size="sm" variant="outline" onclick={pickTopologyFile}>Browse</Button>
             <Button
               size="sm"
@@ -1248,12 +1261,15 @@
           <div class="space-y-1">
             <p class="sidebar-label">GROMACS TPR</p>
             <div class="flex gap-1">
-              <Input
-                size="sm"
-                value={basename(fixPbc.tprPath) || '—'}
-                disabled
-                className="min-w-0 flex-1"
-              />
+              <span class="min-w-0 flex-1" title={fixPbc.tprPath || undefined}>
+                <Input
+                  size="sm"
+                  value={basename(fixPbc.tprPath) || '—'}
+                  disabled
+                  title={fixPbc.tprPath || undefined}
+                  className="w-full"
+                />
+              </span>
               <Button size="sm" variant="outline" onclick={pickTprFile}>Browse</Button>
             </div>
             <p class="sidebar-hint">Required for gmx trjconv (molecule definitions).</p>
@@ -1261,12 +1277,15 @@
           <div class="space-y-1">
             <p class="sidebar-label">Index (optional)</p>
             <div class="flex gap-1">
-              <Input
-                size="sm"
-                value={basename(fixPbc.ndxPath) || '—'}
-                disabled
-                className="min-w-0 flex-1"
-              />
+              <span class="min-w-0 flex-1" title={fixPbc.ndxPath || undefined}>
+                <Input
+                  size="sm"
+                  value={basename(fixPbc.ndxPath) || '—'}
+                  disabled
+                  title={fixPbc.ndxPath || undefined}
+                  className="w-full"
+                />
+              </span>
               <Button size="sm" variant="outline" onclick={pickNdxFile}>Browse</Button>
             </div>
             <p class="sidebar-hint">Uses SOLU_MEMB when present (GateWizard index).</p>
@@ -1290,17 +1309,21 @@
               {#each fixPbc.trajectoryFiles as file, i (file.path)}
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
-                  ondragover={(e) => onDragOver(e, i)}
-                  ondrop={(e) => onDropTrajectory(e, i)}
-                  class="flex items-center gap-1 rounded border border-neutral-200 px-1.5 py-1 transition-opacity dark:border-neutral-800
-                    {dragIdx === i ? 'opacity-40' : ''}
-                    {dragOverIdx === i && dragIdx !== i ? 'border-amber-500 bg-amber-500/10' : ''}"
+                  animate:flip={LIST_REORDER_FLIP}
+                  ondragover={(e) => onTrajDragOver(e, i)}
+                  ondrop={onDropTrajectory}
+                  class="relative flex items-center gap-1 rounded border border-neutral-200 px-1.5 py-1 transition-[opacity,box-shadow,border-color,background-color] duration-150 dark:border-neutral-800
+                    {trajDragPath === file.path
+                      ? 'z-10 border-dashed border-sky-500 bg-sky-500/15 opacity-95 shadow-md dark:border-sky-400 dark:bg-sky-500/20'
+                      : ''}"
                 >
                   <span
+                    role="button"
+                    tabindex="0"
                     draggable="true"
-                    ondragstart={() => onDragStart(i)}
-                    ondragend={onDragEnd}
-                    class="shrink-0 cursor-grab text-neutral-600 select-none active:cursor-grabbing"
+                    ondragstart={(e) => onTrajDragStart(i, e)}
+                    ondragend={onTrajDragEnd}
+                    class="shrink-0 cursor-grab text-sky-700/80 select-none active:cursor-grabbing dark:text-sky-400/90"
                     title="Drag to reorder"
                     >⠿</span
                   >
@@ -1328,7 +1351,9 @@
                 </div>
               {/each}
             </div>
-            <p class="sidebar-hint">Stride 1–999 (1 = all frames; 2, 5, 10… writes a smaller file).</p>
+            <p class="sidebar-hint">
+              Stride 1–999 (1 = all frames; 2, 5, 10… writes a smaller file). Drag ⠿ to live-reorder files.
+            </p>
           {/if}
         </div>
       </div>
