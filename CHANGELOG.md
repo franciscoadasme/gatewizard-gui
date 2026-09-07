@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Tools Fix PBC (GROMACS):** default **output** group is **System**, or the index group with the **most atoms** when System is missing — no longer the first listed group (often SOLU alone).
 - **Builder output folder (gatewizard):** after parametrizing ligands or peptide caps into `02_build_*`, Generate Input reuses that same folder instead of creating a timestamped sibling that left GAFF params behind.
 - **Builder ions / Visualize:** tleap neutralization uses the Builder cation/anion (not hardcoded Na+); `add_salt` is passed through to packmol; ion auto-detect groups Amber `Na+`/`K+`/`Cl-` under **ion** (case-insensitive). Neutralize ion selectors stay visible even when bulk salt is off. CPK **Na** color is orange (`#ff8c00`) so it is distinct from purple **K**.
 - **Visualize bonds:** sparse PDB CONECT (common for peptides with HETATM polymer pieces) is densified with distance `guess_bonds` instead of treating any CONECT as complete; PDB LINK records are added as covalent bonds (intra-chain).

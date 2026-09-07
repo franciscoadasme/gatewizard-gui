@@ -234,6 +234,22 @@
     return names.join(' + ')
   }
 
+  /**
+   * Default GROMACS output group: whole system (System), else largest group by atom count.
+   * Avoids picking the first listed group (often SOLU) when System is absent.
+   * @param {Array<{ name?: string, n_atoms?: number }>} groups
+   */
+  function defaultGromacsOutputGroup(groups) {
+    if (!groups?.length) return 'System'
+    const system = groups.find((g) => String(g?.name || '').trim().toLowerCase() === 'system')
+    if (system?.name) return system.name
+    let best = groups[0]
+    for (const g of groups) {
+      if ((Number(g?.n_atoms) || 0) > (Number(best?.n_atoms) || 0)) best = g
+    }
+    return best?.name || 'System'
+  }
+
   /** True when the field still has the auto default (protein, or protein + detected lipids). */
   function isAutoCenterSelection(sel) {
     const s = String(sel || '').trim()
@@ -735,10 +751,7 @@
             : []
       applyCenterDefaults(rec)
       if (fixPbc.selectedOutputGroups.length === 0) {
-        const hasSystem = fixPbc.centerGroups.some((g) => g.name === 'System')
-        fixPbc.selectedOutputGroups = [
-          hasSystem ? 'System' : fixPbc.centerGroups[0]?.name || 'System'
-        ]
+        fixPbc.selectedOutputGroups = [defaultGromacsOutputGroup(fixPbc.centerGroups)]
       }
     } catch {
       /* keep previous groups */
@@ -831,14 +844,7 @@
               : []
         applyCenterDefaults(rec)
         if (fixPbc.selectedOutputGroups.length === 0) {
-          if (info.recommended_output) {
-            fixPbc.selectedOutputGroups = [info.recommended_output]
-          } else {
-            const hasSystem = fixPbc.centerGroups.some((g) => g.name === 'System')
-            fixPbc.selectedOutputGroups = [
-              hasSystem ? 'System' : fixPbc.centerGroups[0]?.name || 'System'
-            ]
-          }
+          fixPbc.selectedOutputGroups = [defaultGromacsOutputGroup(fixPbc.centerGroups)]
         }
       } else if (info.engine === 'gromacs') {
         await refreshCenterGroups()
@@ -1427,6 +1433,7 @@
                     {/if}
                   </p>
                 {/if}
+                {@const defaultOut = defaultGromacsOutputGroup(fixPbc.centerGroups)}
                 <div
                   class="max-h-32 space-y-1 overflow-y-auto rounded border p-2 dark:border-neutral-800"
                 >
@@ -1442,15 +1449,21 @@
                       />
                       <span class="min-w-0 flex-1 truncate font-mono text-neutral-800 dark:text-neutral-300">
                         {g.index}: {g.name}
+                        {#if g.n_atoms}
+                          <span class="text-neutral-500"> ({g.n_atoms})</span>
+                        {/if}
                       </span>
-                      {#if g.name === 'System'}
-                        <span class="shrink-0 text-amber-600 dark:text-amber-400">★</span>
+                      {#if g.name === defaultOut}
+                        <span class="shrink-0 text-amber-600 dark:text-amber-400" title="Default: full system"
+                          >★</span
+                        >
                       {/if}
                     </label>
                   {/each}
                 </div>
                 <p class="sidebar-hint">
-                  Atoms written to the fixed trajectory. ★ System keeps the full system.
+                  Atoms written to the fixed trajectory. Default is ★ System (or the largest group)
+                  so the whole simulation is exported — not SOLU alone.
                 </p>
               {:else}
                 <Input
