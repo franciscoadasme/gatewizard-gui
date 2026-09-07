@@ -9,8 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Builder output folder (gatewizard):** after parametrizing ligands or peptide caps into `02_build_*`, Generate Input reuses that same folder instead of creating a timestamped sibling that left GAFF params behind.
+- **Builder ions / Visualize:** tleap neutralization uses the Builder cation/anion (not hardcoded Na+); `add_salt` is passed through to packmol; ion auto-detect groups Amber `Na+`/`K+`/`Cl-` under **ion** (case-insensitive). Neutralize ion selectors stay visible even when bulk salt is off. CPK **Na** color is orange (`#ff8c00`) so it is distinct from purple **K**.
+- **Visualize bonds:** sparse PDB CONECT (common for peptides with HETATM polymer pieces) is densified with distance `guess_bonds` instead of treating any CONECT as complete; PDB LINK records are added as covalent bonds (intra-chain).
 - **Visualize Open:** bilayer PDBs with Amber-style ``Cl-`` (or other ions) no longer fail with “vdw radii for types: Cl”. Bond guessing excludes ions and supplies Cl/Na/K/… radii; if guessing still fails, the structure loads without bonds instead of aborting.
-- **Preparation PropKa (peptides):** empty editable protonation list no longer hides the structure viewer or blocks Prepare (e.g. gramicidin 1jno with only N+/C−). Shows a clear empty-state message + 3D.
+- **Preparation PropKa (peptides):** empty editable protonation list no longer hides the structure viewer or blocks Prepare (e.g. gramicidin 1jno with only N+/C−). Shows a clear empty-state message + 3D. Soft notes when D-amino acids are present (PropKa ignores CCD D side-chain pKa).
 - **Visualize / Prep representations:** D-aa and formyl/ethanolamine residues (FVA, DLE, DVA, ETA, …) fold into a single biopolymer view — labeled **Peptide** when D-aa/formyl/ETA are present, otherwise **Protein** — instead of separate `resname …` ligand views.
 - **Visualize side panel:** Representations panel expands automatically after a successful structure load (stays collapsed on empty startup).
 - **Run on cluster upload %:** submit NDJSON is excluded from GZip (same as Pull) so progress no longer freezes near ~2% until the window is resized; stream keepalives + a paint yield keep the spinner/% updating during prepare/rsync.
@@ -20,8 +23,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Analysis defaults:** RMSD selection / APL exclude use `protein or resname …` including common D-aa and peptide caps (needs updated gatewizard).
-- **Equilibration (OpenMM):** mini is folded into Eq1 (**GPU**, NVT fixed box); only first packing (Eq3) is **CPU×1**. Collapsed protocol chips match expanded cards (OpenMM mini no longer shows CPU-only). Later eq/production stay **CPU×1 + GPU**. Eq `p_freq=15` → production `100`; cutoff stays 9 Å + LRC (needs updated gatewizard).
 - **Equilibration (Amber):** minimization and first packing barostat default to **CPU×1** (was ×6); later stages stay on GPU.
 - **Analysis EVAPL:** replaced the old COM half-plane clip. Exclude atoms in the **leaflet headgroup Z-range** shrink each owning Voronoi cell with **successive per-atom** clips. The **Exclude cutoff** control is removed for EVAPL (not used).
 - **Analysis Simulation sets:** **Add set** / **Duplicate** sit under the set list; the list can be collapsed, scrolled, and live drag-reordered (⠿ moves chips as you drag).

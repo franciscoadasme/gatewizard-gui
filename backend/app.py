@@ -69,7 +69,9 @@ from gatewizard.utils.protein_capping import (
 from gatewizard.utils.peptide_residues import (
     amber_unsupported_peptide_names_in_pdb,
     classify_polymer_kind,
+    d_amino_acid_names_in_pdb,
     detect_peptide_caps_in_pdb,
+    detect_peptide_caps_needing_gaff,
     is_peptide_polymer_residue,
     mda_peptide_or_protein_selection,
     remap_pdb_peptide_resnames,
@@ -121,6 +123,10 @@ from gatewizard.tools.ligand_parametrization import (
     get_ligand_2d_image,
     get_ligand_2d_image_from_pdb_lines,
 )
+from gatewizard.tools.peptide_cap_parametrization import (
+    check_peptide_cap_parametrization,
+    parametrize_all_peptide_caps_from_system_pdb,
+)
 from gatewizard.utils import amber_analysis
 from gatewizard.utils import namd_analysis
 from gatewizard.utils import gromacs_analysis
@@ -143,60 +149,17 @@ from gatewizard.utils.equilibration_job_metadata import (
     write_equilibration_job_metadata,
 )
 from gatewizard.utils.equilibration_templates import normalize_scheme_label
+from gatewizard.utils.ions import (
+    ion_mda_selection,
+    is_ion_resname,
+)
 from gatewizard.utils.optional_deps import (
     get_dependency_versions,
     list_md_engine_candidates,
     parse_engine_variant,
 )
 
-ION_NAMES = [
-    "NA",
-    "NA+",
-    "CL",
-    "CL-",
-    "Cl-",
-    "CLA",
-    "K",
-    "K+",
-    "POT",
-    "MG",
-    "MG2",
-    "ZN",
-    "ZN2",
-    "CA",
-    "CA2",
-    "CAL",
-    "MN",
-    "FE",
-    "FE2",
-    "FE3",
-    "CU",
-    "CU1",
-    "CU2",
-    "NI",
-    "CD",
-    "HG",
-    "CS",
-    "RB",
-    "SR",
-    "BA",
-    "I",
-    "BR",
-    "F",
-    "LI",
-    "AL",
-    "CR",
-    "AG",
-    "AU",
-    "PB",
-    "SOD",
-    "CES",
-    "BAR",
-    "LIT",
-    "RUB",
-    "NH4",
-]
-ION_SELECTION = "resname " + " ".join(ION_NAMES)
+ION_SELECTION = ion_mda_selection()
 
 # Extra VdW radii for guess_bonds — MDA tables often miss ion element types (Cl, …).
 _GUESS_BOND_VDWRADII = {
@@ -339,6 +302,109 @@ def _universe_has_bonds(u: mda.Universe) -> bool:
         return False
 
 
+def _bond_coverage_dense(u: mda.Universe, *, min_bonds_per_atom: float = 0.45) -> bool:
+    """True when existing bonds look complete enough to skip distance guessing.
+
+    Partial PDB CONECT (common for HETATM-heavy peptides) often yields far fewer
+    bonds than atoms; those should still be densified with guess_bonds.
+    """
+    try:
+        n_atoms = int(len(u.atoms))
+        n_bonds = int(len(u.bonds))
+    except (mda.exceptions.NoDataError, AttributeError, TypeError, ValueError):
+        return False
+    if n_atoms <= 0:
+        return False
+    if n_bonds >= max(1, int(min_bonds_per_atom * n_atoms)):
+        return True
+    # Also require most heavy atoms to participate in at least one bond.
+    bonded: set[int] = set()
+    try:
+        for bond in u.bonds:
+            bonded.add(int(bond.atoms[0].index))
+            bonded.add(int(bond.atoms[1].index))
+    except Exception:
+        return n_bonds >= max(1, int(min_bonds_per_atom * n_atoms))
+    heavy = 0
+    heavy_bonded = 0
+    for atom in u.atoms:
+        name = str(atom.name).strip().upper()
+        el = ""
+        try:
+            el = str(atom.element).strip().upper()
+        except (mda.exceptions.NoDataError, AttributeError):
+            el = ""
+        if el == "H" or name.startswith("H"):
+            continue
+        heavy += 1
+        if int(atom.index) in bonded:
+            heavy_bonded += 1
+    if heavy <= 0:
+        return True
+    return (heavy_bonded / heavy) >= 0.70
+
+
+def _existing_bond_pairs(u: mda.Universe) -> set[tuple[int, int]]:
+    pairs: set[tuple[int, int]] = set()
+    try:
+        for bond in u.bonds:
+            i = int(bond.atoms[0].index)
+            j = int(bond.atoms[1].index)
+            pairs.add((i, j) if i < j else (j, i))
+    except (mda.exceptions.NoDataError, AttributeError, TypeError, ValueError):
+        pass
+    return pairs
+
+
+def _add_bonds_from_pdb_link_records(pdb_path: str, u: mda.Universe) -> int:
+    """Add covalent bonds from PDB LINK records (intra-chain peptide links, etc.)."""
+    serial_to_index: dict[int, int] = {}
+    try:
+        for atom in u.atoms:
+            try:
+                serial = int(atom.id)
+            except (TypeError, ValueError, AttributeError):
+                continue
+            serial_to_index[serial] = int(atom.index)
+    except Exception:
+        return 0
+
+    existing = _existing_bond_pairs(u)
+    new_pairs: list[tuple[int, int]] = []
+    try:
+        with open(pdb_path, "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if not line.startswith("LINK"):
+                    continue
+                # PDB LINK: atom1 serial cols 23-27, atom2 serial cols 53-57 (1-based)
+                if len(line) < 57:
+                    continue
+                try:
+                    s1 = int(line[22:27].strip())
+                    s2 = int(line[52:57].strip())
+                except ValueError:
+                    continue
+                if s1 not in serial_to_index or s2 not in serial_to_index:
+                    continue
+                i = serial_to_index[s1]
+                j = serial_to_index[s2]
+                key = (i, j) if i < j else (j, i)
+                if key in existing:
+                    continue
+                existing.add(key)
+                new_pairs.append(key)
+    except OSError:
+        return 0
+
+    if not new_pairs:
+        return 0
+    try:
+        u.add_bonds(new_pairs)
+    except Exception:
+        return 0
+    return len(new_pairs)
+
+
 def _add_water_template_bonds(u: mda.Universe) -> int:
     """Add cheap intra-residue O–H bonds for standard water residues (no KD-tree)."""
     pairs: list[tuple[int, int]] = []
@@ -374,21 +440,34 @@ def _add_water_template_bonds(u: mda.Universe) -> int:
     return len(pairs)
 
 
-def _ensure_bonds_efficient(u: mda.Universe) -> str:
+def _ensure_bonds_efficient(u: mda.Universe, pdb_path: str | None = None) -> str:
     """Ensure covalent bonds without a full-system guess_bonds when possible.
 
-    Returns a short source label: ``topology``, ``solute+water``, ``guessed``, or ``none``.
+    Returns a short source label: ``topology``, ``solute+water``, ``guessed``,
+    ``densified``, ``link+densified``, or ``none``.
     Ions (e.g. Amber ``Cl-``) are excluded from guessing — MDA lacks default VdW for
     type ``Cl`` and would abort the whole structure load.
+
+    Sparse PDB CONECT (common for peptides with HETATM polymer pieces) is densified
+    by merging distance-guessed bonds rather than treating any CONECT as complete.
     """
-    if _universe_has_bonds(u):
+    if pdb_path:
+        try:
+            n_link = _add_bonds_from_pdb_link_records(pdb_path, u)
+            if n_link:
+                print(f"INFO:     /get-structure added {n_link} bond(s) from LINK records")
+        except Exception as ex:
+            print(f"WARNING:  /get-structure LINK bond parse failed ({ex})")
+
+    has_bonds = _universe_has_bonds(u)
+    if has_bonds and _bond_coverage_dense(u):
         return "topology"
+
+    before = _existing_bond_pairs(u)
 
     def _guess(ag: mda.AtomGroup) -> None:
         ag.guess_bonds(vdwradii=_GUESS_BOND_VDWRADII)
 
-    # Prefer guessing on solute only — water dominates atom count in prepared systems.
-    # Exclude ions: they are monoatomic and break guess_bonds without vdwradii.
     solute = None
     try:
         solute = u.select_atoms(
@@ -402,21 +481,30 @@ def _ensure_bonds_efficient(u: mda.Universe) -> str:
             print(
                 f"INFO:     /get-structure guessing bonds for solute "
                 f"({len(solute)}/{len(u.atoms)} atoms; ions excluded)"
+                + (" [densify sparse CONECT]" if has_bonds else "")
             )
             _guess(solute)
             _add_water_template_bonds(u)
-            return "solute+water"
-        print(f"INFO:     /get-structure guessing bonds for all {len(u.atoms)} atoms")
+            after = _existing_bond_pairs(u)
+            if has_bonds and len(after) > len(before):
+                return "densified"
+            return "solute+water" if not has_bonds else "densified"
+        print(
+            f"INFO:     /get-structure guessing bonds for all {len(u.atoms)} atoms"
+            + (" [densify sparse CONECT]" if has_bonds else "")
+        )
         _guess(u.atoms)
+        if has_bonds:
+            return "densified"
         return "guessed"
     except Exception as ex:
         # Never fail the whole Open / get-structure on a missing VdW type.
-        print(f"WARNING:  /get-structure bond guess failed ({ex}); loading without bonds")
+        print(f"WARNING:  /get-structure bond guess failed ({ex}); loading without densify")
         try:
             _add_water_template_bonds(u)
         except Exception:
             pass
-        return "none"
+        return "topology" if has_bonds else "none"
 
 
 def _ensure_elements(atoms: mda.AtomGroup) -> None:
@@ -705,16 +793,18 @@ def load_structure(
             else:
                 u = mda.Universe(str(path))
             already = _universe_has_bonds(u)
+            # Companion topology bonds are trusted; sparse PDB CONECT is not.
+            bonds_complete = bool(top_path) or (already and _bond_coverage_dense(u))
             entry = FileCacheEntry(
                 mtime,
                 file_size,
                 u,
-                bond_guessed=already,
+                bond_guessed=bonds_complete,
                 topology_path=str(top_path) if top_path else None,
                 topology_mtime=top_mtime,
             )
             FILE_CACHE[key] = entry
-            if already:
+            if bonds_complete:
                 bond_source = "topology"
         else:
             u = entry.universe
@@ -722,7 +812,7 @@ def load_structure(
                 bond_source = "topology" if top_path else "guessed"
 
         if needs_bonds and not entry.bond_guessed:
-            bond_source = _ensure_bonds_efficient(u)
+            bond_source = _ensure_bonds_efficient(u, pdb_path=str(path))
             entry.bond_guessed = True
         elif needs_bonds and entry.bond_guessed and bond_source == "none":
             bond_source = "topology" if _universe_has_bonds(u) else "none"
@@ -842,6 +932,7 @@ class ValidateBuilderRequest(BaseModel):
     )
     parametrize: bool = True
     ligand_params: list | None = None
+    peptide_cap_params: list | None = None
     solutes: list | None = None
     solute_inmem: bool = False
     solute_prot_dist: float | None = None
@@ -882,6 +973,7 @@ class StartPreparationRequest(BaseModel):
     salt_concentration: float = 0.15
     cation: str = "K+"
     anion: str = "Cl-"
+    add_salt: bool = True
     dist: float = Field(
         12,
         description="Minimum solute-to-box-boundary distance in Angstroms (--dist)",
@@ -897,6 +989,7 @@ class StartPreparationRequest(BaseModel):
         None, description="Project working directory from the GUI top bar"
     )
     ligand_params: list | None = None
+    peptide_cap_params: list | None = None
     solutes: list | None = None
     solute_inmem: bool = False
     solute_prot_dist: float | None = None
@@ -1070,10 +1163,19 @@ def run_propka(payload: RunPropKaRequest) -> dict:
             for c in detect_peptide_caps_in_pdb(path)
             if c in {"FVA", "FOR", "ETA"}
         ]
+        d_aa_names = d_amino_acid_names_in_pdb(path)
+        propka_notes: list[str] = []
         if native_caps and not capping_warning:
             capping_warning = (
                 f"Native peptide caps detected ({', '.join(native_caps)}). "
                 "Do not add ACE/NME — PropKa N+/C− for this structure may be misleading."
+            )
+        if d_aa_names:
+            propka_notes.append(
+                "D-amino acids detected ("
+                + ", ".join(d_aa_names)
+                + "). PropKa does not assign side-chain pKa under CCD D names; "
+                "ionizable D residues are ignored in this release."
             )
         return dict(
             residues=editable,
@@ -1085,6 +1187,8 @@ def run_propka(payload: RunPropKaRequest) -> dict:
             job_dir=str(job_dir),
             working_path=path,
             capping_warning=capping_warning,
+            d_amino_acids=d_aa_names,
+            propka_notes=propka_notes,
         )
 
     except Exception as ex:
@@ -1101,6 +1205,7 @@ def detect_ligands_endpoint(payload: DetectLigandsRequest) -> dict:
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
     try:
         ligands = detect_ligands(path)
+        peptide_caps = detect_peptide_caps_needing_gaff(path)
         return {
             "ligands": [
                 {
@@ -1113,9 +1218,66 @@ def detect_ligands_endpoint(payload: DetectLigandsRequest) -> dict:
                 for lig in ligands
             ],
             "peptide_amber_warnings": amber_unsupported_peptide_names_in_pdb(path),
+            "peptide_caps": peptide_caps,
+            "d_amino_acids": d_amino_acid_names_in_pdb(path),
         }
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+class ParametrizePeptideCapsRequest(BaseModel):
+    path: str = Field(..., description="Absolute path to a system PDB")
+    output_dir: str | None = Field(
+        None,
+        description="Base directory for peptide_cap_params/ (Builder output folder).",
+    )
+    charges: dict[str, int] | None = Field(
+        None, description="Optional formal charge per cap residue name"
+    )
+
+
+@app.post("/parametrize-peptide-caps")
+def parametrize_peptide_caps_endpoint(payload: ParametrizePeptideCapsRequest) -> dict:
+    path = os.path.abspath(os.path.expanduser(payload.path))
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    working_dir = (
+        os.path.abspath(os.path.expanduser(payload.output_dir))
+        if payload.output_dir
+        else os.path.dirname(path)
+    )
+    try:
+        results = parametrize_all_peptide_caps_from_system_pdb(
+            pdb_file=path,
+            output_dir=working_dir,
+            charges=payload.charges or {},
+        )
+        return {"caps": results, "names": list(results.keys())}
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+class CheckPeptideCapParametrizationRequest(BaseModel):
+    path: str = Field(..., description="System PDB (used only for naming context)")
+    cap_names: list[str] = Field(default_factory=list)
+    output_dir: str | None = None
+
+
+@app.post("/check-peptide-cap-parametrization")
+def check_peptide_cap_parametrization_endpoint(
+    payload: CheckPeptideCapParametrizationRequest,
+) -> dict:
+    if payload.output_dir:
+        working_dir = os.path.abspath(os.path.expanduser(payload.output_dir))
+    else:
+        path = os.path.abspath(os.path.expanduser(payload.path))
+        working_dir = os.path.dirname(path)
+    names = payload.cap_names or []
+    if not names and payload.path:
+        p = os.path.abspath(os.path.expanduser(payload.path))
+        if os.path.isfile(p):
+            names = [c["name"] for c in detect_peptide_caps_needing_gaff(p)]
+    return {"parametrized": check_peptide_cap_parametrization(working_dir, names)}
 
 
 @app.post("/detect-terminal-caps")
@@ -2172,6 +2334,27 @@ def project_status(directory: str) -> dict:
     return {"tasks": tasks, "active": active}
 
 
+def _ligand_params_dict(entries: list | None) -> dict:
+    out = {}
+    for lp in entries or []:
+        if (
+            isinstance(lp, dict)
+            and lp.get("name")
+            and lp.get("frcmod")
+            and lp.get("lib")
+        ):
+            item = {"frcmod": lp["frcmod"], "lib": lp["lib"]}
+            if "charge" in lp:
+                try:
+                    item["charge"] = int(lp.get("charge") or 0)
+                except (TypeError, ValueError):
+                    item["charge"] = 0
+            if lp.get("atom_type"):
+                item["atom_type"] = lp["atom_type"]
+            out[str(lp["name"])] = item
+    return out
+
+
 @app.post("/validate-builder")
 def validate_builder(payload: ValidateBuilderRequest) -> dict:
     path = (payload.path or "").strip()
@@ -2199,11 +2382,8 @@ def validate_builder(payload: ValidateBuilderRequest) -> dict:
             dims=payload.dims,
             remove_protein_h=payload.remove_protein_h,
             parametrize=payload.parametrize,
-            ligand_params={
-                lp["name"]: {"frcmod": lp["frcmod"], "lib": lp["lib"]}
-                for lp in (payload.ligand_params or [])
-                if isinstance(lp, dict) and lp.get("name") and lp.get("frcmod") and lp.get("lib")
-            },
+            ligand_params=_ligand_params_dict(payload.ligand_params),
+            peptide_cap_params=_ligand_params_dict(payload.peptide_cap_params),
             solutes=payload.solutes or [],
             solute_inmem=payload.solute_inmem,
             solute_prot_dist=payload.solute_prot_dist,
@@ -2242,16 +2422,14 @@ def _configure_builder(payload: StartPreparationRequest) -> Builder:
         salt_concentration=payload.salt_concentration,
         cation=payload.cation,
         anion=payload.anion,
+        add_salt=payload.add_salt,
         dist=payload.dist,
         dist_wat=payload.dist_wat,
         distxy_fix=payload.distxy_fix,
         dims=payload.dims,
         output_folder_name=payload.output_folder_name or None,
-        ligand_params={
-            lp["name"]: {"frcmod": lp["frcmod"], "lib": lp["lib"]}
-            for lp in (payload.ligand_params or [])
-            if isinstance(lp, dict) and lp.get("name") and lp.get("frcmod") and lp.get("lib")
-        },
+        ligand_params=_ligand_params_dict(payload.ligand_params),
+        peptide_cap_params=_ligand_params_dict(payload.peptide_cap_params),
         solutes=payload.solutes or [],
         solute_inmem=payload.solute_inmem,
         solute_prot_dist=payload.solute_prot_dist,
@@ -5115,7 +5293,12 @@ def detect_molecules(payload: DetectMoleculesRequest) -> list[dict]:
         idxs.extend(polymer_atoms.indices)
 
     for name in ["water", "lipid", "ion"]:
-        atoms = u.select_atoms(NAMED_SELECTIONS[name])
+        if name == "ion":
+            # Case-insensitive: Amber writes Na+/K+/Cl-; MDA resname match is case-sensitive.
+            mask = [is_ion_resname(str(rn)) for rn in u.atoms.resnames]
+            atoms = u.atoms[mask]
+        else:
+            atoms = u.select_atoms(NAMED_SELECTIONS[name])
         if len(atoms) == 0:
             continue
         datalist.append(
@@ -5133,6 +5316,8 @@ def detect_molecules(payload: DetectMoleculesRequest) -> list[dict]:
     for resname in set(res.resname for res in leftover.residues):
         # Polymer HETs already in protein/peptide — never emit resname FVA/DLE/…
         if is_peptide_polymer_residue(str(resname)):
+            continue
+        if is_ion_resname(str(resname)):
             continue
         residues = leftover.select_atoms(f"resname {resname}")
         if len(residues) == 0:

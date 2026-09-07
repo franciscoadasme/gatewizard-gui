@@ -199,7 +199,7 @@ export function cpkScheme({ carbonColor = undefined } = {}) {
     Zn: new Color(0x7d80b0),
     Cu: new Color(0xc78033),
     Mn: new Color(0x9c78c7),
-    Na: new Color(0xab5cf0),
+    Na: new Color(0xff8c00),
     Mg: new Color(0x8a99c7),
     Ca: new Color(0xab5cf0),
     K: new Color(0x8f40d4),

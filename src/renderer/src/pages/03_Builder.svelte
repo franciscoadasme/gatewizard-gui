@@ -16,6 +16,8 @@
     cancelPreparation,
     detectLigands,
     parametrizeLigand,
+    parametrizePeptideCaps,
+    checkPeptideCapParametrization,
     getLigandImage,
     checkLigandParametrization,
     getJobStatus,
@@ -137,6 +139,19 @@
   /** @type {LigandRow[]} */
   let ligands = $state([])
   let peptideAmberWarning = $state('')
+  /**
+   * @typedef {{
+   *   name: string,
+   *   role: string,
+   *   status: string,
+   *   frcmod: string,
+   *   lib: string,
+   *   charge: number
+   * }} PeptideCapRow
+   */
+  /** @type {PeptideCapRow[]} */
+  let peptideCaps = $state([])
+  let parametrizingCaps = $state(false)
   let detectingLigands = $state(false)
 
   // ── Jobs ──
@@ -396,6 +411,68 @@
     await loadLigandImage(index, view)
   }
 
+  /**
+   * Scan polymer caps (FVA/FOR/ETA) for the current PDB and restore cached libs.
+   * Called automatically on PDB select so users who skip ligand Detect still see caps.
+   * @param {string} filePath
+   */
+  async function scanPeptideCapsForPdb(filePath) {
+    if (!filePath) {
+      peptideCaps = []
+      peptideAmberWarning = ''
+      return
+    }
+    try {
+      const data = await detectLigands(filePath)
+      const warn = Array.isArray(data.peptide_amber_warnings)
+        ? data.peptide_amber_warnings
+        : []
+      const caps = Array.isArray(data.peptide_caps) ? data.peptide_caps : []
+      peptideCaps = caps.map((c) => ({
+        name: c.name,
+        role: c.role || 'unknown',
+        status: 'not_parametrized',
+        frcmod: '',
+        lib: '',
+        charge: 0
+      }))
+      peptideAmberWarning = warn.length
+        ? `Peptide caps ${warn.join(', ')} stay in the polymer (not free ligands). Parametrize them below before Build so tleap/packmol can load GAFF libs.`
+        : ''
+
+      if (peptideCaps.length === 0) return
+
+      let outputDirForCache = ''
+      try {
+        if (resolvedOutputParent) outputDirForCache = requireBuilderOutputDir()
+      } catch {
+        // fall back to PDB directory on backend
+      }
+      const { parametrized } = await checkPeptideCapParametrization(
+        filePath,
+        peptideCaps.map((c) => c.name),
+        outputDirForCache || null
+      )
+      for (let i = 0; i < peptideCaps.length; i++) {
+        const cached = parametrized[peptideCaps[i].name]
+        if (cached) {
+          peptideCaps[i] = {
+            ...peptideCaps[i],
+            status: 'completed',
+            frcmod: cached.frcmod,
+            lib: cached.lib,
+            charge: cached.charge || 0
+          }
+        }
+      }
+      peptideCaps = [...peptideCaps]
+    } catch (error) {
+      console.error('Peptide-cap scan error:', error)
+      peptideCaps = []
+      peptideAmberWarning = ''
+    }
+  }
+
   async function onDetectLigands() {
     if (!workingFile) return
     try {
@@ -415,20 +492,16 @@
         finalImageBase64: '',
         imageLoading: false
       }))
-      const warn = Array.isArray(data.peptide_amber_warnings)
-        ? data.peptide_amber_warnings
-        : []
-      peptideAmberWarning = warn.length
-        ? `Peptide residues ${warn.join(', ')} are part of the polymer (not GAFF ligands) but may need extra Amber libraries / frcmod for tleap (formyl / ethanolamine).`
-        : ''
 
-      // Check if any ligands were already parametrized in a previous run
+      await scanPeptideCapsForPdb(workingFile)
+
       const names = ligands.map((l) => l.name)
       logEvent(
         'detail',
         'build',
         `Detected ligands`,
-        `${ligands.length} ligand(s): ${names.join(', ') || '—'}`
+        `${ligands.length} ligand(s): ${names.join(', ') || '—'}; ` +
+          `${peptideCaps.length} peptide cap(s): ${peptideCaps.map((c) => c.name).join(', ') || '—'}`
       )
       if (names.length > 0) {
         let outputDirForCache = ''
@@ -457,13 +530,47 @@
         }
       }
 
-      // Load images for all detected ligands (in parallel)
       await Promise.all(ligands.map((lig, i) => loadLigandImage(i, lig.imageView)))
     } catch (error) {
-      // Show error in the first job or as a standalone message
       console.error('Ligand detection error:', error)
     } finally {
       detectingLigands = false
+    }
+  }
+
+  async function onParametrizePeptideCaps() {
+    if (!workingFile || peptideCaps.length === 0) return
+    try {
+      const builderOut = requireBuilderOutputDir()
+      parametrizingCaps = true
+      peptideCaps = peptideCaps.map((c) => ({ ...c, status: 'running' }))
+      const charges = Object.fromEntries(peptideCaps.map((c) => [c.name, c.charge || 0]))
+      const result = await parametrizePeptideCaps(workingFile, builderOut, charges)
+      const caps = result.caps || {}
+      peptideCaps = peptideCaps.map((c) => {
+        const done = caps[c.name]
+        if (!done) return { ...c, status: 'failed' }
+        return {
+          ...c,
+          status: 'completed',
+          frcmod: done.frcmod || '',
+          lib: done.lib || '',
+          charge: done.charge ?? c.charge
+        }
+      })
+      logEvent(
+        'detail',
+        'build',
+        `Parametrized peptide caps: ${Object.keys(caps).join(', ')}`,
+        `Output: ${builderOut}/peptide_cap_params/`
+      )
+    } catch (error) {
+      peptideCaps = peptideCaps.map((c) =>
+        c.status === 'running' ? { ...c, status: 'failed' } : c
+      )
+      alert(error instanceof Error ? error.message : String(error))
+    } finally {
+      parametrizingCaps = false
     }
   }
 
@@ -643,6 +750,14 @@
     const ligandFromSolutes = soluteRows
       .filter((s) => s.frcmod && s.lib && s.name)
       .map((s) => ({ name: s.name, frcmod: s.frcmod, lib: s.lib }))
+    const peptideCapParams = peptideCaps
+      .filter((c) => c.frcmod && c.lib && c.name)
+      .map((c) => ({
+        name: c.name,
+        frcmod: c.frcmod,
+        lib: c.lib,
+        charge: c.charge || 0
+      }))
     const protDist = parseFloat(String(soluteProtDist))
     return {
       path: includeProtein ? workingFile : '',
@@ -680,6 +795,7 @@
       outputFolderName: outputFolderName.trim() || null,
       workingDir: resolvedOutputParent || null,
       ligandParams: [...ligandFromProtein, ...ligandFromSolutes],
+      peptideCapParams,
       solutes: soluteRows.map((s) => ({
         pdb: s.pdb,
         name: s.name,
@@ -938,6 +1054,8 @@
     outputFolderName = ''
     outputParentDir = ''
     ligands = []
+    peptideCaps = []
+    peptideAmberWarning = ''
     solutes = []
   }
 
@@ -952,6 +1070,8 @@
     outputParentDir = ''
     jobs = []
     ligands = []
+    peptideCaps = []
+    peptideAmberWarning = ''
     solutes = []
     validationResult = null
     launching = false
@@ -1017,7 +1137,19 @@
     if (!result.canceled) {
       workingFile = result.filePath
       outputFolderName = defaultBuildFolderName(result.filePath)
-      await refreshProteinHydrogenStatus(result.filePath)
+      ligands = []
+      await Promise.all([
+        refreshProteinHydrogenStatus(result.filePath),
+        scanPeptideCapsForPdb(result.filePath)
+      ])
+      if (peptideCaps.length > 0) {
+        logEvent(
+          'detail',
+          'build',
+          'Detected peptide caps',
+          peptideCaps.map((c) => `${c.name} (${c.role})`).join(', ')
+        )
+      }
     }
   }
 </script>
@@ -1075,7 +1207,58 @@
     <Divider />
 
     {#if includeProtein}
-    <!-- Ligand Parametrization (must run before packmol-memgen) -->
+    <!-- Peptide caps: auto-scanned on PDB select (not behind ligand Detect) -->
+    {#if workingFile && (peptideCaps.length > 0 || peptideAmberWarning)}
+    <div class="space-y-2">
+      <h2 class="sidebar-heading">Peptide caps</h2>
+      {#if peptideAmberWarning}
+        <p class="gw-notice gw-notice-warning text-[11px] leading-snug">
+          {peptideAmberWarning}
+        </p>
+      {/if}
+      {#if peptideCaps.length > 0}
+        <div class="sidebar-panel space-y-1.5 p-2">
+          <div class="flex items-center justify-between gap-2">
+            <span class="sidebar-hint">Polymer termini (GAFF libs for tleap)</span>
+            <Button
+              variant="secondary"
+              className="text-xs px-1.5 py-0.5"
+              onclick={onParametrizePeptideCaps}
+              disabled={parametrizingCaps || !workingFile}
+            >
+              {parametrizingCaps ? 'Parametrizing...' : 'Parametrize caps'}
+            </Button>
+          </div>
+          {#each peptideCaps as cap (cap.name)}
+            <div class="flex items-center justify-between text-[11px] gap-2">
+              <span>
+                {cap.name}
+                <span class="opacity-60">({cap.role})</span>
+              </span>
+              <span
+                class="rounded px-1 py-0.5"
+                class:bg-neutral-700={cap.status === 'not_parametrized'}
+                class:bg-yellow-800={cap.status === 'running'}
+                class:bg-green-800={cap.status === 'completed'}
+                class:bg-red-800={cap.status === 'failed'}
+              >
+                {cap.status === 'not_parametrized'
+                  ? 'Pending'
+                  : cap.status === 'running'
+                    ? 'Running...'
+                    : cap.status === 'completed'
+                      ? 'Done'
+                      : 'Failed'}
+              </span>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+    <Divider />
+    {/if}
+
+    <!-- Ligand Parametrization (free ligands; Detect still required) -->
     <div class="space-y-2">
       <div class="flex items-center justify-between">
         <h2 class="sidebar-heading">Ligand Parametrization</h2>
@@ -1096,12 +1279,7 @@
       </div>
       {#if ligands.length === 0}
         <p class="sidebar-hint">
-          No ligands. Click "Detect" after selecting a PDB, or add manually.
-        </p>
-      {/if}
-      {#if peptideAmberWarning}
-        <p class="gw-notice gw-notice-warning text-[11px] leading-snug">
-          {peptideAmberWarning}
+          No free ligands. Click "Detect" after selecting a PDB, or add manually.
         </p>
       {/if}
       {#each ligands as lig, i (i)}
@@ -1475,7 +1653,7 @@
       {/if}
       <div class="flex items-center gap-2">
         <Checkbox name="add-salt" bind:checked={addSalt} />
-        <span class="sidebar-label">Add salt</span>
+        <span class="sidebar-label">Add bulk salt</span>
       </div>
       {#if addSalt}
         <div class="flex flex-wrap items-center gap-1 pl-6">
@@ -1486,21 +1664,28 @@
             bind:value={saltConcentration}
           />
           <span class="sidebar-label">M</span>
-          <select
-            class="sidebar-control p-1"
-            bind:value={cation}
-          >
-            <option value="K+">K+</option>
-            <option value="Na+">Na+</option>
-          </select>
-          <select
-            class="sidebar-control p-1"
-            bind:value={anion}
-          >
-            <option value="Cl-">Cl-</option>
-          </select>
         </div>
       {/if}
+      <div class="pl-0 space-y-1">
+        <span class="sidebar-label text-xs opacity-80"
+          >Neutralize with (tleap; also packmol salt ions when bulk salt is on)</span
+        >
+        <div class="flex flex-wrap items-center gap-1">
+          <select class="sidebar-control p-1" bind:value={cation} title="Cation for neutralization (and bulk salt)">
+            <option value="K+">K+</option>
+            <option value="Na+">Na+</option>
+            <option value="Li+">Li+</option>
+            <option value="Rb+">Rb+</option>
+            <option value="Cs+">Cs+</option>
+          </select>
+          <select class="sidebar-control p-1" bind:value={anion} title="Anion for neutralization (and bulk salt)">
+            <option value="Cl-">Cl-</option>
+            <option value="Br-">Br-</option>
+            <option value="F-">F-</option>
+            <option value="I-">I-</option>
+          </select>
+        </div>
+      </div>
       <div class="flex items-center gap-2">
         <label class="sidebar-label flex items-center gap-1">
           <input type="radio" name="box-sizing" value="water_layer" bind:group={boxSizingMode} />

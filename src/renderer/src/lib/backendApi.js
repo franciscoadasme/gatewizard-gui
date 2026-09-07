@@ -202,6 +202,33 @@ export function detectLigands(filePath) {
 }
 
 /**
+ * Parametrize GAFF polymer caps (FVA/FOR/ETA) under peptide_cap_params/.
+ * @param {string} filePath
+ * @param {string | null} [outputDir]
+ * @param {Record<string, number>} [charges]
+ */
+export function parametrizePeptideCaps(filePath, outputDir = null, charges = null) {
+  return backendJson('/parametrize-peptide-caps', {
+    path: filePath,
+    ...(outputDir ? { outputDir } : {}),
+    ...(charges ? { charges } : {})
+  })
+}
+
+/**
+ * @param {string} pdbPath
+ * @param {string[]} capNames
+ * @param {string | null} [outputDir]
+ */
+export function checkPeptideCapParametrization(pdbPath, capNames, outputDir = null) {
+  return backendJson('/check-peptide-cap-parametrization', {
+    path: pdbPath,
+    capNames,
+    ...(outputDir ? { outputDir } : {})
+  })
+}
+
+/**
  * Count protein-only hydrogens in a PDB (ligands / hetero H ignored).
  * @param {string} filePath
  * @returns {Promise<{ count: number, has_protein_hydrogens: boolean }>}

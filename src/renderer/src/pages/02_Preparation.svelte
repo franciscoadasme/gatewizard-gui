@@ -324,6 +324,11 @@
         cappingWarning = data.capping_warning
         logEvent('info', 'prep', data.capping_warning)
       }
+      if (Array.isArray(data.propka_notes)) {
+        for (const note of data.propka_notes) {
+          if (note) logEvent('info', 'prep', note)
+        }
+      }
       preparationStatus.propkaDone = true
       preparationStatus.propkaPh = targetPh
       lastPropKaFile = workingFile
