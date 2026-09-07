@@ -54,17 +54,17 @@ export const APL_METHODS = [
   {
     id: 'evapl',
     label: 'EVAPL (default)',
-    hint: 'Exclusion-aware Voronoi Area Per Lipid: periodic Voronoi; protein (etc.) atoms in the leaflet headgroup Z-range shrink each owning cell with successive half-plane clips. No exclude cutoff.'
+    hint: 'Exclusion-aware Voronoi APL: protein (and other) atoms in the leaflet headgroup Z-range shrink lipid cells.'
   },
   {
     id: 'lipyphilic',
     label: 'Box Voronoi (lipyphilic)',
-    hint: 'Pure-lipid reference only. Ignores occupants; mean ≈ box XY / lipids per leaflet. Not recommended when protein, DNA, or other non-lipids occupy the leaflet — use EVAPL, GridMAT, or VTMC.'
+    hint: 'Pure-lipid reference only. Ignores occupants; mean ≈ box XY / lipids per leaflet. Prefer EVAPL when protein or other non-lipids are present.'
   },
   {
     id: 'gridmat',
     label: 'GridMAT-MD',
-    hint: 'Assign a grid to the nearest headgroup or nearby protein atom (Allen et al. 2009).'
+    hint: 'Grid assigned to the nearest headgroup or nearby protein atom (Allen et al. 2009).'
   },
   {
     id: 'vtmc',

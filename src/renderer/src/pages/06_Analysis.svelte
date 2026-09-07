@@ -6886,10 +6886,15 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
             {#if structuralType === 'area_per_lipid'}
               <div class="space-y-2">
-                <p class="sidebar-label">APL method</p>
-                <Select size="sm" bind:value={aplMethod} className="w-full">
+                <p class="sidebar-label" title={aplMethodHint || undefined}>APL method</p>
+                <Select
+                  size="sm"
+                  bind:value={aplMethod}
+                  className="w-full"
+                  title={aplMethodHint || undefined}
+                >
                   {#each APL_METHODS as method (method.id)}
-                    <option value={method.id}>{method.label}</option>
+                    <option value={method.id} title={method.hint}>{method.label}</option>
                   {/each}
                 </Select>
                 {#if aplMethod === 'lipyphilic'}
@@ -6898,25 +6903,26 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     inflated to box / lipids per leaflet. Use EVAPL (default) for
                     leaflets that contain protein, peptide, DNA, or other occupants.
                   </p>
-                {:else if aplMethodHint}
-                  <p class="sidebar-hint">{aplMethodHint}</p>
                 {/if}
 
                 {#if aplMethod !== 'lipyphilic'}
+                  <p
+                    class="sidebar-label"
+                    title={aplMethod === 'evapl'
+                      ? 'Non-lipid atoms that reduce lipid-accessible area (protein, peptide, DNA, ligands, …). Only atoms in the leaflet headgroup Z-range are used.'
+                      : 'Non-lipid atoms that reduce lipid-accessible area (protein, peptide, DNA, ligands, …). Leave empty for none.'}
+                  >
+                    Exclude atoms
+                  </p>
                   <Input
                     size="sm"
                     bind:value={excludeSel}
-                    placeholder="Exclude selection (empty = none)"
+                    placeholder="empty = none"
                     className="w-full"
-                    title="Non-lipid atoms that reduce lipid-accessible area (protein, peptide, DNA, ligands, …)"
+                    title={aplMethod === 'evapl'
+                      ? 'Non-lipid atoms that reduce lipid-accessible area (protein, peptide, DNA, ligands, …). Only atoms in the leaflet headgroup Z-range are used.'
+                      : 'Non-lipid atoms that reduce lipid-accessible area (protein, peptide, DNA, ligands, …). Leave empty for none.'}
                   />
-                {/if}
-
-                {#if aplMethod === 'evapl'}
-                  <p class="sidebar-hint">
-                    Exclude atoms are limited to the leaflet headgroup Z-range automatically
-                    (no cutoff to set).
-                  </p>
                 {/if}
 
                 {#if aplMethod === 'gridmat'}

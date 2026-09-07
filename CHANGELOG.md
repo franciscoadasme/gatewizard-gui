@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Analysis APL UI:** method blurb under the dropdown removed (details on hover); **Exclude atoms** is a clear label before the selection, with the longer explanation on hover.
 - **Tools Fix PBC (GROMACS):** default **output** group is **System**, or the index group with the **most atoms** when System is missing — no longer the first listed group (often SOLU alone).
 - **Builder output folder (gatewizard):** after parametrizing ligands or peptide caps into `02_build_*`, Generate Input reuses that same folder instead of creating a timestamped sibling that left GAFF params behind.
 - **Builder ions / Visualize:** tleap neutralization uses the Builder cation/anion (not hardcoded Na+); `add_salt` is passed through to packmol; ion auto-detect groups Amber `Na+`/`K+`/`Cl-` under **ion** (case-insensitive). Neutralize ion selectors stay visible even when bulk salt is off. CPK **Na** color is orange (`#ff8c00`) so it is distinct from purple **K**.
@@ -25,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Equilibration (Amber):** minimization and first packing barostat default to **CPU×1** (was ×6); later stages stay on GPU.
-- **Analysis EVAPL:** replaced the old COM half-plane clip. Exclude atoms in the **leaflet headgroup Z-range** shrink each owning Voronoi cell with **successive per-atom** clips. The **Exclude cutoff** control is removed for EVAPL (not used).
+- **Analysis EVAPL:** replaced the old COM half-plane clip. Exclude atoms in the **leaflet headgroup Z-range** shrink each owning Voronoi cell with **successive per-atom** clips.
 - **Analysis Simulation sets:** **Add set** / **Duplicate** sit under the set list; the list can be collapsed, scrolled, and live drag-reordered (⠿ moves chips as you drag).
 - **Analysis backend:** structural (RMSD/RMSF/distance/Rg) and bilayer calls now use `gatewizard.utils.trajectory_analysis` and `lipid_bilayer_analysis` instead of the historically named `namd_analysis` module. NAMD energetic analysis and equilibration progress still use `namd_analysis`.
 
@@ -58,7 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Equilibration Progress:** the cluster **Connect** control stays visible when no profiles exist; it is disabled with a hover hint to add a profile in **Settings → Clusters**. New or edited profiles are picked up when you open Equilibration or save in **Settings → Clusters** — no app restart.
 
 - **Analysis plot layout:** Overlay vs grid is a toolbar (icons + add/remove column/row) for both Structural and Energetic. Mosaic extras live under **Grid options**; **Advanced** holds margins, tick chrome, and fonts. Min/max fields are wider than ticks/decimals; reference lines stay in the sidebar (value/width, then style/label). **Reset view** clears zoom/pan only; a menu also resets axis limits. Trajectory/log list and Time (ns) are inputs for the next Run (the plot comes from the last analysis CSV). Dash gaps scale with line width. Energetic no longer has a sidebar Compare select or Focused panel / Separate panels layout.
-- **Analysis area per lipid:** the GUI now picks the algorithm — **EVAPL** (Exclusion-aware Voronoi Area Per Lipid, default), **Box Voronoi (lipyphilic)**, **GridMAT-MD**, or **VTMC** — with method-specific settings (GridMAT grid/precision, VTMC samples/radius). EVAPL uses the leaflet headgroup Z-range (no exclude cutoff). LiPyphilic shows a warning that it is for **pure lipids only** (not systems with protein or other leaflet occupants).
+- **Analysis area per lipid:** the GUI now picks the algorithm — **EVAPL** (Exclusion-aware Voronoi Area Per Lipid, default), **Box Voronoi (lipyphilic)**, **GridMAT-MD**, or **VTMC** — with method-specific settings (GridMAT grid/precision, VTMC samples/radius). EVAPL uses the leaflet headgroup Z-range. LiPyphilic shows a warning that it is for **pure lipids only** (not systems with protein or other leaflet occupants).
 - **Equilibration Pull progress:** local-size poll no longer skips updates when integer % is unchanged (large files were freezing the ring/status for long stretches). Status line prefers live on-disk bytes over stale stream text; pull start reports existing local size instead of `0 / remote`.
 - **Tools Fix PBC (GROMACS):** no longer shows yellow “no .tpr / provide index” warnings as soon as a PDB topology is chosen. Detect uses the GROMACS TPR / Index browse fields, and also looks for `step*.tpr` / `index.ndx` next to the topology (not only next to trajectories).
 
