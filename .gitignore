@@ -8,7 +8,9 @@ build/icons
 check-env.sh
 run_check.sh
 to-do.txt
-backend/__pycache__
+__pycache__/
+*.py[cod]
+*$py.class
 gatewizard-gui.code-workspace
 electron.vite.config.*.mjs
 !electron.vite.config.mjs
