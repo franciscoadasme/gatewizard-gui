@@ -48,13 +48,20 @@ test('stageResourceLabel matches EquilibrationStage chips', () => {
     stageResourceLabel({ stage_kind: 'equilibration', cpu_cores: 4, use_gpu: false }, 'amber'),
     'CPU×4'
   )
-  // Amber/OpenMM first packing barostat
+  // Amber first packing barostat (OpenMM keeps GPU on Eq3)
   assert.equal(
     stageResourceLabel(
       { stage_kind: 'equilibration', ensemble: 'NPgT', cpu_cores: 1, use_gpu: false },
-      'openmm'
+      'amber'
     ),
     'CPU×1'
+  )
+  assert.equal(
+    stageResourceLabel(
+      { stage_kind: 'equilibration', ensemble: 'NPgT', cpu_cores: 1, use_gpu: true, num_gpus: 1 },
+      'openmm'
+    ),
+    'CPU×1 · GPU×1'
   )
 })
 

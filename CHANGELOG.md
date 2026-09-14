@@ -7,32 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **Analysis APL UI:** method blurb under the dropdown removed (details on hover); **Exclude atoms** is a clear label before the selection, with the longer explanation on hover.
-- **Tools Fix PBC (GROMACS):** default **output** group is **System**, or the index group with the **most atoms** when System is missing — no longer the first listed group (often SOLU alone).
-- **Builder output folder (gatewizard):** after parametrizing ligands or peptide caps into `02_build_*`, Generate Input reuses that same folder instead of creating a timestamped sibling that left GAFF params behind.
-- **Builder ions / Visualize:** tleap neutralization uses the Builder cation/anion (not hardcoded Na+); `add_salt` is passed through to packmol; ion auto-detect groups Amber `Na+`/`K+`/`Cl-` under **ion** (case-insensitive). Neutralize ion selectors stay visible even when bulk salt is off. CPK **Na** color is orange (`#ff8c00`) so it is distinct from purple **K**.
-- **Visualize bonds:** sparse PDB CONECT (common for peptides with HETATM polymer pieces) is densified with distance `guess_bonds` instead of treating any CONECT as complete; PDB LINK records are added as covalent bonds (intra-chain).
-- **Visualize Open:** bilayer PDBs with Amber-style ``Cl-`` (or other ions) no longer fail with “vdw radii for types: Cl”. Bond guessing excludes ions and supplies Cl/Na/K/… radii; if guessing still fails, the structure loads without bonds instead of aborting.
-- **Preparation PropKa (peptides):** empty editable protonation list no longer hides the structure viewer or blocks Prepare (e.g. gramicidin 1jno with only N+/C−). Shows a clear empty-state message + 3D. Soft notes when D-amino acids are present (PropKa ignores CCD D side-chain pKa).
-- **Visualize / Prep representations:** D-aa and formyl/ethanolamine residues (FVA, DLE, DVA, ETA, …) fold into a single biopolymer view — labeled **Peptide** when D-aa/formyl/ETA are present, otherwise **Protein** — instead of separate `resname …` ligand views.
-- **Visualize side panel:** Representations panel expands automatically after a successful structure load (stays collapsed on empty startup).
-- **Run on cluster upload %:** submit NDJSON is excluded from GZip (same as Pull) so progress no longer freezes near ~2% until the window is resized; stream keepalives + a paint yield keep the spinner/% updating during prepare/rsync.
-- **Analysis RMSD:** empty protein selections on lipid-only systems no longer produce a blank plot; the run fails with a clear message (selection checked on topology before trajectories load). Failed runs no longer auto-save the session (that was clearing the error banner).
-- **Analysis Plot settings:** changing a set’s **Line color** updates the live plot (including mosaic cells). **Plot bg** respects **Apply settings → This cell** vs **All cells** instead of always painting every square.
-- **Analysis custom grid:** with **Last incomplete row = Center**, filling the first cell of a short row no longer hides the other empty squares (they stay editable).
-
-### Changed
-
-- **Analysis / Tools trajectories:** file rows live-reorder while dragging (same midpoint behavior as simulation sets, but a sky dashed highlight instead of the amber set ring). Rows in sets and trajectory lists slide into place with a short FLIP animation so the reshuffle is easy to follow.
-- **Analysis defaults:** RMSD selection / APL exclude use `protein or resname …` including common D-aa and peptide caps.
-- **Equilibration (OpenMM):** mini is folded into Eq1 (**GPU**, NVT fixed box); only first packing (Eq3) is **CPU×1**. Collapsed protocol chips match expanded cards (OpenMM mini no longer shows CPU-only). Later eq/production stay **CPU×1 + GPU**. Eq `p_freq=15` → production `100`; cutoff stays 9 Å + LRC.
-- **Equilibration (Amber):** minimization and first packing barostat default to **CPU×1** (was ×6); later stages stay on GPU.
-- **Analysis EVAPL:** replaced the old COM half-plane clip. Exclude atoms in the **leaflet headgroup Z-range** shrink each owning Voronoi cell with **successive per-atom** clips.
-- **Analysis Simulation sets:** **Add set** / **Duplicate** sit under the set list; the list can be collapsed, scrolled, and live drag-reordered (⠿ moves chips as you drag).
-- **Analysis backend:** structural (RMSD/RMSF/distance/Rg) and bilayer calls now use `gatewizard.utils.trajectory_analysis` and `lipid_bilayer_analysis` instead of the historically named `namd_analysis` module. NAMD energetic analysis and equilibration progress still use `namd_analysis`.
-
 ### Added
 
 - **Analysis Apply selection to all sets:** copies the current structural type’s selection snapshot (selection, reference, bilayer/APL fields for that type) onto every set without running.
@@ -63,23 +37,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Analysis trajectories:** per-file time offset (ns) accepts **four decimal places** (e.g. `200.1234`, `2000.1234`); inputs use `0.0001` step and a wider field.
 - **Analysis run all sets:** skips hidden sets and sets missing trajectories/logs, then continues with every remaining set that has data (empty sets in between no longer stop the batch).
 - **Settings → Clusters:** scans `~/.ssh` for readable private keys (`id_ed25519`, `id_rsa`, …) and lists them under **SSH identity file** — click a name to fill the field, or pick from autocomplete. Shows a short hint when no keys or no `~/.ssh` folder exists (see README → Cluster profiles).
-
-### Changed
-
-- **Equilibration protocol:** the stage card strip can collapse via the section heading (▸/▾). Collapsed view keeps a compact summary chip per stage (name, duration, ensemble, resources, restraint count); click a chip to expand and scroll to that card. Ensemble / Load / Save stay visible while collapsed.
-
-- **Equilibration Progress:** the cluster **Connect** control stays visible when no profiles exist; it is disabled with a hover hint to add a profile in **Settings → Clusters**. New or edited profiles are picked up when you open Equilibration or save in **Settings → Clusters** — no app restart.
-
-- **Analysis plot layout:** Overlay vs grid is a toolbar (icons + add/remove column/row) for both Structural and Energetic. Mosaic extras live under **Grid options**; **Advanced** holds margins, tick chrome, and fonts. Min/max fields are wider than ticks/decimals; reference lines stay in the sidebar (value/width, then style/label). **Reset view** clears zoom/pan only; a menu also resets axis limits. Trajectory/log list and Time (ns) are inputs for the next Run (the plot comes from the last analysis CSV). Dash gaps scale with line width. Energetic no longer has a sidebar Compare select or Focused panel / Separate panels layout.
-- **Analysis area per lipid:** the GUI now picks the algorithm — **EVAPL** (Exclusion-aware Voronoi Area Per Lipid, default), **Box Voronoi (lipyphilic)**, **GridMAT-MD**, or **VTMC** — with method-specific settings (GridMAT grid/precision, VTMC samples/radius). EVAPL uses the leaflet headgroup Z-range. LiPyphilic shows a warning that it is for **pure lipids only** (not systems with protein or other leaflet occupants).
-- **Equilibration Pull progress:** local-size poll no longer skips updates when integer % is unchanged (large files were freezing the ring/status for long stretches). Status line prefers live on-disk bytes over stale stream text; pull start reports existing local size instead of `0 / remote`.
-- **Tools Fix PBC (GROMACS):** no longer shows yellow “no .tpr / provide index” warnings as soon as a PDB topology is chosen. Detect uses the GROMACS TPR / Index browse fields, and also looks for `step*.tpr` / `index.ndx` next to the topology (not only next to trajectories).
+- **Preparation / Builder / Equilibration output path:** folder browse button (same as Tools and Analysis) to choose a parent directory outside the top-bar working directory; path preview and “Use working directory” when a custom parent is set. Job scans include the custom parent so Progress / Builder cards still find those folders.
+- **Equilibration progress cards:** each stage row shows its planned simulation time from the protocol (e.g. `(0.125 ns)` on pending stages, `(0.233 / 0.125 ns · …)` while running). The stages summary uses two lines — **Simulated** (accumulated so far) and **Protocol total** (full planned MD time for all stages).
+- **Analysis export:** optional file name for CSV / SVG / PNG. PNG/SVG save every on-screen panel (overlay or separate sets). Pub PNG (matplotlib style) is on both Structural and Energetic and includes every visible set in the legend. Buttons show a spinner while writing.
+- **Builder job cards:** Cancel while a preparation job is running (same pattern as Tools Fix PBC).
+- **Builder job cards:** **Start** on generated (`not_started`) cards so older input folders can be run later; sidebar Start Preparation still targets the newest pending job.
+- **Tools Fix PBC (GROMACS):** multi-check center/output index groups (merged server-side), Lipids preset, skip-cluster toggle, and job-card labels for effective center/output (`GW_CENTER = PA+PC+OL`).
+- **Remote job dialog:** optional **GPU type** select from probed node/partition GRES. Writes `#SBATCH --gres=gpu:TYPE:N` when set; Any keeps `#SBATCH --gpus=N`. Stored in `execution.resources.gpu_type`.
+- **Cluster profiles:** optional **Default job time limit** (`default_time_limit`, Slurm `#SBATCH -t`) used when opening Remote job for a new submit.
 
 ### Fixed
 
 - **Analysis outside legend:** box width/height are true CSS *minimums* (content can grow). Sessions that saved `1×1` no longer collapse the strip to a dot; load also treats mins < 8 px as auto.
 - **Analysis FATSLiM notice:** sidebar probes `/analysis-fatslim-status` when FATSLiM is selected and shows a short install hint only if the CLI is missing (clone the **API** `gatewizard` repo — not the GUI install — then `scripts/install_fatslim_env.sh` / `docs/analysis.md`).
 - **Analysis session load:** sessions that omit per-set `energeticOptions` (offline APL mosaics) no longer crash with `Cannot read properties of undefined (reading 'energeticEngine')`.
+- **Analysis APL UI:** method blurb under the dropdown removed (details on hover); **Exclude atoms** is a clear label before the selection, with the longer explanation on hover.
+- **Tools Fix PBC (GROMACS):** default **output** group is **System**, or the index group with the **most atoms** when System is missing — no longer the first listed group (often SOLU alone).
+- **Builder output folder (gatewizard):** after parametrizing ligands or peptide caps into `02_build_*`, Generate Input reuses that same folder instead of creating a timestamped sibling that left GAFF params behind.
+- **Builder ions / Visualize:** tleap neutralization uses the Builder cation/anion (not hardcoded Na+); `add_salt` is passed through to packmol; ion auto-detect groups Amber `Na+`/`K+`/`Cl-` under **ion** (case-insensitive). Neutralize ion selectors stay visible even when bulk salt is off. CPK **Na** color is orange (`#ff8c00`) so it is distinct from purple **K**.
+- **Visualize bonds:** sparse PDB CONECT (common for peptides with HETATM polymer pieces) is densified with distance `guess_bonds` instead of treating any CONECT as complete; PDB LINK records are added as covalent bonds (intra-chain).
+- **Visualize Open:** bilayer PDBs with Amber-style ``Cl-`` (or other ions) no longer fail with “vdw radii for types: Cl”. Bond guessing excludes ions and supplies Cl/Na/K/… radii; if guessing still fails, the structure loads without bonds instead of aborting.
+- **Preparation PropKa (peptides):** empty editable protonation list no longer hides the structure viewer or blocks Prepare (e.g. gramicidin 1jno with only N+/C−). Shows a clear empty-state message + 3D. Soft notes when D-amino acids are present (PropKa ignores CCD D side-chain pKa).
+- **Visualize / Prep representations:** D-aa and formyl/ethanolamine residues (FVA, DLE, DVA, ETA, …) fold into a single biopolymer view — labeled **Peptide** when D-aa/formyl/ETA are present, otherwise **Protein** — instead of separate `resname …` ligand views.
+- **Visualize side panel:** Representations panel expands automatically after a successful structure load (stays collapsed on empty startup).
+- **Run on cluster upload %:** submit NDJSON is excluded from GZip (same as Pull) so progress no longer freezes near ~2% until the window is resized; stream keepalives + a paint yield keep the spinner/% updating during prepare/rsync.
+- **Analysis RMSD:** empty protein selections on lipid-only systems no longer produce a blank plot; the run fails with a clear message (selection checked on topology before trajectories load). Failed runs no longer auto-save the session (that was clearing the error banner).
+- **Analysis Plot settings:** changing a set’s **Line color** updates the live plot (including mosaic cells). **Plot bg** respects **Apply settings → This cell** vs **All cells** instead of always painting every square.
+- **Analysis custom grid:** with **Last incomplete row = Center**, filling the first cell of a short row no longer hides the other empty squares (they stay editable).
 - **Job finish toasts:** the bottom-right cards shown when the app is unfocused and an analysis/job finishes use a solid theme-aware fill (separate from in-tab `gw-notice` cards).
 - **Analysis plot tools:** Pan is off by default so page scroll works over charts; click **Pan** to enable (click again to turn off). Wheel zoom only runs when a plot tool is active.
 - **Analysis light theme:** Reset view menu and grid-cell set picker (and OrderedSetChips) use light/dark styles instead of always-dark chrome.
@@ -113,26 +97,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Analysis structural grid:** titles, y-labels, and last x-ticks no longer clip; each panel clips itself so inner series are not cut at t=0. When labels/tick numbers are only on the first column or last row, inner cells keep the same plot-box size. Last/first x values sit on their ticks; extra left margin 0 does not leave a gutter. PNG/SVG exports the whole mosaic; publication legends stay print-sized.
 - **Analysis membrane thickness:** starting PDB files listed as trajectories no longer crash with `NoneType` / `Box is None`.
 
-### Added
-
-- **Preparation / Builder / Equilibration output path:** folder browse button (same as Tools and Analysis) to choose a parent directory outside the top-bar working directory; path preview and “Use working directory” when a custom parent is set. Job scans include the custom parent so Progress / Builder cards still find those folders.
-- **Equilibration progress cards:** each stage row shows its planned simulation time from the protocol (e.g. `(0.125 ns)` on pending stages, `(0.233 / 0.125 ns · …)` while running). The stages summary uses two lines — **Simulated** (accumulated so far) and **Protocol total** (full planned MD time for all stages).
-- **Analysis export:** optional file name for CSV / SVG / PNG. PNG/SVG save every on-screen panel (overlay or separate sets). Pub PNG (matplotlib style) is on both Structural and Energetic and includes every visible set in the legend. Buttons show a spinner while writing.
-- **Builder job cards:** Cancel while a preparation job is running (same pattern as Tools Fix PBC).
-- **Builder job cards:** **Start** on generated (`not_started`) cards so older input folders can be run later; sidebar Start Preparation still targets the newest pending job.
-- **Tools Fix PBC (GROMACS):** multi-check center/output index groups (merged server-side), Lipids preset, skip-cluster toggle, and job-card labels for effective center/output (`GW_CENTER = PA+PC+OL`).
-- **Remote job dialog:** optional **GPU type** select from probed node/partition GRES. Writes `#SBATCH --gres=gpu:TYPE:N` when set; Any keeps `#SBATCH --gpus=N`. Stored in `execution.resources.gpu_type`.
-- **Cluster profiles:** optional **Default job time limit** (`default_time_limit`, Slurm `#SBATCH -t`) used when opening Remote job for a new submit.
-
 ### Changed
 
 - **Analysis Plot Settings:** regrouped into card accordion sections (Limits & ticks with tick step next to ticks, Appearance, Series & lines, In-chart legend, Typography, Margins & spines, Advanced last); chevron disclosure; long color help is hover-only. In-chart legend controls show only when legend position is Inside (outside/none point to Grid / Overlay options).
 - **Area per lipid default:** Analysis APL method defaults to **FATSLiM (external CLI)**. EVAPL is labeled experimental / not yet validated. Method picker shows algorithm names only; **LiPyphilic AreaPerLipid** (official `AreaPerLipid`) warns for pure lipids. **Run all / selected** uses the sidebar APL method (and exclude / GridMAT / VTMC params) for every set — hint + **Apply to all sets** + per-set method badges. LiPyphilic / GridMAT / VTMC expose **Exclude cutoff (Å)** and **Cutoff dim**; EVAPL uses leaflet headgroup Z-range instead. Install companion env + set `GATEWIZARD_FATSLIM` (see gatewizard `scripts/install_fatslim_env.sh` / docs).
+- **Equilibration (OpenMM):** mini is folded into Eq1 (**GPU**, NVT fixed box); **all** stages including first packing (Eq3) stay **CPU×1 + GPU**. Collapsed protocol chips match expanded cards. Eq `p_freq=15` → production `100`; cutoff stays 9 Å + LRC. Amber alone still forces first packing to CPU×1.
+- **Equilibration (Amber):** minimization and first packing barostat default to **CPU×1** (was ×6); later stages stay on GPU.
 - **Analysis axis font:** Plot Settings → **Bold** under Axis font applies to tick numbers and X/Y axis titles (on-screen and Pub PNG/PDF).
+- **Analysis panel letters:** outside A/B/C badges no longer clip in the view or on-screen PNG/SVG (wider mosaic gutter, softer hang, export frame includes letter bounds). Letters use the plot **font family**. **Letter color** control (Auto = plot text/tick color). **Apply to** every cell / first of each row / first of each column; Outside panel placement beside the square.
+- **Analysis grid / overlay options:** live in a right resizable panel so plots stay visible while editing; toolbar toggles it (closed by default). Compact Layout / Axis labels / Outside legend / Background; outside strip Width / Height / Round and frame Border color / width / Box round. Removed **Cell border** (on-screen only). Overlay draw order lives in Overlay options. Pub PNG uses wider cell gaps from Gap, wider outside-legend column, GUI font family, and skips duplicating empty cell names as bold titles.
 - **Analysis grid manual legend:** outside strip and Manual entries editor use light/dark theme borders and backgrounds instead of always-dark chrome. Box width/height seed from the current legend when leaving auto (no hard font/box size caps).
 - **Visualize split molecules + rename:** molecule splits use absolute ``index …`` selections (not ``resname UNK and index …``), and after rename/renumber those views are rebuilt from their atom indices so the renamed fragment stays visible without wiping other representations.
 - **Analysis RMSF residue mapping:** remapping no longer re-applies to Charmm / already-original axes. CSV stores topology residue ids; original PDB numbers apply only when drawing. Over-remapped full-length series are rebuilt from the mapping file. Grid ticks use each panel’s own X range (not the active set’s labels); X/Y min–max update every mosaic panel; changing Ticks clears stale X/Y tick step so RMSF does not inherit mosaic time steps.
+- **Analysis plot tools:** grid panels for non-time axes (e.g. RMSF) follow the Tools toolbar like Overlay; wheel only zooms when a tool is active.
 - **Analysis error banner:** capped height with scroll, Copy + dismiss (✕), and shortened Amber ``.rst7`` / MDAnalysis format dumps so batch failures no longer cover the whole chart pane.
+- **Analysis trajectories:** Amber ``.rst7`` / ``.inpcrd`` listed as trajectories are skipped with a clear sidebar hint (they are restarts, not DCD/XTC); backend/package reject lone restarts instead of dumping MDAnalysis ``RST7`` format errors.
+- **Analysis / Tools trajectories:** file rows live-reorder while dragging (same midpoint behavior as simulation sets, but a sky dashed highlight instead of the amber set ring). Rows in sets and trajectory lists slide into place with a short FLIP animation so the reshuffle is easy to follow. Topology path fields show the full path on hover via a wrapper `title`.
+- **Analysis defaults:** RMSD selection / APL exclude use `protein or resname …` including common D-aa and peptide caps.
+- **Analysis EVAPL:** replaced the old COM half-plane clip. Exclude atoms in the **leaflet headgroup Z-range** shrink each owning Voronoi cell with **successive per-atom** clips.
+- **Analysis Simulation sets:** **Add set** / **Duplicate** sit under the set list; the list can be collapsed, scrolled, and live drag-reordered (⠿ moves chips as you drag).
+- **Analysis backend:** structural (RMSD/RMSF/distance/Rg) and bilayer calls now use `gatewizard.utils.trajectory_analysis` and `lipid_bilayer_analysis` instead of the historically named `namd_analysis` module. NAMD energetic analysis and equilibration progress still use `namd_analysis`.
+- **Equilibration protocol:** the stage card strip can collapse via the section heading (▸/▾). Collapsed view keeps a compact summary chip per stage (name, duration, ensemble, resources, restraint count); click a chip to expand and scroll to that card. Ensemble / Load / Save stay visible while collapsed.
+- **Equilibration Progress:** the cluster **Connect** control stays visible when no profiles exist; it is disabled with a hover hint to add a profile in **Settings → Clusters**. New or edited profiles are picked up when you open Equilibration or save in **Settings → Clusters** — no app restart.
+- **Analysis plot layout:** Overlay vs grid is a toolbar (icons + add/remove column/row) for both Structural and Energetic. Mosaic extras live under **Grid options**; **Advanced** holds margins, tick chrome, and fonts. Min/max fields are wider than ticks/decimals; reference lines stay in the sidebar (value/width, then style/label). **Reset view** clears zoom/pan only; a menu also resets axis limits. Trajectory/log list and Time (ns) are inputs for the next Run (the plot comes from the last analysis CSV). Dash gaps scale with line width. Energetic no longer has a sidebar Compare select or Focused panel / Separate panels layout.
+- **Equilibration Pull progress:** local-size poll no longer skips updates when integer % is unchanged (large files were freezing the ring/status for long stretches). Status line prefers live on-disk bytes over stale stream text; pull start reports existing local size instead of `0 / remote`.
+- **Tools Fix PBC (GROMACS):** no longer shows yellow “no .tpr / provide index” warnings as soon as a PDB topology is chosen. Detect uses the GROMACS TPR / Index browse fields, and also looks for `step*.tpr` / `index.ndx` next to the topology (not only next to trajectories).
 - **Sidebar output folder:** Preparation, Builder, and Equilibration use the shared `OutputPathFields` control (folder name + browse parent path), matching Tools and Analysis.
 - **Sidebar output folder placement:** Preparation, Builder, and Equilibration place the output folder next to the primary actions (Prepare / Generate / Run), matching Tools and Analysis, instead of under Input at the top.
 - **Equilibration default protocol:** Eq6 packing extended from 17.625 ns to **47.625 ns** so Eq1–6 total **50 ns** of MD (was 20 ns) in GUI `base.json` and matching banner copy.
@@ -142,6 +131,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Equilibration protocol cards:** hide settings the selected engine does not wire (e.g. NAMD-only margin). Trajectory frequency is shown for all engines and labeled by engine (DCD / XTC / NetCDF). Pressure and surface tension are shown when the stage ensemble uses a barostat / membrane tension path. Stage descriptions moved to an info-hover control with clearer wording.
 - **Equilibration default protocol (`base.json`):** universal membrane packing for all engines — Minimization → NVT thermalization → NVT scaffold (Eq2) → NPgT packing (Eq3–6, 50 ns MD) → production uses the sidebar ensemble.
 - **Equilibration banner:** thermalize/scaffold under NVT, pack under NPgT for 50 ns of MD, then production in the selected ensemble.
+
 
 ## [1.0.13] - 2026-08-06
 

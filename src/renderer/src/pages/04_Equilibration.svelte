@@ -117,7 +117,8 @@
       production: { cpu_cores: 6, gpu_id: 0, num_gpus: 1, use_gpu: true }
     },
     openmm: {
-      // Mini is folded into Eq1 (NVT, fixed box) → GPU with Eq1; only Eq3 first pack is CPU.
+      // Mini folded into Eq1 (NVT, fixed box) → GPU. All stages CPU×1 + GPU×1
+      // including first packing (Eq3); Amber still forces Eq3 to CPU separately.
       sidebar: { totalCpus: 1, totalGpus: 1, gpuId: 0, computeTarget: /** @type {const} */ ('auto') },
       minimization: { cpu_cores: 1, gpu_id: 0, num_gpus: 1, use_gpu: true },
       md: { cpu_cores: 1, gpu_id: 0, num_gpus: 1, use_gpu: true },
@@ -126,8 +127,9 @@
   }
 
   /**
-   * Amber / OpenMM: first packing barostat (NPT/NPAT/NPgT) defaults to CPU×1;
-   * later MD stages stay on GPU. Matches API resolve_all_stage_resources.
+   * Amber only: first packing barostat (NPT/NPAT/NPgT) defaults to CPU×1;
+   * later MD stages stay on GPU. OpenMM keeps GPU on all stages (incl. Eq3).
+   * Matches API resolve_all_stage_resources.
    * @param {object} p
    */
   function applyFirstBarostatCpuDefault(p) {
@@ -175,7 +177,7 @@
       stage.use_gpu = res.use_gpu
       stage.resources_inherit = false
     }
-    if (eng === 'amber' || eng === 'openmm') applyFirstBarostatCpuDefault(protocol)
+    if (eng === 'amber') applyFirstBarostatCpuDefault(protocol)
     // After Use in form, Production must re-bind to the sidebar ensemble
     // and engine-specific fields (margin, γ, …) must be available for the new engine.
     syncProtocolToSidebarEnsemble(protocol, ensemble, eng)
@@ -2329,7 +2331,7 @@
       stage.use_gpu = defaults.use_gpu ?? true
       stage.resources_inherit = false
     }
-    if (engine === 'amber' || engine === 'openmm') applyFirstBarostatCpuDefault(protocol)
+    if (engine === 'amber') applyFirstBarostatCpuDefault(protocol)
     protocolFormKey += 1
   }
 
