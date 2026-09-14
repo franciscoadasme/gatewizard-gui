@@ -5,20 +5,31 @@ import {
   aspectPaddingBottom,
   autoFillEnergeticGrid,
   autoFillEnergeticGridBySet,
+  cellShowsLegend,
   ensureEnergeticGridCells,
   extraMarginPx,
+  figureLegendItems,
   gridCellEmptyReason,
   lineChartAxisProps,
   lineChartExtraMarginProps,
+  lineChartPanelLetterProps,
+  mosaicPanelLetterPadStyle,
+  panelLetterForCell,
+  outsidePanelLetterBadge,
   MAX_AXIS_TICKS,
   axisTickFractions,
   normalizeGridCell,
   normalizeGridLayout,
+  normalizeManualLegendItems,
   plotSpecAxisChrome,
   plotSpecExtraMargins,
+  plotSpecPanelLetter,
+  seedManualLegendItemsFromSeries,
   visibleSetIds,
   mosaicRows,
   gridSpecSlices,
+  outsideLegendAlignClasses,
+  estimateOutsideLegendNaturalBox,
   resolveCellCountOnResize,
   activeGridCells
 } from './analysisGridLayout.js'
@@ -77,13 +88,17 @@ test('plotSpecAxisChrome uses snake_case PlotSpec keys', () => {
   const chrome = plotSpecAxisChrome({
     tickWidth: 2,
     spineTop: true,
-    spineLeft: false
+    spineLeft: false,
+    axisFontSize: 14,
+    axisFontBold: true
   })
   assert.equal(chrome.tick_width, 2)
   assert.equal(chrome.show_spine_top, true)
   assert.equal(chrome.show_spine_left, false)
   assert.equal(chrome.show_spine_bottom, true)
   assert.equal(chrome.show_ticks, true)
+  assert.equal(chrome.axis_fontsize, 14)
+  assert.equal(chrome.axis_font_bold, true)
 })
 
 test('extraMarginPx keeps 0 tight and allows a negative pull-in', () => {
@@ -291,4 +306,229 @@ test('activeGridCells returns only the first cellCount entries', () => {
   const active = activeGridCells(layout)
   assert.equal(active.length, 5)
   assert.deepEqual(active[4].setIds, ['s4'])
+})
+
+test('normalizeGridLayout clears absurdly small legend box mins', () => {
+  const layout = normalizeGridLayout({
+    legendBoxMinWidth: 1,
+    legendBoxMinHeight: '1'
+  })
+  assert.equal(layout.legendBoxMinWidth, '')
+  assert.equal(layout.legendBoxMinHeight, '')
+})
+
+test('normalizeGridLayout accepts large legend fonts and title sizing', () => {
+  const layout = normalizeGridLayout({
+    legendFontSize: 42,
+    legendTitleFontSize: 48,
+    legendTitleGap: 12,
+    legendBoxMinWidth: 220,
+    legendBoxMinHeight: 180
+  })
+  assert.equal(layout.legendFontSize, '42')
+  assert.equal(layout.legendTitleFontSize, '48')
+  assert.equal(layout.legendTitleGap, '12')
+  assert.equal(layout.legendBoxMinWidth, '220')
+  assert.equal(layout.legendBoxMinHeight, '180')
+})
+
+test('estimateOutsideLegendNaturalBox grows with font and labels', () => {
+  const small = estimateOutsideLegendNaturalBox({
+    series: [{ name: 'A' }, { name: 'B' }],
+    fontSize: 10,
+    swatchWidth: 12,
+    swatchHeight: 12,
+    title: ''
+  })
+  const large = estimateOutsideLegendNaturalBox({
+    series: [{ name: 'LiPyphilic AreaPerLipid' }, { name: 'EVAPL' }],
+    fontSize: 28,
+    titleFontSize: 32,
+    titleGap: 12,
+    swatchWidth: 30,
+    swatchHeight: 30,
+    title: 'Methods',
+    boxPadding: 0
+  })
+  assert.ok(large.width > small.width)
+  assert.ok(large.height > small.height)
+})
+
+test('normalizeGridLayout accepts manual legend entries and strip sizes', () => {
+  const layout = normalizeGridLayout({
+    legendMode: 'outside',
+    legendEntries: 'manual',
+    legendFontSize: 14,
+    legendSwatchSize: 16,
+    legendSwatchWidth: 20,
+    legendSwatchHeight: 10,
+    legendSwatchRound: false,
+    legendBoxRound: false,
+    legendBoxBorderColor: '#ff0000',
+    legendBoxBorderWidth: 2,
+    legendManualItems: [
+      { id: 'a', label: 'Amber', color: '#f59e0b', marker: 'circle' },
+      { id: 'a', label: 'dup', color: '#000' },
+      { label: 'NAMD', color: '#22c55e', marker: 'bogus', marker_size: 10 },
+      { id: 'hid', label: 'Hidden', color: '#fff', visible: false }
+    ]
+  })
+  assert.equal(layout.legendEntries, 'manual')
+  assert.equal(layout.legendOutsideAlign, 'center')
+  assert.equal(layout.legendFontSize, '14')
+  assert.equal(layout.legendSwatchSize, '16')
+  assert.equal(layout.legendSwatchWidth, '20')
+  assert.equal(layout.legendSwatchHeight, '10')
+  assert.equal(layout.legendSwatchRound, false)
+  assert.equal(layout.legendBoxRound, false)
+  assert.equal(layout.legendBoxBorderColor, '#ff0000')
+  assert.equal(layout.legendBoxBorderWidth, '2')
+  assert.equal(layout.legendManualItems.length, 3)
+  assert.equal(layout.legendManualItems[0].label, 'Amber')
+  assert.equal(layout.legendManualItems[0].marker, 'circle')
+  assert.equal(layout.legendManualItems[1].id, 'leg-2')
+  assert.equal(layout.legendManualItems[1].marker, 'none')
+  assert.equal(layout.legendManualItems[1].markerSize, 10)
+  assert.equal(layout.legendManualItems[2].visible, false)
+})
+
+test('outsideLegendAlignClasses centers side strips by default', () => {
+  const side = outsideLegendAlignClasses({
+    legendOutside: 'right',
+    legendOutsideAlign: 'center'
+  })
+  assert.equal(side.wrapper, 'flex-row items-center')
+  assert.equal(side.self, '')
+  const topStart = outsideLegendAlignClasses({
+    legendOutside: 'top',
+    legendOutsideAlign: 'start'
+  })
+  assert.equal(topStart.wrapper, 'flex-col')
+  assert.equal(topStart.self, 'self-start')
+  const bottomEnd = outsideLegendAlignClasses({
+    legendOutside: 'bottom',
+    legendOutsideAlign: 'end'
+  })
+  assert.equal(bottomEnd.self, 'self-end')
+})
+
+test('normalizeManualLegendItems and seedManualLegendItemsFromSeries', () => {
+  assert.deepEqual(normalizeManualLegendItems(null), [])
+  const seeded = seedManualLegendItemsFromSeries([
+    { name: 'A', color: '#aaa', marker: 'square' },
+    { name: 'B', color: '#AAA', marker: 'circle' },
+    { name: 'C', color: '#bbb', marker: 'diamond' }
+  ])
+  assert.equal(seeded.length, 2)
+  assert.equal(seeded[0].label, 'A')
+  assert.equal(seeded[0].marker, 'square')
+  assert.equal(seeded[1].color, '#bbb')
+})
+
+test('figureLegendItems returns visible manual items; cellShowsLegend false for outside', () => {
+  const layout = normalizeGridLayout({
+    legendMode: 'outside',
+    legendEntries: 'manual',
+    legendManualItems: [
+      { id: 'e1', label: 'Engine 1', color: '#111', marker: 'circle' },
+      { id: 'e2', label: 'Engine 2', color: '#222', visible: false }
+    ]
+  })
+  const items = figureLegendItems([{ setId: 'x', name: 'ignored', color: '#999' }], layout)
+  assert.equal(items.length, 1)
+  assert.equal(items[0].name, 'Engine 1')
+  assert.equal(items[0].marker, 'circle')
+  assert.equal(cellShowsLegend(layout, 0), false)
+  assert.equal(cellShowsLegend(layout, 3), false)
+})
+
+test('panelLetterForCell advances A→B→C from the start letter', () => {
+  const layout = normalizeGridLayout({
+    cols: 2,
+    rows: 2,
+    panelLetterShow: true,
+    panelLetterText: 'A',
+    panelLetterScope: 'each',
+    panelLetterPlacement: 'outside',
+    panelLetterPosition: 'outside-tl',
+    panelLetterBold: true
+  })
+  assert.equal(panelLetterForCell(layout, 0), 'A')
+  assert.equal(panelLetterForCell(layout, 1), 'B')
+  assert.equal(panelLetterForCell(layout, 2), 'C')
+  assert.equal(panelLetterForCell({ ...layout, panelLetterShow: false }, 0), '')
+  const rowOnly = normalizeGridLayout({ ...layout, panelLetterScope: 'row' })
+  assert.equal(panelLetterForCell(rowOnly, 0), 'A')
+  assert.equal(panelLetterForCell(rowOnly, 1), '')
+  assert.equal(panelLetterForCell(rowOnly, 2), 'B')
+  assert.equal(panelLetterForCell(rowOnly, 3), '')
+  const outside = outsidePanelLetterBadge(layout, 0, 13, '#111', 'Roboto, sans-serif')
+  assert.ok(outside)
+  assert.equal(outside.letter, 'A')
+  assert.match(outside.style, /font-family:Roboto/)
+  assert.match(outside.style, /color:#111/)
+  const colored = outsidePanelLetterBadge(
+    { ...layout, panelLetterColor: '#ff0000' },
+    0,
+    13,
+    '#111',
+    'Roboto, sans-serif'
+  )
+  assert.ok(colored)
+  assert.match(colored.style, /color:#ff0000/)
+  const pad = mosaicPanelLetterPadStyle(layout)
+  assert.match(pad, /padding:/)
+  assert.match(pad, /overflow:visible/)
+  const insideProps = lineChartPanelLetterProps(
+    { ...layout, panelLetterPlacement: 'inside', panelLetterColor: '#00ff00' },
+    0,
+    13
+  )
+  assert.equal(insideProps.panelLetter, 'A')
+  assert.equal(insideProps.panelLetterColor, '#00ff00')
+  assert.equal(lineChartPanelLetterProps(layout, 0, 13).panelLetter, '')
+  const spec = plotSpecPanelLetter({ ...layout, panelLetterColor: '#abcdef' }, 0, 13)
+  assert.equal(spec.panel_letter_color, '#abcdef')
+})
+
+test('normalizeReferenceLines opacity and zOrder', async () => {
+  const { normalizeReferenceLines, emptyReferenceLine, normalizeReferenceBands, emptyReferenceBand } =
+    await import('./analysisGridLayout.js')
+  const lines = normalizeReferenceLines([
+    { axis: 'y', value: 1, opacity: 0.4, zOrder: 'forward' },
+    emptyReferenceLine()
+  ])
+  assert.equal(lines[0].opacity, 0.4)
+  assert.equal(lines[0].zOrder, 'forward')
+  assert.equal(lines[1].opacity, 1)
+  assert.equal(lines[1].zOrder, 'back')
+  const bands = normalizeReferenceBands([
+    { axis: 'x', min: 10, max: 5, color: '#abc', opacity: 0.5, border: true, borderStyle: 'dashed' },
+    emptyReferenceBand()
+  ])
+  // Live normalize preserves typed order; drawing/export orders via finalizeReferenceBands.
+  assert.equal(bands[0].min, 10)
+  assert.equal(bands[0].max, 5)
+  assert.equal(bands[0].axis, 'x')
+  assert.equal(bands[0].border, true)
+  assert.equal(bands[0].borderStyle, 'dashed')
+  assert.equal(bands[1].border, false)
+  assert.equal(bands[1].zOrder, 'back')
+})
+
+test('normalizeReferenceBands preserves sibling bound when one field is cleared', async () => {
+  const { normalizeReferenceBands, finalizeReferenceBands, coerceReferenceBandBound } = await import(
+    './analysisGridLayout.js'
+  )
+  assert.equal(coerceReferenceBandBound(''), '')
+  assert.equal(coerceReferenceBandBound('12.5'), 12.5)
+  const editing = normalizeReferenceBands([{ axis: 'y', min: 50, max: '', color: '#888' }])
+  assert.equal(editing.length, 1)
+  assert.equal(editing[0].min, 50)
+  assert.equal(editing[0].max, '')
+  const drawn = finalizeReferenceBands([{ axis: 'y', min: 50, max: '', color: '#888' }])
+  assert.equal(drawn.length, 0)
+  const ordered = finalizeReferenceBands([{ axis: 'y', min: 50, max: 10 }])
+  assert.equal(ordered[0].min, 10)
+  assert.equal(ordered[0].max, 50)
 })

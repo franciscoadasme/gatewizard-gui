@@ -36,22 +36,82 @@ export const GRID_LAYOUT_DEFAULTS = {
   legendMode: 'each',
   legendCell: 0,
   legendOutside: 'bottom',
+  /** Along the strip axis: left/right = vertical, top/bottom = horizontal */
+  legendOutsideAlign: 'center',
   legendEntries: 'sets',
   legendColumns: 1,
   legendTitle: '',
+  /** Empty = fall back to plot-settings legendFontSize / legendSwatchSize */
+  legendFontSize: '',
+  /** Empty = use legendFontSize for the title */
+  legendTitleFontSize: '',
+  /** Gap (px) between title baseline and first legend row; empty = 8 */
+  legendTitleGap: '',
+  legendSwatchSize: '',
+  /** Independent strip swatch size (empty → legendSwatchSize) */
+  legendSwatchWidth: '',
+  legendSwatchHeight: '',
+  /** Rounded color squares vs sharp corners */
+  legendSwatchRound: true,
+  /** Rounded outside strip box vs sharp */
+  legendBoxRound: true,
+  /** Outside strip frame border (empty color = theme; width 0 = no border) */
+  legendBoxBorderColor: '',
+  legendBoxBorderWidth: '1',
+  /** Empty = default 8px frame padding */
+  legendBoxPadding: '',
+  /** Empty = content-sized; outer frame size (px) */
+  legendBoxMinWidth: '',
+  legendBoxMinHeight: '',
+  /** Curated outside-strip items when legendEntries === 'manual' */
+  legendManualItems: [],
   overlaySetIds: [],
   cells: [],
   cellOverrides: {},
   edited: false,
   /** Plot-settings writes go to every cell or the selected cell */
-  plotApplyScope: 'all'
+  plotApplyScope: 'all',
+  /** Paper-style panel letters (A, B, C…) on overlay / mosaic cells */
+  panelLetterShow: false,
+  /** Starting letter (grid advances A→B→C…; overlay uses this alone) */
+  panelLetterText: 'A',
+  /**
+   * Which cells get letters:
+   * each = every cell; row = first cell of each row; col = first cell of each column
+   */
+  panelLetterScope: 'each',
+  /**
+   * outside = badge beside the panel (does not reshape plot gutters);
+   * inside = drawn in the chart SVG
+   */
+  panelLetterPlacement: 'outside',
+  /** outside-tl | inside-tl | outside-tr | inside-tr (corner relative to the panel) */
+  panelLetterPosition: 'outside-tl',
+  /** Empty = slightly larger than title font */
+  panelLetterFontSize: '',
+  panelLetterBold: true,
+  /** Empty = same as plot text / tick color */
+  panelLetterColor: '',
+  /** Badge behind outside letters: none | theme | white | black */
+  panelLetterBg: 'theme',
+  /** Extra shift in screen px (negative = left / up) */
+  panelLetterOffsetX: '0',
+  panelLetterOffsetY: '0'
 }
 
 const LABEL_PRESETS = new Set(['all', 'bottom', 'left', 'none'])
 const LAST_ROW = new Set(['start', 'center', 'end'])
 const LEGEND_MODES = new Set(['each', 'one', 'outside', 'none'])
 const LEGEND_OUTSIDE = new Set(['bottom', 'top', 'right', 'left'])
-const LEGEND_ENTRIES = new Set(['sets', 'roles', 'both'])
+const LEGEND_OUTSIDE_ALIGN = new Set(['start', 'center', 'end'])
+const LEGEND_ENTRIES = new Set(['sets', 'roles', 'both', 'manual'])
+const PANEL_LETTER_POS = new Set(['outside-tl', 'inside-tl', 'outside-tr', 'inside-tr'])
+const PANEL_LETTER_SCOPE = new Set(['each', 'row', 'col'])
+const PANEL_LETTER_PLACE = new Set(['outside', 'inside'])
+const PANEL_LETTER_BG = new Set(['none', 'theme', 'white', 'black'])
+/** Marker shapes shared with LineChart / ChartLegend */
+export const LEGEND_MARKERS = ['none', 'circle', 'square', 'triangle', 'cross', 'diamond']
+const LEGEND_MARKER_SET = new Set(LEGEND_MARKERS)
 const REF_AXES = new Set(['x', 'y'])
 const REF_STYLES = new Set(['solid', 'dashed', 'dotted', 'dashdot'])
 
@@ -375,9 +435,13 @@ export function normalizeGridLayout(raw) {
   const legendOutside = LEGEND_OUTSIDE.has(String(src.legendOutside))
     ? String(src.legendOutside)
     : GRID_LAYOUT_DEFAULTS.legendOutside
+  const legendOutsideAlign = LEGEND_OUTSIDE_ALIGN.has(String(src.legendOutsideAlign))
+    ? String(src.legendOutsideAlign)
+    : GRID_LAYOUT_DEFAULTS.legendOutsideAlign
   const legendEntries = LEGEND_ENTRIES.has(String(src.legendEntries))
     ? String(src.legendEntries)
     : GRID_LAYOUT_DEFAULTS.legendEntries
+  const legendManualItems = normalizeManualLegendItems(src.legendManualItems)
   const cells = resizeGridCells(
     Array.isArray(src.cells) ? src.cells.map(normalizeGridCell) : [],
     cols,
@@ -424,15 +488,158 @@ export function normalizeGridLayout(raw) {
     legendMode,
     legendCell: clampInt(src.legendCell, 0, Math.max(0, cellCount - 1), 0),
     legendOutside,
+    legendOutsideAlign,
     legendEntries,
     legendColumns: clampInt(src.legendColumns, 1, 8, 1),
     legendTitle: String(src.legendTitle || ''),
+    legendFontSize: src.legendFontSize == null || src.legendFontSize === ''
+      ? ''
+      : String(clampNum(src.legendFontSize, 1, 500, 10)),
+    legendTitleFontSize:
+      src.legendTitleFontSize == null || src.legendTitleFontSize === ''
+        ? ''
+        : String(clampNum(src.legendTitleFontSize, 1, 500, 10)),
+    legendTitleGap:
+      src.legendTitleGap == null || src.legendTitleGap === ''
+        ? ''
+        : String(clampNum(src.legendTitleGap, 0, 200, 8)),
+    legendSwatchSize: src.legendSwatchSize == null || src.legendSwatchSize === ''
+      ? ''
+      : String(clampNum(src.legendSwatchSize, 1, 500, 12)),
+    legendSwatchWidth: src.legendSwatchWidth == null || src.legendSwatchWidth === ''
+      ? ''
+      : String(clampNum(src.legendSwatchWidth, 1, 500, 12)),
+    legendSwatchHeight: src.legendSwatchHeight == null || src.legendSwatchHeight === ''
+      ? ''
+      : String(clampNum(src.legendSwatchHeight, 1, 500, 12)),
+    legendSwatchRound: src.legendSwatchRound !== false,
+    legendBoxRound: src.legendBoxRound !== false,
+    legendBoxBorderColor: String(src.legendBoxBorderColor || ''),
+    legendBoxBorderWidth:
+      src.legendBoxBorderWidth == null || src.legendBoxBorderWidth === ''
+        ? '1'
+        : String(clampNum(src.legendBoxBorderWidth, 0, 32, 1)),
+    legendBoxPadding:
+      src.legendBoxPadding == null || src.legendBoxPadding === ''
+        ? ''
+        : String(clampNum(src.legendBoxPadding, 0, 200, 8)),
+    legendBoxMinWidth:
+      src.legendBoxMinWidth == null || src.legendBoxMinWidth === ''
+        ? ''
+        : (() => {
+            // Absurdly small saved mins (e.g. spinner "1") used to force a
+            // 1×1px outside-legend frame — treat as auto.
+            const n = clampNum(src.legendBoxMinWidth, 0, 5000, 0)
+            return n < 8 ? '' : String(n)
+          })(),
+    legendBoxMinHeight:
+      src.legendBoxMinHeight == null || src.legendBoxMinHeight === ''
+        ? ''
+        : (() => {
+            const n = clampNum(src.legendBoxMinHeight, 0, 5000, 0)
+            return n < 8 ? '' : String(n)
+          })(),
+    legendManualItems,
     overlaySetIds: normalizeIdList(src.overlaySetIds),
     cells,
     cellOverrides: overrides,
     edited: Boolean(src.edited),
-    plotApplyScope: src.plotApplyScope === 'cell' ? 'cell' : 'all'
+    plotApplyScope: src.plotApplyScope === 'cell' ? 'cell' : 'all',
+    panelLetterShow: src.panelLetterShow === true,
+    panelLetterText: (() => {
+      const t = String(src.panelLetterText ?? 'A').trim()
+      return t ? t.slice(0, 4) : 'A'
+    })(),
+    panelLetterScope: PANEL_LETTER_SCOPE.has(String(src.panelLetterScope))
+      ? String(src.panelLetterScope)
+      : GRID_LAYOUT_DEFAULTS.panelLetterScope,
+    panelLetterPlacement: PANEL_LETTER_PLACE.has(String(src.panelLetterPlacement))
+      ? String(src.panelLetterPlacement)
+      : GRID_LAYOUT_DEFAULTS.panelLetterPlacement,
+    panelLetterPosition: PANEL_LETTER_POS.has(String(src.panelLetterPosition))
+      ? String(src.panelLetterPosition)
+      : GRID_LAYOUT_DEFAULTS.panelLetterPosition,
+    panelLetterFontSize:
+      src.panelLetterFontSize == null || src.panelLetterFontSize === ''
+        ? ''
+        : String(clampNum(src.panelLetterFontSize, 8, 48, 16)),
+    panelLetterBold: src.panelLetterBold !== false,
+    panelLetterColor: typeof src.panelLetterColor === 'string' ? String(src.panelLetterColor).trim() : '',
+    panelLetterBg: PANEL_LETTER_BG.has(String(src.panelLetterBg))
+      ? String(src.panelLetterBg)
+      : GRID_LAYOUT_DEFAULTS.panelLetterBg,
+    panelLetterOffsetX:
+      src.panelLetterOffsetX == null || src.panelLetterOffsetX === ''
+        ? '0'
+        : String(clampNum(src.panelLetterOffsetX, -40, 40, 0)),
+    panelLetterOffsetY:
+      src.panelLetterOffsetY == null || src.panelLetterOffsetY === ''
+        ? '0'
+        : String(clampNum(src.panelLetterOffsetY, -40, 40, 0))
   }
+}
+
+/**
+ * @param {unknown} raw
+ * @returns {Array<{ id: string, label: string, color: string, marker: string, markerSize: number, visible: boolean }>}
+ */
+export function normalizeManualLegendItems(raw) {
+  if (!Array.isArray(raw)) return []
+  /** @type {Array<{ id: string, label: string, color: string, marker: string, markerSize: number, visible: boolean }>} */
+  const out = []
+  const seen = new Set()
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const row = /** @type {Record<string, unknown>} */ (item)
+    let id = String(row.id || '').trim()
+    if (!id) id = `leg-${out.length + 1}`
+    if (seen.has(id)) continue
+    seen.add(id)
+    const markerRaw = String(row.marker || 'none')
+    const marker = LEGEND_MARKER_SET.has(markerRaw) ? markerRaw : 'none'
+    const label = String(row.label ?? row.name ?? '').trim() || id
+    const color = String(row.color || '#888888').trim() || '#888888'
+    const sizeRaw = row.markerSize ?? row.marker_size
+    out.push({
+      id,
+      label,
+      color,
+      marker,
+      markerSize: clampNum(sizeRaw, 2, 24, 8),
+      visible: row.visible !== false
+    })
+  }
+  return out
+}
+
+/**
+ * Seed manual strip entries from unique series colors in the mosaic.
+ * @param {Array<{ name?: string, color?: string, marker?: string }>} series
+ */
+export function seedManualLegendItemsFromSeries(series) {
+  const list = Array.isArray(series) ? series : []
+  const seen = new Set()
+  /** @type {Array<{ id: string, label: string, color: string, marker: string, markerSize: number, visible: boolean }>} */
+  const items = []
+  for (const s of list) {
+    if (!s) continue
+    const color = String(s.color || '#888888').trim() || '#888888'
+    const key = color.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    const markerRaw = String(s.marker || 'none')
+    const marker = LEGEND_MARKER_SET.has(markerRaw) ? markerRaw : 'none'
+    const n = items.length + 1
+    items.push({
+      id: `color-${n}`,
+      label: String(s.name || `Series ${n}`).trim() || `Series ${n}`,
+      color,
+      marker,
+      markerSize: 8,
+      visible: true
+    })
+  }
+  return items
 }
 
 export function defaultGridLayout() {
@@ -548,6 +755,8 @@ export function lineChartAxisProps(src) {
  */
 export function plotSpecAxisChrome(src) {
   const p = lineChartAxisProps(src)
+  const s = src && typeof src === 'object' ? src : {}
+  const axisFs = Number(s.axisFontSize)
   return {
     show_ticks: p.showTicks,
     tick_length: p.tickLength,
@@ -556,7 +765,9 @@ export function plotSpecAxisChrome(src) {
     show_spine_left: p.showSpineLeft,
     show_spine_bottom: p.showSpineBottom,
     show_spine_top: p.showSpineTop,
-    show_spine_right: p.showSpineRight
+    show_spine_right: p.showSpineRight,
+    axis_fontsize: Number.isFinite(axisFs) && axisFs > 0 ? axisFs : undefined,
+    axis_font_bold: s.axisFontBold === true
   }
 }
 
@@ -596,6 +807,217 @@ export function plotSpecExtraMargins(src) {
 }
 
 /**
+ * Sequence index for a mosaic cell’s panel letter, or -1 if this cell has none.
+ * `row` = first column of each row; `col` = first row of each column; `each` = all cells.
+ * @param {object | null | undefined} layout
+ * @param {number} [cellIndex]
+ * @returns {number}
+ */
+export function panelLetterSequenceIndex(layout, cellIndex = 0) {
+  if (!layout || layout.panelLetterShow !== true) return -1
+  const cols = Math.max(1, Math.round(Number(layout.cols) || 1))
+  const idx = Math.max(0, Math.round(Number(cellIndex) || 0))
+  const row = Math.floor(idx / cols)
+  const col = idx % cols
+  const scope = String(layout.panelLetterScope || 'each')
+  if (scope === 'row') return col === 0 ? row : -1
+  if (scope === 'col') return row === 0 ? col : -1
+  return idx
+}
+
+/**
+ * Paper-style panel letter for overlay (index 0) or mosaic cell index.
+ * @param {object | null | undefined} layout
+ * @param {number} [cellIndex]
+ * @returns {string}
+ */
+export function panelLetterForCell(layout, cellIndex = 0) {
+  const seq = panelLetterSequenceIndex(layout, cellIndex)
+  if (seq < 0) return ''
+  const startRaw = String(layout?.panelLetterText || 'A').trim() || 'A'
+  const ch = startRaw.charAt(0).toUpperCase()
+  const code = ch.charCodeAt(0)
+  if (code >= 65 && code <= 90) {
+    const next = code + seq
+    if (next <= 90) return String.fromCharCode(next)
+    return `${ch}${seq + 1}`
+  }
+  return seq === 0 ? startRaw : `${startRaw}${seq + 1}`
+}
+
+/**
+ * Resolved font size (px) for panel letters.
+ * @param {object | null | undefined} layout
+ * @param {number} [titleFontSize]
+ */
+export function panelLetterResolvedFontSize(layout, titleFontSize = 13) {
+  const titleFs = Number(titleFontSize) || 13
+  const rawFs = Number(layout?.panelLetterFontSize)
+  if (Number.isFinite(rawFs) && rawFs > 0) return rawFs
+  return Math.max(titleFs + 3, 16)
+}
+
+/**
+ * Props for LineChart panel-letter chrome (only when placement is inside the plot SVG).
+ * @param {object | null | undefined} layout
+ * @param {number} [cellIndex]
+ * @param {number} [titleFontSize]
+ */
+export function lineChartPanelLetterProps(layout, cellIndex = 0, titleFontSize = 13) {
+  const empty = {
+    panelLetter: '',
+    panelLetterFontSize: 0,
+    panelLetterBold: true,
+    panelLetterColor: '',
+    panelLetterPosition: 'outside-tl',
+    panelLetterOffsetX: 0,
+    panelLetterOffsetY: 0
+  }
+  if (String(layout?.panelLetterPlacement || 'outside') !== 'inside') return empty
+  const letter = panelLetterForCell(layout, cellIndex)
+  if (!letter) return empty
+  return {
+    panelLetter: letter,
+    panelLetterFontSize: panelLetterResolvedFontSize(layout, titleFontSize),
+    panelLetterBold: layout?.panelLetterBold !== false,
+    panelLetterColor: String(layout?.panelLetterColor || '').trim(),
+    panelLetterPosition: PANEL_LETTER_POS.has(String(layout?.panelLetterPosition))
+      ? String(layout.panelLetterPosition)
+      : 'outside-tl',
+    panelLetterOffsetX: Number(layout?.panelLetterOffsetX) || 0,
+    panelLetterOffsetY: Number(layout?.panelLetterOffsetY) || 0
+  }
+}
+
+/**
+ * Outside-of-panel letter badge model (HTML overlay; does not reshape plot gutters).
+ * Uses the plot font family (same stack as axis ticks) when `fontFamily` is set.
+ * @param {object | null | undefined} layout
+ * @param {number} [cellIndex]
+ * @param {number} [titleFontSize]
+ * @param {string} [textColor] fallback when panelLetterColor is empty (tick/text color)
+ * @param {string} [fontFamily] plot settings font (ticks/labels)
+ * @returns {null | {
+ *   letter: string,
+ *   fontSize: number,
+ *   bold: boolean,
+ *   style: string
+ * }}
+ */
+export function outsidePanelLetterBadge(
+  layout,
+  cellIndex = 0,
+  titleFontSize = 13,
+  textColor = '',
+  fontFamily = ''
+) {
+  if (String(layout?.panelLetterPlacement || 'outside') !== 'outside') return null
+  const letter = panelLetterForCell(layout, cellIndex)
+  if (!letter) return null
+  const fontSize = panelLetterResolvedFontSize(layout, titleFontSize)
+  const bold = layout?.panelLetterBold !== false
+  const pos = String(layout?.panelLetterPosition || 'outside-tl')
+  const ox = Number(layout?.panelLetterOffsetX) || 0
+  const oy = Number(layout?.panelLetterOffsetY) || 0
+  const bg = String(layout?.panelLetterBg || 'theme')
+  const color = String(layout?.panelLetterColor || '').trim() || textColor || ''
+  const family = String(fontFamily || '').trim()
+  const right = pos.endsWith('-tr')
+  const inside = pos.startsWith('inside')
+  /** @type {string[]} */
+  const parts = [
+    `font-size:${fontSize}px`,
+    `font-weight:${bold ? 700 : 400}`,
+    color ? `color:${color}` : '',
+    family ? `font-family:${family}` : ''
+  ]
+  if (inside) {
+    parts.push(
+      right ? 'right:0.35rem;left:auto' : 'left:0.35rem;right:auto',
+      'top:0.2rem',
+      `transform:translate(${ox}px, ${oy}px)`
+    )
+  } else {
+    // Hang just into the mosaic gutter (full glyph stays inside padded mosaic).
+    parts.push(
+      right ? 'left:100%;right:auto' : 'left:0;right:auto',
+      'top:0',
+      right
+        ? `transform:translate(calc(0.1rem + ${ox}px), calc(-8% + ${oy}px))`
+        : `transform:translate(calc(-100% - 0.1rem + ${ox}px), calc(-8% + ${oy}px))`
+    )
+  }
+  if (bg === 'white') {
+    parts.push('background:#fff', 'box-shadow:0 0 0 1px rgba(0,0,0,0.12)')
+  } else if (bg === 'black') {
+    parts.push('background:#0a0a0a', 'color:#f5f5f5', 'box-shadow:0 0 0 1px rgba(255,255,255,0.15)')
+  } else if (bg === 'theme') {
+    parts.push(
+      'background:color-mix(in srgb, canvas 92%, transparent)',
+      'box-shadow:0 0 0 1px color-mix(in srgb, currentColor 22%, transparent)'
+    )
+  }
+  parts.push('padding:0.05rem 0.28rem', 'border-radius:0.2rem', 'line-height:1.1', 'white-space:nowrap')
+  return {
+    letter,
+    fontSize,
+    bold,
+    style: parts.filter(Boolean).join(';')
+  }
+}
+
+/**
+ * Extra mosaic padding so outside badges sit fully inside the mosaic box (view + PNG/SVG).
+ * @param {object | null | undefined} layout
+ */
+export function mosaicPanelLetterPadStyle(layout) {
+  if (!layout?.panelLetterShow || String(layout.panelLetterPlacement || 'outside') !== 'outside') {
+    return ''
+  }
+  const pos = String(layout.panelLetterPosition || 'outside-tl')
+  const fs = panelLetterResolvedFontSize(layout, 13)
+  const ox = Number(layout?.panelLetterOffsetX) || 0
+  const oy = Number(layout?.panelLetterOffsetY) || 0
+  // Bold letter + badge pad + 0.1rem hang ≈ ~2× font-size on the side.
+  const padL = pos.endsWith('-tr') ? 4 : Math.ceil(fs * 2.05 + Math.max(0, -ox) + 8)
+  const padR = pos.endsWith('-tr') ? Math.ceil(fs * 2.05 + Math.max(0, ox) + 8) : 4
+  const padT = Math.ceil(fs * 1.25 + Math.max(0, -oy) + 6)
+  return `padding:${padT}px ${padR}px 4px ${padL}px;box-sizing:border-box;overflow:visible;`
+}
+
+/**
+ * PlotSpec panel letter fields for publication PNG/PDF.
+ * @param {object | null | undefined} layout
+ * @param {number} [cellIndex]
+ * @param {number} [titleFontSize]
+ */
+export function plotSpecPanelLetter(layout, cellIndex = 0, titleFontSize = 13) {
+  const letter = panelLetterForCell(layout, cellIndex)
+  if (!letter) return {}
+  const placement = String(layout?.panelLetterPlacement || 'outside')
+  let loc = String(layout?.panelLetterPosition || 'outside-tl')
+  // Outside placement always uses axes-fraction coords outside the frame.
+  if (placement === 'outside' && loc.startsWith('inside')) {
+    loc = loc.replace('inside', 'outside')
+  }
+  if (placement === 'inside' && loc.startsWith('outside')) {
+    loc = loc.replace('outside', 'inside')
+  }
+  const color = String(layout?.panelLetterColor || '').trim()
+  /** @type {Record<string, string | number | boolean>} */
+  const out = {
+    panel_letter: letter,
+    panel_letter_fontsize: panelLetterResolvedFontSize(layout, titleFontSize),
+    panel_letter_bold: layout?.panelLetterBold !== false,
+    panel_letter_loc: loc,
+    panel_letter_dx: Number(layout?.panelLetterOffsetX) || 0,
+    panel_letter_dy: Number(layout?.panelLetterOffsetY) || 0
+  }
+  if (color) out.panel_letter_color = color
+  return out
+}
+
+/**
  * Height as padding-bottom % of width. Use this instead of CSS `aspect-ratio`
  * inside flex + overflow panes — Chromium can tight-loop layout with no JS error.
  * @param {unknown} aspect
@@ -604,6 +1026,28 @@ export function aspectPaddingBottom(aspect) {
   const a = Number(aspect)
   const n = Number.isFinite(a) && a > 0.05 && a < 100 ? a : 2.5
   return `${(100 / n).toFixed(4)}%`
+}
+
+/**
+ * Flex classes for the outside-strip mosaic wrapper / ChartLegend self-align.
+ * Left/right use cross-axis (vertical) align; top/bottom use self-* horizontally.
+ * @param {object} layout
+ * @returns {{ wrapper: string, self: string }}
+ */
+export function outsideLegendAlignClasses(layout) {
+  const loc = String(layout?.legendOutside || 'bottom')
+  const align = LEGEND_OUTSIDE_ALIGN.has(String(layout?.legendOutsideAlign))
+    ? String(layout.legendOutsideAlign)
+    : 'center'
+  const side = loc === 'left' || loc === 'right'
+  if (side) {
+    const items =
+      align === 'end' ? 'items-end' : align === 'start' ? 'items-start' : 'items-center'
+    return { wrapper: `flex-row ${items}`, self: '' }
+  }
+  const self =
+    align === 'end' ? 'self-end' : align === 'start' ? 'self-start' : 'self-center'
+  return { wrapper: 'flex-col', self }
 }
 
 /**
@@ -683,18 +1127,29 @@ export function concatInSetIdOrder(setIds, seriesBySetId) {
 
 /**
  * Outside-strip legend items: unique sets in first-assignment order,
- * optional series roles (Mean / Upper / Lower) once.
- * @param {Array<{ setId?: string, seriesRole?: string, name?: string, color?: string }>} series
+ * optional series roles (Mean / Upper / Lower) once, or curated manual entries.
+ * @param {Array<{ setId?: string, seriesRole?: string, name?: string, color?: string, marker?: string }>} series
  * @param {object} layout
  * @param {{ setNames?: Record<string, string>, setColors?: Record<string, string> }} [opts]
  */
 export function figureLegendItems(series, layout, opts = {}) {
   const entries = layout?.legendEntries || 'sets'
+  if (entries === 'manual') {
+    return normalizeManualLegendItems(layout?.legendManualItems)
+      .filter((m) => m.visible)
+      .map((m) => ({
+        key: m.id,
+        name: m.label,
+        color: m.color,
+        marker: m.marker,
+        markerSize: m.markerSize
+      }))
+  }
   const names = opts.setNames && typeof opts.setNames === 'object' ? opts.setNames : {}
   const colors = opts.setColors && typeof opts.setColors === 'object' ? opts.setColors : {}
   const list = Array.isArray(series) ? series : []
   const order = assignedSetIdsInOrder(layout, 'grid')
-  /** @type {Array<{ key: string, name: string, color: string }>} */
+  /** @type {Array<{ key: string, name: string, color: string, marker?: string, markerSize?: number }>} */
   const items = []
   if (entries === 'sets' || entries === 'both') {
     for (const id of order) {
@@ -703,7 +1158,8 @@ export function figureLegendItems(series, layout, opts = {}) {
       items.push({
         key: `set-${id}`,
         name: names[id] || s.name || id,
-        color: s.color || colors[id] || '#888888'
+        color: s.color || colors[id] || '#888888',
+        marker: s.marker || 'none'
       })
     }
   }
@@ -725,11 +1181,63 @@ export function figureLegendItems(series, layout, opts = {}) {
       items.push({
         key: `role-${role}`,
         name: label,
-        color: s.color || '#888888'
+        color: s.color || '#888888',
+        marker: s.marker || 'none'
       })
     }
   }
   return items
+}
+
+/**
+ * Estimate natural outside-legend outer box size (matches ChartLegend content math).
+ * Used to seed Box width/height when leaving "auto".
+ * @param {{
+ *   series?: Array<{ name?: string, key?: string }>,
+ *   columns?: number,
+ *   title?: string,
+ *   fontSize?: number,
+ *   titleFontSize?: number,
+ *   titleGap?: number,
+ *   swatchWidth?: number,
+ *   swatchHeight?: number,
+ *   boxPadding?: number,
+ *   boxBorderWidth?: number
+ * }} opts
+ * @returns {{ width: number, height: number, contentW: number, contentH: number }}
+ */
+export function estimateOutsideLegendNaturalBox(opts = {}) {
+  const items = (Array.isArray(opts.series) ? opts.series : []).filter(
+    (s) => s && (s.name || s.key)
+  )
+  const fs = Math.max(1, Number(opts.fontSize) || 10)
+  const tfs = Math.max(1, Number(opts.titleFontSize) > 0 ? Number(opts.titleFontSize) : fs)
+  const gap =
+    opts.titleGap == null || opts.titleGap === ''
+      ? 8
+      : Math.max(0, Number(opts.titleGap) || 0)
+  const swW = Math.max(1, Number(opts.swatchWidth) || 12)
+  const swH = Math.max(1, Number(opts.swatchHeight) || 12)
+  const cols = Math.max(1, Math.min(8, Math.round(Number(opts.columns) || 1)))
+  const titleText = String(opts.title || '').trim()
+  const itemH = Math.max(14, swH + 6, fs + 4)
+  const maxLen = Math.max(...items.map((s) => String(s.name || '').length), 4)
+  const itemW = maxLen * fs * 0.62 + swW + 16
+  const rows = Math.max(1, Math.ceil(items.length / cols) || 1)
+  const titleBand = titleText ? tfs + gap : 0
+  const contentW = Math.max(40, cols * itemW + 8)
+  const contentH = titleBand + rows * itemH + 8
+  const pad =
+    opts.boxPadding == null || opts.boxPadding === ''
+      ? 8
+      : Math.max(0, Number(opts.boxPadding) || 0)
+  const borderW = Math.max(0, Number(opts.boxBorderWidth) || 0)
+  return {
+    width: Math.round(contentW + pad * 2 + borderW * 2),
+    height: Math.round(contentH + pad * 2 + borderW * 2),
+    contentW: Math.round(contentW),
+    contentH: Math.round(contentH)
+  }
 }
 
 export const CELL_PLOT_KEYS = [
@@ -737,6 +1245,7 @@ export const CELL_PLOT_KEYS = [
   'legendFontSize',
   'legendSwatchSize',
   'axisFontSize',
+  'axisFontBold',
   'titleFontSize',
   'extraLeftMargin',
   'extraRightMargin',
@@ -837,13 +1346,42 @@ export function assignedSetIdsInOrder(layout, compareLayout) {
   return out
 }
 
+const REF_Z_ORDERS = new Set(['back', 'forward'])
+
 /**
  * @param {unknown} raw
- * @returns {Array<{ axis: 'x'|'y', value: number, color: string, width: number, style: string, label: string }>}
+ * @param {number} fallback
+ */
+function clampOpacity(raw, fallback = 1) {
+  const n = Number(raw)
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(1, Math.max(0, n))
+}
+
+/**
+ * @param {unknown} raw
+ * @returns {'back' | 'forward'}
+ */
+function normalizeZOrder(raw) {
+  return REF_Z_ORDERS.has(String(raw)) ? /** @type {'back'|'forward'} */ (String(raw)) : 'back'
+}
+
+/**
+ * @param {unknown} raw
+ * @returns {Array<{
+ *   axis: 'x'|'y',
+ *   value: number,
+ *   color: string,
+ *   width: number,
+ *   style: string,
+ *   label: string,
+ *   opacity: number,
+ *   zOrder: 'back'|'forward'
+ * }>}
  */
 export function normalizeReferenceLines(raw) {
   if (!Array.isArray(raw)) return []
-  /** @type {Array<{ axis: 'x'|'y', value: number, color: string, width: number, style: string, label: string }>} */
+  /** @type {Array<{ axis: 'x'|'y', value: number, color: string, width: number, style: string, label: string, opacity: number, zOrder: 'back'|'forward' }>} */
   const out = []
   for (const item of raw) {
     if (!item || typeof item !== 'object') continue
@@ -859,14 +1397,165 @@ export function normalizeReferenceLines(raw) {
       color: String(obj.color || '#888888'),
       width: Number.isFinite(width) && width > 0 ? width : 1.2,
       style,
-      label: String(obj.label || '')
+      label: String(obj.label || ''),
+      opacity: clampOpacity(obj.opacity, 1),
+      zOrder: normalizeZOrder(obj.zOrder ?? obj.z_order)
     })
   }
   return out
 }
 
 export function emptyReferenceLine() {
-  return { axis: 'y', value: 0, color: '#888888', width: 1.2, style: 'dashed', label: '' }
+  return {
+    axis: 'y',
+    value: 0,
+    color: '#888888',
+    width: 1.2,
+    style: 'dashed',
+    label: '',
+    opacity: 1,
+    zOrder: 'back'
+  }
+}
+
+/**
+ * Parse a band min/max field for live editing.
+ * Empty stays empty (never coerced to 0) so clearing one bound does not
+ * rewrite the other via Number('') === 0 + min/max swap.
+ * @param {unknown} raw
+ * @returns {number | ''}
+ */
+export function coerceReferenceBandBound(raw) {
+  if (raw === '' || raw == null) return ''
+  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : ''
+  const s = String(raw)
+  if (s.trim() === '') return ''
+  // Keep in-progress typed values (e.g. "-", ".", "1e") instead of forcing NaN→0.
+  if (
+    s === '+' ||
+    s === '-' ||
+    s === '.' ||
+    s === '-.' ||
+    s === '+.' ||
+    /[eE][+-]?$/.test(s.trim())
+  ) {
+    return s
+  }
+  const n = Number(s)
+  return Number.isFinite(n) ? n : s
+}
+
+/**
+ * Numeric bound for drawing/export; empty or incomplete → NaN.
+ * @param {unknown} raw
+ */
+export function referenceBandBoundNumber(raw) {
+  if (raw === '' || raw == null) return NaN
+  if (typeof raw === 'string' && raw.trim() === '') return NaN
+  if (
+    typeof raw === 'string' &&
+    (raw === '+' ||
+      raw === '-' ||
+      raw === '.' ||
+      raw === '-.' ||
+      raw === '+.' ||
+      /[eE][+-]?$/.test(raw.trim()))
+  ) {
+    return NaN
+  }
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : NaN
+}
+
+/**
+ * Horizontal (y) or vertical (x) shaded band between min/max.
+ * Empty min/max strings are preserved for in-progress edits (do not swap).
+ * @param {unknown} raw
+ * @returns {Array<{
+ *   axis: 'x'|'y',
+ *   min: number | string,
+ *   max: number | string,
+ *   color: string,
+ *   opacity: number,
+ *   zOrder: 'back'|'forward',
+ *   border: boolean,
+ *   borderColor: string,
+ *   borderWidth: number,
+ *   borderStyle: string,
+ *   label: string
+ * }>}
+ */
+export function normalizeReferenceBands(raw) {
+  if (!Array.isArray(raw)) return []
+  /** @type {Array<{ axis: 'x'|'y', min: number | string, max: number | string, color: string, opacity: number, zOrder: 'back'|'forward', border: boolean, borderColor: string, borderWidth: number, borderStyle: string, label: string }>} */
+  const out = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const obj = /** @type {Record<string, unknown>} */ (item)
+    const min = coerceReferenceBandBound(obj.min ?? obj.start ?? obj.lo)
+    const max = coerceReferenceBandBound(obj.max ?? obj.end ?? obj.hi)
+    // Drop only when both bounds are absent/invalid (not mid-edit empties).
+    const minN = referenceBandBoundNumber(min)
+    const maxN = referenceBandBoundNumber(max)
+    const editing = min === '' || max === '' || typeof min === 'string' || typeof max === 'string'
+    if (!editing && !Number.isFinite(minN) && !Number.isFinite(maxN)) continue
+    const axis = REF_AXES.has(String(obj.axis)) ? String(obj.axis) : 'y'
+    const borderStyle = REF_STYLES.has(String(obj.borderStyle ?? obj.border_style))
+      ? String(obj.borderStyle ?? obj.border_style)
+      : 'solid'
+    const borderWidth = Number(obj.borderWidth ?? obj.border_width)
+    const color = String(obj.color || '#888888')
+    out.push({
+      axis,
+      min,
+      max,
+      color,
+      opacity: clampOpacity(obj.opacity, 0.2),
+      zOrder: normalizeZOrder(obj.zOrder ?? obj.z_order),
+      border: obj.border === true || obj.border === 1 || obj.border === '1' || obj.border === 'true',
+      borderColor: String(obj.borderColor || obj.border_color || color),
+      borderWidth: Number.isFinite(borderWidth) && borderWidth > 0 ? borderWidth : 1,
+      borderStyle,
+      label: String(obj.label || '')
+    })
+  }
+  return out
+}
+
+/**
+ * Bands ready for chart draw / publication (both bounds finite; ordered).
+ * @param {unknown} raw
+ */
+export function finalizeReferenceBands(raw) {
+  /** @type {ReturnType<typeof normalizeReferenceBands>} */
+  const out = []
+  for (const band of normalizeReferenceBands(raw)) {
+    const lo = referenceBandBoundNumber(band.min)
+    const hi = referenceBandBoundNumber(band.max)
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) continue
+    out.push({
+      ...band,
+      min: Math.min(lo, hi),
+      max: Math.max(lo, hi)
+    })
+  }
+  return out
+}
+
+export function emptyReferenceBand() {
+  return {
+    axis: 'y',
+    min: 0,
+    max: 1,
+    color: '#888888',
+    opacity: 0.2,
+    zOrder: 'back',
+    border: false,
+    borderColor: '#888888',
+    borderWidth: 1,
+    borderStyle: 'solid',
+    label: ''
+  }
 }
 
 /** Dash on/off lengths in units of line width (butt caps). */

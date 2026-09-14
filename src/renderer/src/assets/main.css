@@ -1,5 +1,22 @@
 @import 'tailwindcss';
 
+/* Options search: brief border pulse after navigating to a control. */
+@keyframes option-pulse-border {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+  15%,
+  55% {
+    box-shadow: 0 0 0 2px rgb(245 158 11 / 0.9);
+  }
+}
+
+.option-pulse-highlight {
+  animation: option-pulse-border 1.6s ease-out;
+  border-radius: 0.25rem;
+}
+
 /* Bundled Roboto (SIL OFL 1.1) — same face on Windows / macOS / Linux.
  * Files: src/renderer/src/assets/fonts/roboto/ (see OFL.txt). */
 @font-face {
@@ -269,6 +286,44 @@
 
   .sidebar-panel {
     @apply rounded-md border border-neutral-200 dark:border-neutral-800;
+  }
+
+  /* Plot Settings accordion cards */
+  .plot-settings-accordion {
+    @apply space-y-1.5;
+  }
+
+  .plot-settings-section {
+    @apply overflow-hidden rounded-md border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950/60;
+  }
+
+  .plot-settings-section-static {
+    @apply space-y-1.5 p-2;
+  }
+
+  .plot-settings-section-header {
+    @apply flex w-full items-center gap-2 px-2 py-1.5 text-left transition-colors;
+    @apply hover:bg-neutral-100 dark:hover:bg-neutral-900;
+  }
+
+  .plot-settings-section.is-open > .plot-settings-section-header {
+    @apply border-b border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900/80;
+  }
+
+  .plot-settings-section-title {
+    @apply min-w-0 flex-1 text-[11px] font-semibold text-neutral-800 dark:text-neutral-100;
+  }
+
+  .plot-settings-section-chevron {
+    @apply size-3.5 shrink-0 text-neutral-500 transition-transform duration-150 dark:text-neutral-400;
+  }
+
+  .plot-settings-section-chevron.is-collapsed {
+    @apply -rotate-90;
+  }
+
+  .plot-settings-section-body {
+    @apply space-y-2 p-2;
   }
 
   .sidebar-heading {

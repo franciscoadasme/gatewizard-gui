@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte'
   import ChartLegend from './ChartLegend.svelte'
-  import { axisTickFractions, strokeDashForStyle } from '../lib/analysisGridLayout.js'
+  import { axisTickFractions, referenceBandBoundNumber, strokeDashForStyle } from '../lib/analysisGridLayout.js'
 
   let wrapEl = $state(/** @type {HTMLElement | null} */ (null))
 
@@ -46,6 +46,8 @@
     legendFontSize = 10,
     /** Axis tick and axis-title size */
     axisFontSize = 12,
+    /** Bold axis tick numbers and X/Y axis titles */
+    axisFontBold = false,
     /** Chart title size */
     titleFontSize = 13,
     showXLabel = true,
@@ -68,8 +70,10 @@
     /** Data-unit step; empty / 0 uses even tick count */
     xTickStep = '',
     yTickStep = '',
-    /** @type {Array<{ axis?: string, value: number, color?: string, width?: number, style?: string, label?: string }>} */
+    /** @type {Array<{ axis?: string, value: number, color?: string, width?: number, style?: string, label?: string, opacity?: number, zOrder?: string }>} */
     referenceLines = [],
+    /** @type {Array<{ axis?: string, min: number, max: number, color?: string, opacity?: number, zOrder?: string, border?: boolean, borderColor?: string, borderWidth?: number, borderStyle?: string, label?: string }>} */
+    referenceBands = [],
     /** @type {'none' | 'pan' | 'boxZoom' | 'rangeSelect'} */
     interactionMode = 'none',
     /** Highlight band for range stats [t0, t1] in data x units */
@@ -79,7 +83,17 @@
     /** @type {((range: { t0: number, t1: number } | null) => void) | null} */
     onStatsRange = null,
     /** Fill parent height instead of CSS aspect-ratio (mosaic cells). */
-    fillContainer = false
+    fillContainer = false,
+    /** Paper-style panel letter (A, B, C…) */
+    panelLetter = '',
+    panelLetterFontSize = 0,
+    panelLetterBold = true,
+    /** Empty = use labelColor (same as ticks) */
+    panelLetterColor = '',
+    /** outside-tl | inside-tl | outside-tr | inside-tr */
+    panelLetterPosition = 'outside-tl',
+    panelLetterOffsetX = 0,
+    panelLetterOffsetY = 0
   } = $props()
 
   const palette = ['#f59e0b', '#22c55e', '#38bdf8', '#f87171', '#a78bfa', '#f472b6']
@@ -126,7 +140,27 @@
   const legendSwatch = $derived(Math.max(6, Number(legendSwatchSize) || 12) * pxToSvg)
   const legendFs = $derived(Math.max(7, Number(legendFontSize) || 10) * pxToSvg)
   const axisFs = $derived(Math.max(7, Number(axisFontSize) || 12) * pxToSvg)
+  const axisFw = $derived(axisFontBold ? '700' : '400')
   const titleFs = $derived(Math.max(8, Number(titleFontSize) || 13) * pxToSvg)
+  const letterText = $derived(String(panelLetter || '').trim())
+  const letterFs = $derived(
+    Math.max(
+      8,
+      (Number(panelLetterFontSize) > 0
+        ? Number(panelLetterFontSize)
+        : Math.max((Number(titleFontSize) || 13) + 3, 16)) * pxToSvg
+    )
+  )
+  const letterPos = $derived(String(panelLetterPosition || 'outside-tl'))
+  const letterOx = $derived((Number(panelLetterOffsetX) || 0) * pxToSvg)
+  const letterOy = $derived((Number(panelLetterOffsetY) || 0) * pxToSvg)
+  const letterFill = $derived(String(panelLetterColor || '').trim() || labelColor)
+  const letterReserve = $derived.by(() => {
+    if (!letterText || !letterPos.startsWith('outside')) return { top: 0, left: 0, right: 0 }
+    const top = letterFs * 1.15
+    if (letterPos.endsWith('-tr')) return { top, left: 0, right: letterFs * 0.85 }
+    return { top, left: letterFs * 0.85, right: 0 }
+  })
   const tickFs = $derived(Math.max(6 * pxToSvg, axisFs * 0.92))
   const edgePad = $derived(Math.max(4, 6 * pxToSvg))
   const tickLen = $derived(Math.max(0, Number(tickLength) || 0) * pxToSvg)
@@ -179,10 +213,10 @@
       ? Math.max(edgePad * 1.5, Math.ceil(tickFs * 2.8))
       : edgePad
     return {
-      top: Math.max(2, titleBand + extraT),
-      right: Math.max(2, rightBase + extraR),
+      top: Math.max(2, titleBand + extraT + letterReserve.top),
+      right: Math.max(2, rightBase + extraR + letterReserve.right),
       bottom: Math.max(2, xTickSpace + xLabelSpace + extraB),
-      left: Math.max(2, yLabelSpace + yTickSpace + extraL)
+      left: Math.max(2, yLabelSpace + yTickSpace + extraL + letterReserve.left)
     }
   })
   const clipId = `plot-clip-${typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`
@@ -562,6 +596,8 @@
       return
     }
 
+    if (interactionMode !== 'pan') return
+
     if (dataDomain) {
       const dx = (e.clientX - dragStart.x) * (width / rect.width)
       const dy = (e.clientY - dragStart.y) * (height / rect.height)
@@ -669,17 +705,31 @@
 
   const xTickData = $derived.by(() => {
     const ticks = xTickFractions
+    const xs = series[0]?.x ?? []
+    const span = extents.xMax - extents.xMin
     if (xTickLabels.length === 0) {
       return ticks.map((t) => ({
         t,
-        label: fmtX(extents.xMin + (extents.xMax - extents.xMin) * t)
+        label: fmtX(extents.xMin + span * t)
       }))
     }
-    const xs = series[0]?.x ?? []
+    // RMSF residue_number / atom_index store stringified x as labels. Prefer the
+    // axis-range tick value (respects X min/max) instead of snapping to first/last residue.
+    const labelsAreNumericX =
+      xTickLabels.length === xs.length &&
+      xs.length > 0 &&
+      xs.every((x, i) => String(xTickLabels[i]) === String(x))
+    if (labelsAreNumericX) {
+      return ticks.map((t) => {
+        const xVal = extents.xMin + span * t
+        return { t, label: fmtX(xVal) }
+      })
+    }
+    // residue_type_number (ALA123): keep name labels, but still place marks on the range.
     return ticks.map((t) => {
-      const xVal = extents.xMin + (extents.xMax - extents.xMin) * t
-      let best = 0,
-        bestDist = Infinity
+      const xVal = extents.xMin + span * t
+      let best = 0
+      let bestDist = Infinity
       for (let i = 0; i < xs.length; i++) {
         const d = Math.abs(xs[i] - xVal)
         if (d < bestDist) {
@@ -706,6 +756,31 @@
             ? 'grab'
             : 'default'
   )
+
+  const letterAnchor = $derived.by(() => {
+    if (!letterText) return null
+    const pad = Math.max(2, letterFs * 0.15)
+    const outside = letterPos.startsWith('outside')
+    const right = letterPos.endsWith('-tr')
+    if (outside) {
+      return {
+        x: right
+          ? margin.left + plotWidth + pad + letterOx
+          : margin.left - pad + letterOx,
+        y: margin.top - pad + letterOy,
+        anchor: right ? 'start' : 'end',
+        baseline: 'auto'
+      }
+    }
+    return {
+      x: right
+        ? margin.left + plotWidth - pad + letterOx
+        : margin.left + pad + letterOx,
+      y: margin.top + letterFs * 0.85 + letterOy,
+      anchor: right ? 'end' : 'start',
+      baseline: 'alphabetic'
+    }
+  })
 </script>
 
 <div class={`space-y-2 ${fillContainer ? 'flex h-full min-h-0 flex-col' : ''} ${className}`}>
@@ -739,6 +814,19 @@
         </defs>
 
         {#if !transparentBg}<rect x="0" y="0" {width} {height} fill={plotBg} />{/if}
+
+        {#if letterAnchor}
+          <text
+            x={letterAnchor.x}
+            y={letterAnchor.y}
+            text-anchor={letterAnchor.anchor}
+            dominant-baseline={letterAnchor.baseline}
+            font-size={letterFs}
+            font-weight={panelLetterBold !== false ? '700' : '400'}
+            font-family={fontFamily}
+            fill={letterFill}>{letterText}</text
+          >
+        {/if}
 
         {#if chartTitle || chartSubtitle}
           {#if chartTitle}
@@ -843,6 +931,7 @@
               y={ty + tickFs * 0.35}
               text-anchor="end"
               font-size={tickFs}
+              font-weight={axisFw}
               font-family={fontFamily}
               fill={tickColor}>{fmtY(yVal)}</text
             >
@@ -866,6 +955,7 @@
               y={margin.top + plotHeight + tickLen + tickGap + tickFs * 0.85}
               text-anchor="middle"
               font-size={tickFs}
+              font-weight={axisFw}
               font-family={fontFamily}
               fill={tickColor}>{tick.label}</text
             >
@@ -934,26 +1024,60 @@
 
         <g clip-path={`url(#${clipId})`}>
           <g transform={plotTransform}>
-            {#each referenceLines as line, ri (`ref-${ri}-${line.axis}-${line.value}`)}
-              {@const axis = line.axis === 'x' ? 'x' : 'y'}
-              {@const val = Number(line.value)}
-              {#if Number.isFinite(val)}
-                {@const refW = (Number(line.width) || 1.2) * pxToSvg}
-                {@const refDash = svgDasharray(
-                  strokeDashForStyle(line.style, Number(line.width) || 1.2),
-                  pxToSvg
-                )}
-                <line
-                  x1={axis === 'x' ? sx(val) : sx(extents.xMin)}
-                  y1={axis === 'x' ? sy(extents.yMax) : sy(val)}
-                  x2={axis === 'x' ? sx(val) : sx(extents.xMax)}
-                  y2={axis === 'x' ? sy(extents.yMin) : sy(val)}
-                  stroke={line.color || axisColor}
-                  stroke-width={refW}
-                  stroke-dasharray={refDash}
-                  stroke-linecap={refDash ? 'butt' : 'round'}
-                  pointer-events="none"
-                />
+            {#each referenceBands as band, bi (`refband-back-${bi}-${band.axis}-${band.min}-${band.max}`)}
+              {#if (band.zOrder || 'back') !== 'forward'}
+                {@const bMin = Math.min(referenceBandBoundNumber(band.min), referenceBandBoundNumber(band.max))}
+                {@const bMax = Math.max(referenceBandBoundNumber(band.min), referenceBandBoundNumber(band.max))}
+                {#if Number.isFinite(bMin) && Number.isFinite(bMax)}
+                  {@const axis = band.axis === 'x' ? 'x' : 'y'}
+                  {@const bx = axis === 'x' ? sx(bMin) : sx(extents.xMin)}
+                  {@const by = axis === 'x' ? sy(extents.yMax) : sy(bMax)}
+                  {@const bw = axis === 'x' ? Math.abs(sx(bMax) - sx(bMin)) : Math.abs(sx(extents.xMax) - sx(extents.xMin))}
+                  {@const bh = axis === 'x' ? Math.abs(sy(extents.yMin) - sy(extents.yMax)) : Math.abs(sy(bMin) - sy(bMax))}
+                  {@const bW = (Number(band.borderWidth) || 1) * pxToSvg}
+                  {@const bDash = svgDasharray(
+                    strokeDashForStyle(band.borderStyle || 'solid', Number(band.borderWidth) || 1),
+                    pxToSvg
+                  )}
+                  <rect
+                    x={bx}
+                    y={by}
+                    width={bw}
+                    height={bh}
+                    fill={band.color || axisColor}
+                    fill-opacity={Number.isFinite(Number(band.opacity)) ? Number(band.opacity) : 0.2}
+                    stroke={band.border ? band.borderColor || band.color || axisColor : 'none'}
+                    stroke-width={band.border ? bW : 0}
+                    stroke-dasharray={band.border ? bDash : undefined}
+                    stroke-linecap={bDash ? 'butt' : 'round'}
+                    pointer-events="none"
+                  />
+                {/if}
+              {/if}
+            {/each}
+            {#each referenceLines as line, ri (`ref-back-${ri}-${line.axis}-${line.value}`)}
+              {#if (line.zOrder || 'back') !== 'forward'}
+                {@const axis = line.axis === 'x' ? 'x' : 'y'}
+                {@const val = Number(line.value)}
+                {#if Number.isFinite(val)}
+                  {@const refW = (Number(line.width) || 1.2) * pxToSvg}
+                  {@const refDash = svgDasharray(
+                    strokeDashForStyle(line.style, Number(line.width) || 1.2),
+                    pxToSvg
+                  )}
+                  <line
+                    x1={axis === 'x' ? sx(val) : sx(extents.xMin)}
+                    y1={axis === 'x' ? sy(extents.yMax) : sy(val)}
+                    x2={axis === 'x' ? sx(val) : sx(extents.xMax)}
+                    y2={axis === 'x' ? sy(extents.yMin) : sy(val)}
+                    stroke={line.color || axisColor}
+                    stroke-opacity={Number.isFinite(Number(line.opacity)) ? Number(line.opacity) : 1}
+                    stroke-width={refW}
+                    stroke-dasharray={refDash}
+                    stroke-linecap={refDash ? 'butt' : 'round'}
+                    pointer-events="none"
+                  />
+                {/if}
               {/if}
             {/each}
             {#each series as s, i (s.key ?? i)}
@@ -977,6 +1101,62 @@
                 />
               {/each}
             {/each}
+            {#each referenceBands as band, bi (`refband-fwd-${bi}-${band.axis}-${band.min}-${band.max}`)}
+              {#if (band.zOrder || 'back') === 'forward'}
+                {@const bMin = Math.min(referenceBandBoundNumber(band.min), referenceBandBoundNumber(band.max))}
+                {@const bMax = Math.max(referenceBandBoundNumber(band.min), referenceBandBoundNumber(band.max))}
+                {#if Number.isFinite(bMin) && Number.isFinite(bMax)}
+                  {@const axis = band.axis === 'x' ? 'x' : 'y'}
+                  {@const bx = axis === 'x' ? sx(bMin) : sx(extents.xMin)}
+                  {@const by = axis === 'x' ? sy(extents.yMax) : sy(bMax)}
+                  {@const bw = axis === 'x' ? Math.abs(sx(bMax) - sx(bMin)) : Math.abs(sx(extents.xMax) - sx(extents.xMin))}
+                  {@const bh = axis === 'x' ? Math.abs(sy(extents.yMin) - sy(extents.yMax)) : Math.abs(sy(bMin) - sy(bMax))}
+                  {@const bW = (Number(band.borderWidth) || 1) * pxToSvg}
+                  {@const bDash = svgDasharray(
+                    strokeDashForStyle(band.borderStyle || 'solid', Number(band.borderWidth) || 1),
+                    pxToSvg
+                  )}
+                  <rect
+                    x={bx}
+                    y={by}
+                    width={bw}
+                    height={bh}
+                    fill={band.color || axisColor}
+                    fill-opacity={Number.isFinite(Number(band.opacity)) ? Number(band.opacity) : 0.2}
+                    stroke={band.border ? band.borderColor || band.color || axisColor : 'none'}
+                    stroke-width={band.border ? bW : 0}
+                    stroke-dasharray={band.border ? bDash : undefined}
+                    stroke-linecap={bDash ? 'butt' : 'round'}
+                    pointer-events="none"
+                  />
+                {/if}
+              {/if}
+            {/each}
+            {#each referenceLines as line, ri (`ref-fwd-${ri}-${line.axis}-${line.value}`)}
+              {#if (line.zOrder || 'back') === 'forward'}
+                {@const axis = line.axis === 'x' ? 'x' : 'y'}
+                {@const val = Number(line.value)}
+                {#if Number.isFinite(val)}
+                  {@const refW = (Number(line.width) || 1.2) * pxToSvg}
+                  {@const refDash = svgDasharray(
+                    strokeDashForStyle(line.style, Number(line.width) || 1.2),
+                    pxToSvg
+                  )}
+                  <line
+                    x1={axis === 'x' ? sx(val) : sx(extents.xMin)}
+                    y1={axis === 'x' ? sy(extents.yMax) : sy(val)}
+                    x2={axis === 'x' ? sx(val) : sx(extents.xMax)}
+                    y2={axis === 'x' ? sy(extents.yMin) : sy(val)}
+                    stroke={line.color || axisColor}
+                    stroke-opacity={Number.isFinite(Number(line.opacity)) ? Number(line.opacity) : 1}
+                    stroke-width={refW}
+                    stroke-dasharray={refDash}
+                    stroke-linecap={refDash ? 'butt' : 'round'}
+                    pointer-events="none"
+                  />
+                {/if}
+              {/if}
+            {/each}
           </g>
         </g>
 
@@ -986,6 +1166,7 @@
           y={height - edgePad * 0.7}
           text-anchor="middle"
           font-size={axisFs}
+          font-weight={axisFw}
           font-family={fontFamily}
           fill={labelColor}>{xLabel}</text
         >
@@ -996,6 +1177,7 @@
           y={margin.top + plotHeight / 2}
           text-anchor="middle"
           font-size={axisFs}
+          font-weight={axisFw}
           font-family={fontFamily}
           fill={labelColor}
           transform={`rotate(-90, ${yLabelX}, ${margin.top + plotHeight / 2})`}>{yLabel}</text

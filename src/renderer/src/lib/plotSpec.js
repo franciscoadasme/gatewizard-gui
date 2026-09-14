@@ -82,6 +82,8 @@ export function buildPlotSpecFromGui({
     layout: layout === 'grid' ? 'grid' : 'overlay',
     cols: 2,
     sync_x: g.syncX !== false,
+    reference_lines: Array.isArray(g.referenceLines) ? g.referenceLines : [],
+    reference_bands: Array.isArray(g.referenceBands) ? g.referenceBands : [],
     global: {
       time_units: timeUnits,
       energy_units: energyUnits,
@@ -151,6 +153,7 @@ export const energGlobalDefaults = {
   yMax: '',
   yLabel: '',
   referenceLines: [],
+  referenceBands: [],
   dpi: '300',
   fontFamily: 'Roboto, sans-serif'
 }

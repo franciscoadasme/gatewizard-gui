@@ -13,6 +13,7 @@
    *   defaultWidth?: number,
    *   minWidth?: number,
    *   className?: string,
+   *   collapsed?: boolean,
    *   children?: import('svelte').Snippet
    * }} */
   let {
@@ -21,6 +22,7 @@
     defaultWidth = 320,
     minWidth = 200,
     className = '',
+    collapsed = $bindable(false),
     children
   } = $props()
 
@@ -28,7 +30,6 @@
   const maxWidth = $derived(defaultWidth)
 
   let width = $state(320)
-  let collapsed = $state(false)
   /** Last width while expanded (for mid-session memory); rail click still opens to defaultWidth. */
   let lastExpandedWidth = $state(320)
 

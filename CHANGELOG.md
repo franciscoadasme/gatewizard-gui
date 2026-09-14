@@ -37,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Analysis GridMAT-MD.pl:** APL method **GridMAT-MD.pl (external)** plus **GridMAT (GW, experimental)** and **VTMC (GW, experimental)** labels; optional jobs control for the Perl path (`GATEWIZARD_GRIDMAT_MD`).
 - **Analysis FATSLiM Threads / Jobs:** when APL method is FATSLiM, sidebar exposes `fatslim_nthreads` and `fatslim_jobs` (prefer small threads 1–4 and more jobs for wall-clock). Clear install hint when the CLI is missing (`scripts/install_fatslim_env.sh` / `GATEWIZARD_FATSLIM`).
+- **Analysis outside legend (Grid + Overlay):** place the legend Outside / Inside / None — manual curated entries (color, marker, label, reorder, show/hide), strip align (Start / Center / End), frame padding and minimum size, title font/gap, swatches, and border chrome. Panel letters sit in the padded gutter so they clear the outside strip; PNG/PDF export mirrors manual items.
+- **Analysis reference bands:** Plot Settings → **Reference bands** next to reference lines — horizontal (Y min–max) or vertical (X min–max), fill color/opacity, back/front, optional border. Reference lines also gain opacity and back/front. On-screen charts and Pub PNG/PDF honor both.
 - **Builder peptide caps:** Detect lists FVA/FOR/ETA polymer caps separately from free ligands; **Parametrize caps** runs GAFF with head/tail libs into `peptide_cap_params/` and passes them into packmol-memgen / tleap. Caps are **auto-scanned when a PDB is selected** (shown above Ligand Parametrization), so users who skip free-ligand Detect still see ETA/FVA.
 - **Analysis Grid options:** **Cells** count (1…cols×rows) to leave unused trailing squares out of a frame (e.g. 4×2 with 7 cells), and **Right** last-row align alongside Left / Center.
 - **Settings → Appearance:** UI scale (80–150%, default **110%**). Startup uses this value; **Ctrl+=** / **Ctrl+Shift+=** zoom in, **Ctrl+-** zoom out, **Ctrl+0** resets to the Settings scale (not always 100%).
@@ -71,6 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Analysis outside legend:** box width/height are true CSS *minimums* (content can grow). Sessions that saved `1×1` no longer collapse the strip to a dot; load also treats mins < 8 px as auto.
 - **Analysis FATSLiM notice:** sidebar probes `/analysis-fatslim-status` when FATSLiM is selected and shows a short install hint only if the CLI is missing (clone the **API** `gatewizard` repo — not the GUI install — then `scripts/install_fatslim_env.sh` / `docs/analysis.md`).
 - **Job finish toasts:** the bottom-right cards shown when the app is unfocused and an analysis/job finishes use a solid theme-aware fill (separate from in-tab `gw-notice` cards).
 - **Analysis plot tools:** Pan is off by default so page scroll works over charts; click **Pan** to enable (click again to turn off). Wheel zoom only runs when a plot tool is active.
@@ -118,7 +121,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Analysis Plot Settings:** regrouped into card accordion sections (Limits & ticks with tick step next to ticks, Appearance, Series & lines, In-chart legend, Typography, Margins & spines, Advanced last); chevron disclosure; long color help is hover-only. In-chart legend controls show only when legend position is Inside (outside/none point to Grid / Overlay options).
 - **Area per lipid default:** Analysis APL method defaults to **FATSLiM (external CLI)**. EVAPL is labeled experimental / not yet validated. Method picker shows algorithm names only; **LiPyphilic AreaPerLipid** (official `AreaPerLipid`) warns for pure lipids. **Run all / selected** uses the sidebar APL method (and exclude / GridMAT / VTMC params) for every set — hint + **Apply to all sets** + per-set method badges. LiPyphilic / GridMAT / VTMC expose **Exclude cutoff (Å)** and **Cutoff dim**; EVAPL uses leaflet headgroup Z-range instead. Install companion env + set `GATEWIZARD_FATSLIM` (see gatewizard `scripts/install_fatslim_env.sh` / docs).
+- **Analysis axis font:** Plot Settings → **Bold** under Axis font applies to tick numbers and X/Y axis titles (on-screen and Pub PNG/PDF).
+- **Analysis grid manual legend:** outside strip and Manual entries editor use light/dark theme borders and backgrounds instead of always-dark chrome. Box width/height seed from the current legend when leaving auto (no hard font/box size caps).
 - **Sidebar output folder:** Preparation, Builder, and Equilibration use the shared `OutputPathFields` control (folder name + browse parent path), matching Tools and Analysis.
 - **Sidebar output folder placement:** Preparation, Builder, and Equilibration place the output folder next to the primary actions (Prepare / Generate / Run), matching Tools and Analysis, instead of under Input at the top.
 - **Equilibration default protocol:** Eq6 packing extended from 17.625 ns to **47.625 ns** so Eq1–6 total **50 ns** of MD (was 20 ns) in GUI `base.json` and matching banner copy.

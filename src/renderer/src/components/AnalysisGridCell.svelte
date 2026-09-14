@@ -10,7 +10,9 @@
     cellLabelVisibility,
     cellShowsLegend,
     lineChartAxisProps,
-    lineChartExtraMarginProps
+    lineChartExtraMarginProps,
+    lineChartPanelLetterProps,
+    outsidePanelLetterBadge
   } from '../lib/analysisGridLayout.js'
 
   let {
@@ -37,6 +39,7 @@
     xTickStep = '',
     yTickStep = '',
     structReferenceLines = [],
+    structReferenceBands = [],
     cellTitle = '',
     cellSetIds = [],
     sets = [],
@@ -58,6 +61,18 @@
   const labels = $derived(cellLabelVisibility(gridLayout, idx))
   const gutters = $derived(cellAxisReservation(gridLayout))
   const showLegend = $derived(cellShowsLegend(gridLayout, idx))
+  const panelLetterProps = $derived(
+    lineChartPanelLetterProps(gridLayout, idx, Number(cps?.titleFontSize) || 13)
+  )
+  const outsideLetter = $derived(
+    outsidePanelLetterBadge(
+      gridLayout,
+      idx,
+      Number(cps?.titleFontSize) || Number(ps?.titleFontSize) || 13,
+      resolvedStructColors?.textColor || '',
+      ps?.fontFamily || 'Roboto, sans-serif'
+    )
+  )
   const gridColor = $derived.by(() => {
     const c = String(cps?.gridColor || '').trim()
     return c || `${resolvedStructColors.textColor}40`
@@ -109,6 +124,14 @@
   style={`${gridLayout.cellBorder && gridLayout.cellBorderColor ? `border: 1px solid ${gridLayout.cellBorderColor};` : ''} ${cellChromeBg ? `background:${cellChromeBg};` : ''}`}
   onclick={() => onSelectCell?.(idx)}
 >
+  {#if outsideLetter}
+    <span
+      class="pointer-events-none absolute z-[15] select-none"
+      data-chart-export="panel-letter"
+      style={outsideLetter.style}
+      aria-hidden="true">{outsideLetter.letter}</span
+    >
+  {/if}
   <!-- Height from width only. CSS aspect-ratio inside flex+overflow freezes Chromium with no console error. -->
   <div class="relative w-full" style={`padding-bottom: ${aspectPaddingBottom(gridCellAspect)};`}>
     <div class="absolute inset-0 min-h-0 min-w-0 overflow-hidden">
@@ -150,6 +173,7 @@
           legendSwatchSize={Number(cps.legendSwatchSize) || 12}
           legendFontSize={Number(cps.legendFontSize) || 10}
           axisFontSize={Number(cps.axisFontSize) || 12}
+          axisFontBold={cps.axisFontBold === true}
           titleFontSize={Number(cps.titleFontSize) || 13}
           showXLabel={labels.showXLabel}
           showYLabel={labels.showYLabel}
@@ -160,14 +184,16 @@
           reserveXTickLabels={gutters.reserveXTickLabels}
           reserveYTickLabels={gutters.reserveYTickLabels}
           {...lineChartAxisProps(plotEdit)}
+          {...panelLetterProps}
           {xTickStep}
           {yTickStep}
           referenceLines={structReferenceLines}
+          referenceBands={structReferenceBands}
           xMinOverride={xMinO}
           xMaxOverride={xMaxO}
           yMinOverride={yMinO}
           yMaxOverride={yMaxO}
-          interactionMode={hasChartTimeAxis ? chartInteractionMode : 'pan'}
+          interactionMode={chartInteractionMode}
           statsRange={hasChartTimeAxis ? statsRange : null}
           {onAxisRange}
           {onStatsRange}
