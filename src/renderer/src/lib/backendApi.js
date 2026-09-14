@@ -299,8 +299,16 @@ export function checkLigandParametrization(pdbPath, ligandNames, outputDir = nul
 }
 
 /**
+ * Probe whether the external FATSLiM CLI is available to the backend.
+ * @returns {Promise<{ available: boolean, path: string|null, error?: string|null }>}
+ */
+export function getFatslimStatus() {
+  return backendJson('/analysis-fatslim-status')
+}
+
+/**
  * Run structural trajectory analysis (RMSD/RMSF/Distance/Rg/bilayer).
- * @param {{ topologyPath: string, trajectoryPaths: string[], analysisType: string, selection?: string, selection2?: string, referenceFrame?: number, referenceStructure?: string|null, align?: boolean, fileTimes?: Record<string, number>, fileStrides?: Record<string, number>, rmsfXaxisType?: string, leafletLipidSel?: string|null, leafletFilterSel?: string|null, nBins?: number, interpolate?: boolean, excludeSel?: string|null, excludeCutoff?: number, excludeDim?: number, aplMethod?: string|null, gridmatN?: number, gridmatPrecision?: number, vtmcNSamples?: number, vtmcProteinRadius?: number, start?: number|null, stop?: number|null, step?: number|null }} payload
+ * @param {{ topologyPath: string, trajectoryPaths: string[], analysisType: string, selection?: string, selection2?: string, referenceFrame?: number, referenceStructure?: string|null, align?: boolean, fileTimes?: Record<string, number>, fileStrides?: Record<string, number>, rmsfXaxisType?: string, leafletLipidSel?: string|null, leafletFilterSel?: string|null, nBins?: number, interpolate?: boolean, excludeSel?: string|null, excludeCutoff?: number, excludeDim?: number, aplMethod?: string|null, fatslimNthreads?: number, fatslimJobs?: number, gridmatN?: number, gridmatPrecision?: number, gridmatMdJobs?: number, vtmcNSamples?: number, vtmcProteinRadius?: number, start?: number|null, stop?: number|null, step?: number|null }} payload
  * @returns {Promise<{ analysis_type: string, x: number[], y: number[], x_label: string, y_label: string, series_name: string, x_labels?: string[], stats?: Record<string, number>, mean_upper_leaflet?: number[], mean_lower_leaflet?: number[] }>}
  */
 export function runStructuralAnalysis(payload, opts = {}) {
@@ -309,7 +317,7 @@ export function runStructuralAnalysis(payload, opts = {}) {
 
 /**
  * Count atoms matching MDAnalysis selection(s) on the analysis topology.
- * @param {{ topologyPath: string, trajectoryPaths?: string[], selection: string, selection2?: string|null }} payload
+ * @param {{ topologyPath: string, trajectoryPaths?: string[], selection: string, selection2?: string|null, companionStructure?: string|null }} payload
  * @returns {Promise<{ count: number, total_atoms: number, count2?: number }>}
  */
 export function countAnalysisSelection(payload) {

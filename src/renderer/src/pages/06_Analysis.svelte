@@ -6,6 +6,7 @@
   import TopologyInfoModal from '../components/TopologyInfoModal.svelte'
   import OutputPathFields from '../components/OutputPathFields.svelte'
   import ResizableSidePanel from '../components/ResizableSidePanel.svelte'
+  import { requestSidePanelExpand } from '../lib/pageSidePanelStore.svelte.js'
   import Button from '../components/ui/Button.svelte'
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Divider from '../components/ui/Divider.svelte'
@@ -30,6 +31,7 @@
     detectLipidHeadgroups,
     ensureOutputFolder,
     getEnergeticProperties,
+    getFatslimStatus,
     renderAnalysisPlot,
     runEnergeticAnalysis,
     runStructuralAnalysis,
@@ -40,6 +42,7 @@
     APL_METHOD_DEFAULTS,
     APL_METHODS,
     aplMethodLabel,
+    aplMethodUsesExcludeCutoff,
     createAnalysisSet,
     defaultSelectionForStructuralType,
     duplicateAnalysisSet,
@@ -59,10 +62,17 @@
     newSetId,
     resolveStructuralTypeSelection,
     setHasResult,
+    STRUCTURAL_TYPE_GROUPS,
+    STRUCTURAL_TYPE_TITLES as STRUCTURAL_TYPE_TITLE_MAP,
     structuralMeanY,
     structuralResultNeedsCsvHydration,
     structuralSetHasPlottableResult
   } from '../lib/analysisSets.js'
+  import {
+    navigateToAnalysisOption,
+    rankAnalysisOptions,
+    ANALYSIS_OPTIONS_CATALOG
+  } from '../lib/analysisOptionsCatalog.js'
   import { notifyJobFinishedIfUnfocused } from '../lib/jobNotifications.svelte.js'
   import {
     ANALYSIS_SESSION_FILENAME,
@@ -108,6 +118,14 @@
     formatTrajectoryTimeNs
   } from '../lib/protocolStageTimes.js'
   import {
+    normalizeResidueMappingGroups,
+    parseResidueMappingText,
+    remapResidueTypeLabels,
+    remapResidsToOriginal,
+    serializeResidueMappingGroups,
+    topologyResidsFromRmsfResult
+  } from '../lib/residueMapping.js'
+  import {
     defaultGridLayout,
     ensureGridCellsForSets,
     autoFillEnergeticGrid,
@@ -116,6 +134,10 @@
     normalizeGridLayout,
     normalizeReferenceLines,
     emptyReferenceLine,
+    normalizeReferenceBands,
+    emptyReferenceBand,
+    coerceReferenceBandBound,
+    finalizeReferenceBands,
     cellLabelVisibility,
     cellShowsLegend,
     mosaicRows,
@@ -124,6 +146,12 @@
     resizeGridCells,
     concatInSetIdOrder,
     figureLegendItems,
+    seedManualLegendItemsFromSeries,
+    normalizeManualLegendItems,
+    LEGEND_MARKERS,
+    moveIdInList,
+    outsideLegendAlignClasses,
+    estimateOutsideLegendNaturalBox,
     gridSpecSlices,
     syncOrderedIds,
     visibleSetIds,
@@ -140,6 +168,10 @@
     plotSpecAxisChrome,
     lineChartExtraMarginProps,
     plotSpecExtraMargins,
+    lineChartPanelLetterProps,
+    plotSpecPanelLetter,
+    mosaicPanelLetterPadStyle,
+    outsidePanelLetterBadge,
     activeGridCells,
     clampCellCount,
     resolveCellCountOnResize,
@@ -224,20 +256,65 @@
   let referenceStructurePath = $state('')
   let align = $state(true)
   let rmsfXaxisType = $state('residue_number')
+  /**
+   * One or more prep renum maps, each applied to selected analysis sets.
+   * @type {Array<{
+   *   id: string,
+   *   path: string,
+   *   enabled: boolean,
+   *   setIds: string[],
+   *   map: Map<number, number>,
+   *   error: string,
+   *   usefulCount: number
+   * }>}
+   */
+  let residueMappingGroups = $state([])
   let leafletLipidSel = $state('')
   let leafletFilterSel = $state('')
   let nBins = $state('1')
   /** Non-lipid atoms for protein/peptide-aware APL (empty = no exclusion). */
   let excludeSel = $state(defaultPeptideExcludeSelection())
-  let excludeCutoff = $state('30')
+  let excludeCutoff = $state(APL_METHOD_DEFAULTS.excludeCutoff)
+  let excludeDim = $state(APL_METHOD_DEFAULTS.excludeDim)
   let aplMethod = $state(APL_METHOD_DEFAULTS.aplMethod)
+  let fatslimNthreads = $state(APL_METHOD_DEFAULTS.fatslimNthreads)
+  let fatslimJobs = $state(APL_METHOD_DEFAULTS.fatslimJobs)
+  /** @type {boolean | null} null = not checked / checking */
+  let fatslimAvailable = $state(/** @type {boolean | null} */ (null))
+  let fatslimStatusChecking = $state(false)
   let gridmatN = $state(APL_METHOD_DEFAULTS.gridmatN)
   let gridmatPrecision = $state(APL_METHOD_DEFAULTS.gridmatPrecision)
+  let gridmatMdJobs = $state(APL_METHOD_DEFAULTS.gridmatMdJobs)
   let vtmcNSamples = $state(APL_METHOD_DEFAULTS.vtmcNSamples)
   let vtmcProteinRadius = $state(APL_METHOD_DEFAULTS.vtmcProteinRadius)
   const aplMethodHint = $derived(
     APL_METHODS.find((item) => item.id === aplMethod)?.hint || ''
   )
+  const showAplExcludeCutoff = $derived(aplMethodUsesExcludeCutoff(aplMethod))
+
+  $effect(() => {
+    if (structuralType !== 'area_per_lipid' || normalizeAplMethod(aplMethod) !== 'fatslim') {
+      return
+    }
+    let cancelled = false
+    fatslimStatusChecking = true
+    getFatslimStatus()
+      .then((res) => {
+        if (cancelled) return
+        fatslimAvailable = Boolean(res?.available)
+      })
+      .catch(() => {
+        if (cancelled) return
+        fatslimAvailable = false
+      })
+      .finally(() => {
+        if (!cancelled) fatslimStatusChecking = false
+      })
+    return () => {
+      cancelled = true
+    }
+  })
+
   let interpolate = $state(false)
   /** @type {Array<{ name: string, atomCount: number, enabled: boolean }>} */
   let lipidHeadgroupAtoms = $state([])
@@ -255,8 +332,24 @@
   let compareLayout = $state('overlay')
   /** Custom mosaic + overlay series order (session-persisted). */
   let gridLayout = $state(defaultGridLayout())
-  let plotGridOptionsOpen = $state(false)
+  let plotLayoutOptionsOpen = $state(false)
+  /** Bound to the right options panel; true when dragged to the thin rail. */
+  let plotLayoutOptionsCollapsed = $state(false)
   let plotSettingsAdvancedOpen = $state(false)
+  /** Collapsible Plot Settings sections (Limits + Appearance default open). */
+  let plotSectionOpen = $state({
+    limits: true,
+    appearance: true,
+    series: false,
+    legend: false,
+    typography: false,
+    margins: false,
+    advanced: false
+  })
+  let optionsSearchQuery = $state('')
+  let optionsSearchOpen = $state(false)
+  let optionsSearchHighlightId = $state(/** @type {string | null} */ (null))
+  let optionsSearchHighlightTimer = $state(/** @type {ReturnType<typeof setTimeout> | null} */ (null))
   /** Mosaic cell selected for per-cell plot settings (0-based). */
   let selectedGridCell = $state(0)
   /** Which mosaic cell has the sets/order popover open (`null` = closed). */
@@ -748,6 +841,212 @@
     markSessionDirty()
   }
 
+  function toggleLayoutOptionsPanel() {
+    if (!plotLayoutOptionsOpen) {
+      plotLayoutOptionsOpen = true
+      plotLayoutOptionsCollapsed = false
+      queueMicrotask(() => requestSidePanelExpand('analysis-grid'))
+      return
+    }
+    if (plotLayoutOptionsCollapsed) {
+      plotLayoutOptionsCollapsed = false
+      requestSidePanelExpand('analysis-grid')
+      return
+    }
+    plotLayoutOptionsOpen = false
+  }
+
+  /** Outside-strip font/swatch: mosaic override, else plot settings. */
+  function outsideLegendFontSize(layout) {
+    const n = Number(layout?.legendFontSize)
+    if (Number.isFinite(n) && n > 0) return n
+    return Number(ps.legendFontSize) || Number(ePlotGlobal.legendFontSize) || 10
+  }
+
+  function outsideLegendSwatchSize(layout) {
+    const n = Number(layout?.legendSwatchSize)
+    if (Number.isFinite(n) && n > 0) return n
+    return Number(ps.legendSwatchSize) || Number(ePlotGlobal.legendSwatchSize) || 12
+  }
+
+  function outsideLegendSwatchWidth(layout) {
+    const n = Number(layout?.legendSwatchWidth)
+    if (Number.isFinite(n) && n > 0) return n
+    return outsideLegendSwatchSize(layout)
+  }
+
+  function outsideLegendSwatchHeight(layout) {
+    const n = Number(layout?.legendSwatchHeight)
+    if (Number.isFinite(n) && n > 0) return n
+    return outsideLegendSwatchSize(layout)
+  }
+
+  /** Shared ChartLegend chrome props for the outside strip. */
+  function outsideLegendTitleFontSize(layout) {
+    const n = Number(layout?.legendTitleFontSize)
+    if (Number.isFinite(n) && n > 0) return n
+    return outsideLegendFontSize(layout)
+  }
+
+  function outsideLegendTitleGap(layout) {
+    const raw = layout?.legendTitleGap
+    if (raw == null || raw === '') return 8
+    const n = Number(raw)
+    return Number.isFinite(n) ? Math.max(0, n) : 8
+  }
+
+  /** Natural outer box size for the current outside legend (seeds auto → fixed). */
+  function outsideLegendNaturalBox(layout = activeMosaicLayout) {
+    return estimateOutsideLegendNaturalBox({
+      series: outsideLegendSeries,
+      columns: Number(layout?.legendColumns) || 1,
+      title: layout?.legendTitle || '',
+      fontSize: outsideLegendFontSize(layout),
+      titleFontSize: outsideLegendTitleFontSize(layout),
+      titleGap: outsideLegendTitleGap(layout),
+      swatchWidth: outsideLegendSwatchWidth(layout),
+      swatchHeight: outsideLegendSwatchHeight(layout),
+      boxPadding:
+        layout?.legendBoxPadding == null || layout?.legendBoxPadding === ''
+          ? 8
+          : Number(layout.legendBoxPadding) || 0,
+      boxBorderWidth: Math.max(0, Number(layout?.legendBoxBorderWidth) || 0)
+    })
+  }
+
+  /** Shared ChartLegend chrome props for the outside strip. */
+  function outsideLegendChrome(layout) {
+    const padRaw = layout?.legendBoxPadding
+    const pad =
+      padRaw == null || padRaw === ''
+        ? 8
+        : Math.max(0, Number(padRaw) || 0)
+    return {
+      fontSize: outsideLegendFontSize(layout),
+      titleFontSize: outsideLegendTitleFontSize(layout),
+      titleGap: outsideLegendTitleGap(layout),
+      swatchSize: outsideLegendSwatchSize(layout),
+      swatchWidth: outsideLegendSwatchWidth(layout),
+      swatchHeight: outsideLegendSwatchHeight(layout),
+      swatchRound: layout?.legendSwatchRound !== false,
+      boxRound: layout?.legendBoxRound !== false,
+      boxBorderColor: String(layout?.legendBoxBorderColor || ''),
+      boxBorderWidth: Math.max(0, Number(layout?.legendBoxBorderWidth) || 0),
+      boxPadding: pad,
+      boxMinWidth: Math.max(0, Number(layout?.legendBoxMinWidth) || 0),
+      boxMinHeight: Math.max(0, Number(layout?.legendBoxMinHeight) || 0)
+    }
+  }
+
+  /**
+   * Commit box width/height. When leaving auto, seed from the current natural
+   * legend size (font + labels + swatches) so the spinner does not jump to a tiny value.
+   * @param {'legendBoxMinWidth' | 'legendBoxMinHeight'} key
+   * @param {string} raw
+   * @param {'input' | 'focus'} [reason]
+   */
+  function commitLegendBoxDim(key, raw, reason = 'input') {
+    const trimmed = String(raw ?? '').trim()
+    const prev = String(activeMosaicLayout?.[key] ?? '').trim()
+    if (trimmed === '') {
+      patchGridChrome({ [key]: '' })
+      return
+    }
+    const n = Number(trimmed)
+    if (!Number.isFinite(n) || n <= 0) {
+      patchGridChrome({ [key]: '' })
+      return
+    }
+    if (!prev) {
+      const nat = outsideLegendNaturalBox(activeMosaicLayout)
+      const seed = key === 'legendBoxMinWidth' ? nat.width : nat.height
+      // Focus on empty field → fill natural size. Tiny first spinner step → bump to natural.
+      if (reason === 'focus' || n < seed * 0.5) {
+        patchGridChrome({ [key]: String(seed) })
+        return
+      }
+    }
+    patchGridChrome({ [key]: String(Math.round(n)) })
+  }
+
+  /**
+   * Switch Entries → Manual; seed from unique mosaic colors when empty.
+   * @param {string} value
+   */
+  function setLegendEntriesMode(value) {
+    const layout = activeMosaicLayout
+    const next = String(value || 'sets')
+    if (next === 'manual') {
+      const existing = normalizeManualLegendItems(layout.legendManualItems)
+      if (existing.length) {
+        patchGridChrome({ legendEntries: 'manual' })
+        return
+      }
+      const series = mode === 'energetic' ? energeticChartView.series : chartView.series
+      patchGridChrome({
+        legendEntries: 'manual',
+        legendManualItems: seedManualLegendItemsFromSeries(series)
+      })
+      return
+    }
+    patchGridChrome({ legendEntries: next })
+  }
+
+  /**
+   * @param {number} index
+   * @param {Record<string, unknown>} partial
+   */
+  function patchManualLegendItem(index, partial) {
+    const layout = activeMosaicLayout
+    const items = normalizeManualLegendItems(layout.legendManualItems).map((row, i) =>
+      i === index ? { ...row, ...partial } : row
+    )
+    patchGridChrome({ legendManualItems: items, legendEntries: 'manual' })
+  }
+
+  function addManualLegendItem() {
+    const layout = activeMosaicLayout
+    const items = normalizeManualLegendItems(layout.legendManualItems)
+    const n = items.length + 1
+    items.push({
+      id: `leg-${Date.now().toString(36)}-${n}`,
+      label: `Series ${n}`,
+      color: '#f59e0b',
+      marker: 'none',
+      markerSize: 8,
+      visible: true
+    })
+    patchGridChrome({ legendManualItems: items, legendEntries: 'manual' })
+  }
+
+  /** @param {number} index */
+  function removeManualLegendItem(index) {
+    const layout = activeMosaicLayout
+    const items = normalizeManualLegendItems(layout.legendManualItems).filter((_, i) => i !== index)
+    patchGridChrome({ legendManualItems: items, legendEntries: 'manual' })
+  }
+
+  /**
+   * @param {number} index
+   * @param {-1 | 1} dir
+   */
+  function moveManualLegendItem(index, dir) {
+    const layout = activeMosaicLayout
+    const ids = normalizeManualLegendItems(layout.legendManualItems).map((r) => r.id)
+    const order = moveIdInList(ids, index, dir)
+    const byId = new Map(normalizeManualLegendItems(layout.legendManualItems).map((r) => [r.id, r]))
+    const items = order.map((id) => byId.get(id)).filter(Boolean)
+    patchGridChrome({ legendManualItems: items, legendEntries: 'manual' })
+  }
+
+  function reseedManualLegendFromMosaic() {
+    const series = mode === 'energetic' ? energeticChartView.series : chartView.series
+    patchGridChrome({
+      legendEntries: 'manual',
+      legendManualItems: seedManualLegendItemsFromSeries(series)
+    })
+  }
+
   function setGridColsRows(cols, rows) {
     if (mode === 'energetic') {
       setEnergeticGridColsRows(cols, rows)
@@ -1039,15 +1338,49 @@
     patchStructuralPlot({ referenceLines: lines })
   }
 
-  /** Display names matching the Structural Options dropdown. */
-  const STRUCTURAL_TYPE_TITLES = {
-    rmsd: 'RMSD',
-    rmsf: 'RMSF',
-    distance: 'Distance',
-    radius_of_gyration: 'Radius of Gyration',
-    membrane_thickness: 'Membrane Thickness',
-    area_per_lipid: 'Area per Lipid'
+  function patchReferenceBands(next) {
+    const bands = normalizeReferenceBands(next)
+    if (mode === 'energetic') {
+      ePlotGlobal = { ...ePlotGlobal, referenceBands: bands }
+      markSessionDirty()
+      return
+    }
+    patchStructuralPlot({ referenceBands: bands })
   }
+
+  /** @param {unknown} raw */
+  function publicationReferenceLines(raw) {
+    return normalizeReferenceLines(raw).map((line) => ({
+      axis: line.axis,
+      value: line.value,
+      color: line.color,
+      width: line.width,
+      style: line.style,
+      label: line.label,
+      opacity: line.opacity,
+      z_order: line.zOrder
+    }))
+  }
+
+  /** @param {unknown} raw */
+  function publicationReferenceBands(raw) {
+    return finalizeReferenceBands(raw).map((band) => ({
+      axis: band.axis,
+      min: band.min,
+      max: band.max,
+      color: band.color,
+      opacity: band.opacity,
+      z_order: band.zOrder,
+      border: band.border,
+      border_color: band.borderColor,
+      border_width: band.borderWidth,
+      border_style: band.borderStyle,
+      label: band.label
+    }))
+  }
+
+  /** Display names matching the Structural Options dropdown. */
+  const STRUCTURAL_TYPE_TITLES = STRUCTURAL_TYPE_TITLE_MAP
 
   /** @param {string} [type] */
   function autoStructuralTitle(type = structuralType) {
@@ -1194,9 +1527,12 @@
     const sp = sPlots[type] || structDefaults
     const xUnit = sp.xUnit || 'ns'
     const yUnit = sp.yUnit || 'Å'
-    const xs = viewed.lastAnalysisHasTimeX
+    let xs = viewed.lastAnalysisHasTimeX
       ? convertX(viewed.rawX, 'ns', xUnit)
       : [...(viewed.rawX || [])]
+    if (type === 'rmsf' && rmsfXaxisType === 'residue_number') {
+      xs = remapRmsfResidueNumbers(viewed, set.id)
+    }
     const prefix = opts.prefixSetName === true
     /** @type {Array<{ name: string, x: number[], y: number[], color?: string, strokeDasharray?: string, strokeWidth?: number, marker?: string, markerSize?: number, markerEvery?: number, seriesRole?: string, setId?: string, key?: string, extraName?: string }>} */
     const out = []
@@ -1235,6 +1571,52 @@
   }
 
   /**
+   * First enabled mapping group that targets this analysis set.
+   * @param {string} setId
+   * @returns {{ map: Map<number, number>, force: boolean } | null}
+   */
+  function residueMappingForSet(setId) {
+    for (const g of residueMappingGroups) {
+      if (!g.enabled || !g.map?.size) continue
+      if (!g.setIds.includes(setId)) continue
+      // Never force: already-original / previously remapped axes must not be remapped again.
+      return { map: g.map, force: false }
+    }
+    return null
+  }
+
+  /**
+   * Remap GateWizard (renumbered) RMSF residue numbers → original PDB ids for a set.
+   * Uses topology `resids` when present; never writes remapped ids back into storage.
+   * @param {{ resids?: number[], rawX?: number[], xLabels?: string[] }} res
+   * @param {string} [setId]
+   * @returns {number[]}
+   */
+  function remapRmsfResidueNumbers(res, setId = '') {
+    const topology = topologyResidsFromRmsfResult(res, 'residue_number')
+    const fallback = topology.length ? topology : [...(res.rawX || [])]
+    const hit = setId ? residueMappingForSet(setId) : null
+    if (!hit) return fallback
+    return remapResidsToOriginal(topology.length ? topology : fallback, hit.map, {
+      force: hit.force
+    })
+  }
+
+  /**
+   * @param {{ resids?: number[], rawX?: number[], xLabels?: string[] }} res
+   * @param {string} [setId]
+   * @returns {string[]}
+   */
+  function remapRmsfXLabels(res, setId = '') {
+    const labels = res?.xLabels || []
+    if (!labels.length) return []
+    const hit = setId ? residueMappingForSet(setId) : null
+    if (!hit) return [...labels]
+    const topology = topologyResidsFromRmsfResult(res, rmsfXaxisType)
+    return remapResidueTypeLabels(labels, topology, hit.map, { force: hit.force })
+  }
+
+  /**
    * @param {import('../lib/analysisSets.js').AnalysisSet} set
    * @param {{ mode?: 'structural' | 'energetic', structuralType?: string }} [opts]
    */
@@ -1244,8 +1626,13 @@
     if (csvMode === 'structural') {
       const res = resultForSetAndType(set, type)
       if (!res || !structuralResultHasPlotData(res)) return []
-      // Stable CSV columns (no overlay prefixes) so leaflets survive save/load.
-      const xs = res.rawX || []
+      // Stable CSV columns: topology residue ids (never display-remapped).
+      // Remap to original PDB numbers only when building chart series.
+      let xs = res.rawX || []
+      if (type === 'rmsf') {
+        const topology = topologyResidsFromRmsfResult(res, 'residue_number')
+        if (topology.length) xs = topology
+      }
       /** @type {Array<{ name: string, x: number[], y: number[] }>} */
       const out = [
         {
@@ -1309,6 +1696,16 @@
     energeticGridFill = session.energeticGridFill === 'by_set' ? 'by_set' : 'by_property'
     outputFolderName = session.outputFolderName || defaultAnalysisFolderName('')
     sessionName = String(session.sessionName || '').trim()
+    residueMappingGroups = normalizeResidueMappingGroups(session.residueMappingGroups, {
+      residueMappingPath: session.residueMappingPath,
+      useOriginalResidueNumbers: session.useOriginalResidueNumbers,
+      setIds: (session.sets || []).map((s) => s.id)
+    }).map((g) => ({
+      ...g,
+      map: new Map(),
+      error: '',
+      usefulCount: 0
+    }))
     analysisSets = assignCsvStems(
       (session.sets || []).map((s) => normalizeAnalysisSetStructuralResults(s))
     ).map((s) => {
@@ -1356,14 +1753,17 @@
       unionEnergeticProperties(analysisSets),
       energeticGridFill
     )
-    // Mosaic used to own tick spacing. Copy X only — Y step "1" from this session
-    // would draw ~20 ticks on APL (55–75) and stall the plot flush.
+    // Mosaic used to own tick spacing. Copy X only onto time-like plots —
+    // never onto RMSF (residue/atom axis); a step like "50" would ignore Tick count.
     const gridXStep = String(gridLayout.xTickStep || '').trim()
     if (gridXStep) {
+      const skipGridXStep = new Set(['rmsf'])
       sPlots = Object.fromEntries(
         Object.entries(sPlots).map(([type, plot]) => [
           type,
-          String(plot.xTickStep || '').trim() ? plot : { ...plot, xTickStep: gridXStep }
+          skipGridXStep.has(type) || String(plot.xTickStep || '').trim()
+            ? plot
+            : { ...plot, xTickStep: gridXStep }
         ])
       )
     }
@@ -1502,6 +1902,7 @@
       try {
         applyAnalysisSession(session)
         applyOutputLocationFromSessionDir(sessionDir)
+        await hydrateResidueMappingGroups({ quiet: true })
         if (!hydratedAny) {
           await hydratePlotDataFromOutputFolder([sessionDir])
         }
@@ -1597,6 +1998,33 @@
     }
   }
 
+  /**
+   * Collapse MDAnalysis format dumps and Amber-restart noise into a short line.
+   * @param {string} msg
+   */
+  function shortenAnalysisError(msg) {
+    const raw = String(msg || '').trim()
+    if (!raw) return raw
+    const lower = raw.toLowerCase()
+    if (
+      lower.includes('rst7') ||
+      lower.includes("format 'rst7'") ||
+      lower.includes('unknown coordinate trajectory format')
+    ) {
+      const fileMatch = raw.match(/['"]([^'"]+\.rst7)['"]/i)
+      const name = fileMatch ? fileMatch[1].split(/[/\\]/).pop() : '.rst7'
+      return (
+        `${name} is an Amber restart, not an MD trajectory. Remove it from Trajectories ` +
+        'and add production .dcd/.xtc/.trr/.nc files. For RMSD vs a start structure, use Reference PDB.'
+      )
+    }
+    // Drop the long "The FORMATs dict_keys([...]) are implemented..." dump.
+    const cut = raw.search(/\n\s*The FORMATs\b|\bdict_keys\(\[/i)
+    let out = cut > 0 ? raw.slice(0, cut).trim() : raw
+    if (out.length > 420) out = `${out.slice(0, 400).trim()}…`
+    return out.replace(/\s+/g, ' ')
+  }
+
   /** @type {Record<string, number> | null} */
   let primaryStats = $state(null)
   let rawX = $state([])
@@ -1651,6 +2079,7 @@
     legendSwatchSize: '12',
     legendFontSize: '10',
     axisFontSize: '12',
+    axisFontBold: false,
     titleFontSize: '13',
     xTickCount: '5',
     yTickCount: '5',
@@ -1682,7 +2111,9 @@
     aplUpperMarkerEvery: '10',
     aplLowerMarkerEvery: '10',
     /** Horizontal/vertical experimental markers for this analysis type */
-    referenceLines: []
+    referenceLines: [],
+    /** Horizontal/vertical shaded bands for this analysis type */
+    referenceBands: []
   }
   // Energetic plot settings defaults
   const energDefaults = {
@@ -1733,6 +2164,7 @@
     legendSwatchSize: '12',
     legendFontSize: '10',
     axisFontSize: '12',
+    axisFontBold: false,
     titleFontSize: '13',
     xTickCount: '5',
     yTickCount: '5',
@@ -1811,8 +2243,8 @@
       if ((leafletFilter || '').trim()) parts.push(`filter: ${leafletFilter.trim()}`)
       if (type === 'area_per_lipid') {
         const methodId = normalizeAplMethod(method)
-        parts.push(aplMethodLabel(methodId).replace(/\s*\(default\)$/i, ''))
-        if (methodId !== 'lipyphilic' && (exclude || '').trim()) {
+        parts.push(aplMethodLabel(methodId).replace(/\s*\(default[^)]*\)$/i, ''))
+        if ((exclude || '').trim()) {
           parts.push(`exclude: ${exclude.trim()}`)
         }
       }
@@ -1932,6 +2364,7 @@
       selection2,
       selectedProperties,
       availableProperties,
+      residueMappingGroups: serializeResidueMappingGroups(residueMappingGroups),
       plotSettings: {
         structural: Object.fromEntries(
           Object.entries(sPlots).map(([k, v]) => [
@@ -2033,9 +2466,13 @@
       interpolate,
       excludeSel,
       excludeCutoff,
+      excludeDim,
       aplMethod,
+      fatslimNthreads,
+      fatslimJobs,
       gridmatN,
       gridmatPrecision,
+      gridmatMdJobs,
       vtmcNSamples,
       vtmcProteinRadius,
       lipidHeadgroupAtoms: lipidHeadgroupAtoms.map((a) => ({ ...a }))
@@ -2061,11 +2498,22 @@
     if (snap.nBins != null) nBins = String(snap.nBins)
     if (snap.interpolate != null) interpolate = Boolean(snap.interpolate)
     excludeSel = snap.excludeSel ?? defaultPeptideExcludeSelection()
-    excludeCutoff = snap.excludeCutoff != null ? String(snap.excludeCutoff) : '30'
+    excludeCutoff =
+      snap.excludeCutoff != null ? String(snap.excludeCutoff) : APL_METHOD_DEFAULTS.excludeCutoff
+    excludeDim =
+      snap.excludeDim != null ? String(snap.excludeDim) : APL_METHOD_DEFAULTS.excludeDim
     aplMethod = normalizeAplMethod(snap.aplMethod)
+    fatslimNthreads =
+      snap.fatslimNthreads != null
+        ? String(snap.fatslimNthreads)
+        : APL_METHOD_DEFAULTS.fatslimNthreads
+    fatslimJobs =
+      snap.fatslimJobs != null ? String(snap.fatslimJobs) : APL_METHOD_DEFAULTS.fatslimJobs
     gridmatN = snap.gridmatN != null ? String(snap.gridmatN) : APL_METHOD_DEFAULTS.gridmatN
     gridmatPrecision =
       snap.gridmatPrecision != null ? String(snap.gridmatPrecision) : APL_METHOD_DEFAULTS.gridmatPrecision
+    gridmatMdJobs =
+      snap.gridmatMdJobs != null ? String(snap.gridmatMdJobs) : APL_METHOD_DEFAULTS.gridmatMdJobs
     vtmcNSamples =
       snap.vtmcNSamples != null ? String(snap.vtmcNSamples) : APL_METHOD_DEFAULTS.vtmcNSamples
     vtmcProteinRadius =
@@ -2214,10 +2662,39 @@
   const displayXTickLabels = $derived.by(() => {
     if (mode !== 'structural') return []
     if (structuralType !== 'rmsf') return activeXLabels
+    // Numeric residue / atom axes: never reuse another set's string labels.
+    // Shared active-set labels made GateWizard panels show Charmm resids (21…507)
+    // and looked like X min/max only applied on the first grid row.
+    if (rmsfXaxisType === 'residue_number' || rmsfXaxisType === 'atom_index') return []
     if (rmsfXaxisType !== 'residue_type_number') return activeXLabels
-    if (ps.residueCodeFormat !== 'one') return activeXLabels
-    return activeXLabels.map(toOneLetterResidueLabel)
+    const activeId = activeSetId || ''
+    const labels = activeStructRes ? remapRmsfXLabels(activeStructRes, activeId) : activeXLabels
+    if (ps.residueCodeFormat !== 'one') return labels
+    return labels.map(toOneLetterResidueLabel)
   })
+
+  /**
+   * Per-panel RMSF name labels (ALA21) for grid cells — first set in the cell.
+   * @param {{ setIds?: string[], visibleSetIds?: string[] }} panel
+   */
+  function rmsfXTickLabelsForPanel(panel) {
+    if (structuralType !== 'rmsf') return displayXTickLabels
+    if (rmsfXaxisType === 'residue_number' || rmsfXaxisType === 'atom_index') return []
+    const ids = panel.visibleSetIds?.length
+      ? panel.visibleSetIds
+      : panel.setIds || []
+    for (const id of ids) {
+      const set = analysisSets.find((s) => s.id === id)
+      const res = resultForSetAndType(set, 'rmsf')
+      const labels = res ? remapRmsfXLabels(res, id) : []
+      if (Array.isArray(labels) && labels.length) {
+        return ps.residueCodeFormat === 'one'
+          ? labels.map(toOneLetterResidueLabel)
+          : labels
+      }
+    }
+    return displayXTickLabels
+  }
   const visibleCompareSets = $derived.by(() => {
     plotDataRevision
     chartView.series.length
@@ -2283,9 +2760,8 @@
   )
   const outsideLegendSeries = $derived.by(() => {
     const layout = mode === 'energetic' ? energeticGridLayout : gridLayout
-    const compare = mode === 'energetic' ? energeticCompareLayout : compareLayout
     const series = mode === 'energetic' ? energeticChartView.series : chartView.series
-    if (compare !== 'grid' || layout.legendMode !== 'outside') return []
+    if (layout.legendMode !== 'outside') return []
     /** @type {Record<string, string>} */
     const setNames = {}
     /** @type {Record<string, string>} */
@@ -2296,7 +2772,18 @@
     }
     return figureLegendItems(series, layout, { setNames, setColors })
   })
+  const overlayChartLegendPosition = $derived.by(() => {
+    const modeLeg = activeMosaicLayout.legendMode
+    if (modeLeg === 'outside' || modeLeg === 'none') return 'none'
+    if (mode === 'energetic') {
+      return ePlotGlobal.legendPosition || energPanelShell.legendPosition || 'top-left'
+    }
+    return ps.legendPosition || 'top-left'
+  })
   const structReferenceLines = $derived(normalizeReferenceLines(ps.referenceLines))
+  const structReferenceBands = $derived(normalizeReferenceBands(ps.referenceBands))
+  /** Complete bands only — avoid treating a cleared field as 0 while typing. */
+  const structReferenceBandsDraw = $derived(finalizeReferenceBands(ps.referenceBands))
   /**
    * Structural: overlay when 2+ visible sets.
    * Energetic: stay on the multi-set path whenever the session has 2+ energetic
@@ -2858,9 +3345,13 @@
       interpolate,
       excludeSel,
       excludeCutoff,
+      excludeDim,
       aplMethod,
+      fatslimNthreads,
+      fatslimJobs,
       gridmatN,
       gridmatPrecision,
+      gridmatMdJobs,
       vtmcNSamples,
       vtmcProteinRadius,
       selectionsByType
@@ -2906,13 +3397,26 @@
         nBins = opts.nBins != null ? String(opts.nBins) : nBins
         interpolate = opts.interpolate
         excludeSel = opts.excludeSel ?? defaultPeptideExcludeSelection()
-        excludeCutoff = opts.excludeCutoff != null ? String(opts.excludeCutoff) : '30'
+        excludeCutoff =
+          opts.excludeCutoff != null ? String(opts.excludeCutoff) : APL_METHOD_DEFAULTS.excludeCutoff
+        excludeDim =
+          opts.excludeDim != null ? String(opts.excludeDim) : APL_METHOD_DEFAULTS.excludeDim
         aplMethod = normalizeAplMethod(opts.aplMethod)
+        fatslimNthreads =
+          opts.fatslimNthreads != null
+            ? String(opts.fatslimNthreads)
+            : APL_METHOD_DEFAULTS.fatslimNthreads
+        fatslimJobs =
+          opts.fatslimJobs != null ? String(opts.fatslimJobs) : APL_METHOD_DEFAULTS.fatslimJobs
         gridmatN = opts.gridmatN != null ? String(opts.gridmatN) : APL_METHOD_DEFAULTS.gridmatN
         gridmatPrecision =
           opts.gridmatPrecision != null
             ? String(opts.gridmatPrecision)
             : APL_METHOD_DEFAULTS.gridmatPrecision
+        gridmatMdJobs =
+          opts.gridmatMdJobs != null
+            ? String(opts.gridmatMdJobs)
+            : APL_METHOD_DEFAULTS.gridmatMdJobs
         vtmcNSamples =
           opts.vtmcNSamples != null ? String(opts.vtmcNSamples) : APL_METHOD_DEFAULTS.vtmcNSamples
         vtmcProteinRadius =
@@ -2924,15 +3428,16 @@
   }
 
   function applyEnergeticOptions(/** @type {import('../lib/analysisSets.js').EnergeticOptions} */ opts) {
-    energeticEngine = opts.energeticEngine || 'namd'
-    logFiles = (opts.logFiles || []).map(normalizeAnalysisFileRow)
-    availableProperties = [...(opts.availableProperties || [])]
-    selectedProperties = [...(opts.selectedProperties || [])]
-    timeUnits = opts.timeUnits || 'ns'
-    energyUnits = opts.energyUnits || 'kcal/mol'
-    pressureUnits = opts.pressureUnits || 'atm'
-    temperatureUnits = opts.temperatureUnits || 'K'
-    volumeUnits = opts.volumeUnits || 'Å³'
+    const o = opts || defaultEnergeticOptionsFallback()
+    energeticEngine = o.energeticEngine || 'namd'
+    logFiles = (o.logFiles || []).map(normalizeAnalysisFileRow)
+    availableProperties = [...(o.availableProperties || [])]
+    selectedProperties = [...(o.selectedProperties || [])]
+    timeUnits = o.timeUnits || 'ns'
+    energyUnits = o.energyUnits || 'kcal/mol'
+    pressureUnits = o.pressureUnits || 'atm'
+    temperatureUnits = o.temperatureUnits || 'K'
+    volumeUnits = o.volumeUnits || 'Å³'
   }
 
   function applyEnergeticResultToView(/** @type {import('../lib/analysisSets.js').EnergeticSetResult | null} */ res) {
@@ -3069,6 +3574,230 @@
     )
   }
 
+  /**
+   * Push the sidebar APL method (+ related params) onto the given sets so a batch
+   * run cannot silently use each set's older saved method.
+   * @param {string[]} setIds
+   */
+  function stampAplOptionsOntoSets(setIds) {
+    if (mode !== 'structural' || structuralType !== 'area_per_lipid') return
+    const ids = new Set((setIds || []).map((id) => String(id)).filter(Boolean))
+    if (!ids.size) return
+    const method = normalizeAplMethod(aplMethod)
+    const patch = {
+      aplMethod: method,
+      excludeSel,
+      excludeCutoff,
+      excludeDim,
+      fatslimNthreads,
+      fatslimJobs,
+      gridmatN,
+      gridmatPrecision,
+      gridmatMdJobs,
+      vtmcNSamples,
+      vtmcProteinRadius
+    }
+    analysisSets = analysisSets.map((s) => {
+      if (!ids.has(s.id)) return s
+      const byType = { ...(s.structuralOptions?.selectionsByType || {}) }
+      const prev = byType.area_per_lipid || {}
+      byType.area_per_lipid = { ...prev, ...patch }
+      return {
+        ...s,
+        structuralOptions: {
+          ...s.structuralOptions,
+          ...patch,
+          structuralType: s.structuralOptions?.structuralType || structuralType,
+          selectionsByType: byType
+        }
+      }
+    })
+    markSessionDirty()
+  }
+
+  /** Apply sidebar APL options to every analysis set (no run). */
+  function applyAplMethodToAllSets() {
+    persistActiveSetFields()
+    stampAplOptionsOntoSets(analysisSets.map((s) => s.id))
+  }
+
+  /**
+   * Copy the current structural type's selection snapshot onto every set (no run).
+   * Does not change topology/trajectories.
+   * @param {string[]} setIds
+   */
+  function stampTypeSelectionOntoSets(setIds) {
+    if (mode !== 'structural') return
+    const ids = new Set((setIds || []).map((id) => String(id)).filter(Boolean))
+    if (!ids.size) return
+    const type = structuralType
+    const snap = snapshotCurrentTypeSelection()
+    analysisSets = analysisSets.map((s) => {
+      if (!ids.has(s.id)) return s
+      const byType = { ...(s.structuralOptions?.selectionsByType || {}) }
+      byType[type] = { ...(byType[type] || {}), ...snap }
+      const activeType = s.structuralOptions?.structuralType || type
+      const flat =
+        activeType === type
+          ? {
+              selection: snap.selection,
+              selection2: snap.selection2,
+              referenceFrame: snap.referenceFrame,
+              referenceStructurePath: snap.referenceStructurePath,
+              align: snap.align,
+              rmsfXaxisType: snap.rmsfXaxisType,
+              leafletLipidSel: snap.leafletLipidSel,
+              leafletFilterSel: snap.leafletFilterSel,
+              nBins: snap.nBins,
+              interpolate: snap.interpolate,
+              excludeSel: snap.excludeSel,
+              excludeCutoff: snap.excludeCutoff,
+              excludeDim: snap.excludeDim,
+              aplMethod: snap.aplMethod,
+              fatslimNthreads: snap.fatslimNthreads,
+              fatslimJobs: snap.fatslimJobs,
+              gridmatN: snap.gridmatN,
+              gridmatPrecision: snap.gridmatPrecision,
+              gridmatMdJobs: snap.gridmatMdJobs,
+              vtmcNSamples: snap.vtmcNSamples,
+              vtmcProteinRadius: snap.vtmcProteinRadius
+            }
+          : {}
+      return {
+        ...s,
+        structuralOptions: {
+          ...s.structuralOptions,
+          ...flat,
+          structuralType: activeType,
+          selectionsByType: byType
+        }
+      }
+    })
+    markSessionDirty()
+  }
+
+  /** Apply current type selection to every analysis set (no run). */
+  function applyTypeSelectionToAllSets() {
+    persistActiveSetFields()
+    stampTypeSelectionOntoSets(analysisSets.map((s) => s.id))
+  }
+
+  const optionsSearchHits = $derived.by(() =>
+    rankAnalysisOptions(optionsSearchQuery, {
+      mode,
+      structuralType,
+      catalog: ANALYSIS_OPTIONS_CATALOG
+    })
+  )
+
+  /**
+   * @param {import('../lib/analysisOptionsCatalog.js').AnalysisOptionEntry} entry
+   */
+  async function onPickAnalysisOption(entry) {
+    optionsSearchOpen = false
+    optionsSearchQuery = entry.label
+    await navigateToAnalysisOption(entry, {
+      mode,
+      structuralType,
+      setMode: (m) => onModeChange(m),
+      setStructuralType: (t) => onStructuralTypeChange(t),
+      openPlotSettings: () => {
+        plotSettingsOpen = true
+      },
+      openPlotSection: (sectionId) => {
+        if (sectionId && sectionId in plotSectionOpen) {
+          setPlotSectionOpen(/** @type {keyof typeof plotSectionOpen} */ (sectionId), true)
+        }
+      },
+      openStructuralOptions: () => {},
+      openGridOptions: () => {
+        plotLayoutOptionsOpen = true
+        plotLayoutOptionsCollapsed = false
+      },
+      expandPanel: (panel) => requestSidePanelExpand(panel),
+      pulseOption: (id) => pulseOptionHighlight(id)
+    })
+  }
+
+  /** @param {string} optionId */
+  function pulseOptionHighlight(optionId) {
+    const id = String(optionId || '').trim()
+    if (!id) return
+    if (optionsSearchHighlightTimer) clearTimeout(optionsSearchHighlightTimer)
+    optionsSearchHighlightId = id
+
+    /** @param {HTMLElement} el */
+    function scrollOptionIntoView(el) {
+      const scroller =
+        el.closest('.overflow-y-auto') ||
+        el.closest('.overflow-y-scroll') ||
+        el.closest('[class*="overflow-y-auto"]')
+      if (scroller instanceof HTMLElement) {
+        const er = el.getBoundingClientRect()
+        const sr = scroller.getBoundingClientRect()
+        // Keep the pulse well inside the panel (not clipped at the edge).
+        const pad = Math.max(72, Math.min(140, sr.height * 0.28))
+        const nextTop = er.top - sr.top + scroller.scrollTop - pad
+        scroller.scrollTo({ top: Math.max(0, nextTop), behavior: 'smooth' })
+        return
+      }
+      el.scrollIntoView({ block: 'center', behavior: 'smooth', inline: 'nearest' })
+    }
+
+    let attempts = 0
+    const tryFocus = () => {
+      const el = document.querySelector(`[data-option-id="${CSS.escape(id)}"]`)
+      if (el instanceof HTMLElement) {
+        scrollOptionIntoView(el)
+        return
+      }
+      attempts += 1
+      if (attempts < 8) setTimeout(tryFocus, 50)
+    }
+    queueMicrotask(tryFocus)
+
+    optionsSearchHighlightTimer = setTimeout(() => {
+      optionsSearchHighlightId = null
+      optionsSearchHighlightTimer = null
+    }, 1600)
+  }
+
+  /** @param {keyof typeof plotSectionOpen} key */
+  function togglePlotSection(key) {
+    const next = !plotSectionOpen[key]
+    plotSectionOpen = { ...plotSectionOpen, [key]: next }
+    if (key === 'advanced') plotSettingsAdvancedOpen = next
+  }
+
+  /**
+   * @param {keyof typeof plotSectionOpen} key
+   * @param {boolean} open
+   */
+  function setPlotSectionOpen(key, open) {
+    plotSectionOpen = { ...plotSectionOpen, [key]: open }
+    if (key === 'advanced') plotSettingsAdvancedOpen = open
+  }
+
+  /** In-chart legend controls (vs Grid outside strip / none). */
+  const showInChartLegendControls = $derived.by(() => {
+    const lm = activeMosaicLayout?.legendMode
+    if (lm === 'outside' || lm === 'none') return false
+    if (!toolbarIsGrid) return true
+    return lm === 'each' || lm === 'one'
+  })
+
+  /**
+   * Stored APL method label for a set (for list badges).
+   * @param {import('../lib/analysisSets.js').AnalysisSet} set
+   */
+  function aplMethodBadgeForSet(set) {
+    const opts = set?.structuralOptions
+    const snap = opts?.selectionsByType?.area_per_lipid
+    const raw = snap?.aplMethod ?? opts?.aplMethod
+    const id = normalizeAplMethod(raw)
+    return aplMethodLabel(id).replace(/\s*\(default[^)]*\)$/i, '')
+  }
+
   function loadActiveSetFields() {
     const set = analysisSets.find((s) => s.id === activeSetId)
     if (!set) return
@@ -3078,7 +3807,7 @@
       topologyPath = set.topologyPath
       trajectoryFiles = (set.trajectoryFiles || []).map(normalizeAnalysisFileRow)
       applyStructuralOptions(set.structuralOptions)
-      applyEnergeticOptions(set.energeticOptions)
+      applyEnergeticOptions(set.energeticOptions || defaultEnergeticOptionsFallback())
       // outputFolderName is session-level — never reset when switching/adding sets
       headgroupDetectAttempted = lipidHeadgroupAtoms.length > 0
       if (set.structuralResult || set.structuralResults) {
@@ -3350,6 +4079,9 @@
           ...(plotSettings.structural[type] || {}),
           referenceLines: normalizeReferenceLines(
             plotSettings.structural[type]?.referenceLines ?? next[type].referenceLines
+          ),
+          referenceBands: normalizeReferenceBands(
+            plotSettings.structural[type]?.referenceBands ?? next[type].referenceBands
           )
         })
       }
@@ -3362,6 +4094,9 @@
         ...plotSettings.energeticGlobal,
         referenceLines: normalizeReferenceLines(
           plotSettings.energeticGlobal.referenceLines ?? []
+        ),
+        referenceBands: normalizeReferenceBands(
+          plotSettings.energeticGlobal.referenceBands ?? []
         )
       })
     }
@@ -3388,14 +4123,19 @@
     void referenceStructurePath
     void align
     void rmsfXaxisType
+    void residueMappingGroups
     void leafletLipidSel
     void leafletFilterSel
     void nBins
     void excludeSel
     void excludeCutoff
+    void excludeDim
     void aplMethod
+    void fatslimNthreads
+    void fatslimJobs
     void gridmatN
     void gridmatPrecision
+    void gridmatMdJobs
     void vtmcNSamples
     void vtmcProteinRadius
     void interpolate
@@ -3635,14 +4375,29 @@
         nBins: Number(nBins) || 1,
         interpolate,
         excludeSel:
-          structuralType === 'area_per_lipid' && aplMethod !== 'lipyphilic'
-            ? excludeSel.trim() || null
-            : null,
+          structuralType === 'area_per_lipid' ? excludeSel.trim() || null : null,
         excludeCutoff:
           structuralType === 'area_per_lipid'
             ? Math.max(0, Number(excludeCutoff) || 0)
             : undefined,
+        excludeDim:
+          structuralType === 'area_per_lipid'
+            ? Number(excludeDim) === 1
+              ? 1
+              : 3
+            : undefined,
         aplMethod: structuralType === 'area_per_lipid' ? aplMethod : undefined,
+        fatslimNthreads:
+          structuralType === 'area_per_lipid'
+            ? (() => {
+                const n = Math.trunc(Number(fatslimNthreads))
+                return Number.isFinite(n) ? n : 1
+              })()
+            : undefined,
+        fatslimJobs:
+          structuralType === 'area_per_lipid'
+            ? Math.max(1, Math.trunc(Number(fatslimJobs)) || 1)
+            : undefined,
         gridmatN:
           structuralType === 'area_per_lipid'
             ? Math.max(2, Number(gridmatN) || 20)
@@ -3650,6 +4405,10 @@
         gridmatPrecision:
           structuralType === 'area_per_lipid'
             ? Math.max(0.1, Number(gridmatPrecision) || 13)
+            : undefined,
+        gridmatMdJobs:
+          structuralType === 'area_per_lipid'
+            ? Math.max(1, Math.trunc(Number(gridmatMdJobs)) || 8)
             : undefined,
         vtmcNSamples:
           structuralType === 'area_per_lipid'
@@ -3675,6 +4434,8 @@
       rawX: result.x || [],
       rawY: result.y || [],
       xLabels: xLabelsResult,
+      resids: result.resids || (structuralType === 'rmsf' ? result.x : null),
+      resnames: result.resnames || null,
       extraSeries,
       seriesName: result.series_name,
       primaryStats: result.stats || null,
@@ -3873,7 +4634,8 @@
   }
 
   function buildEnergeticPlotPayload() {
-    const refs = normalizeReferenceLines(ePlotGlobal.referenceLines)
+    const refs = publicationReferenceLines(ePlotGlobal.referenceLines)
+    const bands = publicationReferenceBands(ePlotGlobal.referenceBands)
     const lineColors = ['#f59e0b', '#22c55e', '#38bdf8', '#f87171', '#a78bfa', '#f472b6']
     const panels = energeticPanels
     const allDataSeries = panels.flatMap((panel) => seriesToPublicationData(panel.series))
@@ -3920,7 +4682,12 @@
             show_legend: cellShowsLegend(energeticGridLayout, idx) && cps.legendPosition !== 'none',
             show_grid: cps.showGrid !== false,
             legend_loc: loc,
-            legend_fontsize: guiSvgFontToMpl(cps.legendFontSize, 8)
+            legend_fontsize: guiSvgFontToMpl(cps.legendFontSize, 8),
+            ...plotSpecPanelLetter(
+              energeticGridLayout,
+              idx,
+              Number(cps.titleFontSize) || Number(ePlotGlobal.titleFontSize) || 13
+            )
           }
         })
         .filter(Boolean)
@@ -3938,12 +4705,19 @@
             energeticGridLayout.legendOutside === 'top' ||
             energeticGridLayout.legendOutside === 'bottom'
           ) {
-            figH += 0.55
+            figH += 0.75
           } else {
-            figW += 1.15
+            figW += 2.1
           }
         }
-        const gapFrac = Math.max(0.02, Math.min(0.45, (Number(energeticGridLayout.gapPx) || 16) / 80))
+        if (energeticGridLayout.panelLetterShow) {
+          figW += 0.35
+          figH += 0.2
+        }
+        const gapFrac = Math.max(
+          0.28,
+          Math.min(0.55, 0.14 + (Number(energeticGridLayout.gapPx) || 16) / 50)
+        )
         return {
           data: {
             x: allDataSeries[0]?.x || [],
@@ -3967,12 +4741,37 @@
               mode: energeticGridLayout.legendMode,
               cell: Number(energeticGridLayout.legendCell) || 0,
               loc: energeticGridLayout.legendOutside,
+              align: energeticGridLayout.legendOutsideAlign || 'center',
               entries: energeticGridLayout.legendEntries,
-              fontsize: guiSvgFontToMpl(ePlotGlobal.legendFontSize, 8),
+              fontsize: guiSvgFontToMpl(outsideLegendFontSize(energeticGridLayout), 8),
+              title_fontsize: guiSvgFontToMpl(
+                outsideLegendTitleFontSize(energeticGridLayout),
+                8
+              ),
+              title_gap: outsideLegendTitleGap(energeticGridLayout),
               ncol: Number(energeticGridLayout.legendColumns) || 1,
-              title: energeticGridLayout.legendTitle || ''
+              title: energeticGridLayout.legendTitle || '',
+              swatch_width: outsideLegendSwatchWidth(energeticGridLayout),
+              swatch_height: outsideLegendSwatchHeight(energeticGridLayout),
+              swatch_round: energeticGridLayout.legendSwatchRound !== false,
+              box_round: energeticGridLayout.legendBoxRound !== false,
+              border_color: String(energeticGridLayout.legendBoxBorderColor || ''),
+              border_width: Math.max(0, Number(energeticGridLayout.legendBoxBorderWidth) || 0),
+              manual_items:
+                energeticGridLayout.legendEntries === 'manual'
+                  ? normalizeManualLegendItems(energeticGridLayout.legendManualItems)
+                      .filter((m) => m.visible)
+                      .map((m) => ({
+                        id: m.id,
+                        label: m.label,
+                        color: m.color,
+                        marker: m.marker,
+                        marker_size: m.markerSize
+                      }))
+                  : []
             },
             reference_lines: refs,
+            reference_bands: bands,
             global: {
               ...energeticPublicationGlobalStyle(),
               figsize: [figW, figH]
@@ -3999,6 +4798,7 @@
           cols: 2,
           sync_x: false,
           reference_lines: refs,
+          reference_bands: bands,
           global: {
             ...energeticPublicationGlobalStyle(),
             title,
@@ -4013,7 +4813,14 @@
             ylabel,
             line_color: s.color || lineColors[i % lineColors.length],
             linewidth: Number(s.linewidth) || Number(ePlotGlobal.lineWidth) || 1.5,
-            linestyle: s.linestyle || ePlotGlobal.lineStyle || 'solid'
+            linestyle: s.linestyle || ePlotGlobal.lineStyle || 'solid',
+            ...(i === 0
+              ? plotSpecPanelLetter(
+                  energeticGridLayout,
+                  0,
+                  Number(ePlotGlobal.titleFontSize) || 13
+                )
+              : {})
           }))
         }
       }
@@ -4262,6 +5069,7 @@
       const result = await countAnalysisSelection({
         topologyPath,
         trajectoryPaths: trajectoryFiles.map((f) => f.path),
+        companionStructure: referenceStructurePath.trim() || null,
         selection: sel
       })
       if (which === 'selection2') {
@@ -4309,6 +5117,133 @@
     if (result.canceled || !result.filePath) return
     referenceStructurePath = result.filePath
     persistActiveSetFields()
+  }
+
+  /**
+   * @param {string} path
+   * @returns {Promise<{ map: Map<number, number>, usefulCount: number, error: string }>}
+   */
+  async function parseResidueMappingPath(path) {
+    const text = await window.api.readText(path)
+    const map = parseResidueMappingText(text, { path })
+    if (!map.size) {
+      throw new Error('No residue pairs found (expected ORIGINAL … FINAL columns).')
+    }
+    const usefulCount = [...map.entries()].filter(([a, b]) => a !== b).length
+    const error = usefulCount
+      ? ''
+      : 'Identity map (ids unchanged). For PDB originals (e.g. 21→2) use *_gatewizard_residue_mapping.txt from capping.'
+    return { map, usefulCount, error }
+  }
+
+  /** @param {{ quiet?: boolean }} [opts] */
+  async function hydrateResidueMappingGroups(opts = {}) {
+    if (!residueMappingGroups.length) {
+      bumpPlotData()
+      return
+    }
+    const next = []
+    for (const g of residueMappingGroups) {
+      try {
+        const parsed = await parseResidueMappingPath(g.path)
+        next.push({
+          ...g,
+          map: parsed.map,
+          usefulCount: parsed.usefulCount,
+          error: parsed.error
+        })
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error)
+        if (!opts.quiet) lastError = `Residue mapping (${basename(g.path)}): ${msg}`
+        next.push({ ...g, map: new Map(), usefulCount: 0, error: msg })
+      }
+    }
+    residueMappingGroups = next
+    bumpPlotData()
+  }
+
+  function newResidueMappingGroupId() {
+    return `rmap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+  }
+
+  async function addResidueMappingFiles() {
+    const result = await window.api.openFilesDialog(
+      'Add residue renumbering map(s)',
+      [
+        { name: 'Residue renum / mapping', extensions: ['txt'] },
+        { name: 'All files', extensions: ['*'] }
+      ],
+      workingDir || undefined
+    )
+    if (result.canceled || !result.filePaths?.length) return
+    const existing = new Set(residueMappingGroups.map((g) => g.path))
+    const defaultSetIds = activeSetId ? [activeSetId] : analysisSets.slice(0, 1).map((s) => s.id)
+    /** @type {typeof residueMappingGroups} */
+    const added = []
+    for (const filePath of result.filePaths) {
+      if (existing.has(filePath)) continue
+      try {
+        const parsed = await parseResidueMappingPath(filePath)
+        added.push({
+          id: newResidueMappingGroupId(),
+          path: filePath,
+          enabled: parsed.usefulCount > 0,
+          setIds: [...defaultSetIds],
+          map: parsed.map,
+          usefulCount: parsed.usefulCount,
+          error: parsed.error
+        })
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error)
+        added.push({
+          id: newResidueMappingGroupId(),
+          path: filePath,
+          enabled: false,
+          setIds: [...defaultSetIds],
+          map: new Map(),
+          usefulCount: 0,
+          error: msg
+        })
+        lastError = `Residue mapping (${basename(filePath)}): ${msg}`
+      }
+    }
+    if (!added.length) return
+    residueMappingGroups = [...residueMappingGroups, ...added]
+    bumpPlotData()
+    markSessionDirty()
+  }
+
+  /** @param {string} groupId */
+  function removeResidueMappingGroup(groupId) {
+    residueMappingGroups = residueMappingGroups.filter((g) => g.id !== groupId)
+    bumpPlotData()
+    markSessionDirty()
+  }
+
+  /**
+   * @param {string} groupId
+   * @param {Partial<{ enabled: boolean, setIds: string[] }>} patch
+   */
+  function patchResidueMappingGroup(groupId, patch) {
+    residueMappingGroups = residueMappingGroups.map((g) =>
+      g.id === groupId ? { ...g, ...patch } : g
+    )
+    bumpPlotData()
+    markSessionDirty()
+  }
+
+  /**
+   * @param {string} groupId
+   * @param {string} setId
+   * @param {boolean} checked
+   */
+  function toggleResidueMappingSet(groupId, setId, checked) {
+    const g = residueMappingGroups.find((x) => x.id === groupId)
+    if (!g) return
+    const setIds = checked
+      ? [...new Set([...g.setIds, setId])]
+      : g.setIds.filter((id) => id !== setId)
+    patchResidueMappingGroup(groupId, { setIds })
   }
 
   async function addTrajectoryFile() {
@@ -4461,9 +5396,13 @@
           interpolate: s.structuralOptions.interpolate,
           excludeSel: s.structuralOptions.excludeSel,
           excludeCutoff: s.structuralOptions.excludeCutoff,
+          excludeDim: s.structuralOptions.excludeDim,
           aplMethod: s.structuralOptions.aplMethod,
+          fatslimNthreads: s.structuralOptions.fatslimNthreads,
+          fatslimJobs: s.structuralOptions.fatslimJobs,
           gridmatN: s.structuralOptions.gridmatN,
           gridmatPrecision: s.structuralOptions.gridmatPrecision,
+          gridmatMdJobs: s.structuralOptions.gridmatMdJobs,
           vtmcNSamples: s.structuralOptions.vtmcNSamples,
           vtmcProteinRadius: s.structuralOptions.vtmcProteinRadius,
           lipidHeadgroupAtoms: []
@@ -4495,13 +5434,30 @@
           nBins: nextSnap.nBins ?? s.structuralOptions.nBins,
           interpolate: nextSnap.interpolate ?? s.structuralOptions.interpolate,
           excludeSel: nextSnap.excludeSel ?? s.structuralOptions.excludeSel ?? defaultPeptideExcludeSelection(),
-          excludeCutoff: nextSnap.excludeCutoff ?? s.structuralOptions.excludeCutoff ?? '30',
+          excludeCutoff:
+            nextSnap.excludeCutoff ??
+            s.structuralOptions.excludeCutoff ??
+            APL_METHOD_DEFAULTS.excludeCutoff,
+          excludeDim:
+            nextSnap.excludeDim ?? s.structuralOptions.excludeDim ?? APL_METHOD_DEFAULTS.excludeDim,
           aplMethod: normalizeAplMethod(nextSnap.aplMethod ?? s.structuralOptions.aplMethod),
+          fatslimNthreads:
+            nextSnap.fatslimNthreads ??
+            s.structuralOptions.fatslimNthreads ??
+            APL_METHOD_DEFAULTS.fatslimNthreads,
+          fatslimJobs:
+            nextSnap.fatslimJobs ??
+            s.structuralOptions.fatslimJobs ??
+            APL_METHOD_DEFAULTS.fatslimJobs,
           gridmatN: nextSnap.gridmatN ?? s.structuralOptions.gridmatN ?? APL_METHOD_DEFAULTS.gridmatN,
           gridmatPrecision:
             nextSnap.gridmatPrecision ??
             s.structuralOptions.gridmatPrecision ??
             APL_METHOD_DEFAULTS.gridmatPrecision,
+          gridmatMdJobs:
+            nextSnap.gridmatMdJobs ??
+            s.structuralOptions.gridmatMdJobs ??
+            APL_METHOD_DEFAULTS.gridmatMdJobs,
           vtmcNSamples:
             nextSnap.vtmcNSamples ?? s.structuralOptions.vtmcNSamples ?? APL_METHOD_DEFAULTS.vtmcNSamples,
           vtmcProteinRadius:
@@ -4591,6 +5547,7 @@
       topologyPath,
       // Empty traj list → topology/companion only (do not open DCDs).
       trajectoryPaths: [],
+      companionStructure: referenceStructurePath.trim() || null,
       selection: sel,
       selection2:
         structuralType === 'distance' && selection2.trim() ? selection2.trim() : null
@@ -4857,15 +5814,20 @@
     referenceStructurePath = ''
     align = true
     rmsfXaxisType = 'residue_number'
+    residueMappingGroups = []
     leafletLipidSel = ''
     leafletFilterSel = ''
     nBins = '1'
     interpolate = false
     excludeSel = defaultPeptideExcludeSelection()
-    excludeCutoff = '30'
+    excludeCutoff = APL_METHOD_DEFAULTS.excludeCutoff
+    excludeDim = APL_METHOD_DEFAULTS.excludeDim
     aplMethod = APL_METHOD_DEFAULTS.aplMethod
+    fatslimNthreads = APL_METHOD_DEFAULTS.fatslimNthreads
+    fatslimJobs = APL_METHOD_DEFAULTS.fatslimJobs
     gridmatN = APL_METHOD_DEFAULTS.gridmatN
     gridmatPrecision = APL_METHOD_DEFAULTS.gridmatPrecision
+    gridmatMdJobs = APL_METHOD_DEFAULTS.gridmatMdJobs
     vtmcNSamples = APL_METHOD_DEFAULTS.vtmcNSamples
     vtmcProteinRadius = APL_METHOD_DEFAULTS.vtmcProteinRadius
     lipidHeadgroupAtoms = []
@@ -5256,6 +6218,10 @@
       label: set.label,
       status: /** @type {'pending'} */ ('pending')
     }))
+    // Batch APL: one method for the whole job — sidebar wins over each set's older save.
+    if (mode === 'structural' && runStructuralType === 'area_per_lipid') {
+      stampAplOptionsOntoSets(runnable.map((s) => s.id))
+    }
     try {
       for (let i = 0; i < runnable.length; i++) {
         if (analysisAbort?.signal.aborted) break
@@ -5285,7 +6251,11 @@
           idx === i ? { ...stage, status: 'running' } : stage
         )
         const typeLabel = mode === 'structural' ? runStructuralType : 'energetic'
-        setAnalysisProgress(i + 1, total, `${set.label} (${typeLabel})`)
+        const aplTag =
+          mode === 'structural' && runStructuralType === 'area_per_lipid'
+            ? ` · ${normalizeAplMethod(aplMethod)}`
+            : ''
+        setAnalysisProgress(i + 1, total, `${set.label} (${typeLabel}${aplTag})`)
         try {
           if (mode === 'structural' && isBilayerType(runStructuralType)) {
             await ensureBilayerSelectionReady()
@@ -5322,7 +6292,9 @@
             )
             break
           }
-          const msg = error instanceof Error ? error.message : String(error)
+          const msg = shortenAnalysisError(
+            error instanceof Error ? error.message : String(error)
+          )
           errors.push(`${set.label}: ${msg}`)
           runProgressStages = runProgressStages.map((stage, idx) =>
             idx === i ? { ...stage, status: 'error' } : stage
@@ -5332,11 +6304,11 @@
       if (analysisAbort?.signal.aborted && !lastError) {
         lastError = 'Analysis cancelled'
       } else if (errors.length > 0) {
-        const skipNote = skipped.length ? ` Skipped ${skipped.length}: ${skipped.join('; ')}.` : ''
+        const skipNote = skipped.length ? `\nSkipped ${skipped.length}: ${skipped.join('; ')}.` : ''
         lastError =
           errors.length === total
-            ? errors[0]
-            : `Completed ${completed}/${total} sets. ${errors.join(' ')}${skipNote}`
+            ? errors.join('\n')
+            : `Completed ${completed}/${total} sets.\n${errors.join('\n')}${skipNote}`
         if (completed > 0) {
           logEvent(
             'warn',
@@ -5487,7 +6459,14 @@
     return { xMin, xMax, yMin: yMin - yPad, yMax: yMax + yPad }
   }
 
-  /** Match LineChart y-axis overrides; x uses full series range for publication. */
+  /** Match LineChart axis overrides for publication PNG/PDF. */
+  function publicationXlimFromExtents(ext) {
+    const xMinEff = xMinO != null ? xMinO : ext.xMin
+    const xMaxEff = xMaxO != null ? xMaxO : ext.xMax
+    return [Math.min(xMinEff, xMaxEff), Math.max(xMinEff, xMaxEff)]
+  }
+
+  /** Match LineChart y-axis overrides for publication PNG/PDF. */
   function publicationYlimFromExtents(ext) {
     const yMinEff = yMinO != null ? yMinO : ext.yMin
     const yMaxEff = yMaxO != null ? yMaxO : ext.yMax
@@ -5591,23 +6570,62 @@
   }
 
   /**
+   * Union of mosaic root + outside panel-letter badges (letters can hang in the gutter).
+   * @param {HTMLElement} root
+   */
+  function mosaicExportFrame(root) {
+    const wrap = root.getBoundingClientRect()
+    let left = wrap.left
+    let top = wrap.top
+    let right = wrap.right
+    let bottom = wrap.bottom
+    for (const el of root.querySelectorAll('[data-chart-export="panel-letter"]')) {
+      const r = el.getBoundingClientRect()
+      if (r.width < 1 && r.height < 1) continue
+      left = Math.min(left, r.left)
+      top = Math.min(top, r.top)
+      right = Math.max(right, r.right)
+      bottom = Math.max(bottom, r.bottom)
+    }
+    // Small safety margin so glyph ink is not clipped at the canvas edge.
+    const pad = 2
+    left -= pad
+    top -= pad
+    right += pad
+    bottom += pad
+    return {
+      left,
+      top,
+      width: Math.max(1, right - left),
+      height: Math.max(1, bottom - top)
+    }
+  }
+
+  /**
    * Draw every SVG in a mosaic wrapper onto one canvas (layout matches the screen).
+   * Also paints outside panel-letter badges (HTML), which SVGs alone omit.
    * @param {HTMLElement} root
    */
   async function rasterizeMosaicToPng(root) {
     const svgs = [...root.querySelectorAll('svg')].filter((el) => !el.closest('[data-grid-cell-chrome]'))
     if (svgs.length === 0) throw new Error('Mosaic has no charts to export')
-    const wrap = root.getBoundingClientRect()
-    const dpi = Math.max(72, Math.min(600, Number(ps.dpi) || 150))
+    const frame = mosaicExportFrame(root)
+    const dpi = Math.max(
+      72,
+      Math.min(600, Number(mode === 'energetic' ? ePlotGlobal.dpi : ps.dpi) || 150)
+    )
     const pixelScale = dpi / 96
     const canvas = document.createElement('canvas')
-    canvas.width = Math.max(1, Math.round(wrap.width * pixelScale))
-    canvas.height = Math.max(1, Math.round(wrap.height * pixelScale))
+    canvas.width = Math.max(1, Math.round(frame.width * pixelScale))
+    canvas.height = Math.max(1, Math.round(frame.height * pixelScale))
     const ctx = canvas.getContext('2d')
     if (!ctx) throw new Error('Could not create canvas for PNG export')
-    const transparent = Boolean(ps.transparentBg)
+    const transparent = Boolean(mode === 'energetic' ? ePlotGlobal.transparentBg : ps.transparentBg)
     if (!transparent) {
-      ctx.fillStyle = gridLayout.figureBg || displayPlotBg
+      ctx.fillStyle =
+        mode === 'energetic'
+          ? energeticGridLayout.figureBg || resolvedEnergColors.plotBg
+          : gridLayout.figureBg || displayPlotBg
       ctx.fillRect(0, 0, canvas.width, canvas.height)
     }
     for (let i = 0; i < svgs.length; i++) {
@@ -5622,13 +6640,53 @@
       })
       ctx.drawImage(
         img,
-        (r.left - wrap.left) * pixelScale,
-        (r.top - wrap.top) * pixelScale,
+        (r.left - frame.left) * pixelScale,
+        (r.top - frame.top) * pixelScale,
         r.width * pixelScale,
         r.height * pixelScale
       )
     }
+    paintMosaicPanelLetters(ctx, root, frame, pixelScale)
     return canvas.toDataURL('image/png').replace(/^data:image\/png;base64,/, '')
+  }
+
+  /**
+   * @param {CanvasRenderingContext2D} ctx
+   * @param {HTMLElement} root
+   * @param {{ left: number, top: number }} frame
+   * @param {number} pixelScale
+   */
+  function paintMosaicPanelLetters(ctx, root, frame, pixelScale) {
+    const letters = [...root.querySelectorAll('[data-chart-export="panel-letter"]')]
+    for (const el of letters) {
+      const text = String(el.textContent || '').trim()
+      if (!text) continue
+      const r = el.getBoundingClientRect()
+      const cs = getComputedStyle(el)
+      const fontSize = Math.max(8, parseFloat(cs.fontSize) || 16) * pixelScale
+      const weight = cs.fontWeight || '700'
+      const family = cs.fontFamily || 'Roboto, sans-serif'
+      const color = cs.color || '#111'
+      const padX = 3 * pixelScale
+      const padY = 1.5 * pixelScale
+      const x = (r.left - frame.left) * pixelScale
+      const y = (r.top - frame.top) * pixelScale
+      const w = Math.max(r.width * pixelScale, fontSize * 0.7)
+      const h = Math.max(r.height * pixelScale, fontSize * 1.05)
+      const bg = cs.backgroundColor
+      if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') {
+        ctx.fillStyle = bg
+        ctx.beginPath()
+        const rad = 2 * pixelScale
+        ctx.roundRect?.(x - padX * 0.2, y - padY * 0.2, w + padX * 0.4, h + padY * 0.4, rad)
+        if (ctx.roundRect) ctx.fill()
+        else ctx.fillRect(x, y, w, h)
+      }
+      ctx.fillStyle = color
+      ctx.font = `${weight} ${fontSize}px ${family}`
+      ctx.textBaseline = 'top'
+      ctx.fillText(text, x + padX * 0.15, y + padY * 0.1)
+    }
   }
 
   /**
@@ -5636,32 +6694,56 @@
    */
   function composeMosaicSvg(root) {
     const svgs = [...root.querySelectorAll('svg')].filter((el) => !el.closest('[data-grid-cell-chrome]'))
-    const wrap = root.getBoundingClientRect()
-    const w = Math.max(1, Math.round(wrap.width))
-    const h = Math.max(1, Math.round(wrap.height))
-    const bg = ps.transparentBg ? 'none' : gridLayout.figureBg || displayPlotBg
+    const frame = mosaicExportFrame(root)
+    const w = Math.max(1, Math.round(frame.width))
+    const h = Math.max(1, Math.round(frame.height))
+    const bg =
+      (mode === 'energetic' ? ePlotGlobal.transparentBg : ps.transparentBg)
+        ? 'none'
+        : mode === 'energetic'
+          ? energeticGridLayout.figureBg || resolvedEnergColors.plotBg
+          : gridLayout.figureBg || displayPlotBg
     const parts = svgs.map((svg, i) => {
       const r = svg.getBoundingClientRect()
       const clone = /** @type {SVGSVGElement} */ (svg.cloneNode(true))
       uniquifySvgClipIds(clone, i)
-      clone.setAttribute('x', String(Math.round(r.left - wrap.left)))
-      clone.setAttribute('y', String(Math.round(r.top - wrap.top)))
+      clone.setAttribute('x', String(Math.round(r.left - frame.left)))
+      clone.setAttribute('y', String(Math.round(r.top - frame.top)))
       clone.setAttribute('width', String(Math.round(r.width)))
       clone.setAttribute('height', String(Math.round(r.height)))
       clone.removeAttribute('class')
       return new XMLSerializer().serializeToString(clone)
+    })
+    const letterParts = [...root.querySelectorAll('[data-chart-export="panel-letter"]')].map((el) => {
+      const text = String(el.textContent || '').trim()
+      if (!text) return ''
+      const r = el.getBoundingClientRect()
+      const cs = getComputedStyle(el)
+      const fontSize = Math.max(8, parseFloat(cs.fontSize) || 16)
+      const weight = cs.fontWeight || '700'
+      const family = (cs.fontFamily || 'Roboto, sans-serif').replace(/"/g, "'")
+      const color = cs.color || '#111'
+      const x = Math.round(r.left - frame.left)
+      const y = Math.round(r.top - frame.top + fontSize * 0.85)
+      const bgc = cs.backgroundColor
+      let bgRect = ''
+      if (bgc && bgc !== 'rgba(0, 0, 0, 0)' && bgc !== 'transparent') {
+        bgRect = `<rect x="${x - 2}" y="${Math.round(r.top - frame.top) - 1}" width="${Math.max(Math.round(r.width) + 4, Math.round(fontSize))}" height="${Math.max(Math.round(r.height) + 2, Math.round(fontSize * 1.1))}" rx="2" fill="${bgc}"/>`
+      }
+      return `${bgRect}<text x="${x}" y="${y}" font-size="${fontSize}" font-weight="${weight}" font-family="${family}" fill="${color}">${text.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</text>`
     })
     return (
       `<?xml version="1.0" encoding="UTF-8"?>\n` +
       `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">` +
       (bg !== 'none' ? `<rect width="100%" height="100%" fill="${bg}"/>` : '') +
       parts.join('') +
+      letterParts.join('') +
       `</svg>`
     )
   }
 
-  function structuralMosaicRoot() {
-    if (mode !== 'structural' || chartView.mode !== 'grid') return null
+  function chartMosaicRoot() {
+    if (!toolbarIsGrid) return null
     return plotExportRoot?.querySelector('[data-chart-mosaic]') || null
   }
 
@@ -5821,6 +6903,7 @@
           sets: slimSetsForSessionSave(analysisSets, 'all'),
           gridLayout: clonePlainAnalysisData(gridLayout),
           energeticGridLayout: clonePlainAnalysisData(energeticGridLayout),
+          residueMappingGroups: serializeResidueMappingGroups(residueMappingGroups),
           plotSettings: {
             structural: clonePlainAnalysisData(sPlots),
             energeticGlobal: clonePlainAnalysisData(ePlotGlobal),
@@ -5910,7 +6993,7 @@
         await new Promise((resolve) =>
           requestAnimationFrame(() => requestAnimationFrame(resolve))
         )
-        const mosaic = structuralMosaicRoot()
+        const mosaic = chartMosaicRoot()
         if (mosaic) {
           const filePath = await resolveExportPath(
             `${exportFileStem()}.svg`,
@@ -5970,14 +7053,8 @@
   }
 
   function buildStructuralPlotPayload() {
-    const refs = normalizeReferenceLines(ps.referenceLines).map((line) => ({
-      axis: line.axis,
-      value: line.value,
-      color: line.color,
-      width: line.width,
-      style: line.style,
-      label: line.label
-    }))
+    const refs = publicationReferenceLines(ps.referenceLines)
+    const bands = publicationReferenceBands(ps.referenceBands)
     const lineColors = ['#f59e0b', '#22c55e', '#38bdf8', '#f87171', '#a78bfa', '#f472b6']
     const toDataSeries = (s) => {
       const set = analysisSets.find((x) => x.id === s.setId)
@@ -6010,10 +7087,17 @@
         let figW = Math.max(6, cols * cellW)
         let figH = Math.max(3, rows * (cellW / Math.max(0.4, aspect)))
         if (gridLayout.legendMode === 'outside') {
-          if (gridLayout.legendOutside === 'top' || gridLayout.legendOutside === 'bottom') figH += 0.55
-          else figW += 1.15
+          if (gridLayout.legendOutside === 'top' || gridLayout.legendOutside === 'bottom') figH += 0.75
+          else figW += 2.1
         }
-        const gapFrac = Math.max(0.02, Math.min(0.45, (Number(gridLayout.gapPx) || 16) / 80))
+        if (gridLayout.panelLetterShow) {
+          figW += 0.35
+          figH += 0.2
+        }
+        const gapFrac = Math.max(
+          0.28,
+          Math.min(0.55, 0.14 + (Number(gridLayout.gapPx) || 16) / 50)
+        )
         const origIndex = (panel) =>
           Number.isFinite(panel.cellIndex) ? panel.cellIndex : chartView.panels.indexOf(panel)
         return {
@@ -6033,17 +7117,39 @@
             wspace: gapFrac,
             hspace: gapFrac,
             cell_aspect: aspect,
-            sync_x: false,
+            sync_x: xMinO != null || xMaxO != null,
             legend: {
               mode: gridLayout.legendMode,
               cell: Number(gridLayout.legendCell) || 0,
               loc: gridLayout.legendOutside,
+              align: gridLayout.legendOutsideAlign || 'center',
               entries: gridLayout.legendEntries,
-              fontsize: guiSvgFontToMpl(ps.legendFontSize, 8),
+              fontsize: guiSvgFontToMpl(outsideLegendFontSize(gridLayout), 8),
+              title_fontsize: guiSvgFontToMpl(outsideLegendTitleFontSize(gridLayout), 8),
+              title_gap: outsideLegendTitleGap(gridLayout),
               ncol: Number(gridLayout.legendColumns) || 1,
-              title: gridLayout.legendTitle || ''
+              title: gridLayout.legendTitle || '',
+              swatch_width: outsideLegendSwatchWidth(gridLayout),
+              swatch_height: outsideLegendSwatchHeight(gridLayout),
+              swatch_round: gridLayout.legendSwatchRound !== false,
+              box_round: gridLayout.legendBoxRound !== false,
+              border_color: String(gridLayout.legendBoxBorderColor || ''),
+              border_width: Math.max(0, Number(gridLayout.legendBoxBorderWidth) || 0),
+              manual_items:
+                gridLayout.legendEntries === 'manual'
+                  ? normalizeManualLegendItems(gridLayout.legendManualItems)
+                      .filter((m) => m.visible)
+                      .map((m) => ({
+                        id: m.id,
+                        label: m.label,
+                        color: m.color,
+                        marker: m.marker,
+                        marker_size: m.markerSize
+                      }))
+                  : []
             },
             reference_lines: refs,
+            reference_bands: bands,
             global: {
               plot_bg: gridLayout.cellBg || resolvedStructColors.plotBg,
               fig_bg: gridLayout.figureBg || resolvedStructColors.plotBg,
@@ -6056,7 +7162,12 @@
               xlabel: displayXLabel,
               ylabel: displayYLabel,
               title: displayTitle || 'Structural Analysis',
-              xlim: null,
+              xlim:
+                xMinO != null || xMaxO != null
+                  ? publicationXlimFromExtents(
+                      dataExtentsFromSeries(allSeries) || { xMin: 0, xMax: 1, yMin: 0, yMax: 1 }
+                    )
+                  : null,
               ylim: null,
               ...plotSpecAxisChrome(ps),
               ...plotSpecExtraMargins(ps)
@@ -6082,7 +7193,7 @@
                 ylabel: displayYLabel,
                 series_keys: series.map((s) => s.key || s.name),
                 line_color: series[0]?.color || lineColors[i % lineColors.length],
-                xlim: ext ? [ext.xMin, ext.xMax] : null,
+                xlim: ext ? publicationXlimFromExtents(ext) : null,
                 ylim: ext ? publicationYlimFromExtents(ext) : null,
                 show_xlabel: labels.showXLabel,
                 show_ylabel: labels.showYLabel,
@@ -6094,7 +7205,12 @@
                 linewidth: Number(cps.lineWidth) || 1.5,
                 linestyle: cps.lineStyle || 'solid',
                 legend_loc: loc,
-                legend_fontsize: guiSvgFontToMpl(cps.legendFontSize, 8)
+                legend_fontsize: guiSvgFontToMpl(cps.legendFontSize, 8),
+                ...plotSpecPanelLetter(
+                  gridLayout,
+                  idx,
+                  Number(cps.titleFontSize) || Number(ps.titleFontSize) || 13
+                )
               }
             })
           }
@@ -6104,7 +7220,7 @@
 
     const shown = publicationSeries()
     const globalExt = dataExtentsFromSeries(shown)
-    const overlayXlim = globalExt ? [globalExt.xMin, globalExt.xMax] : null
+    const overlayXlim = globalExt ? publicationXlimFromExtents(globalExt) : null
     const overlayYlim = globalExt ? publicationYlimFromExtents(globalExt) : null
     return {
       data: {
@@ -6117,6 +7233,7 @@
         cols: 2,
         sync_x: true,
         reference_lines: refs,
+        reference_bands: bands,
         global: {
           plot_bg: resolvedStructColors.plotBg,
           fig_bg: resolvedStructColors.plotBg,
@@ -6143,7 +7260,10 @@
           linewidth: Number(s.strokeWidth) || Number(ps.lineWidth) || 1.5,
           linestyle: s.lineStyle || ps.lineStyle || 'solid',
           xlim: overlayXlim,
-          ylim: overlayYlim
+          ylim: overlayYlim,
+          ...(i === 0
+            ? plotSpecPanelLetter(gridLayout, 0, Number(ps.titleFontSize) || 13)
+            : {})
         }))
       }
     }
@@ -6191,7 +7311,7 @@
         await new Promise((resolve) =>
           requestAnimationFrame(() => requestAnimationFrame(resolve))
         )
-        const mosaic = structuralMosaicRoot()
+        const mosaic = chartMosaicRoot()
         if (mosaic) {
           const filePath = await resolveExportPath(
             `${exportFileStem()}.png`,
@@ -6238,6 +7358,30 @@
 {#snippet structuralGridCell(panel)}
   {@const idx = panel.cellIndex ?? 0}
   {@const cps = cellPlotSettings(idx)}
+  {@const cellXMin =
+    structViewRange != null
+      ? structViewRange.xMin
+      : cps.xMin !== '' && Number.isFinite(Number(cps.xMin))
+        ? Number(cps.xMin)
+        : null}
+  {@const cellXMax =
+    structViewRange != null
+      ? structViewRange.xMax
+      : cps.xMax !== '' && Number.isFinite(Number(cps.xMax))
+        ? Number(cps.xMax)
+        : null}
+  {@const cellYMin =
+    structViewRange != null
+      ? structViewRange.yMin
+      : cps.yMin !== '' && Number.isFinite(Number(cps.yMin))
+        ? Number(cps.yMin)
+        : null}
+  {@const cellYMax =
+    structViewRange != null
+      ? structViewRange.yMax
+      : cps.yMax !== '' && Number.isFinite(Number(cps.yMax))
+        ? Number(cps.yMax)
+        : null}
   <AnalysisGridCell
     {panel}
     {gridLayout}
@@ -6247,20 +7391,21 @@
     series={panel.empty ? [] : seriesWithCellLine(panel.series, cps, structuralType)}
     {displayXLabel}
     {displayYLabel}
-    {displayXTickLabels}
+    displayXTickLabels={rmsfXTickLabelsForPanel(panel)}
     {resolvedStructColors}
     {ps}
     {plotEdit}
-    {xMinO}
-    {xMaxO}
-    {yMinO}
-    {yMaxO}
+    xMinO={cellXMin}
+    xMaxO={cellXMax}
+    yMinO={cellYMin}
+    yMaxO={cellYMax}
     {hasChartTimeAxis}
     {chartInteractionMode}
     {statsRange}
     xTickStep={plotTickStep('x')}
     yTickStep={plotTickStep('y')}
     {structReferenceLines}
+    structReferenceBands={structReferenceBandsDraw}
     editing={gridCellEditorOpen === idx}
     cellTitle={gridLayout.cells?.[idx]?.title || ''}
     cellSetIds={gridLayout.cells?.[idx]?.setIds || []}
@@ -6325,6 +7470,7 @@
     xTickStep={ePlotGlobal.xTickStep || ''}
     yTickStep={ePlotGlobal.yTickStep || ''}
     {structReferenceLines}
+    structReferenceBands={structReferenceBandsDraw}
     editing={gridCellEditorOpen === idx}
     cellTitle={energeticGridLayout.cells?.[idx]?.title || ''}
     cellSetIds={energeticGridLayout.cells?.[idx]?.setIds || []}
@@ -6440,6 +7586,63 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
   >
     <div class="space-y-2">
       <h2 class="sidebar-heading">Analysis</h2>
+      <div class="relative">
+        <Input
+          size="sm"
+          value={optionsSearchQuery}
+          placeholder="Search options…"
+          className="w-full"
+          aria-label="Search analysis options"
+          oninput={(e) => {
+            optionsSearchQuery = e.currentTarget.value
+            optionsSearchOpen = true
+          }}
+          onfocus={() => {
+            if (optionsSearchQuery.trim()) optionsSearchOpen = true
+          }}
+          onkeydown={(e) => {
+            if (e.key === 'Escape') {
+              optionsSearchOpen = false
+              e.currentTarget.blur()
+            } else if (e.key === 'Enter' && optionsSearchHits[0]) {
+              e.preventDefault()
+              void onPickAnalysisOption(optionsSearchHits[0])
+            }
+          }}
+        />
+        {#if optionsSearchOpen && optionsSearchQuery.trim() && optionsSearchHits.length > 0}
+          <ul
+            class="absolute z-30 mt-0.5 max-h-48 w-full overflow-y-auto rounded-md border border-neutral-300 bg-white py-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+            role="listbox"
+          >
+            {#each optionsSearchHits as hit (hit.id)}
+              <li>
+                <button
+                  type="button"
+                  class="flex w-full flex-col items-start px-2 py-1.5 text-left hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                  role="option"
+                  aria-selected="false"
+                  onclick={() => void onPickAnalysisOption(hit)}
+                >
+                  <span class="text-[11px] font-medium text-neutral-800 dark:text-neutral-100"
+                    >{hit.label}</span
+                  >
+                  <span class="text-[10px] text-neutral-500"
+                    >{hit.panel === 'analysis-grid' ? 'Grid options' : 'Left panel'}{#if hit.sectionId}
+                      · {hit.sectionId}{/if}</span
+                  >
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {:else if optionsSearchOpen && optionsSearchQuery.trim()}
+          <p
+            class="absolute z-30 mt-0.5 w-full rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-[11px] text-neutral-500 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+          >
+            No matching options
+          </p>
+        {/if}
+      </div>
       <div class="flex items-center gap-1" role="tablist" aria-label="Analysis mode">
         {#each ANALYSIS_MODES as item (item.id)}
           {@const Icon = item.Icon}
@@ -6577,7 +7780,12 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
     <!-- Simulation sets (structural + energetic compare) -->
     <div class="space-y-2">
       <div class="flex items-center justify-between gap-2">
-        <h2 class="sidebar-heading">Simulation sets</h2>
+        <h2
+          class="sidebar-heading"
+          title="Own files, options, and results per set. Drag ⠿ to reorder."
+        >
+          Simulation sets
+        </h2>
         <Button
           size="sm"
           variant="ghost"
@@ -6637,21 +7845,30 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   style={`background:${set.color}`}
                   aria-hidden="true"
                 ></span>
-                <Input
-                  size="sm"
-                  blurOnEnter
-                  value={set.label}
-                  oninput={(e) => updateSetLabel(set.id, e.currentTarget.value)}
-                  onblur={applyChartAppearance}
-                  className="min-w-0 flex-1 border-amber-300/60 bg-white dark:border-amber-500/40 dark:bg-neutral-950"
-                  onclick={(e) => e.stopPropagation()}
-                />
+                <div class="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <Input
+                    size="sm"
+                    blurOnEnter
+                    value={set.label}
+                    oninput={(e) => updateSetLabel(set.id, e.currentTarget.value)}
+                    onblur={applyChartAppearance}
+                    className="min-w-0 w-full border-amber-300/60 bg-white dark:border-amber-500/40 dark:bg-neutral-950"
+                    onclick={(e) => e.stopPropagation()}
+                  />
+                  {#if mode === 'structural' && structuralType === 'area_per_lipid'}
+                    <span
+                      class="truncate text-[10px] leading-tight text-neutral-500 dark:text-neutral-400"
+                      title={`APL method: ${aplMethodLabel(aplMethod).replace(/\s*\(default[^)]*\)$/i, '')}`}
+                      >{aplMethodLabel(aplMethod).replace(/\s*\(default[^)]*\)$/i, '')}</span
+                    >
+                  {/if}
+                </div>
               {:else}
                 <button
                   type="button"
                   class="min-w-0 flex-1 truncate rounded px-1 py-0.5 text-left text-neutral-800 transition-colors hover:bg-neutral-100 hover:text-neutral-950 dark:text-neutral-300 dark:hover:bg-neutral-800 dark:hover:text-neutral-50"
                   onclick={() => selectAnalysisSet(set.id)}
-                  title={mode === 'structural' ? set.topologyPath || 'No topology' : `${set.energeticOptions.logFiles.length} log file(s)`}
+                  title={mode === 'structural' ? set.topologyPath || 'No topology' : `${set.energeticOptions?.logFiles?.length ?? 0} log file(s)`}
                 >
                   <span
                     class="mr-1 inline-block h-2 w-2 shrink-0 rounded-full align-middle"
@@ -6659,6 +7876,13 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     aria-hidden="true"
                   ></span>
                   {set.label}
+                  {#if mode === 'structural' && structuralType === 'area_per_lipid'}
+                    <span
+                      class="ml-1 text-[10px] text-neutral-500 dark:text-neutral-400"
+                      title={`APL method: ${aplMethodBadgeForSet(set)}`}
+                      >· {aplMethodBadgeForSet(set)}</span
+                    >
+                  {/if}
                   {#if setHasResult(set, mode, structuralType)}
                     <span class="text-emerald-600 dark:text-emerald-400"> ✓</span>
                   {/if}
@@ -6702,9 +7926,6 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           Checked properties were not found on the visible sets. Run analysis to detect each set’s log properties.
         </p>
       {/if}
-      <p class="sidebar-hint">
-        Each set keeps its own files, options, and results. Drag ⠿ to reorder; use Collapse when the list is long.
-      </p>
     </div>
 
     <Divider />
@@ -6767,7 +7988,10 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               <div class="flex items-center gap-1 px-1.5 text-[10px] text-neutral-500">
                 <span class="min-w-0 flex-1">File</span>
                 <span class="w-16 shrink-0 text-center">Time</span>
-                <span class="w-12 shrink-0 text-center" title="Use every Nth frame">Stride</span>
+                <span
+                  class="w-12 shrink-0 text-center"
+                  title="Every Nth frame (e.g. 10 ≈ 10× fewer). Per file when concatenated."
+                >Stride</span>
                 <span class="w-4 shrink-0"></span>
               </div>
               {#each trajectoryFiles as file, i (file.path)}
@@ -6830,12 +8054,14 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               {/each}
             </div>
           {/if}
-          <p class="sidebar-hint">
-            Stride loads and analyzes every Nth frame only (e.g. 10 ≈ 10× fewer frames). Applies per file when trajectories are concatenated. Drag ⠿ to live-reorder files.
-          </p>
           {#if trajectoryFiles.some((f) => /\.(pdb|ent|gro)$/i.test(f.path))}
             <p class="sidebar-hint text-amber-600 dark:text-amber-400">
-              A PDB/GRO in this list is ignored for thickness and area-per-lipid (those files have no periodic box). For RMSD vs a starting structure, use <span class="font-medium">Reference PDB</span> under RMSD instead of listing it as a trajectory.
+              A PDB/GRO in this list is ignored for thickness and area-per-lipid (those files have no periodic box). For RMSD vs a starting structure, use <span class="font-medium">Reference PDB</span> instead of listing it as a trajectory.
+            </p>
+          {/if}
+          {#if trajectoryFiles.some((f) => /\.(rst7|restrt|inpcrd)$/i.test(f.path))}
+            <p class="sidebar-hint text-amber-600 dark:text-amber-400">
+              Amber <span class="font-medium">.rst7 / .inpcrd</span> files are restarts, not trajectories — they are skipped. Add production .dcd/.xtc/.trr/.nc files. For RMSD vs a start structure, use <span class="font-medium">Reference PDB</span>.
             </p>
           {/if}
         </div>
@@ -6854,20 +8080,26 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             </span>
           {/if}
         </div>
-        <Select
-          size="sm"
-          className="w-full"
-          value={structuralType}
-          disabled={structuralTypeChanging || headgroupDetecting}
-          onchange={(e) => onStructuralTypeChange(e.currentTarget.value)}
+        <div
+          data-option-id="structural-type"
+          class={optionsSearchHighlightId === 'structural-type' ? 'option-pulse-highlight rounded' : ''}
         >
-          <option value="rmsd">RMSD</option>
-          <option value="rmsf">RMSF</option>
-          <option value="distance">Distance</option>
-          <option value="radius_of_gyration">Radius of Gyration</option>
-          <option value="membrane_thickness">Membrane Thickness</option>
-          <option value="area_per_lipid">Area per Lipid</option>
-        </Select>
+          <Select
+            size="sm"
+            className="w-full"
+            value={structuralType}
+            disabled={structuralTypeChanging || headgroupDetecting}
+            onchange={(e) => onStructuralTypeChange(e.currentTarget.value)}
+          >
+            {#each STRUCTURAL_TYPE_GROUPS as group (group.id)}
+              <optgroup label={group.label}>
+                {#each group.types as type (type)}
+                  <option value={type}>{STRUCTURAL_TYPE_TITLES[type] || type}</option>
+                {/each}
+              </optgroup>
+            {/each}
+          </Select>
+        </div>
 
         {#if isBilayerType(structuralType)}
           <div class="space-y-2">
@@ -6943,7 +8175,20 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
             {#if structuralType === 'area_per_lipid'}
               <div class="space-y-2">
-                <p class="sidebar-label" title={aplMethodHint || undefined}>APL method</p>
+                <p
+                  class="sidebar-label"
+                  title={aplMethodHint || undefined}
+                >
+                  APL method
+                </p>
+                <p class="sidebar-hint">
+                  Used for this set. Run all / selected applies this method to every set in the
+                  batch.
+                </p>
+                <div
+                  class={optionsSearchHighlightId === 'apl-method' ? 'option-pulse-highlight rounded' : ''}
+                  data-option-id="apl-method"
+                >
                 <Select
                   size="sm"
                   bind:value={aplMethod}
@@ -6954,35 +8199,164 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     <option value={method.id} title={method.hint}>{method.label}</option>
                   {/each}
                 </Select>
-                {#if aplMethod === 'lipyphilic'}
+                </div>
+                {#if analysisSets.length > 1}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full"
+                    onclick={applyAplMethodToAllSets}
+                    title="Copy the sidebar APL method and related options onto every set without running"
+                    >Apply to all sets</Button
+                  >
+                {/if}
+                {#if aplMethod === 'fatslim'}
+                  {#if fatslimStatusChecking}
+                    <p class="sidebar-hint text-[11px] leading-snug">Checking FATSLiM…</p>
+                  {:else if fatslimAvailable === false}
+                    <p class="gw-notice gw-notice-warning text-[11px] leading-snug">
+                      FATSLiM not found. Clone the
+                      <code class="text-[10px]">gatewizard</code>
+                      API repo (not this GUI install), run
+                      <code class="text-[10px]">bash scripts/install_fatslim_env.sh</code>
+                      in WSL/Linux, then set
+                      <code class="text-[10px]">GATEWIZARD_FATSLIM</code>
+                      (see API
+                      <code class="text-[10px]">docs/analysis.md</code>).
+                    </p>
+                  {/if}
+                  <div class="flex items-center gap-2">
+                    <span
+                      class="sidebar-label shrink-0"
+                      title="FATSLiM --nthreads per process. Use -1 for all CPUs. Prefer 1–4 when Jobs > 1."
+                    >Threads</span
+                    >
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="-1"
+                      step="1"
+                      bind:value={fatslimNthreads}
+                      className="w-20"
+                      title="FATSLiM --nthreads per process. Use -1 for all CPUs. Prefer 1–4 when Jobs > 1."
+                    />
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span
+                      class="sidebar-label shrink-0"
+                      title="Parallel frame chunks (--begin-frame / --end-frame). Raise for long trajectories."
+                    >Jobs</span
+                    >
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="1"
+                      step="1"
+                      bind:value={fatslimJobs}
+                      className="w-20"
+                      title="Parallel frame chunks (--begin-frame / --end-frame). Raise for long trajectories."
+                    />
+                  </div>
+                  <p class="sidebar-hint text-[11px] leading-snug">
+                    Prefer small Threads (1–4) with more Jobs for better wall-clock performance,
+                    rather than one job with all CPUs.
+                  </p>
+                {:else if aplMethod === 'lipyphilic'}
                   <p class="gw-notice gw-notice-warning text-[11px] leading-snug">
-                    LiPyphilic is a pure-lipid box Voronoi. It ignores the protein, so APL is
-                    inflated to box / lipids per leaflet. Use EVAPL (default) for
-                    leaflets that contain protein, peptide, DNA, or other occupants.
+                    Official lipyphilic AreaPerLipid. Use exclude atoms + cutoff/dim below
+                    (docs example: 10 Å, 3D). Protein exclude needs the git lipyphilic pin in
+                    <code class="text-[10px]">backend/requirements.txt</code>
+                    (PR #164). Prefer FATSLiM (default) for occupants.
+                  </p>
+                {:else if aplMethod === 'evapl'}
+                  <p class="gw-notice gw-notice-warning text-[11px] leading-snug">
+                    EVAPL is experimental and not yet validated. Prefer FATSLiM (default) for
+                    production comparisons.
                   </p>
                 {/if}
 
-                {#if aplMethod !== 'lipyphilic'}
-                  <p
-                    class="sidebar-label"
-                    title={aplMethod === 'evapl'
+                <p
+                  class="sidebar-label"
+                  title={aplMethod === 'fatslim'
+                    ? 'Non-lipid atoms mapped to FATSLiM --interacting-group (protein group in NDX). Leave empty for bilayer-only.'
+                    : aplMethod === 'evapl'
                       ? 'Non-lipid atoms that reduce lipid-accessible area (protein, peptide, DNA, ligands, …). Only atoms in the leaflet headgroup Z-range are used.'
-                      : 'Non-lipid atoms that reduce lipid-accessible area (protein, peptide, DNA, ligands, …). Leave empty for none.'}
-                  >
-                    Exclude atoms
+                      : aplMethod === 'lipyphilic'
+                        ? 'Non-lipid atoms for AreaPerLipid exclude_sel. Requires lipyphilic with PR #164 (git install) when non-empty; otherwise the run errors.'
+                        : 'Non-lipid atoms that reduce lipid-accessible area (protein, peptide, DNA, ligands, …). Leave empty for none.'}
+                >
+                  Exclude atoms
+                </p>
+                <Input
+                  size="sm"
+                  bind:value={excludeSel}
+                  placeholder="empty = none"
+                  className="w-full"
+                  title={aplMethod === 'fatslim'
+                    ? 'Non-lipid atoms mapped to FATSLiM --interacting-group (protein group in NDX). Leave empty for bilayer-only.'
+                    : aplMethod === 'evapl'
+                      ? 'Non-lipid atoms that reduce lipid-accessible area (protein, peptide, DNA, ligands, …). Only atoms in the leaflet headgroup Z-range are used.'
+                      : aplMethod === 'lipyphilic'
+                        ? 'Non-lipid atoms for AreaPerLipid exclude_sel. Requires lipyphilic with PR #164 (git install) when non-empty; otherwise the run errors.'
+                        : 'Non-lipid atoms that reduce lipid-accessible area (protein, peptide, DNA, ligands, …). Leave empty for none.'}
+                />
+
+                {#if showAplExcludeCutoff}
+                  <div class="flex items-center gap-2">
+                    <span
+                      class="sidebar-label shrink-0"
+                      title="Only exclude atoms within this distance of the leaflet are included. 0 = use all exclude atoms. LiPyphilic docs example uses 10 Å."
+                    >Exclude cutoff (Å)</span
+                    >
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="0"
+                      step="1"
+                      bind:value={excludeCutoff}
+                      className="w-20"
+                      title="Only exclude atoms within this distance of the leaflet are included. 0 = use all exclude atoms. LiPyphilic docs example uses 10 Å."
+                    />
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span
+                      class="sidebar-label shrink-0"
+                      title="How exclude_cutoff is measured: 3 = 3D distance to leaflet atoms; 1 = |z − leaflet midplane|."
+                    >Cutoff dim</span
+                    >
+                    <Select
+                      size="sm"
+                      bind:value={excludeDim}
+                      className="min-w-0 flex-1"
+                      title="How exclude_cutoff is measured: 3 = 3D distance to leaflet atoms; 1 = |z − leaflet midplane|."
+                    >
+                      <option value="3">3D distance</option>
+                      <option value="1">Z to midplane</option>
+                    </Select>
+                  </div>
+                {:else if aplMethod === 'evapl'}
+                  <p class="sidebar-hint text-[11px] leading-snug">
+                    EVAPL ignores cutoff/dim — exclude atoms are taken from the leaflet headgroup
+                    Z-range.
                   </p>
-                  <Input
-                    size="sm"
-                    bind:value={excludeSel}
-                    placeholder="empty = none"
-                    className="w-full"
-                    title={aplMethod === 'evapl'
-                      ? 'Non-lipid atoms that reduce lipid-accessible area (protein, peptide, DNA, ligands, …). Only atoms in the leaflet headgroup Z-range are used.'
-                      : 'Non-lipid atoms that reduce lipid-accessible area (protein, peptide, DNA, ligands, …). Leave empty for none.'}
-                  />
+                {:else if aplMethod === 'fatslim'}
+                  <p class="sidebar-hint text-[11px] leading-snug">
+                    FATSLiM ignores cutoff/dim — exclude atoms are passed as the interacting
+                    group (NDX).
+                  </p>
+                {:else if aplMethod === 'gridmat' || aplMethod === 'gridmat_md'}
+                  <p class="sidebar-hint text-[11px] leading-snug">
+                    GridMAT ignores exclude cutoff/dim — protein proximity uses the precision
+                    (Å) control
+                    {aplMethod === 'gridmat_md' ? ' in the .pl param file' : ''}.
+                  </p>
                 {/if}
 
                 {#if aplMethod === 'gridmat'}
+                  <p class="gw-notice gw-notice-warning text-[11px] leading-snug">
+                    Experimental GateWizard reimplementation (not bit-identical to GridMAT-MD.pl).
+                    Prefer <strong>GridMAT-MD.pl (external)</strong> for the original tool.
+                  </p>
                   <div class="flex items-center gap-2">
                     <span class="sidebar-label shrink-0">Grid points</span>
                     <Input
@@ -7009,7 +8383,60 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   </div>
                 {/if}
 
+                {#if aplMethod === 'gridmat_md'}
+                  <p class="gw-notice gw-notice-info text-[11px] leading-snug">
+                    Original Perl GridMAT-MD.pl. Set
+                    <code class="text-[10px]">GATEWIZARD_GRIDMAT_MD</code>
+                    to the script path (gatewizard
+                    <code class="text-[10px]">scripts/install_gridmat_md.sh</code>).
+                  </p>
+                  <div class="flex items-center gap-2">
+                    <span class="sidebar-label shrink-0">Grid points</span>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="2"
+                      step="1"
+                      bind:value={gridmatN}
+                      className="w-20"
+                      title="GridMAT-MD.pl grid points (default 20)"
+                    />
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="sidebar-label shrink-0">Protein cutoff (Å)</span>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="0.1"
+                      step="0.5"
+                      bind:value={gridmatPrecision}
+                      className="w-20"
+                      title="GridMAT-MD.pl precision in Å (default 13 = 1.3 nm)"
+                    />
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span
+                      class="sidebar-label shrink-0"
+                      title="Parallel perl jobs (one frame each). Raise for long trajectories."
+                    >Jobs</span
+                    >
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="1"
+                      step="1"
+                      bind:value={gridmatMdJobs}
+                      className="w-20"
+                      title="Parallel perl jobs (one frame each). Raise for long trajectories."
+                    />
+                  </div>
+                {/if}
+
                 {#if aplMethod === 'vtmc'}
+                  <p class="gw-notice gw-notice-warning text-[11px] leading-snug">
+                    GateWizard (GW) reimplementation of Mori et al. VTMC — experimental; not yet
+                    validated against the original binary.
+                  </p>
                   <div class="flex items-center gap-2">
                     <span class="sidebar-label shrink-0">MC samples</span>
                     <Input
@@ -7108,7 +8535,10 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           </div>
         {:else}
           <!-- Selection 1 row with count + help -->
-          <div class="flex gap-1">
+          <div
+            class="flex gap-1 {optionsSearchHighlightId === 'selection' ? 'option-pulse-highlight rounded' : ''}"
+            data-option-id="selection"
+          >
             <Input
               size="sm"
               bind:value={selection}
@@ -7162,20 +8592,50 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           {/if}
         {/if}
 
-        {#if structuralType === 'rmsd'}
+        {#if analysisSets.length > 1}
+          <div
+            class="space-y-1 {optionsSearchHighlightId === 'apply-selection-all' ||
+            optionsSearchHighlightId === 'selection'
+              ? 'option-pulse-highlight'
+              : ''}"
+            data-option-id="apply-selection-all"
+          >
+            <Button
+              size="sm"
+              variant="outline"
+              className="w-full"
+              onclick={applyTypeSelectionToAllSets}
+              title="Copies this analysis type’s selection onto every set (does not run)."
+              >Apply to all sets</Button
+            >
+            <p class="sidebar-hint">
+              Copies this analysis type’s selection onto every set (does not run).
+            </p>
+          </div>
+        {/if}
+
+        {#if structuralType === 'rmsd' || structuralType === 'radius_of_gyration'}
           <div class="space-y-1">
-            <p class="sidebar-label">Reference PDB (optional)</p>
+            <p class="sidebar-label">
+              {structuralType === 'rmsd' ? 'Reference PDB (optional)' : 'Companion / Reference PDB (optional)'}
+            </p>
             <div class="flex gap-1">
               <span
                 class="min-w-0 flex-1"
-                title={referenceStructurePath || 'Not set — uses Ref. frame'}
+                title={referenceStructurePath ||
+                  (structuralType === 'rmsd'
+                    ? 'Not set — uses Ref. frame'
+                    : 'Not set — uses topology companion if needed')}
               >
                 <Input
                   size="sm"
                   value={basename(referenceStructurePath) || '—'}
                   disabled
                   className="w-full"
-                  title={referenceStructurePath || 'Not set — uses Ref. frame'}
+                  title={referenceStructurePath ||
+                    (structuralType === 'rmsd'
+                      ? 'Not set — uses Ref. frame'
+                      : 'Not set — uses topology companion if needed')}
                 />
               </span>
               <Button size="sm" variant="outline" onclick={pickReferenceStructure}>Select</Button>
@@ -7191,10 +8651,19 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 >
               {/if}
             </div>
-            <p class="sidebar-hint">
-              Starting structure for RMSD instead of Ref. frame. Do not add this file to Trajectories — extra PDBs break membrane thickness (no unit cell).
-            </p>
+            {#if structuralType === 'rmsd'}
+              <p class="sidebar-hint">
+                Starting structure for RMSD instead of Ref. frame. Do not add this file to Trajectories — extra PDBs break membrane thickness (no unit cell).
+              </p>
+            {:else}
+              <p class="sidebar-hint">
+                Same field as RMSD. For PSF/PRMTOP topologies, used as companion coordinates when validating the selection (Rg itself does not need a reference frame). Prefer production .dcd/.xtc in Trajectories — not .rst7.
+              </p>
+            {/if}
           </div>
+        {/if}
+
+        {#if structuralType === 'rmsd'}
           <div class="flex items-center gap-2">
             <span class="sidebar-label shrink-0">Ref. frame</span>
             <Input
@@ -7215,12 +8684,119 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
         {#if structuralType === 'rmsf'}
           <div class="space-y-1">
-            <p class="sidebar-label">X axis type</p>
-            <Select size="sm" className="w-full" bind:value={rmsfXaxisType}>
+            <p
+              class="sidebar-label"
+              title="Re-run after changing. Plot Settings → Ticks = label count."
+            >
+              X axis type
+            </p>
+            <Select
+              size="sm"
+              className="w-full"
+              value={rmsfXaxisType}
+              title="Re-run after changing. Plot Settings → Ticks = label count."
+              onchange={(e) => {
+                rmsfXaxisType = /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                // Residue/atom axes should use Tick count, not a leftover time X step.
+                setPlotField({ xTickStep: '' })
+                persistActiveSetFields()
+              }}
+            >
               <option value="residue_number">Residue number</option>
               <option value="residue_type_number">Residue name + number</option>
               <option value="atom_index">Atom index</option>
             </Select>
+          </div>
+          <label
+            class="flex items-center gap-2"
+            title="Unwrap + align polymer before RMSF (membrane-centered Fix-PBC). Off = raw coords."
+          >
+            <Checkbox name="align-rmsf" bind:checked={align} />
+            <span class="sidebar-label">Prepare protein (unwrap + align)</span>
+          </label>
+          <div class="space-y-1">
+            <div class="flex items-center justify-between gap-1">
+              <p
+                class="sidebar-label"
+                title="Prep files: *_protonated_renum.txt (pdb4amber) or *_gatewizard_residue_mapping.txt (written when ACE/NME capping runs in Preparation). Assign each file to the sets that should use original PDB residue numbers."
+              >
+                Residue mapping (original PDB)
+              </p>
+              <Button size="sm" variant="outline" onclick={addResidueMappingFiles}>+ Add</Button>
+            </div>
+            {#if residueMappingGroups.length === 0}
+              <p class="sidebar-hint">
+                Optional. Add one or more renum files and tick which sets they apply to (e.g. GateWizard only — leave Charmm unchecked).
+              </p>
+            {:else}
+              <div class="space-y-2">
+                {#each residueMappingGroups as group (group.id)}
+                  <div class="rounded border border-neutral-700/80 p-1.5 space-y-1">
+                    <div class="flex items-center gap-1">
+                      <label
+                        class="flex min-w-0 flex-1 items-center gap-1.5"
+                        title={group.path}
+                      >
+                        <Checkbox
+                          size="sm"
+                          name={`rmap-en-${group.id}`}
+                          checked={group.enabled}
+                          disabled={!group.map.size}
+                          onchange={(e) =>
+                            patchResidueMappingGroup(group.id, {
+                              enabled: /** @type {HTMLInputElement} */ (e.currentTarget).checked
+                            })}
+                        />
+                        <span class="truncate text-[11px] leading-tight" title={group.path}
+                          >{basename(group.path)}</span
+                        >
+                      </label>
+                      <button
+                        type="button"
+                        class="shrink-0 px-1 text-red-500 hover:text-red-400"
+                        onclick={() => removeResidueMappingGroup(group.id)}
+                        title="Remove this mapping file">✕</button
+                      >
+                    </div>
+                    {#if group.error}
+                      <p class="sidebar-hint text-amber-400">{group.error}</p>
+                    {:else}
+                      <p class="sidebar-hint leading-tight">
+                        {group.usefulCount || group.map.size} pair{(group.usefulCount || group.map.size) === 1
+                          ? ''
+                          : 's'}
+                        · apply to ({group.setIds.length}/{analysisSets.length}):
+                      </p>
+                    {/if}
+                    <div
+                      class="max-h-24 space-y-0 overflow-y-auto overscroll-contain rounded border border-neutral-800/80 px-1 py-0.5 dark:border-neutral-800"
+                      title="Scroll for more sets"
+                    >
+                      {#each analysisSets as set (set.id)}
+                        <label
+                          class="flex min-h-0 items-center gap-1 py-px text-[10px] leading-tight text-neutral-300"
+                        >
+                          <Checkbox
+                            size="sm"
+                            name={`rmap-${group.id}-${set.id}`}
+                            checked={group.setIds.includes(set.id)}
+                            onchange={(e) =>
+                              toggleResidueMappingSet(
+                                group.id,
+                                set.id,
+                                /** @type {HTMLInputElement} */ (e.currentTarget).checked
+                              )}
+                          />
+                          <span class="min-w-0 truncate" title={set.legendLabel || set.label}
+                            >{set.legendLabel || set.label}</span
+                          >
+                        </label>
+                      {/each}
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            {/if}
           </div>
         {/if}
       </div>
@@ -7510,1346 +9086,1918 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
     <!-- ===== PLOT SETTINGS (collapsible) ===== -->
     <div class="space-y-2">
       <button
-        class="sidebar-heading flex w-full items-center justify-between hover:text-neutral-700 dark:hover:text-neutral-200"
+        type="button"
+        class="sidebar-heading flex w-full items-center justify-between gap-2 hover:text-neutral-700 dark:hover:text-neutral-200"
+        aria-expanded={plotSettingsOpen}
         onclick={() => (plotSettingsOpen = !plotSettingsOpen)}
       >
         <span>⚙ Plot Settings</span>
-        <span class="sidebar-hint">{plotSettingsOpen ? '▲' : '▼'}</span>
+        <ChevronDown
+          className="plot-settings-section-chevron {plotSettingsOpen ? '' : 'is-collapsed'}"
+        />
       </button>
 
       {#if plotSettingsOpen}
-        <div class="sidebar-panel space-y-2 p-2">
-          {#if toolbarIsGrid}
-            <div>
-              <p class="sidebar-label mb-0.5">Apply settings</p>
-              <div class="flex gap-1">
-                <Button
-                  size="sm"
-                  variant={activeMosaicLayout.plotApplyScope !== 'cell' ? 'default' : 'outline'}
-                  className="flex-1"
-                  onclick={() => patchGridChrome({ plotApplyScope: 'all' })}>All cells</Button
-                >
-                <Button
-                  size="sm"
-                  variant={activeMosaicLayout.plotApplyScope === 'cell' ? 'default' : 'outline'}
-                  className="flex-1"
-                  onclick={() => patchGridChrome({ plotApplyScope: 'cell' })}
-                  >This cell ({selectedGridCell + 1})</Button
-                >
-              </div>
-              <p class="sidebar-hint">
-                {activeMosaicLayout.plotApplyScope === 'cell'
-                  ? 'Applies to the selected square (click a plot to choose it).'
-                  : 'Applies to every square.'}
-              </p>
-            </div>
-          {/if}
-          {#if mode === 'structural'}
-            <div>
-              <p class="sidebar-label mb-0.5">Title</p>
-              <div class="flex gap-1">
-                <Input
-                  size="sm"
-                  value={ps.titleCustomized ? ps.title : ''}
-                  placeholder={
-                    ps.titleCustomized && !String(ps.title || '').trim()
-                      ? '(no title)'
-                      : autoStructuralTitle(structuralType)
-                  }
-                  className="min-w-0 flex-1"
-                  oninput={(e) =>
-                    patchStructuralPlot({
-                      title: e.currentTarget.value,
-                      titleCustomized: true
-                    })
-                  }
-                />
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={!ps.titleCustomized}
-                  onclick={restoreAutoStructuralTitle}
-                  title="Restore the analysis-type title"
-                >Auto</Button>
-              </div>
-              <p class="sidebar-hint">Follows the analysis type. Edit to customize, or clear to hide.</p>
-            </div>
-            {#if activeAnalysisSet}
+        <div class="plot-settings-accordion">
+          <!-- 1. Figure strip (always visible card) -->
+          <div class="plot-settings-section">
+            <div class="plot-settings-section-static">
+              <p class="plot-settings-section-title">Figure</p>
+            {#if toolbarIsGrid}
               <div>
-                <p class="sidebar-label mb-0.5">Legend (this set)</p>
-                <Input
-                  size="sm"
-                  blurOnEnter
-                  value={activeAnalysisSet.legendLabel ?? ''}
-                  placeholder={activeAnalysisSet.label}
-                  className="w-full"
-                  oninput={(e) => updateSetLegend(activeAnalysisSet.id, e.currentTarget.value)}
-                  onblur={applyChartAppearance}
-                />
-                <p class="sidebar-hint">Follows the set name. Empty restores it.</p>
-              </div>
-            {/if}
-          {/if}
-          {#if mode === 'energetic'}
-            <div>
-              <p class="sidebar-label mb-0.5">Title</p>
-              <Input
-                size="sm"
-                value={ePlotGlobal.title}
-                placeholder={chartTitle || 'Energetic Analysis'}
-                className="w-full"
-                oninput={(e) => {
-                  ePlotGlobal = { ...ePlotGlobal, title: e.currentTarget.value }
-                  markSessionDirty()
-                }}
-              />
-            </div>
-            {#if energeticCompareLayout === 'grid'}
-              <label class="flex items-center gap-2">
-                <Checkbox name="sync-x" bind:checked={ePlotGlobal.syncX} />
-                <span class="sidebar-label">Sync X limits across panels</span>
-              </label>
-            {/if}
-            {#if selectedProperties[0]}
-              {@const pk = selectedProperties[0]}
-              <div>
-                <p class="sidebar-label mb-0.5">Line color ({pk})</p>
-                <div class="flex items-center gap-1">
-                  <input
-                    type="color"
-                    value={ePlotPanels[pk]?.lineColor || '#f59e0b'}
-                    class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
-                    oninput={(e) => {
-                      ensureEPlotPanel(pk)
-                      markSessionDirty()
-                      ePlotPanels = {
-                        ...ePlotPanels,
-                        [pk]: { ...ePlotPanels[pk], lineColor: e.currentTarget.value }
-                      }
-                      cellLineCache = new WeakMap()
-                      syncEnergeticChartViewFromSets()
-                    }}
-                  />
-                </div>
-              </div>
-            {/if}
-            <div class="grid grid-cols-2 gap-1">
-              <div>
-                <p class="sidebar-label mb-0.5">Plot bg</p>
-                <div class="flex items-center gap-1">
-                  <input
-                    type="color"
-                    value={scopedPlotBgDisplay}
-                    class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
-                    oninput={(e) => setEnergeticPlotBg(e.currentTarget.value)}
-                  />
-                  <Input
+                <p class="sidebar-label mb-0.5">Apply settings</p>
+                <div class="flex gap-1">
+                  <Button
                     size="sm"
-                    value={scopedPlotBgValue}
-                    placeholder={resolvedEnergColors.plotBg}
-                    className="min-w-0 flex-1 font-mono"
-                    oninput={(e) => setEnergeticPlotBg(e.currentTarget.value)}
-                  />
-                </div>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={!scopedPlotBgCustomized}
-                  onclick={() => setEnergeticPlotBg('')}
-                >Auto</Button>
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">Text color</p>
-                <div class="flex items-center gap-1">
-                  <input
-                    type="color"
-                    value={resolvedEnergColors.textColor}
-                    class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
-                    oninput={(e) => setEnergeticTextColor(e.currentTarget.value)}
-                  />
-                  <Input
+                    variant={activeMosaicLayout.plotApplyScope !== 'cell' ? 'default' : 'outline'}
+                    className="flex-1"
+                    onclick={() => patchGridChrome({ plotApplyScope: 'all' })}>All cells</Button
+                  >
+                  <Button
                     size="sm"
-                    value={ePlotGlobal.textColorCustomized ? ePlotGlobal.textColor : ''}
-                    placeholder={resolvedEnergColors.textColor}
-                    className="min-w-0 flex-1 font-mono"
-                    oninput={(e) => setEnergeticTextColor(e.currentTarget.value)}
-                  />
+                    variant={activeMosaicLayout.plotApplyScope === 'cell' ? 'default' : 'outline'}
+                    className="flex-1"
+                    onclick={() => patchGridChrome({ plotApplyScope: 'cell' })}
+                    >This cell ({selectedGridCell + 1})</Button
+                  >
                 </div>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={!ePlotGlobal.textColorCustomized}
-                  onclick={() => {
-                    markSessionDirty()
-                    ePlotGlobal = { ...ePlotGlobal, textColor: '', textColorCustomized: false }
-                  }}
-                >Auto</Button>
-              </div>
-            </div>
-          {/if}
-          <div class="grid grid-cols-2 gap-1">
-            {#if mode === 'structural' && (activeStructRes?.lastAnalysisHasTimeX ?? false)}
-              <div>
-                <p class="sidebar-label mb-0.5">X units</p>
-                <Select
-                  size="sm"
-                  bind:value={ps.xUnit}
-                  className="w-full"
-                  onchange={() => {
-                    bumpPlotData()
-                    persistActiveSetFields()
-                  }}
-                >
-                  <option value="ns">ns</option>
-                  <option value="ps">ps</option>
-                  <option value="µs">µs</option>
-                </Select>
+                <p class="sidebar-hint">
+                  {activeMosaicLayout.plotApplyScope === 'cell'
+                    ? 'Applies to the selected square (click a plot to choose it).'
+                    : 'Applies to every square.'}
+                </p>
               </div>
             {/if}
             {#if mode === 'structural'}
-              <div>
-                <p class="sidebar-label mb-0.5">Y units</p>
-                <Select
-                  size="sm"
-                  bind:value={ps.yUnit}
-                  className="w-full"
-                  onchange={() => {
-                    bumpPlotData()
-                    persistActiveSetFields()
-                  }}
-                >
-                  {#if structuralType === 'area_per_lipid'}
-                    <option value="Å²">Å²</option>
-                    <option value="nm²">nm²</option>
-                  {:else}
-                    <option value="Å">Å</option>
-                    <option value="nm">nm</option>
-                  {/if}
-                </Select>
-              </div>
-            {/if}
-          </div>
-
-          {#if mode === 'structural' && structuralType === 'rmsf' && rmsfXaxisType === 'residue_type_number'}
-            <div>
-              <p class="sidebar-label mb-0.5">Residue code format</p>
-              <Select size="sm" bind:value={ps.residueCodeFormat} className="w-full">
-                <option value="three">Three-letter (ALA123)</option>
-                <option value="one">One-letter (A123)</option>
-              </Select>
-            </div>
-          {/if}
-
-          <!-- Axis limits -->
-          <div class="min-w-0 space-y-1">
-            <div
-              class="grid min-w-0 grid-cols-[1.15rem_minmax(0,1.35fr)_minmax(0,1.35fr)_2.35rem_2.85rem] items-end gap-1"
-            >
-              <p class="sidebar-label pb-1.5">X</p>
-              <div class="min-w-0">
-                <p class="sidebar-label mb-0.5">Min</p>
-                <Input size="sm" bind:value={ps.xMin} placeholder="auto" className="w-full min-w-0" />
-              </div>
-              <div class="min-w-0">
-                <p class="sidebar-label mb-0.5">Max</p>
-                <Input size="sm" bind:value={ps.xMax} placeholder="auto" className="w-full min-w-0" />
-              </div>
-              <div class="min-w-0">
-                <p class="sidebar-label mb-0.5">Ticks</p>
-                <Input
-                  size="sm"
-                  type="number"
-                  min="2"
-                  max="20"
-                  step="1"
-                  bind:value={ps.xTickCount}
-                  className="w-full min-w-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                  title="Number of X tick marks"
-                />
-              </div>
-              <div class="min-w-0">
-                <p class="sidebar-label mb-0.5">Dec.</p>
-                <Input
-                  size="sm"
-                  type="number"
-                  min="0"
-                  max="8"
-                  step="1"
-                  bind:value={ps.xTickDecimals}
-                  placeholder="auto"
-                  className="w-full min-w-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                  title="X tick decimal places. Empty = auto."
-                />
-              </div>
-              <p class="sidebar-label pb-1.5">Y</p>
-              <div class="min-w-0">
-                <p class="sidebar-label mb-0.5">Min</p>
-                <Input
-                  size="sm"
-                  value={mode === 'energetic' ? plotEdit.yMin ?? '' : ps.yMin}
-                  placeholder="auto"
-                  className="w-full min-w-0"
-                  oninput={(e) => {
-                    const v = /** @type {HTMLInputElement} */ (e.currentTarget).value
-                    if (mode === 'energetic') setPlotField({ yMin: v })
-                    else ps.yMin = v
-                  }}
-                />
-              </div>
-              <div class="min-w-0">
-                <p class="sidebar-label mb-0.5">Max</p>
-                <Input
-                  size="sm"
-                  value={mode === 'energetic' ? plotEdit.yMax ?? '' : ps.yMax}
-                  placeholder="auto"
-                  className="w-full min-w-0"
-                  oninput={(e) => {
-                    const v = /** @type {HTMLInputElement} */ (e.currentTarget).value
-                    if (mode === 'energetic') setPlotField({ yMax: v })
-                    else ps.yMax = v
-                  }}
-                />
-              </div>
-              <div class="min-w-0">
-                <p class="sidebar-label mb-0.5">Ticks</p>
-                <Input
-                  size="sm"
-                  type="number"
-                  min="2"
-                  max="20"
-                  step="1"
-                  bind:value={ps.yTickCount}
-                  className="w-full min-w-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                  title="Number of Y tick marks"
-                />
-              </div>
-              <div class="min-w-0">
-                <p class="sidebar-label mb-0.5">Dec.</p>
-                <Input
-                  size="sm"
-                  type="number"
-                  min="0"
-                  max="8"
-                  step="1"
-                  bind:value={ps.yTickDecimals}
-                  placeholder="auto"
-                  className="w-full min-w-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                  title="Y tick decimal places. Empty = auto."
-                />
-              </div>
-            </div>
-          </div>
-          <div class="min-w-0 space-y-1">
-            <div class="flex items-center justify-between">
-              <p class="sidebar-label">Reference lines</p>
-              <Button
-                size="sm"
-                variant="ghost"
-                onclick={() =>
-                  patchReferenceLines([
-                    ...(ps.referenceLines || []),
-                    emptyReferenceLine()
-                  ])
-                }>+ Add</Button
+              <div
+                class={optionsSearchHighlightId === 'plot-title' ? 'option-pulse-highlight rounded' : ''}
+                data-option-id="plot-title"
               >
-            </div>
-            {#each structReferenceLines as line, ri (`ref-${ri}`)}
-              <div class="min-w-0 space-y-1 rounded-md border border-neutral-800 p-1.5">
-                <div class="flex min-w-0 items-center gap-1">
-                  <Select
-                    size="sm"
-                    className="w-12 shrink-0"
-                    value={line.axis}
-                    onchange={(e) => {
-                      const next = [...structReferenceLines]
-                      next[ri] = {
-                        ...next[ri],
-                        axis: /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                      }
-                      patchReferenceLines(next)
-                    }}
-                  >
-                    <option value="y">Y</option>
-                    <option value="x">X</option>
-                  </Select>
+                <p class="sidebar-label mb-0.5">Title</p>
+                <div class="flex gap-1">
                   <Input
                     size="sm"
-                    type="number"
-                    step="any"
-                    value={line.value}
-                    className="min-w-0 flex-1 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                    title="Value"
-                    oninput={(e) => {
-                      const next = [...structReferenceLines]
-                      next[ri] = {
-                        ...next[ri],
-                        value: Number(/** @type {HTMLInputElement} */ (e.currentTarget).value)
-                      }
-                      patchReferenceLines(next)
-                    }}
-                  />
-                  <ColorInput
-                    size="sm"
-                    className="shrink-0"
-                    value={line.color}
-                    oninput={(e) => {
-                      const next = [...structReferenceLines]
-                      next[ri] = {
-                        ...next[ri],
-                        color: /** @type {HTMLInputElement} */ (e.currentTarget).value
-                      }
-                      patchReferenceLines(next)
-                    }}
-                  />
-                  <Input
-                    size="sm"
-                    type="number"
-                    min="0.4"
-                    max="6"
-                    step="0.1"
-                    value={line.width}
-                    className="w-10 shrink-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                    title="Width"
-                    oninput={(e) => {
-                      const next = [...structReferenceLines]
-                      next[ri] = {
-                        ...next[ri],
-                        width: Number(/** @type {HTMLInputElement} */ (e.currentTarget).value)
-                      }
-                      patchReferenceLines(next)
-                    }}
+                    value={ps.titleCustomized ? ps.title : ''}
+                    placeholder={
+                      ps.titleCustomized && !String(ps.title || '').trim()
+                        ? '(no title)'
+                        : autoStructuralTitle(structuralType)
+                    }
+                    className="min-w-0 flex-1"
+                    oninput={(e) =>
+                      patchStructuralPlot({
+                        title: e.currentTarget.value,
+                        titleCustomized: true
+                      })
+                    }
                   />
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="shrink-0 px-1.5"
-                    onclick={() =>
-                      patchReferenceLines(structReferenceLines.filter((_, j) => j !== ri))
-                    }>✕</Button
-                  >
+                    disabled={!ps.titleCustomized}
+                    onclick={restoreAutoStructuralTitle}
+                    title="Restore the analysis-type title"
+                  >Auto</Button>
                 </div>
-                <div class="flex min-w-0 items-center gap-1">
-                  <Select
-                    size="sm"
-                    className="w-[6.75rem] shrink-0"
-                    value={line.style}
-                    onchange={(e) => {
-                      const next = [...structReferenceLines]
-                      next[ri] = {
-                        ...next[ri],
-                        style: /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                      }
-                      patchReferenceLines(next)
-                    }}
-                  >
-                    <option value="solid">Solid</option>
-                    <option value="dashed">Dashed</option>
-                    <option value="dotted">Dotted</option>
-                    <option value="dashdot">Dash-dot</option>
-                  </Select>
-                  <Input
-                    size="sm"
-                    value={line.label}
-                    placeholder="Label"
-                    className="min-w-0 flex-1"
-                    oninput={(e) => {
-                      const next = [...structReferenceLines]
-                      next[ri] = {
-                        ...next[ri],
-                        label: /** @type {HTMLInputElement} */ (e.currentTarget).value
-                      }
-                      patchReferenceLines(next)
-                    }}
-                  />
-                </div>
-              </div>
-            {/each}
-          </div>
-
-          {#if mode === 'structural'}
-          <div class="grid grid-cols-2 gap-1">
-            <div>
-              <p class="sidebar-label mb-0.5">Line color (this set)</p>
-              <div class="flex items-center gap-1">
-                <input
-                  type="color"
-                  value={activeAnalysisSet?.color || '#f59e0b'}
-                  class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
-                  oninput={(e) => {
-                    if (!activeAnalysisSet) return
-                    patchAnalysisSet(activeAnalysisSet.id, { color: e.currentTarget.value })
-                  }}
-                />
-                <Input
-                  size="sm"
-                  blurOnEnter
-                  value={activeAnalysisSet?.color || ''}
-                  className="min-w-0 flex-1 font-mono"
-                  oninput={(e) => {
-                    if (!activeAnalysisSet) return
-                    patchAnalysisSet(activeAnalysisSet.id, { color: e.currentTarget.value })
-                  }}
-                  onblur={applyChartAppearance}
-                />
-              </div>
-              <p class="sidebar-hint">Same color as the set. Area per lipid uses it for Average.</p>
-            </div>
-            <div>
-              <p class="sidebar-label mb-0.5">Plot bg</p>
-              <div class="flex items-center gap-1">
-                <input
-                  type="color"
-                  value={scopedPlotBgDisplay}
-                  class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
-                  oninput={(e) => setStructuralPlotBg(e.currentTarget.value)}
-                />
-                <Input
-                  size="sm"
-                  value={scopedPlotBgValue}
-                  placeholder={resolvedStructColors.plotBg}
-                  className="min-w-0 flex-1 font-mono"
-                  oninput={(e) => setStructuralPlotBg(e.currentTarget.value)}
-                />
-              </div>
-              <div class="mt-0.5 flex gap-1">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={!scopedPlotBgCustomized}
-                  onclick={clearStructuralPlotBgCustom}
-                >Auto</Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onclick={applyStructuralPlotColorsToAllTypes}
-                  title="Copy this plot's background and text colors to every structural analysis type"
-                >All types</Button>
-              </div>
-              <p class="sidebar-hint">
-                Auto follows light/dark theme. With a custom grid, Apply settings (All cells / This
-                cell) scopes Plot bg.
-              </p>
-            </div>
-            <div>
-              <p class="sidebar-label mb-0.5">Text/axes color</p>
-              <div class="flex items-center gap-1">
-                <input
-                  type="color"
-                  value={resolvedStructColors.textColor}
-                  class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
-                  oninput={(e) => setStructuralTextColor(e.currentTarget.value)}
-                />
-                <Input
-                  size="sm"
-                  value={ps.textColorCustomized ? ps.textColor : ''}
-                  placeholder={resolvedStructColors.textColor}
-                  className="min-w-0 flex-1 font-mono"
-                  oninput={(e) => setStructuralTextColor(e.currentTarget.value)}
-                />
-              </div>
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={!ps.textColorCustomized}
-                onclick={clearStructuralTextColorCustom}
-              >Auto</Button>
-            </div>
-          </div>
-          {/if}
-          <div class="flex flex-wrap items-end gap-2 pb-1">
-            <label class="flex items-center gap-2">
-              <Checkbox
-                name="show-grid"
-                checked={plotEdit.showGrid !== false}
-                onchange={(e) => setPlotField({ showGrid: e.currentTarget.checked })}
-              />
-              <span class="sidebar-label">Show grid</span>
-            </label>
-            <div>
-              <p class="sidebar-label mb-0.5">Grid color</p>
-              <div class="flex items-center gap-1">
-                <input
-                  type="color"
-                  value={String(plotEdit.gridColor || '').trim() || (mode === 'energetic' ? resolvedEnergColors.textColor : resolvedStructColors.textColor)}
-                  disabled={plotEdit.showGrid === false}
-                  class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0 disabled:opacity-40"
-                  oninput={(e) => setPlotField({ gridColor: e.currentTarget.value })}
-                  title="Background grid line color"
-                />
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={!String(plotEdit.gridColor || '').trim()}
-                  onclick={() => setPlotField({ gridColor: '' })}
-                >Auto</Button>
-              </div>
-            </div>
-          </div>
-          <div class="grid grid-cols-2 gap-1">
-            <div>
-              <p class="sidebar-label mb-0.5">Line width</p>
-              <Input
-                size="sm"
-                type="number"
-                min="0.5"
-                max="12"
-                step="0.5"
-                value={plotEdit.lineWidth}
-                className="w-full"
-                oninput={(e) =>
-                  setPlotField({
-                    lineWidth: /** @type {HTMLInputElement} */ (e.currentTarget).value
-                  })
-                }
-              />
-            </div>
-            <div>
-              <p class="sidebar-label mb-0.5">Line style</p>
-              <Select
-                size="sm"
-                className="w-full"
-                value={plotEdit.lineStyle || 'solid'}
-                onchange={(e) =>
-                  setPlotField({
-                    lineStyle: /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                  })
-                }
-              >
-                <option value="solid">Solid</option>
-                <option value="dashed">Dashed</option>
-                <option value="dotted">Dotted</option>
-                <option value="dashdot">Dash-dot</option>
-              </Select>
-            </div>
-          </div>
-          {#if mode === 'structural' && structuralType === 'area_per_lipid'}
-            <div class="space-y-1 rounded border border-neutral-800 p-2">
-              <p class="sidebar-label">Area per lipid series (this set)</p>
-              <p class="sidebar-hint">
-                Uncheck a series to hide it on the plot. CSV still stores all three.
-              </p>
-              <div class="flex flex-wrap gap-x-3 gap-y-1">
-                <label class="flex items-center gap-1.5">
-                  <Checkbox
-                    name="apl-show-mean"
-                    size="sm"
-                    checked={ps.aplShowMean !== false}
-                    onchange={(e) =>
-                      setAplSeriesVisible('mean', e.currentTarget.checked)}
-                  />
-                  <span class="text-xs text-neutral-700 dark:text-neutral-300">Average</span>
-                </label>
-                <label class="flex items-center gap-1.5">
-                  <Checkbox
-                    name="apl-show-upper"
-                    size="sm"
-                    checked={ps.aplShowUpper !== false}
-                    onchange={(e) =>
-                      setAplSeriesVisible('upper', e.currentTarget.checked)}
-                  />
-                  <span class="text-xs text-neutral-700 dark:text-neutral-300">Upper leaflet</span>
-                </label>
-                <label class="flex items-center gap-1.5">
-                  <Checkbox
-                    name="apl-show-lower"
-                    size="sm"
-                    checked={ps.aplShowLower !== false}
-                    onchange={(e) =>
-                      setAplSeriesVisible('lower', e.currentTarget.checked)}
-                  />
-                  <span class="text-xs text-neutral-700 dark:text-neutral-300">Lower leaflet</span>
-                </label>
               </div>
               {#if activeAnalysisSet}
-                <div class="col-span-2 grid grid-cols-1 gap-1">
-                  <div>
-                    <p class="sidebar-label mb-0.5">Average label</p>
-                    <Input
-                      size="sm"
-                      blurOnEnter
-                      value={activeAnalysisSet.aplMeanLabel ?? ''}
-                      placeholder="Average"
-                      className="w-full"
-                      oninput={(e) =>
-                        patchAnalysisSet(activeAnalysisSet.id, {
-                          aplMeanLabel: e.currentTarget.value
-                        })}
-                      onblur={applyChartAppearance}
-                    />
-                  </div>
-                  <div>
-                    <p class="sidebar-label mb-0.5">Upper leaflet label</p>
-                    <Input
-                      size="sm"
-                      blurOnEnter
-                      value={activeAnalysisSet.aplUpperLabel ?? ''}
-                      placeholder="Upper leaflet"
-                      className="w-full"
-                      oninput={(e) =>
-                        patchAnalysisSet(activeAnalysisSet.id, {
-                          aplUpperLabel: e.currentTarget.value
-                        })}
-                      onblur={applyChartAppearance}
-                    />
-                  </div>
-                  <div>
-                    <p class="sidebar-label mb-0.5">Lower leaflet label</p>
-                    <Input
-                      size="sm"
-                      blurOnEnter
-                      value={activeAnalysisSet.aplLowerLabel ?? ''}
-                      placeholder="Lower leaflet"
-                      className="w-full"
-                      oninput={(e) =>
-                        patchAnalysisSet(activeAnalysisSet.id, {
-                          aplLowerLabel: e.currentTarget.value
-                        })}
-                      onblur={applyChartAppearance}
-                    />
-                  </div>
+                <div
+                  class={optionsSearchHighlightId === 'legend-label' ? 'option-pulse-highlight rounded' : ''}
+                  data-option-id="legend-label"
+                >
+                  <p class="sidebar-label mb-0.5">Legend (this set)</p>
+                  <Input
+                    size="sm"
+                    blurOnEnter
+                    value={activeAnalysisSet.legendLabel ?? ''}
+                    placeholder={activeAnalysisSet.label}
+                    className="w-full"
+                    oninput={(e) => updateSetLegend(activeAnalysisSet.id, e.currentTarget.value)}
+                    onblur={applyChartAppearance}
+                  />
                 </div>
               {/if}
-              <div class="grid grid-cols-2 gap-1">
-                <div>
-                  <p class="sidebar-label mb-0.5">Average line</p>
-                  <Select
-                    size="sm"
-                    className="w-full"
-                    value={ps.aplMeanLineStyle || 'solid'}
-                    onchange={(e) => {
-                      ps.aplMeanLineStyle = /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                      applyChartAppearance()
-                    }}
-                  >
-                    <option value="solid">Solid</option>
-                    <option value="dashed">Dashed</option>
-                    <option value="dotted">Dotted</option>
-                    <option value="dashdot">Dash-dot</option>
-                  </Select>
-                </div>
-                <div>
-                  <p class="sidebar-label mb-0.5">Average marker</p>
-                  <Select
-                    size="sm"
-                    className="w-full"
-                    value={ps.aplMeanMarker || 'none'}
-                    onchange={(e) => {
-                      ps.aplMeanMarker = /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                      applyChartAppearance()
-                    }}
-                  >
-                    <option value="none">None</option>
-                    <option value="circle">Circle</option>
-                    <option value="square">Square</option>
-                    <option value="triangle">Triangle</option>
-                    <option value="cross">Cross</option>
-                  </Select>
-                </div>
-                <div class="col-span-2">
-                  <p class="sidebar-label mb-0.5">Average marker every N points</p>
-                  <Input
-                    size="sm"
-                    type="number"
-                    min="1"
-                    max="9999"
-                    step="1"
-                    bind:value={ps.aplMeanMarkerEvery}
-                    className="w-full"
-                    onchange={() => applyChartAppearance()}
-                  />
-                </div>
-                <div>
-                  <p class="sidebar-label mb-0.5">Upper leaflet line</p>
-                  <Select
-                    size="sm"
-                    className="w-full"
-                    value={ps.aplUpperLineStyle || 'dashed'}
-                    onchange={(e) => {
-                      ps.aplUpperLineStyle = /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                      applyChartAppearance()
-                    }}
-                  >
-                    <option value="solid">Solid</option>
-                    <option value="dashed">Dashed</option>
-                    <option value="dotted">Dotted</option>
-                    <option value="dashdot">Dash-dot</option>
-                  </Select>
-                </div>
-                <div>
-                  <p class="sidebar-label mb-0.5">Upper marker</p>
-                  <Select
-                    size="sm"
-                    className="w-full"
-                    value={ps.aplUpperMarker || 'none'}
-                    onchange={(e) => {
-                      ps.aplUpperMarker = /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                      applyChartAppearance()
-                    }}
-                  >
-                    <option value="none">None</option>
-                    <option value="circle">Circle</option>
-                    <option value="square">Square</option>
-                    <option value="triangle">Triangle</option>
-                    <option value="cross">Cross</option>
-                  </Select>
-                </div>
-                <div>
-                  <p class="sidebar-label mb-0.5">Upper color (this set)</p>
-                  <div class="flex items-center gap-1">
-                    <input
-                      type="color"
-                      value={activeAnalysisSet ? aplSeriesColor(activeAnalysisSet, 'upper') : '#f59e0b'}
-                      class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
-                      oninput={(e) => {
-                        if (!activeAnalysisSet) return
-                        patchAnalysisSet(activeAnalysisSet.id, {
-                          aplUpperColor: e.currentTarget.value
-                        })
-                      }}
-                    />
-                    <Input
-                      size="sm"
-                      blurOnEnter
-                      value={activeAnalysisSet?.aplUpperColor || ''}
-                      placeholder={activeAnalysisSet?.color || '#f59e0b'}
-                      className="min-w-0 flex-1 font-mono"
-                      oninput={(e) => {
-                        if (!activeAnalysisSet) return
-                        patchAnalysisSet(activeAnalysisSet.id, {
-                          aplUpperColor: e.currentTarget.value
-                        })
-                      }}
-                      onblur={applyChartAppearance}
-                    />
-                  </div>
-                </div>
-                <div>
-                  <p class="sidebar-label mb-0.5">Upper marker every N</p>
-                  <Input
-                    size="sm"
-                    type="number"
-                    min="1"
-                    max="9999"
-                    step="1"
-                    bind:value={ps.aplUpperMarkerEvery}
-                    className="w-full"
-                    onchange={() => applyChartAppearance()}
-                  />
-                </div>
-                <div>
-                  <p class="sidebar-label mb-0.5">Lower leaflet line</p>
-                  <Select
-                    size="sm"
-                    className="w-full"
-                    value={ps.aplLowerLineStyle || 'dotted'}
-                    onchange={(e) => {
-                      ps.aplLowerLineStyle = /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                      applyChartAppearance()
-                    }}
-                  >
-                    <option value="solid">Solid</option>
-                    <option value="dashed">Dashed</option>
-                    <option value="dotted">Dotted</option>
-                    <option value="dashdot">Dash-dot</option>
-                  </Select>
-                </div>
-                <div>
-                  <p class="sidebar-label mb-0.5">Lower marker</p>
-                  <Select
-                    size="sm"
-                    className="w-full"
-                    value={ps.aplLowerMarker || 'none'}
-                    onchange={(e) => {
-                      ps.aplLowerMarker = /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                      applyChartAppearance()
-                    }}
-                  >
-                    <option value="none">None</option>
-                    <option value="circle">Circle</option>
-                    <option value="square">Square</option>
-                    <option value="triangle">Triangle</option>
-                    <option value="cross">Cross</option>
-                  </Select>
-                </div>
-                <div>
-                  <p class="sidebar-label mb-0.5">Lower color (this set)</p>
-                  <div class="flex items-center gap-1">
-                    <input
-                      type="color"
-                      value={activeAnalysisSet ? aplSeriesColor(activeAnalysisSet, 'lower') : '#f59e0b'}
-                      class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
-                      oninput={(e) => {
-                        if (!activeAnalysisSet) return
-                        patchAnalysisSet(activeAnalysisSet.id, {
-                          aplLowerColor: e.currentTarget.value
-                        })
-                      }}
-                    />
-                    <Input
-                      size="sm"
-                      blurOnEnter
-                      value={activeAnalysisSet?.aplLowerColor || ''}
-                      placeholder={activeAnalysisSet?.color || '#f59e0b'}
-                      className="min-w-0 flex-1 font-mono"
-                      oninput={(e) => {
-                        if (!activeAnalysisSet) return
-                        patchAnalysisSet(activeAnalysisSet.id, {
-                          aplLowerColor: e.currentTarget.value
-                        })
-                      }}
-                      onblur={applyChartAppearance}
-                    />
-                  </div>
-                </div>
-                <div>
-                  <p class="sidebar-label mb-0.5">Lower marker every N</p>
-                  <Input
-                    size="sm"
-                    type="number"
-                    min="1"
-                    max="9999"
-                    step="1"
-                    bind:value={ps.aplLowerMarkerEvery}
-                    className="w-full"
-                    onchange={() => applyChartAppearance()}
-                  />
-                </div>
-                <div>
-                  <p class="sidebar-label mb-0.5">Marker size</p>
-                  <Input
-                    size="sm"
-                    type="number"
-                    min="1"
-                    max="10"
-                    step="0.5"
-                    bind:value={ps.aplMarkerSize}
-                    className="w-full"
-                    onchange={() => applyChartAppearance()}
-                  />
-                </div>
-              </div>
-            </div>
-          {/if}
-
-          <button
-            type="button"
-            class="flex w-full items-center gap-1.5 rounded-md border border-neutral-800 px-2 py-1 text-left text-xs text-neutral-300 hover:bg-neutral-900"
-            onclick={() => (plotSettingsAdvancedOpen = !plotSettingsAdvancedOpen)}
-          >
-            <Gear className="size-3.5" />
-            <span class="sidebar-label">Advanced</span>
-            <span class="ml-auto sidebar-hint">{plotSettingsAdvancedOpen ? '▲' : '▼'}</span>
-          </button>
-          {#if plotSettingsAdvancedOpen}
-            {#if mode === 'structural'}
-            <label class="flex items-center gap-2">
-              <Checkbox name="show-selection-subtitle" bind:checked={ps.showSelectionSubtitle} />
-              <span class="sidebar-label">Show selection on plot</span>
-            </label>
             {/if}
-
-          <!-- Aspect ratio + transparent bg + DPI + font -->
-          <div class="grid grid-cols-2 gap-1">
-            <div>
-              <p class="sidebar-label mb-0.5">Aspect ratio (W/H)</p>
-              <Input
-                size="sm"
-                type="number"
-                min="0.5"
-                max="10"
-                step="0.1"
-                bind:value={ps.aspectRatio}
-                className="w-full"
-              />
-            </div>
-            <div>
-              <p class="sidebar-label mb-0.5">Export DPI</p>
-              <Select size="sm" bind:value={ps.dpi} className="w-full">
-                <option value="72">72 dpi (screen)</option>
-                <option value="96">96 dpi</option>
-                <option value="150">150 dpi</option>
-                <option value="300">300 dpi (print)</option>
-                <option value="600">600 dpi (high-res)</option>
-              </Select>
-            </div>
-            <div class="flex items-end pb-1">
-              <label class="flex items-center gap-2">
-                <Checkbox name="transparent-bg" bind:checked={ps.transparentBg} />
-                <span class="sidebar-label">Transparent bg</span>
-              </label>
-            </div>
-            <div>
-              <p class="sidebar-label mb-0.5">Font</p>
-              <Select size="sm" bind:value={ps.fontFamily} className="w-full">
-                <option value="Roboto, sans-serif">Roboto</option>
-                <option value="sans-serif">Sans-serif</option>
-                <option value="serif">Serif</option>
-                <option value="monospace">Monospace</option>
-                <option value="Arial, sans-serif">Arial</option>
-                <option value="Georgia, serif">Georgia</option>
-                <option value="'Times New Roman', serif">Times New Roman</option>
-                <option value="'Courier New', monospace">Courier New</option>
-                <option value="Helvetica, sans-serif">Helvetica</option>
-              </Select>
-            </div>
-          </div>
-          {/if}
-
-          {#if !toolbarIsGrid || activeMosaicLayout.legendMode === 'each' || activeMosaicLayout.legendMode === 'one'}
-          <div>
-            <p class="sidebar-label mb-0.5">Legend position</p>
-            <Select
-              size="sm"
-              value={plotEdit.legendPosition || 'top-left'}
-              className="w-full"
-              onchange={(e) =>
-                setPlotField({
-                  legendPosition: /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                })
-              }
-            >
-              <option value="bottom">Below chart</option>
-              <option value="top-left">Inside — top left</option>
-              <option value="top-right">Inside — top right</option>
-              <option value="bottom-left">Inside — bottom left</option>
-              <option value="bottom-right">Inside — bottom right</option>
-              <option value="none">Hidden</option>
-            </Select>
-          </div>
-          {/if}
-          <div class="grid grid-cols-2 gap-1">
-            <div>
-              <p class="sidebar-label mb-0.5">Legend square (px)</p>
-              <Input
-                size="sm"
-                type="number"
-                min="6"
-                max="48"
-                step="1"
-                value={plotEdit.legendSwatchSize}
-                className="w-full"
-                oninput={(e) =>
-                  setPlotField({
-                    legendSwatchSize: /** @type {HTMLInputElement} */ (e.currentTarget).value
-                  })
-                }
-              />
-            </div>
-            <div>
-              <p class="sidebar-label mb-0.5">Legend font (px)</p>
-              <Input
-                size="sm"
-                type="number"
-                min="7"
-                max="48"
-                step="1"
-                value={plotEdit.legendFontSize}
-                className="w-full"
-                oninput={(e) =>
-                  setPlotField({
-                    legendFontSize: /** @type {HTMLInputElement} */ (e.currentTarget).value
-                  })
-                }
-              />
-            </div>
-            <div>
-              <p class="sidebar-label mb-0.5">Axis font (px)</p>
-              <Input
-                size="sm"
-                type="number"
-                min="7"
-                max="64"
-                step="1"
-                value={plotEdit.axisFontSize}
-                className="w-full"
-                oninput={(e) =>
-                  setPlotField({
-                    axisFontSize: /** @type {HTMLInputElement} */ (e.currentTarget).value
-                  })
-                }
-              />
-            </div>
-            <div>
-              <p class="sidebar-label mb-0.5">Title font (px)</p>
-              <Input
-                size="sm"
-                type="number"
-                min="8"
-                max="64"
-                step="1"
-                value={plotEdit.titleFontSize}
-                className="w-full"
-                oninput={(e) =>
-                  setPlotField({
-                    titleFontSize: /** @type {HTMLInputElement} */ (e.currentTarget).value
-                  })
-                }
-              />
-            </div>
-          </div>
-
-          <div class="grid grid-cols-2 gap-1">
-            <div>
-              <p class="sidebar-label mb-0.5">Extra left margin</p>
-              <Input
-                size="sm"
-                type="number"
-                min="-80"
-                max="240"
-                step="1"
-                value={plotEdit.extraLeftMargin}
-                className="w-full"
-                placeholder="0"
-                title="0 is tight to the Y numbers. Negative pulls the plot left."
-                oninput={(e) =>
-                  setPlotField({
-                    extraLeftMargin: /** @type {HTMLInputElement} */ (e.currentTarget).value
-                  })
-                }
-              />
-            </div>
-            <div>
-              <p class="sidebar-label mb-0.5">Extra right margin</p>
-              <Input
-                size="sm"
-                type="number"
-                min="-80"
-                max="240"
-                step="1"
-                value={plotEdit.extraRightMargin ?? '0'}
-                className="w-full"
-                placeholder="0"
-                oninput={(e) =>
-                  setPlotField({
-                    extraRightMargin: /** @type {HTMLInputElement} */ (e.currentTarget).value
-                  })
-                }
-              />
-            </div>
-            <div>
-              <p class="sidebar-label mb-0.5">Extra top margin</p>
-              <Input
-                size="sm"
-                type="number"
-                min="-80"
-                max="240"
-                step="1"
-                value={plotEdit.extraTopMargin ?? '0'}
-                className="w-full"
-                placeholder="0"
-                oninput={(e) =>
-                  setPlotField({
-                    extraTopMargin: /** @type {HTMLInputElement} */ (e.currentTarget).value
-                  })
-                }
-              />
-            </div>
-            <div>
-              <p class="sidebar-label mb-0.5">Extra bottom margin</p>
-              <Input
-                size="sm"
-                type="number"
-                min="-80"
-                max="240"
-                step="1"
-                value={plotEdit.extraBottomMargin}
-                className="w-full"
-                placeholder="0"
-                oninput={(e) =>
-                  setPlotField({
-                    extraBottomMargin: /** @type {HTMLInputElement} */ (e.currentTarget).value
-                  })
-                }
-              />
-            </div>
-            <div>
-              <p class="sidebar-label mb-0.5">Tick number gap</p>
-              <Input
-                size="sm"
-                type="number"
-                min="0"
-                max="32"
-                step="1"
-                value={plotEdit.tickLabelGap ?? '8'}
-                className="w-full"
-                placeholder="8"
-                title="Space between tick marks and tick numbers"
-                oninput={(e) =>
-                  setPlotField({
-                    tickLabelGap: /** @type {HTMLInputElement} */ (e.currentTarget).value
-                  })
-                }
-              />
-            </div>
-          </div>
-          <label class="flex items-center gap-2">
-            <Checkbox
-              name="overlay-show-ticks"
-              checked={plotEdit.showTicks !== false}
-              onchange={(e) => setPlotField({ showTicks: e.currentTarget.checked })}
-            />
-            <span class="sidebar-label">Show tick marks</span>
-          </label>
+            {#if mode === 'energetic'}
+              <div
+                class={optionsSearchHighlightId === 'plot-title' ? 'option-pulse-highlight rounded' : ''}
+                data-option-id="plot-title"
+              >
+                <p class="sidebar-label mb-0.5">Title</p>
+                <Input
+                  size="sm"
+                  value={ePlotGlobal.title}
+                  placeholder={chartTitle || 'Energetic Analysis'}
+                  className="w-full"
+                  oninput={(e) => {
+                    ePlotGlobal = { ...ePlotGlobal, title: e.currentTarget.value }
+                    markSessionDirty()
+                  }}
+                />
+              </div>
+            {/if}
             <div class="grid grid-cols-2 gap-1">
-              <div>
-                <p class="sidebar-label mb-0.5">Tick length</p>
-                <Input
-                  size="sm"
-                  type="number"
-                  min="0"
-                  max="16"
-                  step="1"
-                  value={plotEdit.tickLength}
-                  className="w-full"
-                  oninput={(e) =>
-                    setPlotField({
-                      tickLength: /** @type {HTMLInputElement} */ (e.currentTarget).value
-                    })
-                  }
-                />
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">Tick width</p>
-                <Input
-                  size="sm"
-                  type="number"
-                  min="0.2"
-                  max="8"
-                  step="0.2"
-                  value={plotEdit.tickWidth}
-                  className="w-full"
-                  oninput={(e) =>
-                    setPlotField({
-                      tickWidth: /** @type {HTMLInputElement} */ (e.currentTarget).value
-                    })
-                  }
-                />
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">Axis line width</p>
-                <Input
-                  size="sm"
-                  type="number"
-                  min="0.2"
-                  max="8"
-                  step="0.2"
-                  value={plotEdit.spineWidth}
-                  className="w-full"
-                  oninput={(e) =>
-                    setPlotField({
-                      spineWidth: /** @type {HTMLInputElement} */ (e.currentTarget).value
-                    })
-                  }
-                />
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">X tick step</p>
-                <Input
-                  size="sm"
-                  type="number"
-                  min="0"
-                  step="any"
-                  value={ps.xTickStep || ''}
-                  placeholder="count"
-                  className="w-full"
-                  title="Spacing in X units. Empty uses tick count."
-                  oninput={(e) =>
-                    setPlotField({
-                      xTickStep: /** @type {HTMLInputElement} */ (e.currentTarget).value
-                    })
-                  }
-                />
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">Y tick step</p>
-                <Input
-                  size="sm"
-                  type="number"
-                  min="0"
-                  step="any"
-                  value={ps.yTickStep || ''}
-                  placeholder="count"
-                  className="w-full"
-                  title="Spacing in Y units. Empty uses tick count."
-                  oninput={(e) =>
-                    setPlotField({
-                      yTickStep: /** @type {HTMLInputElement} */ (e.currentTarget).value
-                    })
-                  }
-                />
-              </div>
+              {#if mode === 'structural' && (activeStructRes?.lastAnalysisHasTimeX ?? false)}
+                <div>
+                  <p class="sidebar-label mb-0.5">X units</p>
+                  <Select
+                    size="sm"
+                    bind:value={ps.xUnit}
+                    className="w-full"
+                    onchange={() => {
+                      bumpPlotData()
+                      persistActiveSetFields()
+                    }}
+                  >
+                    <option value="ns">ns</option>
+                    <option value="ps">ps</option>
+                    <option value="µs">µs</option>
+                  </Select>
+                </div>
+              {/if}
+              {#if mode === 'structural'}
+                <div>
+                  <p class="sidebar-label mb-0.5">Y units</p>
+                  <Select
+                    size="sm"
+                    bind:value={ps.yUnit}
+                    className="w-full"
+                    onchange={() => {
+                      bumpPlotData()
+                      persistActiveSetFields()
+                    }}
+                  >
+                    {#if structuralType === 'area_per_lipid'}
+                      <option value="Å²">Å²</option>
+                      <option value="nm²">nm²</option>
+                    {:else}
+                      <option value="Å">Å</option>
+                      <option value="nm">nm</option>
+                    {/if}
+                  </Select>
+                </div>
+              {/if}
             </div>
-            <p class="sidebar-label mb-0.5">Axis box</p>
-            <div class="grid grid-cols-2 gap-x-2 gap-y-1">
-              <label class="flex items-center gap-2">
-                <Checkbox
-                  name="overlay-spine-left"
-                  checked={plotEdit.spineLeft !== false}
-                  onchange={(e) => setPlotField({ spineLeft: e.currentTarget.checked })}
-                />
-                <span class="sidebar-label">Left</span>
-              </label>
-              <label class="flex items-center gap-2">
-                <Checkbox
-                  name="overlay-spine-bottom"
-                  checked={plotEdit.spineBottom !== false}
-                  onchange={(e) => setPlotField({ spineBottom: e.currentTarget.checked })}
-                />
-                <span class="sidebar-label">Bottom</span>
-              </label>
-              <label class="flex items-center gap-2">
-                <Checkbox
-                  name="overlay-spine-top"
-                  checked={plotEdit.spineTop === true}
-                  onchange={(e) => setPlotField({ spineTop: e.currentTarget.checked })}
-                />
-                <span class="sidebar-label">Top</span>
-              </label>
-              <label class="flex items-center gap-2">
-                <Checkbox
-                  name="overlay-spine-right"
-                  checked={plotEdit.spineRight === true}
-                  onchange={(e) => setPlotField({ spineRight: e.currentTarget.checked })}
-                />
-                <span class="sidebar-label">Right</span>
-              </label>
-            </div>
-
-          <!-- Actions -->
-          <div class="flex flex-wrap gap-1 pt-1">
-            <Button
-              size="sm"
-              variant="ghost"
-              className="flex-1"
-              onclick={() => {
-                if (mode === 'structural') {
-                  sPlots = {
-                    ...sPlots,
-                    [structuralType]: {
-                      ...structDefaults,
-                      ...(structuralType === 'area_per_lipid' ? { yUnit: 'Å²' } : {})
-                    }
-                  }
-                  if (compareLayout === 'grid') {
-                    gridLayout = clearCellPlotKeysFromOverrides(gridLayout, CELL_PLOT_KEYS)
-                  }
-                  bumpPlotData()
-                } else {
-                  ePlotGlobal = { ...energGlobalDefaults, ...energPanelShell }
-                  ePlotPanels = {}
-                  if (energeticCompareLayout === 'grid') {
-                    energeticGridLayout = clearCellPlotKeysFromOverrides(
-                      energeticGridLayout,
-                      ENERGETIC_CELL_PLOT_KEYS
-                    )
-                  }
-                  for (const p of selectedProperties) ensureEPlotPanel(p)
-                  statsRange = null
-                  panelRangeStats = {}
-                }
-              }}>Reset</Button
-            >
+            {#if mode === 'structural' && structuralType === 'rmsf' && rmsfXaxisType === 'residue_type_number'}
+              <div>
+                <p class="sidebar-label mb-0.5">Residue code format</p>
+                <Select size="sm" bind:value={ps.residueCodeFormat} className="w-full">
+                  <option value="three">Three-letter (ALA123)</option>
+                  <option value="one">One-letter (A123)</option>
+                </Select>
+              </div>
+            {/if}
           </div>
+          </div>
+
+          <!-- 2. Limits & ticks -->
+          <div class="plot-settings-section" class:is-open={plotSectionOpen.limits}>
+            <button
+              type="button"
+              class="plot-settings-section-header"
+              aria-expanded={plotSectionOpen.limits}
+              onclick={() => togglePlotSection('limits')}
+            >
+              <span class="plot-settings-section-title">Limits & ticks</span>
+              <ChevronDown
+                className="plot-settings-section-chevron {plotSectionOpen.limits ? '' : 'is-collapsed'}"
+              />
+            </button>
+            {#if plotSectionOpen.limits}
+              <div class="plot-settings-section-body">
+                <div
+                  class="min-w-0 space-y-1 {optionsSearchHighlightId === 'x-limits' ||
+                  optionsSearchHighlightId === 'y-limits'
+                    ? 'option-pulse-highlight rounded p-1'
+                    : ''}"
+                >
+                  <div
+                    class="grid min-w-0 grid-cols-[1.15rem_minmax(0,1.35fr)_minmax(0,1.35fr)_2.35rem_2.85rem] items-end gap-1"
+                    data-option-id="x-limits"
+                  >
+                    <p class="sidebar-label pb-1.5">X</p>
+                    <div class="min-w-0">
+                      <p class="sidebar-label mb-0.5">Min</p>
+                      <Input
+                        size="sm"
+                        value={ps.xMin}
+                        placeholder="auto"
+                        className="w-full min-w-0"
+                        oninput={(e) => {
+                          structViewRange = null
+                          setPlotField({
+                            xMin: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                          })
+                        }}
+                      />
+                    </div>
+                    <div class="min-w-0">
+                      <p class="sidebar-label mb-0.5">Max</p>
+                      <Input
+                        size="sm"
+                        value={ps.xMax}
+                        placeholder="auto"
+                        className="w-full min-w-0"
+                        oninput={(e) => {
+                          structViewRange = null
+                          setPlotField({
+                            xMax: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                          })
+                        }}
+                      />
+                    </div>
+                    <div class="min-w-0">
+                      <p class="sidebar-label mb-0.5">Ticks</p>
+                      <Input
+                        size="sm"
+                        type="number"
+                        min="2"
+                        max="20"
+                        step="1"
+                        value={ps.xTickCount}
+                        className="w-full min-w-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                        title="Number of X tick marks. Clears X tick step so count is used."
+                        oninput={(e) =>
+                          setPlotField({
+                            xTickCount: /** @type {HTMLInputElement} */ (e.currentTarget).value,
+                            xTickStep: ''
+                          })
+                        }
+                      />
+                    </div>
+                    <div class="min-w-0">
+                      <p class="sidebar-label mb-0.5">Dec.</p>
+                      <Input
+                        size="sm"
+                        type="number"
+                        min="0"
+                        max="8"
+                        step="1"
+                        value={ps.xTickDecimals}
+                        placeholder="auto"
+                        className="w-full min-w-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                        title="X tick decimal places. Empty = auto."
+                        oninput={(e) =>
+                          setPlotField({
+                            xTickDecimals: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+                  <div
+                    class="grid min-w-0 grid-cols-[1.15rem_minmax(0,1.35fr)_minmax(0,1.35fr)_2.35rem_2.85rem] items-end gap-1"
+                    data-option-id="y-limits"
+                  >
+                    <p class="sidebar-label pb-1.5">Y</p>
+                    <div class="min-w-0">
+                      <p class="sidebar-label mb-0.5">Min</p>
+                      <Input
+                        size="sm"
+                        value={mode === 'energetic' ? plotEdit.yMin ?? '' : ps.yMin}
+                        placeholder="auto"
+                        className="w-full min-w-0"
+                        oninput={(e) => {
+                          const v = /** @type {HTMLInputElement} */ (e.currentTarget).value
+                          if (mode === 'energetic') setPlotField({ yMin: v })
+                          else {
+                            structViewRange = null
+                            setPlotField({ yMin: v })
+                          }
+                        }}
+                      />
+                    </div>
+                    <div class="min-w-0">
+                      <p class="sidebar-label mb-0.5">Max</p>
+                      <Input
+                        size="sm"
+                        value={mode === 'energetic' ? plotEdit.yMax ?? '' : ps.yMax}
+                        placeholder="auto"
+                        className="w-full min-w-0"
+                        oninput={(e) => {
+                          const v = /** @type {HTMLInputElement} */ (e.currentTarget).value
+                          if (mode === 'energetic') setPlotField({ yMax: v })
+                          else {
+                            structViewRange = null
+                            setPlotField({ yMax: v })
+                          }
+                        }}
+                      />
+                    </div>
+                    <div class="min-w-0">
+                      <p class="sidebar-label mb-0.5">Ticks</p>
+                      <Input
+                        size="sm"
+                        type="number"
+                        min="2"
+                        max="20"
+                        step="1"
+                        value={ps.yTickCount}
+                        className="w-full min-w-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                        title="Number of Y tick marks. Clears Y tick step so count is used."
+                        oninput={(e) =>
+                          setPlotField({
+                            yTickCount: /** @type {HTMLInputElement} */ (e.currentTarget).value,
+                            yTickStep: ''
+                          })
+                        }
+                      />
+                    </div>
+                    <div class="min-w-0">
+                      <p class="sidebar-label mb-0.5">Dec.</p>
+                      <Input
+                        size="sm"
+                        type="number"
+                        min="0"
+                        max="8"
+                        step="1"
+                        value={ps.yTickDecimals}
+                        placeholder="auto"
+                        className="w-full min-w-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                        title="Y tick decimal places. Empty = auto."
+                        oninput={(e) =>
+                          setPlotField({
+                            yTickDecimals: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div class="grid grid-cols-2 gap-1">
+                  <div
+                    class={optionsSearchHighlightId === 'x-tick-step' ? 'option-pulse-highlight rounded p-0.5' : ''}
+                    data-option-id="x-tick-step"
+                  >
+                    <p class="sidebar-label mb-0.5">X tick step</p>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={ps.xTickStep || ''}
+                      placeholder="count"
+                      className="w-full"
+                      title="Spacing in X units. Empty uses tick count."
+                      oninput={(e) =>
+                        setPlotField({
+                          xTickStep: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                        })
+                      }
+                    />
+                  </div>
+                  <div
+                    class={optionsSearchHighlightId === 'y-tick-step' ? 'option-pulse-highlight rounded p-0.5' : ''}
+                    data-option-id="y-tick-step"
+                  >
+                    <p class="sidebar-label mb-0.5">Y tick step</p>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={ps.yTickStep || ''}
+                      placeholder="count"
+                      className="w-full"
+                      title="Spacing in Y units. Empty uses tick count."
+                      oninput={(e) =>
+                        setPlotField({
+                          yTickStep: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                        })
+                      }
+                    />
+                  </div>
+                </div>
+                {#if mode === 'energetic' && energeticCompareLayout === 'grid'}
+                  <label
+                    class="flex items-center gap-2 {optionsSearchHighlightId === 'sync-x-limits'
+                      ? 'option-pulse-highlight rounded p-1'
+                      : ''}"
+                    data-option-id="sync-x-limits"
+                  >
+                    <Checkbox name="sync-x" bind:checked={ePlotGlobal.syncX} />
+                    <span class="sidebar-label">Sync X limits across panels</span>
+                  </label>
+                {/if}
+                <div class="min-w-0 space-y-1">
+                  <div class="flex items-center justify-between">
+                    <p class="sidebar-label">Reference lines</p>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onclick={() =>
+                        patchReferenceLines([
+                          ...(ps.referenceLines || []),
+                          emptyReferenceLine()
+                        ])
+                      }>+ Add</Button
+                    >
+                  </div>
+                  {#each structReferenceLines as line, ri (`ref-${ri}`)}
+                    <div class="min-w-0 space-y-1 rounded-md border border-neutral-800 p-1.5">
+                      <div class="flex min-w-0 items-center gap-1">
+                        <Select
+                          size="sm"
+                          className="w-12 shrink-0"
+                          value={line.axis}
+                          onchange={(e) => {
+                            const next = [...structReferenceLines]
+                            next[ri] = {
+                              ...next[ri],
+                              axis: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                            }
+                            patchReferenceLines(next)
+                          }}
+                        >
+                          <option value="y">Y</option>
+                          <option value="x">X</option>
+                        </Select>
+                        <Input
+                          size="sm"
+                          type="number"
+                          step="any"
+                          value={line.value}
+                          className="min-w-0 flex-1 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                          title="Value"
+                          oninput={(e) => {
+                            const next = [...structReferenceLines]
+                            next[ri] = {
+                              ...next[ri],
+                              value: Number(/** @type {HTMLInputElement} */ (e.currentTarget).value)
+                            }
+                            patchReferenceLines(next)
+                          }}
+                        />
+                        <ColorInput
+                          size="sm"
+                          className="shrink-0"
+                          value={line.color}
+                          oninput={(e) => {
+                            const next = [...structReferenceLines]
+                            next[ri] = {
+                              ...next[ri],
+                              color: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                            }
+                            patchReferenceLines(next)
+                          }}
+                        />
+                        <Input
+                          size="sm"
+                          type="number"
+                          min="0.4"
+                          max="6"
+                          step="0.1"
+                          value={line.width}
+                          className="w-10 shrink-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                          title="Width"
+                          oninput={(e) => {
+                            const next = [...structReferenceLines]
+                            next[ri] = {
+                              ...next[ri],
+                              width: Number(/** @type {HTMLInputElement} */ (e.currentTarget).value)
+                            }
+                            patchReferenceLines(next)
+                          }}
+                        />
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="shrink-0 px-1.5"
+                          onclick={() =>
+                            patchReferenceLines(structReferenceLines.filter((_, j) => j !== ri))
+                          }>✕</Button
+                        >
+                      </div>
+                      <div class="flex min-w-0 items-center gap-1">
+                        <Select
+                          size="sm"
+                          className="w-[4.5rem] shrink-0"
+                          value={line.style}
+                          title="Line style"
+                          onchange={(e) => {
+                            const next = [...structReferenceLines]
+                            next[ri] = {
+                              ...next[ri],
+                              style: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                            }
+                            patchReferenceLines(next)
+                          }}
+                        >
+                          <option value="solid">Solid</option>
+                          <option value="dashed">Dash</option>
+                          <option value="dotted">Dot</option>
+                          <option value="dashdot">Dash·</option>
+                        </Select>
+                        <Select
+                          size="sm"
+                          className="w-[3.75rem] shrink-0"
+                          value={line.zOrder || 'back'}
+                          title="Draw behind or in front of data"
+                          onchange={(e) => {
+                            const next = [...structReferenceLines]
+                            next[ri] = {
+                              ...next[ri],
+                              zOrder: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                            }
+                            patchReferenceLines(next)
+                          }}
+                        >
+                          <option value="back">Back</option>
+                          <option value="forward">Front</option>
+                        </Select>
+                        <Input
+                          size="sm"
+                          type="number"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={line.opacity}
+                          className="w-11 shrink-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                          title="Opacity (0–1)"
+                          oninput={(e) => {
+                            const next = [...structReferenceLines]
+                            next[ri] = {
+                              ...next[ri],
+                              opacity: Number(/** @type {HTMLInputElement} */ (e.currentTarget).value)
+                            }
+                            patchReferenceLines(next)
+                          }}
+                        />
+                        <Input
+                          size="sm"
+                          value={line.label}
+                          placeholder="Label"
+                          className="min-w-0 flex-1"
+                          title="Label"
+                          oninput={(e) => {
+                            const next = [...structReferenceLines]
+                            next[ri] = {
+                              ...next[ri],
+                              label: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                            }
+                            patchReferenceLines(next)
+                          }}
+                        />
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+                <div class="min-w-0 space-y-1">
+                  <div class="flex items-center justify-between">
+                    <p class="sidebar-label">Reference bands</p>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onclick={() =>
+                        patchReferenceBands([...(ps.referenceBands || []), emptyReferenceBand()])
+                      }>+ Add</Button
+                    >
+                  </div>
+                  {#each structReferenceBands as band, bi (`refband-${bi}`)}
+                    <div class="min-w-0 space-y-1 rounded-md border border-neutral-800 p-1.5">
+                      <div class="flex min-w-0 items-center gap-1">
+                        <Select
+                          size="sm"
+                          className="w-12 shrink-0"
+                          value={band.axis}
+                          title="Horizontal (Y range) or vertical (X range)"
+                          onchange={(e) => {
+                            const next = [...structReferenceBands]
+                            next[bi] = {
+                              ...next[bi],
+                              axis: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                            }
+                            patchReferenceBands(next)
+                          }}
+                        >
+                          <option value="y">Y</option>
+                          <option value="x">X</option>
+                        </Select>
+                        <Input
+                          size="sm"
+                          type="number"
+                          step="any"
+                          value={band.min}
+                          className="min-w-0 flex-1 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                          title={band.axis === 'x' ? 'X min' : 'Y min'}
+                          oninput={(e) => {
+                            const next = [...structReferenceBands]
+                            next[bi] = {
+                              ...next[bi],
+                              min: coerceReferenceBandBound(
+                                /** @type {HTMLInputElement} */ (e.currentTarget).value
+                              )
+                            }
+                            patchReferenceBands(next)
+                          }}
+                        />
+                        <Input
+                          size="sm"
+                          type="number"
+                          step="any"
+                          value={band.max}
+                          className="min-w-0 flex-1 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                          title={band.axis === 'x' ? 'X max' : 'Y max'}
+                          oninput={(e) => {
+                            const next = [...structReferenceBands]
+                            next[bi] = {
+                              ...next[bi],
+                              max: coerceReferenceBandBound(
+                                /** @type {HTMLInputElement} */ (e.currentTarget).value
+                              )
+                            }
+                            patchReferenceBands(next)
+                          }}
+                        />
+                        <ColorInput
+                          size="sm"
+                          className="shrink-0"
+                          value={band.color}
+                          oninput={(e) => {
+                            const next = [...structReferenceBands]
+                            next[bi] = {
+                              ...next[bi],
+                              color: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                            }
+                            patchReferenceBands(next)
+                          }}
+                        />
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="shrink-0 px-1.5"
+                          onclick={() =>
+                            patchReferenceBands(structReferenceBands.filter((_, j) => j !== bi))
+                          }>✕</Button
+                        >
+                      </div>
+                      <div class="flex min-w-0 items-center gap-1">
+                        <Select
+                          size="sm"
+                          className="w-[5.5rem] shrink-0"
+                          value={band.zOrder || 'back'}
+                          title="Draw behind or in front of data"
+                          onchange={(e) => {
+                            const next = [...structReferenceBands]
+                            next[bi] = {
+                              ...next[bi],
+                              zOrder: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                            }
+                            patchReferenceBands(next)
+                          }}
+                        >
+                          <option value="back">Back</option>
+                          <option value="forward">Front</option>
+                        </Select>
+                        <Input
+                          size="sm"
+                          type="number"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={band.opacity}
+                          className="w-12 shrink-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                          title="Fill opacity (0–1)"
+                          oninput={(e) => {
+                            const next = [...structReferenceBands]
+                            next[bi] = {
+                              ...next[bi],
+                              opacity: Number(/** @type {HTMLInputElement} */ (e.currentTarget).value)
+                            }
+                            patchReferenceBands(next)
+                          }}
+                        />
+                        <label
+                          class="flex shrink-0 items-center gap-1 text-[10px] text-neutral-400"
+                          title="Draw border around the band"
+                        >
+                          <Checkbox
+                            checked={!!band.border}
+                            onchange={(e) => {
+                              const next = [...structReferenceBands]
+                              next[bi] = {
+                                ...next[bi],
+                                border: /** @type {HTMLInputElement} */ (e.currentTarget).checked
+                              }
+                              patchReferenceBands(next)
+                            }}
+                          />
+                          Border
+                        </label>
+                        <Input
+                          size="sm"
+                          value={band.label}
+                          placeholder="Label"
+                          className="min-w-0 flex-1"
+                          oninput={(e) => {
+                            const next = [...structReferenceBands]
+                            next[bi] = {
+                              ...next[bi],
+                              label: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                            }
+                            patchReferenceBands(next)
+                          }}
+                        />
+                      </div>
+                      {#if band.border}
+                        <div class="flex min-w-0 items-center gap-1">
+                          <ColorInput
+                            size="sm"
+                            className="shrink-0"
+                            value={band.borderColor || band.color}
+                            title="Border color"
+                            oninput={(e) => {
+                              const next = [...structReferenceBands]
+                              next[bi] = {
+                                ...next[bi],
+                                borderColor: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                              }
+                              patchReferenceBands(next)
+                            }}
+                          />
+                          <Input
+                            size="sm"
+                            type="number"
+                            min="0.4"
+                            max="6"
+                            step="0.1"
+                            value={band.borderWidth}
+                            className="w-10 shrink-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                            title="Border width"
+                            oninput={(e) => {
+                              const next = [...structReferenceBands]
+                              next[bi] = {
+                                ...next[bi],
+                                borderWidth: Number(
+                                  /** @type {HTMLInputElement} */ (e.currentTarget).value
+                                )
+                              }
+                              patchReferenceBands(next)
+                            }}
+                          />
+                          <Select
+                            size="sm"
+                            className="min-w-0 flex-1"
+                            value={band.borderStyle || 'solid'}
+                            onchange={(e) => {
+                              const next = [...structReferenceBands]
+                              next[bi] = {
+                                ...next[bi],
+                                borderStyle: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                              }
+                              patchReferenceBands(next)
+                            }}
+                          >
+                            <option value="solid">Solid</option>
+                            <option value="dashed">Dashed</option>
+                            <option value="dotted">Dotted</option>
+                            <option value="dashdot">Dash-dot</option>
+                          </Select>
+                        </div>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+          </div>
+
+          <!-- 3. Appearance -->
+          <div class="plot-settings-section" class:is-open={plotSectionOpen.appearance}>
+            <button
+              type="button"
+              class="plot-settings-section-header"
+              aria-expanded={plotSectionOpen.appearance}
+              onclick={() => togglePlotSection('appearance')}
+            >
+              <span class="plot-settings-section-title">Appearance</span>
+              <ChevronDown
+                className="plot-settings-section-chevron {plotSectionOpen.appearance
+                  ? ''
+                  : 'is-collapsed'}"
+              />
+            </button>
+            {#if plotSectionOpen.appearance}
+              <div class="plot-settings-section-body">
+                <div class="grid grid-cols-2 gap-1">
+                  {#if mode === 'structural'}
+                    <div
+                      class={optionsSearchHighlightId === 'line-color' ? 'option-pulse-highlight rounded p-0.5' : ''}
+                      data-option-id="line-color"
+                      title="Same color as the set. Area per lipid uses it for Average."
+                    >
+                      <p class="sidebar-label mb-0.5">Line color (this set)</p>
+                      <div class="flex items-center gap-1">
+                        <input
+                          type="color"
+                          value={activeAnalysisSet?.color || '#f59e0b'}
+                          class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
+                          oninput={(e) => {
+                            if (!activeAnalysisSet) return
+                            patchAnalysisSet(activeAnalysisSet.id, { color: e.currentTarget.value })
+                          }}
+                        />
+                        <Input
+                          size="sm"
+                          blurOnEnter
+                          value={activeAnalysisSet?.color || ''}
+                          className="min-w-0 flex-1 font-mono"
+                          oninput={(e) => {
+                            if (!activeAnalysisSet) return
+                            patchAnalysisSet(activeAnalysisSet.id, { color: e.currentTarget.value })
+                          }}
+                          onblur={applyChartAppearance}
+                        />
+                      </div>
+                    </div>
+                    <div
+                      class={optionsSearchHighlightId === 'plot-bg' ? 'option-pulse-highlight rounded p-0.5' : ''}
+                      data-option-id="plot-bg"
+                      title="Auto follows light/dark theme. With a custom grid, Apply settings scopes Plot bg."
+                    >
+                      <p class="sidebar-label mb-0.5">Plot bg</p>
+                      <div class="flex items-center gap-1">
+                        <input
+                          type="color"
+                          value={scopedPlotBgDisplay}
+                          class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
+                          oninput={(e) => setStructuralPlotBg(e.currentTarget.value)}
+                        />
+                        <Input
+                          size="sm"
+                          value={scopedPlotBgValue}
+                          placeholder={resolvedStructColors.plotBg}
+                          className="min-w-0 flex-1 font-mono"
+                          oninput={(e) => setStructuralPlotBg(e.currentTarget.value)}
+                        />
+                      </div>
+                      <div class="mt-0.5 flex gap-1">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={!scopedPlotBgCustomized}
+                          onclick={clearStructuralPlotBgCustom}
+                        >Auto</Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onclick={applyStructuralPlotColorsToAllTypes}
+                          title="Copy this plot's background and text colors to every structural analysis type"
+                        >All types</Button>
+                      </div>
+                    </div>
+                    <div
+                      class="col-span-2 {optionsSearchHighlightId === 'text-color'
+                        ? 'option-pulse-highlight rounded p-0.5'
+                        : ''}"
+                      data-option-id="text-color"
+                    >
+                      <p class="sidebar-label mb-0.5">Text/axes color</p>
+                      <div class="flex items-center gap-1">
+                        <input
+                          type="color"
+                          value={resolvedStructColors.textColor}
+                          class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
+                          oninput={(e) => setStructuralTextColor(e.currentTarget.value)}
+                        />
+                        <Input
+                          size="sm"
+                          value={ps.textColorCustomized ? ps.textColor : ''}
+                          placeholder={resolvedStructColors.textColor}
+                          className="min-w-0 flex-1 font-mono"
+                          oninput={(e) => setStructuralTextColor(e.currentTarget.value)}
+                        />
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={!ps.textColorCustomized}
+                          onclick={clearStructuralTextColorCustom}
+                        >Auto</Button>
+                      </div>
+                    </div>
+                  {:else if mode === 'energetic'}
+                    {#if selectedProperties[0]}
+                      {@const pk = selectedProperties[0]}
+                      <div
+                        class={optionsSearchHighlightId === 'line-color'
+                          ? 'option-pulse-highlight rounded p-0.5'
+                          : ''}
+                        data-option-id="line-color"
+                      >
+                        <p class="sidebar-label mb-0.5">Line color ({pk})</p>
+                        <div class="flex items-center gap-1">
+                          <input
+                            type="color"
+                            value={ePlotPanels[pk]?.lineColor || '#f59e0b'}
+                            class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
+                            oninput={(e) => {
+                              ensureEPlotPanel(pk)
+                              markSessionDirty()
+                              ePlotPanels = {
+                                ...ePlotPanels,
+                                [pk]: { ...ePlotPanels[pk], lineColor: e.currentTarget.value }
+                              }
+                              cellLineCache = new WeakMap()
+                              syncEnergeticChartViewFromSets()
+                            }}
+                          />
+                        </div>
+                      </div>
+                    {/if}
+                    <div
+                      class={optionsSearchHighlightId === 'plot-bg' ? 'option-pulse-highlight rounded p-0.5' : ''}
+                      data-option-id="plot-bg"
+                      title="Auto follows light/dark theme."
+                    >
+                      <p class="sidebar-label mb-0.5">Plot bg</p>
+                      <div class="flex items-center gap-1">
+                        <input
+                          type="color"
+                          value={scopedPlotBgDisplay}
+                          class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
+                          oninput={(e) => setEnergeticPlotBg(e.currentTarget.value)}
+                        />
+                        <Input
+                          size="sm"
+                          value={scopedPlotBgValue}
+                          placeholder={resolvedEnergColors.plotBg}
+                          className="min-w-0 flex-1 font-mono"
+                          oninput={(e) => setEnergeticPlotBg(e.currentTarget.value)}
+                        />
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={!scopedPlotBgCustomized}
+                        onclick={() => setEnergeticPlotBg('')}
+                      >Auto</Button>
+                    </div>
+                    <div
+                      class={optionsSearchHighlightId === 'text-color' ? 'option-pulse-highlight rounded p-0.5' : ''}
+                      data-option-id="text-color"
+                    >
+                      <p class="sidebar-label mb-0.5">Text color</p>
+                      <div class="flex items-center gap-1">
+                        <input
+                          type="color"
+                          value={resolvedEnergColors.textColor}
+                          class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
+                          oninput={(e) => setEnergeticTextColor(e.currentTarget.value)}
+                        />
+                        <Input
+                          size="sm"
+                          value={ePlotGlobal.textColorCustomized ? ePlotGlobal.textColor : ''}
+                          placeholder={resolvedEnergColors.textColor}
+                          className="min-w-0 flex-1 font-mono"
+                          oninput={(e) => setEnergeticTextColor(e.currentTarget.value)}
+                        />
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={!ePlotGlobal.textColorCustomized}
+                        onclick={() => {
+                          markSessionDirty()
+                          ePlotGlobal = { ...ePlotGlobal, textColor: '', textColorCustomized: false }
+                        }}
+                      >Auto</Button>
+                    </div>
+                  {/if}
+                </div>
+                <div
+                  class="flex flex-wrap items-end gap-2 {optionsSearchHighlightId === 'show-grid'
+                    ? 'option-pulse-highlight rounded p-1'
+                    : ''}"
+                  data-option-id="show-grid"
+                >
+                  <label class="flex items-center gap-2">
+                    <Checkbox
+                      name="show-grid"
+                      checked={plotEdit.showGrid !== false}
+                      onchange={(e) => setPlotField({ showGrid: e.currentTarget.checked })}
+                    />
+                    <span class="sidebar-label">Show grid</span>
+                  </label>
+                  <div>
+                    <p class="sidebar-label mb-0.5">Grid color</p>
+                    <div class="flex items-center gap-1">
+                      <input
+                        type="color"
+                        value={String(plotEdit.gridColor || '').trim() || (mode === 'energetic' ? resolvedEnergColors.textColor : resolvedStructColors.textColor)}
+                        disabled={plotEdit.showGrid === false}
+                        class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0 disabled:opacity-40"
+                        oninput={(e) => setPlotField({ gridColor: e.currentTarget.value })}
+                        title="Background grid line color"
+                      />
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={!String(plotEdit.gridColor || '').trim()}
+                        onclick={() => setPlotField({ gridColor: '' })}
+                      >Auto</Button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            {/if}
+          </div>
+
+          <!-- 4. Series & lines -->
+          <div class="plot-settings-section" class:is-open={plotSectionOpen.series}>
+            <button
+              type="button"
+              class="plot-settings-section-header"
+              aria-expanded={plotSectionOpen.series}
+              onclick={() => togglePlotSection('series')}
+            >
+              <span class="plot-settings-section-title">Series & lines</span>
+              <ChevronDown
+                className="plot-settings-section-chevron {plotSectionOpen.series ? '' : 'is-collapsed'}"
+              />
+            </button>
+            {#if plotSectionOpen.series}
+              <div class="plot-settings-section-body">
+                <div class="grid grid-cols-2 gap-1">
+                  <div
+                    class={optionsSearchHighlightId === 'line-width' ? 'option-pulse-highlight rounded p-0.5' : ''}
+                    data-option-id="line-width"
+                  >
+                    <p class="sidebar-label mb-0.5">Line width</p>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="0.5"
+                      max="12"
+                      step="0.5"
+                      value={plotEdit.lineWidth}
+                      className="w-full"
+                      oninput={(e) =>
+                        setPlotField({
+                          lineWidth: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                        })
+                      }
+                    />
+                  </div>
+                  <div
+                    class={optionsSearchHighlightId === 'line-style' ? 'option-pulse-highlight rounded p-0.5' : ''}
+                    data-option-id="line-style"
+                  >
+                    <p class="sidebar-label mb-0.5">Line style</p>
+                    <Select
+                      size="sm"
+                      className="w-full"
+                      value={plotEdit.lineStyle || 'solid'}
+                      onchange={(e) =>
+                        setPlotField({
+                          lineStyle: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                        })
+                      }
+                    >
+                      <option value="solid">Solid</option>
+                      <option value="dashed">Dashed</option>
+                      <option value="dotted">Dotted</option>
+                      <option value="dashdot">Dash-dot</option>
+                    </Select>
+                  </div>
+                </div>
+                {#if mode === 'structural' && structuralType === 'area_per_lipid'}
+                  <div
+                    class="space-y-1 rounded border border-neutral-800 p-2 {optionsSearchHighlightId === 'apl-series'
+                      ? 'option-pulse-highlight'
+                      : ''}"
+                    data-option-id="apl-series"
+                  >
+                    <p class="sidebar-label">Area per lipid series (this set)</p>
+                    <p class="sidebar-hint">
+                      Uncheck a series to hide it on the plot. CSV still stores all three.
+                    </p>
+                    <div class="flex flex-wrap gap-x-3 gap-y-1">
+                      <label class="flex items-center gap-1.5">
+                        <Checkbox
+                          name="apl-show-mean"
+                          size="sm"
+                          checked={ps.aplShowMean !== false}
+                          onchange={(e) => setAplSeriesVisible('mean', e.currentTarget.checked)}
+                        />
+                        <span class="text-xs text-neutral-700 dark:text-neutral-300">Average</span>
+                      </label>
+                      <label class="flex items-center gap-1.5">
+                        <Checkbox
+                          name="apl-show-upper"
+                          size="sm"
+                          checked={ps.aplShowUpper !== false}
+                          onchange={(e) => setAplSeriesVisible('upper', e.currentTarget.checked)}
+                        />
+                        <span class="text-xs text-neutral-700 dark:text-neutral-300">Upper leaflet</span>
+                      </label>
+                      <label class="flex items-center gap-1.5">
+                        <Checkbox
+                          name="apl-show-lower"
+                          size="sm"
+                          checked={ps.aplShowLower !== false}
+                          onchange={(e) => setAplSeriesVisible('lower', e.currentTarget.checked)}
+                        />
+                        <span class="text-xs text-neutral-700 dark:text-neutral-300">Lower leaflet</span>
+                      </label>
+                    </div>
+                    {#if activeAnalysisSet}
+                      <div class="col-span-2 grid grid-cols-1 gap-1">
+                        <div>
+                          <p class="sidebar-label mb-0.5">Average label</p>
+                          <Input
+                            size="sm"
+                            blurOnEnter
+                            value={activeAnalysisSet.aplMeanLabel ?? ''}
+                            placeholder="Average"
+                            className="w-full"
+                            oninput={(e) =>
+                              patchAnalysisSet(activeAnalysisSet.id, {
+                                aplMeanLabel: e.currentTarget.value
+                              })}
+                            onblur={applyChartAppearance}
+                          />
+                        </div>
+                        <div>
+                          <p class="sidebar-label mb-0.5">Upper leaflet label</p>
+                          <Input
+                            size="sm"
+                            blurOnEnter
+                            value={activeAnalysisSet.aplUpperLabel ?? ''}
+                            placeholder="Upper leaflet"
+                            className="w-full"
+                            oninput={(e) =>
+                              patchAnalysisSet(activeAnalysisSet.id, {
+                                aplUpperLabel: e.currentTarget.value
+                              })}
+                            onblur={applyChartAppearance}
+                          />
+                        </div>
+                        <div>
+                          <p class="sidebar-label mb-0.5">Lower leaflet label</p>
+                          <Input
+                            size="sm"
+                            blurOnEnter
+                            value={activeAnalysisSet.aplLowerLabel ?? ''}
+                            placeholder="Lower leaflet"
+                            className="w-full"
+                            oninput={(e) =>
+                              patchAnalysisSet(activeAnalysisSet.id, {
+                                aplLowerLabel: e.currentTarget.value
+                              })}
+                            onblur={applyChartAppearance}
+                          />
+                        </div>
+                      </div>
+                    {/if}
+                    <div class="grid grid-cols-2 gap-1">
+                      <div>
+                        <p class="sidebar-label mb-0.5">Average line</p>
+                        <Select
+                          size="sm"
+                          className="w-full"
+                          value={ps.aplMeanLineStyle || 'solid'}
+                          onchange={(e) => {
+                            ps.aplMeanLineStyle = /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                            applyChartAppearance()
+                          }}
+                        >
+                          <option value="solid">Solid</option>
+                          <option value="dashed">Dashed</option>
+                          <option value="dotted">Dotted</option>
+                          <option value="dashdot">Dash-dot</option>
+                        </Select>
+                      </div>
+                      <div>
+                        <p class="sidebar-label mb-0.5">Average marker</p>
+                        <Select
+                          size="sm"
+                          className="w-full"
+                          value={ps.aplMeanMarker || 'none'}
+                          onchange={(e) => {
+                            ps.aplMeanMarker = /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                            applyChartAppearance()
+                          }}
+                        >
+                          <option value="none">None</option>
+                          <option value="circle">Circle</option>
+                          <option value="square">Square</option>
+                          <option value="triangle">Triangle</option>
+                          <option value="cross">Cross</option>
+                        </Select>
+                      </div>
+                      <div class="col-span-2">
+                        <p class="sidebar-label mb-0.5">Average marker every N points</p>
+                        <Input
+                          size="sm"
+                          type="number"
+                          min="1"
+                          max="9999"
+                          step="1"
+                          bind:value={ps.aplMeanMarkerEvery}
+                          className="w-full"
+                          onchange={() => applyChartAppearance()}
+                        />
+                      </div>
+                      <div>
+                        <p class="sidebar-label mb-0.5">Upper leaflet line</p>
+                        <Select
+                          size="sm"
+                          className="w-full"
+                          value={ps.aplUpperLineStyle || 'dashed'}
+                          onchange={(e) => {
+                            ps.aplUpperLineStyle = /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                            applyChartAppearance()
+                          }}
+                        >
+                          <option value="solid">Solid</option>
+                          <option value="dashed">Dashed</option>
+                          <option value="dotted">Dotted</option>
+                          <option value="dashdot">Dash-dot</option>
+                        </Select>
+                      </div>
+                      <div>
+                        <p class="sidebar-label mb-0.5">Upper marker</p>
+                        <Select
+                          size="sm"
+                          className="w-full"
+                          value={ps.aplUpperMarker || 'none'}
+                          onchange={(e) => {
+                            ps.aplUpperMarker = /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                            applyChartAppearance()
+                          }}
+                        >
+                          <option value="none">None</option>
+                          <option value="circle">Circle</option>
+                          <option value="square">Square</option>
+                          <option value="triangle">Triangle</option>
+                          <option value="cross">Cross</option>
+                        </Select>
+                      </div>
+                      <div>
+                        <p class="sidebar-label mb-0.5">Upper color (this set)</p>
+                        <div class="flex items-center gap-1">
+                          <input
+                            type="color"
+                            value={activeAnalysisSet ? aplSeriesColor(activeAnalysisSet, 'upper') : '#f59e0b'}
+                            class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
+                            oninput={(e) => {
+                              if (!activeAnalysisSet) return
+                              patchAnalysisSet(activeAnalysisSet.id, {
+                                aplUpperColor: e.currentTarget.value
+                              })
+                            }}
+                          />
+                          <Input
+                            size="sm"
+                            blurOnEnter
+                            value={activeAnalysisSet?.aplUpperColor || ''}
+                            placeholder={activeAnalysisSet?.color || '#f59e0b'}
+                            className="min-w-0 flex-1 font-mono"
+                            oninput={(e) => {
+                              if (!activeAnalysisSet) return
+                              patchAnalysisSet(activeAnalysisSet.id, {
+                                aplUpperColor: e.currentTarget.value
+                              })
+                            }}
+                            onblur={applyChartAppearance}
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <p class="sidebar-label mb-0.5">Upper marker every N</p>
+                        <Input
+                          size="sm"
+                          type="number"
+                          min="1"
+                          max="9999"
+                          step="1"
+                          bind:value={ps.aplUpperMarkerEvery}
+                          className="w-full"
+                          onchange={() => applyChartAppearance()}
+                        />
+                      </div>
+                      <div>
+                        <p class="sidebar-label mb-0.5">Lower leaflet line</p>
+                        <Select
+                          size="sm"
+                          className="w-full"
+                          value={ps.aplLowerLineStyle || 'dotted'}
+                          onchange={(e) => {
+                            ps.aplLowerLineStyle = /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                            applyChartAppearance()
+                          }}
+                        >
+                          <option value="solid">Solid</option>
+                          <option value="dashed">Dashed</option>
+                          <option value="dotted">Dotted</option>
+                          <option value="dashdot">Dash-dot</option>
+                        </Select>
+                      </div>
+                      <div>
+                        <p class="sidebar-label mb-0.5">Lower marker</p>
+                        <Select
+                          size="sm"
+                          className="w-full"
+                          value={ps.aplLowerMarker || 'none'}
+                          onchange={(e) => {
+                            ps.aplLowerMarker = /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                            applyChartAppearance()
+                          }}
+                        >
+                          <option value="none">None</option>
+                          <option value="circle">Circle</option>
+                          <option value="square">Square</option>
+                          <option value="triangle">Triangle</option>
+                          <option value="cross">Cross</option>
+                        </Select>
+                      </div>
+                      <div>
+                        <p class="sidebar-label mb-0.5">Lower color (this set)</p>
+                        <div class="flex items-center gap-1">
+                          <input
+                            type="color"
+                            value={activeAnalysisSet ? aplSeriesColor(activeAnalysisSet, 'lower') : '#f59e0b'}
+                            class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
+                            oninput={(e) => {
+                              if (!activeAnalysisSet) return
+                              patchAnalysisSet(activeAnalysisSet.id, {
+                                aplLowerColor: e.currentTarget.value
+                              })
+                            }}
+                          />
+                          <Input
+                            size="sm"
+                            blurOnEnter
+                            value={activeAnalysisSet?.aplLowerColor || ''}
+                            placeholder={activeAnalysisSet?.color || '#f59e0b'}
+                            className="min-w-0 flex-1 font-mono"
+                            oninput={(e) => {
+                              if (!activeAnalysisSet) return
+                              patchAnalysisSet(activeAnalysisSet.id, {
+                                aplLowerColor: e.currentTarget.value
+                              })
+                            }}
+                            onblur={applyChartAppearance}
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <p class="sidebar-label mb-0.5">Lower marker every N</p>
+                        <Input
+                          size="sm"
+                          type="number"
+                          min="1"
+                          max="9999"
+                          step="1"
+                          bind:value={ps.aplLowerMarkerEvery}
+                          className="w-full"
+                          onchange={() => applyChartAppearance()}
+                        />
+                      </div>
+                      <div>
+                        <p class="sidebar-label mb-0.5">Marker size</p>
+                        <Input
+                          size="sm"
+                          type="number"
+                          min="1"
+                          max="10"
+                          step="0.5"
+                          bind:value={ps.aplMarkerSize}
+                          className="w-full"
+                          onchange={() => applyChartAppearance()}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                {/if}
+              </div>
+            {/if}
+          </div>
+
+          <!-- 5. In-chart legend -->
+          <div class="plot-settings-section" class:is-open={plotSectionOpen.legend}>
+            <button
+              type="button"
+              class="plot-settings-section-header"
+              aria-expanded={plotSectionOpen.legend}
+              onclick={() => togglePlotSection('legend')}
+            >
+              <span class="plot-settings-section-title">In-chart legend</span>
+              <ChevronDown
+                className="plot-settings-section-chevron {plotSectionOpen.legend ? '' : 'is-collapsed'}"
+              />
+            </button>
+            {#if plotSectionOpen.legend}
+              <div class="plot-settings-section-body">
+                {#if showInChartLegendControls}
+                  <div
+                    class={optionsSearchHighlightId === 'legend-position'
+                      ? 'option-pulse-highlight rounded p-0.5'
+                      : ''}
+                    data-option-id="legend-position"
+                  >
+                    <p class="sidebar-label mb-0.5">Legend position</p>
+                    <Select
+                      size="sm"
+                      value={plotEdit.legendPosition || 'top-left'}
+                      className="w-full"
+                      onchange={(e) =>
+                        setPlotField({
+                          legendPosition: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                        })
+                      }
+                    >
+                      <option value="bottom">Below chart</option>
+                      <option value="top-left">Inside — top left</option>
+                      <option value="top-right">Inside — top right</option>
+                      <option value="bottom-left">Inside — bottom left</option>
+                      <option value="bottom-right">Inside — bottom right</option>
+                      <option value="none">Hidden</option>
+                    </Select>
+                  </div>
+                  <div class="grid grid-cols-2 gap-1">
+                    <div
+                      class={optionsSearchHighlightId === 'legend-square'
+                        ? 'option-pulse-highlight rounded p-0.5'
+                        : ''}
+                      data-option-id="legend-square"
+                    >
+                      <p class="sidebar-label mb-0.5">Legend square (px)</p>
+                      <Input
+                        size="sm"
+                        type="number"
+                        min="6"
+                        max="48"
+                        step="1"
+                        value={plotEdit.legendSwatchSize}
+                        className="w-full"
+                        oninput={(e) =>
+                          setPlotField({
+                            legendSwatchSize: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                          })
+                        }
+                      />
+                    </div>
+                    <div
+                      class={optionsSearchHighlightId === 'legend-font'
+                        ? 'option-pulse-highlight rounded p-0.5'
+                        : ''}
+                      data-option-id="legend-font"
+                    >
+                      <p class="sidebar-label mb-0.5">Legend font (px)</p>
+                      <Input
+                        size="sm"
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={plotEdit.legendFontSize}
+                        className="w-full"
+                        oninput={(e) =>
+                          setPlotField({
+                            legendFontSize: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+                {:else}
+                  <p class="sidebar-hint">Outside legend chrome is in Grid options.</p>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full"
+                    onclick={() => {
+                      plotLayoutOptionsOpen = true
+                      plotLayoutOptionsCollapsed = false
+                      requestSidePanelExpand('analysis-grid')
+                    }}
+                  >Open Grid options</Button>
+                {/if}
+              </div>
+            {/if}
+          </div>
+
+          <!-- 6. Typography -->
+          <div class="plot-settings-section" class:is-open={plotSectionOpen.typography}>
+            <button
+              type="button"
+              class="plot-settings-section-header"
+              aria-expanded={plotSectionOpen.typography}
+              onclick={() => togglePlotSection('typography')}
+            >
+              <span class="plot-settings-section-title">Typography</span>
+              <ChevronDown
+                className="plot-settings-section-chevron {plotSectionOpen.typography
+                  ? ''
+                  : 'is-collapsed'}"
+              />
+            </button>
+            {#if plotSectionOpen.typography}
+              <div class="plot-settings-section-body">
+                <div class="grid grid-cols-2 gap-1">
+                  <div
+                    class={optionsSearchHighlightId === 'axis-font' ? 'option-pulse-highlight rounded p-0.5' : ''}
+                    data-option-id="axis-font"
+                  >
+                    <p class="sidebar-label mb-0.5">Axis font (px)</p>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="7"
+                      max="64"
+                      step="1"
+                      value={plotEdit.axisFontSize}
+                      className="w-full"
+                      oninput={(e) =>
+                        setPlotField({
+                          axisFontSize: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                        })
+                      }
+                    />
+                    <label class="mt-1 flex items-center gap-1.5 text-[11px] text-neutral-600 dark:text-neutral-400">
+                      <Checkbox
+                        checked={plotEdit.axisFontBold === true}
+                        onchange={(e) => setPlotField({ axisFontBold: e.currentTarget.checked })}
+                      />
+                      Bold
+                    </label>
+                  </div>
+                  <div
+                    class={optionsSearchHighlightId === 'title-font' ? 'option-pulse-highlight rounded p-0.5' : ''}
+                    data-option-id="title-font"
+                  >
+                    <p class="sidebar-label mb-0.5">Title font (px)</p>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="8"
+                      max="64"
+                      step="1"
+                      value={plotEdit.titleFontSize}
+                      className="w-full"
+                      oninput={(e) =>
+                        setPlotField({
+                          titleFontSize: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                        })
+                      }
+                    />
+                  </div>
+                </div>
+              </div>
+            {/if}
+          </div>
+
+          <!-- 7. Margins & spines -->
+          <div class="plot-settings-section" class:is-open={plotSectionOpen.margins}>
+            <button
+              type="button"
+              class="plot-settings-section-header"
+              aria-expanded={plotSectionOpen.margins}
+              onclick={() => togglePlotSection('margins')}
+            >
+              <span class="plot-settings-section-title">Margins & spines</span>
+              <ChevronDown
+                className="plot-settings-section-chevron {plotSectionOpen.margins ? '' : 'is-collapsed'}"
+              />
+            </button>
+            {#if plotSectionOpen.margins}
+              <div class="plot-settings-section-body">
+                <div
+                  class="grid grid-cols-2 gap-1 {optionsSearchHighlightId === 'extra-margins'
+                    ? 'option-pulse-highlight rounded p-1'
+                    : ''}"
+                  data-option-id="extra-margins"
+                >
+                  <div>
+                    <p class="sidebar-label mb-0.5">Extra left margin</p>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="-80"
+                      max="240"
+                      step="1"
+                      value={plotEdit.extraLeftMargin}
+                      className="w-full"
+                      placeholder="0"
+                      title="0 is tight to the Y numbers. Negative pulls the plot left."
+                      oninput={(e) =>
+                        setPlotField({
+                          extraLeftMargin: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                        })
+                      }
+                    />
+                  </div>
+                  <div>
+                    <p class="sidebar-label mb-0.5">Extra right margin</p>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="-80"
+                      max="240"
+                      step="1"
+                      value={plotEdit.extraRightMargin ?? '0'}
+                      className="w-full"
+                      placeholder="0"
+                      oninput={(e) =>
+                        setPlotField({
+                          extraRightMargin: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                        })
+                      }
+                    />
+                  </div>
+                  <div>
+                    <p class="sidebar-label mb-0.5">Extra top margin</p>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="-80"
+                      max="240"
+                      step="1"
+                      value={plotEdit.extraTopMargin ?? '0'}
+                      className="w-full"
+                      placeholder="0"
+                      oninput={(e) =>
+                        setPlotField({
+                          extraTopMargin: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                        })
+                      }
+                    />
+                  </div>
+                  <div>
+                    <p class="sidebar-label mb-0.5">Extra bottom margin</p>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="-80"
+                      max="240"
+                      step="1"
+                      value={plotEdit.extraBottomMargin}
+                      className="w-full"
+                      placeholder="0"
+                      oninput={(e) =>
+                        setPlotField({
+                          extraBottomMargin: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                        })
+                      }
+                    />
+                  </div>
+                  <div>
+                    <p class="sidebar-label mb-0.5">Tick number gap</p>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="0"
+                      max="32"
+                      step="1"
+                      value={plotEdit.tickLabelGap ?? '8'}
+                      className="w-full"
+                      placeholder="8"
+                      title="Space between tick marks and tick numbers"
+                      oninput={(e) =>
+                        setPlotField({
+                          tickLabelGap: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                        })
+                      }
+                    />
+                  </div>
+                </div>
+                <label
+                  class="flex items-center gap-2 {optionsSearchHighlightId === 'tick-marks'
+                    ? 'option-pulse-highlight rounded p-1'
+                    : ''}"
+                  data-option-id="tick-marks"
+                >
+                  <Checkbox
+                    name="overlay-show-ticks"
+                    checked={plotEdit.showTicks !== false}
+                    onchange={(e) => setPlotField({ showTicks: e.currentTarget.checked })}
+                  />
+                  <span class="sidebar-label">Show tick marks</span>
+                </label>
+                <div class="grid grid-cols-2 gap-1">
+                  <div>
+                    <p class="sidebar-label mb-0.5">Tick length</p>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="0"
+                      max="16"
+                      step="1"
+                      value={plotEdit.tickLength}
+                      className="w-full"
+                      oninput={(e) =>
+                        setPlotField({
+                          tickLength: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                        })
+                      }
+                    />
+                  </div>
+                  <div>
+                    <p class="sidebar-label mb-0.5">Tick width</p>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="0.2"
+                      max="8"
+                      step="0.2"
+                      value={plotEdit.tickWidth}
+                      className="w-full"
+                      oninput={(e) =>
+                        setPlotField({
+                          tickWidth: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                        })
+                      }
+                    />
+                  </div>
+                  <div>
+                    <p class="sidebar-label mb-0.5">Axis line width</p>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="0.2"
+                      max="8"
+                      step="0.2"
+                      value={plotEdit.spineWidth}
+                      className="w-full"
+                      oninput={(e) =>
+                        setPlotField({
+                          spineWidth: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                        })
+                      }
+                    />
+                  </div>
+                </div>
+                <div
+                  class={optionsSearchHighlightId === 'axis-box' ? 'option-pulse-highlight rounded p-1' : ''}
+                  data-option-id="axis-box"
+                >
+                  <p class="sidebar-label mb-0.5">Axis box</p>
+                  <div class="grid grid-cols-2 gap-x-2 gap-y-1">
+                    <label class="flex items-center gap-2">
+                      <Checkbox
+                        name="overlay-spine-left"
+                        checked={plotEdit.spineLeft !== false}
+                        onchange={(e) => setPlotField({ spineLeft: e.currentTarget.checked })}
+                      />
+                      <span class="sidebar-label">Left</span>
+                    </label>
+                    <label class="flex items-center gap-2">
+                      <Checkbox
+                        name="overlay-spine-bottom"
+                        checked={plotEdit.spineBottom !== false}
+                        onchange={(e) => setPlotField({ spineBottom: e.currentTarget.checked })}
+                      />
+                      <span class="sidebar-label">Bottom</span>
+                    </label>
+                    <label class="flex items-center gap-2">
+                      <Checkbox
+                        name="overlay-spine-top"
+                        checked={plotEdit.spineTop === true}
+                        onchange={(e) => setPlotField({ spineTop: e.currentTarget.checked })}
+                      />
+                      <span class="sidebar-label">Top</span>
+                    </label>
+                    <label class="flex items-center gap-2">
+                      <Checkbox
+                        name="overlay-spine-right"
+                        checked={plotEdit.spineRight === true}
+                        onchange={(e) => setPlotField({ spineRight: e.currentTarget.checked })}
+                      />
+                      <span class="sidebar-label">Right</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            {/if}
+          </div>
+
+          <!-- 8. Advanced -->
+          <div class="plot-settings-section" class:is-open={plotSectionOpen.advanced}>
+            <button
+              type="button"
+              class="plot-settings-section-header"
+              aria-expanded={plotSectionOpen.advanced}
+              onclick={() => togglePlotSection('advanced')}
+            >
+              <Gear className="size-3.5 shrink-0 text-neutral-500" />
+              <span class="plot-settings-section-title">Advanced</span>
+              <ChevronDown
+                className="plot-settings-section-chevron {plotSectionOpen.advanced ? '' : 'is-collapsed'}"
+              />
+            </button>
+            {#if plotSectionOpen.advanced}
+              <div class="plot-settings-section-body">
+                {#if mode === 'structural'}
+                  <label
+                    class="flex items-center gap-2 {optionsSearchHighlightId === 'show-selection-subtitle'
+                      ? 'option-pulse-highlight rounded p-1'
+                      : ''}"
+                    data-option-id="show-selection-subtitle"
+                  >
+                    <Checkbox name="show-selection-subtitle" bind:checked={ps.showSelectionSubtitle} />
+                    <span class="sidebar-label">Show selection on plot</span>
+                  </label>
+                {/if}
+                <div class="grid grid-cols-2 gap-1">
+                  <div
+                    class={optionsSearchHighlightId === 'aspect-ratio'
+                      ? 'option-pulse-highlight rounded p-0.5'
+                      : ''}
+                    data-option-id="aspect-ratio"
+                  >
+                    <p class="sidebar-label mb-0.5">Aspect ratio (W/H)</p>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="0.5"
+                      max="10"
+                      step="0.1"
+                      bind:value={ps.aspectRatio}
+                      className="w-full"
+                    />
+                  </div>
+                  <div
+                    class={optionsSearchHighlightId === 'export-dpi'
+                      ? 'option-pulse-highlight rounded p-0.5'
+                      : ''}
+                    data-option-id="export-dpi"
+                  >
+                    <p class="sidebar-label mb-0.5">Export DPI</p>
+                    <Select size="sm" bind:value={ps.dpi} className="w-full">
+                      <option value="72">72 dpi (screen)</option>
+                      <option value="96">96 dpi</option>
+                      <option value="150">150 dpi</option>
+                      <option value="300">300 dpi (print)</option>
+                      <option value="600">600 dpi (high-res)</option>
+                    </Select>
+                  </div>
+                  <div class="flex items-end pb-1">
+                    <label class="flex items-center gap-2">
+                      <Checkbox name="transparent-bg" bind:checked={ps.transparentBg} />
+                      <span class="sidebar-label">Transparent bg</span>
+                    </label>
+                  </div>
+                  <div
+                    class={optionsSearchHighlightId === 'font-family'
+                      ? 'option-pulse-highlight rounded p-0.5'
+                      : ''}
+                    data-option-id="font-family"
+                  >
+                    <p class="sidebar-label mb-0.5">Font</p>
+                    <Select size="sm" bind:value={ps.fontFamily} className="w-full">
+                      <option value="Roboto, sans-serif">Roboto</option>
+                      <option value="sans-serif">Sans-serif</option>
+                      <option value="serif">Serif</option>
+                      <option value="monospace">Monospace</option>
+                      <option value="Arial, sans-serif">Arial</option>
+                      <option value="Georgia, serif">Georgia</option>
+                      <option value="'Times New Roman', serif">Times New Roman</option>
+                      <option value="'Courier New', monospace">Courier New</option>
+                      <option value="Helvetica, sans-serif">Helvetica</option>
+                    </Select>
+                  </div>
+                </div>
+                <div
+                  class={optionsSearchHighlightId === 'reset-plot' ? 'option-pulse-highlight rounded p-1' : ''}
+                  data-option-id="reset-plot"
+                >
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="w-full"
+                    onclick={() => {
+                      if (mode === 'structural') {
+                        sPlots = {
+                          ...sPlots,
+                          [structuralType]: {
+                            ...structDefaults,
+                            ...(structuralType === 'area_per_lipid' ? { yUnit: 'Å²' } : {})
+                          }
+                        }
+                        if (compareLayout === 'grid') {
+                          gridLayout = clearCellPlotKeysFromOverrides(gridLayout, CELL_PLOT_KEYS)
+                        }
+                        bumpPlotData()
+                      } else {
+                        ePlotGlobal = { ...energGlobalDefaults, ...energPanelShell }
+                        ePlotPanels = {}
+                        if (energeticCompareLayout === 'grid') {
+                          energeticGridLayout = clearCellPlotKeysFromOverrides(
+                            energeticGridLayout,
+                            ENERGETIC_CELL_PLOT_KEYS
+                          )
+                        }
+                        for (const p of selectedProperties) ensureEPlotPanel(p)
+                        statsRange = null
+                        panelRangeStats = {}
+                      }
+                    }}>Reset</Button
+                  >
+                </div>
+              </div>
+            {/if}
+          </div>
+
         </div>
       {/if}
     </div>
@@ -9101,27 +11249,51 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
     class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
     style={paneBackgroundStyle}
   >
-    <h1 class="m-4 mb-2 text-xl font-semibold">{displayTitle || 'Analysis'}</h1>
+    <h1 class="m-3 mb-1.5 text-lg font-semibold">{displayTitle || 'Analysis'}</h1>
 
     {#if lastError}
-      <div class="gw-notice gw-notice-error mx-4 mb-3 select-text">
-        <div class="flex items-start gap-2">
-          <pre class="min-w-0 flex-1 whitespace-pre-wrap font-mono text-[11px] leading-snug">{lastError}</pre>
-          <Button
-            size="sm"
-            variant="outline"
-            className="shrink-0"
-            onclick={() => copyAnalysisError(lastError)}
-            title="Copy error to clipboard"
-          >
-            Copy
-          </Button>
+      <div
+        class="gw-notice gw-notice-error mx-4 mb-3 flex max-h-36 shrink-0 flex-col overflow-hidden select-text"
+        role="alert"
+      >
+        <div
+          class="flex shrink-0 items-center justify-between gap-2 border-b border-red-900/30 pb-1.5 dark:border-red-400/20"
+        >
+          <p class="text-[11px] font-medium text-red-800 dark:text-red-200">
+            Analysis error — scroll for details
+          </p>
+          <div class="flex shrink-0 items-center gap-1">
+            <Button
+              size="sm"
+              variant="outline"
+              className="shrink-0"
+              onclick={() => copyAnalysisError(lastError)}
+              title="Copy error to clipboard"
+            >
+              Copy
+            </Button>
+            <button
+              type="button"
+              class="rounded px-1.5 py-0.5 text-sm text-red-700 hover:bg-red-950/20 dark:text-red-300"
+              onclick={() => {
+                lastError = ''
+              }}
+              title="Dismiss error"
+              aria-label="Dismiss error"
+            >
+              ✕
+            </button>
+          </div>
         </div>
+        <pre
+          class="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap font-mono text-[11px] leading-snug pr-1"
+          >{lastError}</pre
+        >
       </div>
     {/if}
 
     {#if mode === 'structural' || mode === 'energetic'}
-      <div class="mx-4 mb-2 space-y-2">
+      <div class="mx-3 mb-1.5 space-y-1.5">
         <div class="relative z-10 flex flex-wrap items-center gap-1">
           <Button
             size="sm"
@@ -9182,344 +11354,23 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 · {clampCellCount(activeMosaicLayout.cellCount, activeMosaicLayout.cols, activeMosaicLayout.rows)}
               {/if}</span
             >
-            <Button
-              size="sm"
-              variant={plotGridOptionsOpen ? 'default' : 'outline'}
-              onclick={() => (plotGridOptionsOpen = !plotGridOptionsOpen)}
-              title="Gap, labels, legend, background"
-            >Grid options</Button>
           {/if}
+          <Button
+            size="sm"
+            variant={plotLayoutOptionsOpen ? 'default' : 'outline'}
+            onclick={toggleLayoutOptionsPanel}
+            title={toolbarIsGrid
+              ? 'Show or hide the Grid options panel on the right'
+              : 'Show or hide the Overlay options panel on the right'}
+            >{toolbarIsGrid ? 'Grid options' : 'Overlay options'}</Button
+          >
         </div>
-        {#if !toolbarIsGrid && analysisSets.length > 1}
-          <div>
-            <p class="sidebar-label mb-0.5">Overlay draw order</p>
-            <OrderedSetChips
-              setIds={syncOrderedIds(activeMosaicLayout.overlaySetIds, analysisSets.map((s) => s.id))}
-              sets={gridChipSets}
-              onchange={setOverlaySetIds}
-            />
-          </div>
-        {/if}
-        {#if toolbarIsGrid && plotGridOptionsOpen}
-          <div class="space-y-2 rounded-md border border-neutral-800 p-2 text-xs">
-            <div class="grid grid-cols-2 gap-1 sm:grid-cols-4">
-              <div>
-                <p class="sidebar-label mb-0.5">Gap (px)</p>
-                <Input
-                  size="sm"
-                  type="number"
-                  min="0"
-                  max="80"
-                  step="1"
-                  value={activeMosaicLayout.gapPx}
-                  className="w-full"
-                  oninput={(e) =>
-                    patchGridChrome({
-                      gapPx: /** @type {HTMLInputElement} */ (e.currentTarget).value
-                    })
-                  }
-                />
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">Cell aspect (x/y)</p>
-                <Input
-                  size="sm"
-                  type="number"
-                  min="0.4"
-                  max="5"
-                  step="0.1"
-                  value={activeMosaicLayout.aspectRatio}
-                  placeholder={String(ps.aspectRatio || '2.5')}
-                  className="w-full"
-                  oninput={(e) =>
-                    patchGridChrome({
-                      aspectRatio: /** @type {HTMLInputElement} */ (e.currentTarget).value
-                    })
-                  }
-                />
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">Cells</p>
-                <Input
-                  size="sm"
-                  type="number"
-                  min="1"
-                  max={gridCapacity(activeMosaicLayout.cols, activeMosaicLayout.rows)}
-                  step="1"
-                  value={clampCellCount(
-                    activeMosaicLayout.cellCount,
-                    activeMosaicLayout.cols,
-                    activeMosaicLayout.rows
-                  )}
-                  className="w-full"
-                  oninput={(e) =>
-                    setActiveGridCellCount(
-                      /** @type {HTMLInputElement} */ (e.currentTarget).value
-                    )
-                  }
-                />
-                <p class="mt-0.5 text-[10px] text-neutral-500 dark:text-neutral-400">
-                  Active squares in the {activeMosaicLayout.cols}×{activeMosaicLayout.rows} frame
-                  (max {gridCapacity(activeMosaicLayout.cols, activeMosaicLayout.rows)}).
-                </p>
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">Last incomplete row</p>
-                <Select
-                  size="sm"
-                  className="w-full"
-                  value={activeMosaicLayout.lastRowAlign}
-                  onchange={(e) =>
-                    patchGridChrome({
-                      lastRowAlign: /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                    })
-                  }
-                >
-                  <option value="start">Left</option>
-                  <option value="center">Center</option>
-                  <option value="end">Right</option>
-                </Select>
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">Legend</p>
-                <Select
-                  size="sm"
-                  className="w-full"
-                  value={activeMosaicLayout.legendMode}
-                  onchange={(e) =>
-                    patchGridChrome({
-                      legendMode: /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                    })
-                  }
-                >
-                  <option value="each">Each cell</option>
-                  <option value="one">One cell</option>
-                  <option value="outside">Outside strip</option>
-                  <option value="none">None</option>
-                </Select>
-              </div>
-            </div>
-            <div class="grid grid-cols-2 gap-1 sm:grid-cols-4">
-              <div>
-                <p class="sidebar-label mb-0.5">X titles</p>
-                <Select
-                  size="sm"
-                  className="w-full"
-                  value={activeMosaicLayout.showXLabels}
-                  onchange={(e) =>
-                    patchGridChrome({
-                      showXLabels: /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                    })
-                  }
-                >
-                  <option value="all">All</option>
-                  <option value="bottom">Last row only</option>
-                  <option value="none">None</option>
-                </Select>
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">Y titles</p>
-                <Select
-                  size="sm"
-                  className="w-full"
-                  value={activeMosaicLayout.showYLabels}
-                  onchange={(e) =>
-                    patchGridChrome({
-                      showYLabels: /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                    })
-                  }
-                >
-                  <option value="all">All</option>
-                  <option value="left">First column only</option>
-                  <option value="none">None</option>
-                </Select>
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">X tick numbers</p>
-                <Select
-                  size="sm"
-                  className="w-full"
-                  value={activeMosaicLayout.showXTickLabels}
-                  onchange={(e) =>
-                    patchGridChrome({
-                      showXTickLabels: /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                    })
-                  }
-                >
-                  <option value="all">All</option>
-                  <option value="bottom">Last row only</option>
-                  <option value="none">None</option>
-                </Select>
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">Y tick numbers</p>
-                <Select
-                  size="sm"
-                  className="w-full"
-                  value={activeMosaicLayout.showYTickLabels}
-                  onchange={(e) =>
-                    patchGridChrome({
-                      showYTickLabels: /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                    })
-                  }
-                >
-                  <option value="all">All</option>
-                  <option value="left">First column only</option>
-                  <option value="none">None</option>
-                </Select>
-              </div>
-            </div>
-            {#if activeMosaicLayout.legendMode === 'one'}
-              <div>
-                <p class="sidebar-label mb-0.5">Legend cell</p>
-                <Select
-                  size="sm"
-                  className="w-full"
-                  value={String(activeMosaicLayout.legendCell)}
-                  onchange={(e) =>
-                    patchGridChrome({
-                      legendCell: Number(
-                        /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                      )
-                    })
-                  }
-                >
-                  {#each activeMosaicLayout.cells as cell, i (i)}
-                    <option value={String(i)}>Cell {i + 1}{cell.title ? ` · ${cell.title}` : ''}</option>
-                  {/each}
-                </Select>
-              </div>
-            {/if}
-            {#if activeMosaicLayout.legendMode === 'outside'}
-              <div class="grid grid-cols-2 gap-1 sm:grid-cols-4">
-                <div>
-                  <p class="sidebar-label mb-0.5">Strip</p>
-                  <Select
-                    size="sm"
-                    className="w-full"
-                    value={activeMosaicLayout.legendOutside}
-                    onchange={(e) =>
-                      patchGridChrome({
-                        legendOutside: /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                      })
-                    }
-                  >
-                    <option value="bottom">Bottom</option>
-                    <option value="top">Top</option>
-                    <option value="right">Right (side box)</option>
-                    <option value="left">Left (side box)</option>
-                  </Select>
-                </div>
-                <div>
-                  <p class="sidebar-label mb-0.5">Entries</p>
-                  <Select
-                    size="sm"
-                    className="w-full"
-                    value={activeMosaicLayout.legendEntries}
-                    onchange={(e) =>
-                      patchGridChrome({
-                        legendEntries: /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                      })
-                    }
-                  >
-                    <option value="sets">Sets</option>
-                    <option value="roles">Series roles</option>
-                    <option value="both">Sets and roles</option>
-                  </Select>
-                </div>
-                <div>
-                  <p class="sidebar-label mb-0.5">Columns</p>
-                  <Input
-                    size="sm"
-                    type="number"
-                    min="1"
-                    max="8"
-                    step="1"
-                    value={activeMosaicLayout.legendColumns}
-                    className="w-full"
-                    oninput={(e) =>
-                      patchGridChrome({
-                        legendColumns: /** @type {HTMLInputElement} */ (e.currentTarget).value
-                      })
-                    }
-                  />
-                </div>
-                <div>
-                  <p class="sidebar-label mb-0.5">Legend title</p>
-                  <Input
-                    size="sm"
-                    value={activeMosaicLayout.legendTitle}
-                    className="w-full"
-                    oninput={(e) =>
-                      patchGridChrome({
-                        legendTitle: /** @type {HTMLInputElement} */ (e.currentTarget).value
-                      })
-                    }
-                  />
-                </div>
-              </div>
-            {/if}
-            <div class="grid grid-cols-2 gap-1 sm:grid-cols-4">
-              <div>
-                <p class="sidebar-label mb-0.5">Figure background</p>
-                <div class="flex items-center gap-1">
-                  <ColorInput
-                    size="sm"
-                    value={activeMosaicLayout.figureBg || displayPlotBg}
-                    oninput={(e) =>
-                      patchGridChrome({
-                        figureBg: /** @type {HTMLInputElement} */ (e.currentTarget).value
-                      })
-                    }
-                  />
-                  <Button size="sm" variant="ghost" onclick={() => patchGridChrome({ figureBg: '' })}
-                    >Theme</Button
-                  >
-                </div>
-              </div>
-              <div>
-                <p class="sidebar-label mb-0.5">Cell background</p>
-                <div class="flex items-center gap-1">
-                  <ColorInput
-                    size="sm"
-                    value={activeMosaicLayout.cellBg || displayPlotBg}
-                    oninput={(e) =>
-                      patchGridChrome({
-                        cellBg: /** @type {HTMLInputElement} */ (e.currentTarget).value
-                      })
-                    }
-                  />
-                  <Button size="sm" variant="ghost" onclick={() => patchGridChrome({ cellBg: '' })}
-                    >Theme</Button
-                  >
-                </div>
-              </div>
-              <label class="flex items-end gap-2 pb-1">
-                <Checkbox
-                  name="grid-cell-border"
-                  checked={activeMosaicLayout.cellBorder !== false}
-                  onchange={(e) =>
-                    patchGridChrome({
-                      cellBorder: /** @type {HTMLInputElement} */ (e.currentTarget).checked
-                    })
-                  }
-                />
-                <span class="sidebar-label">Cell border</span>
-              </label>
-              <div class="flex items-end">
-                <Button size="sm" variant="outline" className="w-full" onclick={resetGridToAuto}
-                  >{mode === 'energetic' ? 'Reset auto (one property / cell)' : 'Reset auto (one set / cell)'}</Button
-                >
-              </div>
-            </div>
-          </div>
-        {/if}
       </div>
     {/if}
 
     {#if (mode === 'structural' ? chartView.mode === 'empty' : energeticChartIsEmpty)}
       <p
-        class="mx-4 mb-4 flex flex-1 items-center justify-center rounded-lg border border-dashed border-neutral-300 text-neutral-500 dark:border-neutral-800 dark:text-neutral-700"
+        class="mx-3 mb-3 flex flex-1 items-center justify-center rounded-lg border border-dashed border-neutral-300 text-neutral-500 dark:border-neutral-800 dark:text-neutral-700"
       >
         {#if mode === 'energetic' && selectedProperties.length === 0 && analysisSets.some((s) => s.energeticResult)}
           No properties checked — mark a property to show it on the chart.
@@ -9535,7 +11386,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
       </p>
     {:else}
       <div
-        class="relative mx-4 mb-4 flex min-h-0 flex-1 flex-col gap-3 overflow-x-hidden overflow-y-auto"
+        class="relative mx-3 mb-3 flex min-h-0 flex-1 flex-col gap-2 overflow-x-auto overflow-y-auto"
         style="scrollbar-gutter: stable;"
         bind:this={plotExportRoot}
       >
@@ -9660,21 +11511,21 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           {@const outside = gridLayout.legendMode === 'outside'}
           {@const loc = gridLayout.legendOutside}
           {@const mosaicGap = `${Number(gridLayout.gapPx) || 0}px`}
-          {@const stripFlex =
-            outside && (loc === 'left' || loc === 'right') ? 'flex-row items-start' : 'flex-col'}
+          {@const stripAlign = outsideLegendAlignClasses(gridLayout)}
+          {@const stripFlex = outside && (loc === 'left' || loc === 'right') ? stripAlign.wrapper : 'flex-col'}
           <div
             class={`flex min-w-0 ${stripFlex}`}
             data-chart-mosaic="1"
-            style={`gap: ${mosaicGap}; ${gridLayout.figureBg ? `background: ${gridLayout.figureBg};` : ''} padding: 0.25rem; overflow-anchor: none;`}
+            style={`gap: ${mosaicGap}; ${gridLayout.figureBg ? `background: ${gridLayout.figureBg};` : ''} padding: 0.25rem; overflow-anchor: none; ${mosaicPanelLetterPadStyle(gridLayout)}`}
           >
             {#if outside && loc === 'top'}
               <ChartLegend
+                className={stripAlign.self}
                 series={outsideLegendSeries}
                 columns={gridLayout.legendColumns}
                 title={gridLayout.legendTitle}
                 fontFamily={ps.fontFamily || 'Roboto, sans-serif'}
-                fontSize={Number(ps.legendFontSize) || 10}
-                swatchSize={Number(ps.legendSwatchSize) || 12}
+                {...outsideLegendChrome(gridLayout)}
                 textColor={resolvedStructColors.textColor}
               />
             {/if}
@@ -9684,8 +11535,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 columns={1}
                 title={gridLayout.legendTitle}
                 fontFamily={ps.fontFamily || 'Roboto, sans-serif'}
-                fontSize={Number(ps.legendFontSize) || 10}
-                swatchSize={Number(ps.legendSwatchSize) || 12}
+                {...outsideLegendChrome(gridLayout)}
                 textColor={resolvedStructColors.textColor}
                 boxed
               />
@@ -9725,86 +11575,158 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 columns={1}
                 title={gridLayout.legendTitle}
                 fontFamily={ps.fontFamily || 'Roboto, sans-serif'}
-                fontSize={Number(ps.legendFontSize) || 10}
-                swatchSize={Number(ps.legendSwatchSize) || 12}
+                {...outsideLegendChrome(gridLayout)}
                 textColor={resolvedStructColors.textColor}
                 boxed
               />
             {/if}
             {#if outside && loc === 'bottom'}
               <ChartLegend
+                className={stripAlign.self}
                 series={outsideLegendSeries}
                 columns={gridLayout.legendColumns}
                 title={gridLayout.legendTitle}
                 fontFamily={ps.fontFamily || 'Roboto, sans-serif'}
-                fontSize={Number(ps.legendFontSize) || 10}
-                swatchSize={Number(ps.legendSwatchSize) || 12}
+                {...outsideLegendChrome(gridLayout)}
                 textColor={resolvedStructColors.textColor}
               />
             {/if}
           </div>
         {:else if mode === 'structural'}
-          <div data-chart-export="">
-          <LineChart
-            series={displaySeries}
-            xLabel={displayXLabel}
-            yLabel={displayYLabel}
-            plotBg={resolvedStructColors.plotBg}
-            tickColor={resolvedStructColors.textColor}
-            labelColor={resolvedStructColors.textColor}
-            axisColor={resolvedStructColors.textColor}
-            gridColor={plotGridColor(ps, resolvedStructColors.textColor)}
-            showGrid={ps.showGrid}
-            aspectRatio={Number(ps.aspectRatio) || 2.5}
-            transparentBg={ps.transparentBg}
-            fontFamily={ps.fontFamily || 'Roboto, sans-serif'}
-            chartTitle={displayTitle}
-            chartSubtitle={displaySubtitle}
-            xTickLabels={displayXTickLabels}
-            xTicks={Number(ps.xTickCount) || 5}
-            yTicks={Number(ps.yTickCount) || 5}
-            xTickDecimals={ps.xTickDecimals}
-            yTickDecimals={ps.yTickDecimals}
-            {...lineChartExtraMarginProps(ps)}
-            tickLabelGap={Number(ps.tickLabelGap) || 8}
-            legendPosition={ps.legendPosition || 'top-left'}
-            legendSwatchSize={Number(ps.legendSwatchSize) || 12}
-            legendFontSize={Number(ps.legendFontSize) || 10}
-            axisFontSize={Number(ps.axisFontSize) || 12}
-            titleFontSize={Number(ps.titleFontSize) || 13}
-            {...lineChartAxisProps(ps)}
-            xTickStep={plotTickStep('x')}
-            yTickStep={plotTickStep('y')}
-            referenceLines={structReferenceLines}
-            xMinOverride={xMinO}
-            xMaxOverride={xMaxO}
-            yMinOverride={yMinO}
-            yMaxOverride={yMaxO}
-            interactionMode={chartInteractionMode}
-            statsRange={hasChartTimeAxis ? statsRange : null}
-            onAxisRange={applyStructAxisRange}
-            onStatsRange={handleStatsRange}
-          />
+          {@const outside = gridLayout.legendMode === 'outside'}
+          {@const loc = gridLayout.legendOutside}
+          {@const mosaicGap = `${Number(gridLayout.gapPx) || 0}px`}
+          {@const stripAlign = outsideLegendAlignClasses(gridLayout)}
+          {@const stripFlex = outside && (loc === 'left' || loc === 'right') ? stripAlign.wrapper : 'flex-col'}
+          {@const overlayLetter = outsidePanelLetterBadge(
+            gridLayout,
+            0,
+            Number(ps.titleFontSize) || 13,
+            resolvedStructColors.textColor,
+            ps.fontFamily || 'Roboto, sans-serif'
+          )}
+          <div
+            class={`flex min-w-0 ${stripFlex}`}
+            data-chart-export=""
+            style={`gap: ${mosaicGap}; ${gridLayout.figureBg ? `background: ${gridLayout.figureBg};` : ''} overflow-anchor: none; ${mosaicPanelLetterPadStyle(gridLayout)}`}
+          >
+            {#if outside && loc === 'top'}
+              <ChartLegend
+                className={stripAlign.self}
+                series={outsideLegendSeries}
+                columns={gridLayout.legendColumns}
+                title={gridLayout.legendTitle}
+                fontFamily={ps.fontFamily || 'Roboto, sans-serif'}
+                {...outsideLegendChrome(gridLayout)}
+                textColor={resolvedStructColors.textColor}
+              />
+            {/if}
+            {#if outside && loc === 'left'}
+              <ChartLegend
+                series={outsideLegendSeries}
+                columns={1}
+                title={gridLayout.legendTitle}
+                fontFamily={ps.fontFamily || 'Roboto, sans-serif'}
+                {...outsideLegendChrome(gridLayout)}
+                textColor={resolvedStructColors.textColor}
+                boxed
+              />
+            {/if}
+            <div class="relative min-w-0 flex-1">
+              {#if overlayLetter}
+                <span
+                  class="pointer-events-none absolute z-[15] select-none"
+                  data-chart-export="panel-letter"
+                  style={overlayLetter.style}
+                  aria-hidden="true">{overlayLetter.letter}</span
+                >
+              {/if}
+              <LineChart
+                series={displaySeries}
+                xLabel={displayXLabel}
+                yLabel={displayYLabel}
+                plotBg={resolvedStructColors.plotBg}
+                tickColor={resolvedStructColors.textColor}
+                labelColor={resolvedStructColors.textColor}
+                axisColor={resolvedStructColors.textColor}
+                gridColor={plotGridColor(ps, resolvedStructColors.textColor)}
+                showGrid={ps.showGrid}
+                aspectRatio={Number(ps.aspectRatio) || 2.5}
+                transparentBg={ps.transparentBg}
+                fontFamily={ps.fontFamily || 'Roboto, sans-serif'}
+                chartTitle={displayTitle}
+                chartSubtitle={displaySubtitle}
+                xTickLabels={displayXTickLabels}
+                xTicks={Number(ps.xTickCount) || 5}
+                yTicks={Number(ps.yTickCount) || 5}
+                xTickDecimals={ps.xTickDecimals}
+                yTickDecimals={ps.yTickDecimals}
+                {...lineChartExtraMarginProps(ps)}
+                tickLabelGap={Number(ps.tickLabelGap) || 8}
+                legendPosition={overlayChartLegendPosition}
+                legendSwatchSize={Number(ps.legendSwatchSize) || 12}
+                legendFontSize={Number(ps.legendFontSize) || 10}
+                axisFontSize={Number(ps.axisFontSize) || 12}
+                axisFontBold={ps.axisFontBold === true}
+                titleFontSize={Number(ps.titleFontSize) || 13}
+                {...lineChartAxisProps(ps)}
+                {...lineChartPanelLetterProps(gridLayout, 0, Number(ps.titleFontSize) || 13)}
+                xTickStep={plotTickStep('x')}
+                yTickStep={plotTickStep('y')}
+                referenceLines={structReferenceLines}
+                referenceBands={structReferenceBandsDraw}
+                xMinOverride={xMinO}
+                xMaxOverride={xMaxO}
+                yMinOverride={yMinO}
+                yMaxOverride={yMaxO}
+                interactionMode={chartInteractionMode}
+                statsRange={hasChartTimeAxis ? statsRange : null}
+                onAxisRange={applyStructAxisRange}
+                onStatsRange={handleStatsRange}
+              />
+            </div>
+            {#if outside && loc === 'right'}
+              <ChartLegend
+                series={outsideLegendSeries}
+                columns={1}
+                title={gridLayout.legendTitle}
+                fontFamily={ps.fontFamily || 'Roboto, sans-serif'}
+                {...outsideLegendChrome(gridLayout)}
+                textColor={resolvedStructColors.textColor}
+                boxed
+              />
+            {/if}
+            {#if outside && loc === 'bottom'}
+              <ChartLegend
+                className={stripAlign.self}
+                series={outsideLegendSeries}
+                columns={gridLayout.legendColumns}
+                title={gridLayout.legendTitle}
+                fontFamily={ps.fontFamily || 'Roboto, sans-serif'}
+                {...outsideLegendChrome(gridLayout)}
+                textColor={resolvedStructColors.textColor}
+              />
+            {/if}
           </div>
         {:else if mode === 'energetic' && energeticCompareLayout === 'grid'}
           {@const outside = energeticGridLayout.legendMode === 'outside'}
           {@const loc = energeticGridLayout.legendOutside}
           {@const mosaicGap = `${Number(energeticGridLayout.gapPx) || 0}px`}
-          {@const stripFlex =
-            outside && (loc === 'left' || loc === 'right') ? 'flex-row items-start' : 'flex-col'}
+          {@const stripAlign = outsideLegendAlignClasses(energeticGridLayout)}
+          {@const stripFlex = outside && (loc === 'left' || loc === 'right') ? stripAlign.wrapper : 'flex-col'}
           <div
             class={`flex min-w-0 ${stripFlex}`}
             data-chart-mosaic="1"
-            style={`gap: ${mosaicGap}; ${energeticGridLayout.figureBg ? `background: ${energeticGridLayout.figureBg};` : ''} padding: 0.25rem; overflow-anchor: none;`}
+            style={`gap: ${mosaicGap}; ${energeticGridLayout.figureBg ? `background: ${energeticGridLayout.figureBg};` : ''} padding: 0.25rem; overflow-anchor: none; ${mosaicPanelLetterPadStyle(energeticGridLayout)}`}
           >
             {#if outside && loc === 'top'}
               <ChartLegend
+                className={stripAlign.self}
                 series={outsideLegendSeries}
                 columns={energeticGridLayout.legendColumns}
                 title={energeticGridLayout.legendTitle}
                 fontFamily={ePlotGlobal.fontFamily || 'Roboto, sans-serif'}
-                fontSize={Number(ePlotGlobal.legendFontSize) || 10}
-                swatchSize={Number(ePlotGlobal.legendSwatchSize) || 12}
+                {...outsideLegendChrome(energeticGridLayout)}
                 textColor={resolvedEnergColors.textColor}
               />
             {/if}
@@ -9814,8 +11736,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 columns={1}
                 title={energeticGridLayout.legendTitle}
                 fontFamily={ePlotGlobal.fontFamily || 'Roboto, sans-serif'}
-                fontSize={Number(ePlotGlobal.legendFontSize) || 10}
-                swatchSize={Number(ePlotGlobal.legendSwatchSize) || 12}
+                {...outsideLegendChrome(energeticGridLayout)}
                 textColor={resolvedEnergColors.textColor}
                 boxed
               />
@@ -9855,20 +11776,19 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 columns={1}
                 title={energeticGridLayout.legendTitle}
                 fontFamily={ePlotGlobal.fontFamily || 'Roboto, sans-serif'}
-                fontSize={Number(ePlotGlobal.legendFontSize) || 10}
-                swatchSize={Number(ePlotGlobal.legendSwatchSize) || 12}
+                {...outsideLegendChrome(energeticGridLayout)}
                 textColor={resolvedEnergColors.textColor}
                 boxed
               />
             {/if}
             {#if outside && loc === 'bottom'}
               <ChartLegend
+                className={stripAlign.self}
                 series={outsideLegendSeries}
                 columns={energeticGridLayout.legendColumns}
                 title={energeticGridLayout.legendTitle}
                 fontFamily={ePlotGlobal.fontFamily || 'Roboto, sans-serif'}
-                fontSize={Number(ePlotGlobal.legendFontSize) || 10}
-                swatchSize={Number(ePlotGlobal.legendSwatchSize) || 12}
+                {...outsideLegendChrome(energeticGridLayout)}
                 textColor={resolvedEnergColors.textColor}
               />
             {/if}
@@ -9895,45 +11815,122 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             (ePlotGlobal.yMax !== '' && Number.isFinite(Number(ePlotGlobal.yMax))
               ? Number(ePlotGlobal.yMax)
               : null)}
-          <div data-chart-export="">
-          <LineChart
-            series={displaySeries}
-            xLabel={displayXLabel}
-            yLabel={displayYLabel}
-            plotBg={resolvedEnergColors.plotBg}
-            tickColor={resolvedEnergColors.textColor}
-            labelColor={resolvedEnergColors.textColor}
-            axisColor={resolvedEnergColors.textColor}
-            gridColor={plotGridColor(ePlotGlobal, resolvedEnergColors.textColor)}
-            showGrid={ePlotGlobal.showGrid !== false}
-            aspectRatio={Number(ePlotGlobal.aspectRatio) || Number(energPanelShell.aspectRatio) || 2.5}
-            transparentBg={ePlotGlobal.transparentBg}
-            fontFamily={ePlotGlobal.fontFamily || 'Roboto, sans-serif'}
-            chartTitle={displayTitle}
-            xTicks={Number(ePlotGlobal.xTickCount) || 5}
-            yTicks={Number(ePlotGlobal.yTickCount) || 5}
-            xTickDecimals={ePlotGlobal.xTickDecimals}
-            yTickDecimals={ePlotGlobal.yTickDecimals}
-            {...lineChartExtraMarginProps(ePlotGlobal)}
-            tickLabelGap={Number(ePlotGlobal.tickLabelGap) || 8}
-            legendPosition={ePlotGlobal.legendPosition || energPanelShell.legendPosition || 'top-left'}
-            legendSwatchSize={Number(ePlotGlobal.legendSwatchSize) || 12}
-            legendFontSize={Number(ePlotGlobal.legendFontSize) || 10}
-            axisFontSize={Number(ePlotGlobal.axisFontSize) || 12}
-            titleFontSize={Number(ePlotGlobal.titleFontSize) || 13}
-            {...lineChartAxisProps(ePlotGlobal)}
-            xTickStep={ePlotGlobal.xTickStep || ''}
-            yTickStep={ePlotGlobal.yTickStep || ''}
-            referenceLines={structReferenceLines}
-            xMinOverride={xMinP}
-            xMaxOverride={xMaxP}
-            yMinOverride={yMinP}
-            yMaxOverride={yMaxP}
-            interactionMode={chartInteractionMode}
-            statsRange={statsRange}
-            onAxisRange={(r) => applyPanelAxisRange('__overlay__', r)}
-            onStatsRange={handleStatsRange}
-          />
+          {@const outside = energeticGridLayout.legendMode === 'outside'}
+          {@const loc = energeticGridLayout.legendOutside}
+          {@const mosaicGap = `${Number(energeticGridLayout.gapPx) || 0}px`}
+          {@const stripAlign = outsideLegendAlignClasses(energeticGridLayout)}
+          {@const stripFlex = outside && (loc === 'left' || loc === 'right') ? stripAlign.wrapper : 'flex-col'}
+          {@const energOverlayLetter = outsidePanelLetterBadge(
+            energeticGridLayout,
+            0,
+            Number(ePlotGlobal.titleFontSize) || 13,
+            resolvedEnergColors.textColor,
+            ePlotGlobal.fontFamily || 'Roboto, sans-serif'
+          )}
+          <div
+            class={`flex min-w-0 ${stripFlex}`}
+            data-chart-export=""
+            style={`gap: ${mosaicGap}; ${energeticGridLayout.figureBg ? `background: ${energeticGridLayout.figureBg};` : ''} overflow-anchor: none; ${mosaicPanelLetterPadStyle(energeticGridLayout)}`}
+          >
+            {#if outside && loc === 'top'}
+              <ChartLegend
+                className={stripAlign.self}
+                series={outsideLegendSeries}
+                columns={energeticGridLayout.legendColumns}
+                title={energeticGridLayout.legendTitle}
+                fontFamily={ePlotGlobal.fontFamily || 'Roboto, sans-serif'}
+                {...outsideLegendChrome(energeticGridLayout)}
+                textColor={resolvedEnergColors.textColor}
+              />
+            {/if}
+            {#if outside && loc === 'left'}
+              <ChartLegend
+                series={outsideLegendSeries}
+                columns={1}
+                title={energeticGridLayout.legendTitle}
+                fontFamily={ePlotGlobal.fontFamily || 'Roboto, sans-serif'}
+                {...outsideLegendChrome(energeticGridLayout)}
+                textColor={resolvedEnergColors.textColor}
+                boxed
+              />
+            {/if}
+            <div class="relative min-w-0 flex-1">
+              {#if energOverlayLetter}
+                <span
+                  class="pointer-events-none absolute z-[15] select-none"
+                  data-chart-export="panel-letter"
+                  style={energOverlayLetter.style}
+                  aria-hidden="true">{energOverlayLetter.letter}</span
+                >
+              {/if}
+              <LineChart
+                series={displaySeries}
+                xLabel={displayXLabel}
+                yLabel={displayYLabel}
+                plotBg={resolvedEnergColors.plotBg}
+                tickColor={resolvedEnergColors.textColor}
+                labelColor={resolvedEnergColors.textColor}
+                axisColor={resolvedEnergColors.textColor}
+                gridColor={plotGridColor(ePlotGlobal, resolvedEnergColors.textColor)}
+                showGrid={ePlotGlobal.showGrid !== false}
+                aspectRatio={Number(ePlotGlobal.aspectRatio) || Number(energPanelShell.aspectRatio) || 2.5}
+                transparentBg={ePlotGlobal.transparentBg}
+                fontFamily={ePlotGlobal.fontFamily || 'Roboto, sans-serif'}
+                chartTitle={displayTitle}
+                xTicks={Number(ePlotGlobal.xTickCount) || 5}
+                yTicks={Number(ePlotGlobal.yTickCount) || 5}
+                xTickDecimals={ePlotGlobal.xTickDecimals}
+                yTickDecimals={ePlotGlobal.yTickDecimals}
+                {...lineChartExtraMarginProps(ePlotGlobal)}
+                tickLabelGap={Number(ePlotGlobal.tickLabelGap) || 8}
+                legendPosition={overlayChartLegendPosition}
+                legendSwatchSize={Number(ePlotGlobal.legendSwatchSize) || 12}
+                legendFontSize={Number(ePlotGlobal.legendFontSize) || 10}
+                axisFontSize={Number(ePlotGlobal.axisFontSize) || 12}
+                axisFontBold={ePlotGlobal.axisFontBold === true}
+                titleFontSize={Number(ePlotGlobal.titleFontSize) || 13}
+                {...lineChartAxisProps(ePlotGlobal)}
+                {...lineChartPanelLetterProps(
+                  energeticGridLayout,
+                  0,
+                  Number(ePlotGlobal.titleFontSize) || 13
+                )}
+                xTickStep={ePlotGlobal.xTickStep || ''}
+                yTickStep={ePlotGlobal.yTickStep || ''}
+                referenceLines={structReferenceLines}
+                referenceBands={structReferenceBandsDraw}
+                xMinOverride={xMinP}
+                xMaxOverride={xMaxP}
+                yMinOverride={yMinP}
+                yMaxOverride={yMaxP}
+                interactionMode={chartInteractionMode}
+                statsRange={statsRange}
+                onAxisRange={(r) => applyPanelAxisRange('__overlay__', r)}
+                onStatsRange={handleStatsRange}
+              />
+            </div>
+            {#if outside && loc === 'right'}
+              <ChartLegend
+                series={outsideLegendSeries}
+                columns={1}
+                title={energeticGridLayout.legendTitle}
+                fontFamily={ePlotGlobal.fontFamily || 'Roboto, sans-serif'}
+                {...outsideLegendChrome(energeticGridLayout)}
+                textColor={resolvedEnergColors.textColor}
+                boxed
+              />
+            {/if}
+            {#if outside && loc === 'bottom'}
+              <ChartLegend
+                className={stripAlign.self}
+                series={outsideLegendSeries}
+                columns={energeticGridLayout.legendColumns}
+                title={energeticGridLayout.legendTitle}
+                fontFamily={ePlotGlobal.fontFamily || 'Roboto, sans-serif'}
+                {...outsideLegendChrome(energeticGridLayout)}
+                textColor={resolvedEnergColors.textColor}
+              />
+            {/if}
           </div>
         {/if}
         {/if}
@@ -9993,4 +11990,977 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
       </div>
     {/if}
   </div>
+
+  {#if plotLayoutOptionsOpen && (mode === 'structural' || mode === 'energetic')}
+    <ResizableSidePanel
+      side="right"
+      storageKey="analysis-grid"
+      defaultWidth={260}
+      minWidth={200}
+      bind:collapsed={plotLayoutOptionsCollapsed}
+      className="flex min-h-0 min-w-0 flex-col overflow-x-clip overflow-y-auto border-l border-neutral-200 bg-white p-2.5 text-xs select-none dark:border-neutral-800 dark:bg-neutral-950"
+    >
+      <div class="mb-2 flex items-center justify-between gap-1">
+        <h2 class="sidebar-heading mb-0">{toolbarIsGrid ? 'Grid options' : 'Overlay options'}</h2>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="px-1.5"
+          title="Hide panel"
+          onclick={() => (plotLayoutOptionsOpen = false)}
+          >✕</Button
+        >
+      </div>
+
+      <div class="space-y-2.5">
+        {#if !toolbarIsGrid && analysisSets.length > 1}
+          <div class="space-y-1">
+            <p class="sidebar-subheading">Draw order</p>
+            <p class="sidebar-hint">Top of the list draws on top.</p>
+            <div class="max-h-48 overflow-y-auto pr-0.5">
+              <OrderedSetChips
+                setIds={syncOrderedIds(
+                  activeMosaicLayout.overlaySetIds,
+                  analysisSets.map((s) => s.id)
+                )}
+                sets={gridChipSets}
+                onchange={setOverlaySetIds}
+              />
+            </div>
+          </div>
+          <Divider />
+        {/if}
+
+        {#if !toolbarIsGrid}
+          <div
+            class="space-y-1 {optionsSearchHighlightId === 'grid-legend-mode'
+              ? 'option-pulse-highlight rounded p-1'
+              : ''}"
+            data-option-id="grid-legend-mode"
+          >
+            <p class="sidebar-subheading">Legend</p>
+            <p class="sidebar-hint">Outside uses the same strip options as Grid.</p>
+            <label>
+              <span class="sidebar-label mb-0 block">Placement</span>
+              <Select
+                size="sm"
+                className="w-full"
+                value={
+                  activeMosaicLayout.legendMode === 'outside' ||
+                  activeMosaicLayout.legendMode === 'none'
+                    ? activeMosaicLayout.legendMode
+                    : 'each'
+                }
+                onchange={(e) =>
+                  patchGridChrome({
+                    legendMode: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                  })
+                }
+              >
+                <option value="each">Inside plot</option>
+                <option value="outside">Outside</option>
+                <option value="none">None</option>
+              </Select>
+            </label>
+          </div>
+          <Divider />
+        {/if}
+
+        {#if toolbarIsGrid}
+        <div class="space-y-1">
+          <p class="sidebar-subheading">Layout</p>
+          <div class="grid grid-cols-2 gap-1.5">
+            <label title="Gap between cells (px)">
+              <span class="sidebar-label mb-0 block">Gap</span>
+              <Input
+                size="sm"
+                type="number"
+                min="0"
+                max="80"
+                step="1"
+                value={activeMosaicLayout.gapPx}
+                className="w-full"
+                oninput={(e) =>
+                  patchGridChrome({
+                    gapPx: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                  })
+                }
+              />
+            </label>
+            <label title="Cell aspect ratio (width/height)">
+              <span class="sidebar-label mb-0 block">Aspect</span>
+              <Input
+                size="sm"
+                type="number"
+                min="0.4"
+                max="5"
+                step="0.1"
+                value={activeMosaicLayout.aspectRatio}
+                placeholder={String(ps.aspectRatio || '2.5')}
+                className="w-full"
+                oninput={(e) =>
+                  patchGridChrome({
+                    aspectRatio: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                  })
+                }
+              />
+            </label>
+            <label
+              title={`Active cells in ${activeMosaicLayout.cols}×${activeMosaicLayout.rows} (max ${gridCapacity(activeMosaicLayout.cols, activeMosaicLayout.rows)})`}
+            >
+              <span class="sidebar-label mb-0 block">Cells</span>
+              <Input
+                size="sm"
+                type="number"
+                min="1"
+                max={gridCapacity(activeMosaicLayout.cols, activeMosaicLayout.rows)}
+                step="1"
+                value={clampCellCount(
+                  activeMosaicLayout.cellCount,
+                  activeMosaicLayout.cols,
+                  activeMosaicLayout.rows
+                )}
+                className="w-full"
+                oninput={(e) =>
+                  setActiveGridCellCount(/** @type {HTMLInputElement} */ (e.currentTarget).value)
+                }
+              />
+            </label>
+            <label title="Align last incomplete row">
+              <span class="sidebar-label mb-0 block">Last row</span>
+              <Select
+                size="sm"
+                className="w-full"
+                value={activeMosaicLayout.lastRowAlign}
+                onchange={(e) =>
+                  patchGridChrome({
+                    lastRowAlign: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                  })
+                }
+              >
+                <option value="start">Left</option>
+                <option value="center">Center</option>
+                <option value="end">Right</option>
+              </Select>
+            </label>
+            <label
+              class="col-span-2 {optionsSearchHighlightId === 'grid-legend-mode'
+                ? 'option-pulse-highlight rounded p-0.5'
+                : ''}"
+              data-option-id="grid-legend-mode"
+            >
+              <span class="sidebar-label mb-0 block">Legend</span>
+              <Select
+                size="sm"
+                className="w-full"
+                value={activeMosaicLayout.legendMode}
+                onchange={(e) =>
+                  patchGridChrome({
+                    legendMode: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                  })
+                }
+              >
+                <option value="each">Each cell</option>
+                <option value="one">One cell</option>
+                <option value="outside">Outside</option>
+                <option value="none">None</option>
+              </Select>
+            </label>
+          </div>
+        </div>
+
+        <Divider />
+
+        <div class="space-y-1">
+          <p class="sidebar-subheading">Axis labels</p>
+          <div class="grid grid-cols-2 gap-1.5">
+            <label>
+              <span class="sidebar-label mb-0 block">X title</span>
+              <Select
+                size="sm"
+                className="w-full"
+                value={activeMosaicLayout.showXLabels}
+                onchange={(e) =>
+                  patchGridChrome({
+                    showXLabels: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                  })
+                }
+              >
+                <option value="all">All</option>
+                <option value="bottom">Bottom</option>
+                <option value="none">None</option>
+              </Select>
+            </label>
+            <label>
+              <span class="sidebar-label mb-0 block">Y title</span>
+              <Select
+                size="sm"
+                className="w-full"
+                value={activeMosaicLayout.showYLabels}
+                onchange={(e) =>
+                  patchGridChrome({
+                    showYLabels: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                  })
+                }
+              >
+                <option value="all">All</option>
+                <option value="left">Left</option>
+                <option value="none">None</option>
+              </Select>
+            </label>
+            <label>
+              <span class="sidebar-label mb-0 block">X ticks</span>
+              <Select
+                size="sm"
+                className="w-full"
+                value={activeMosaicLayout.showXTickLabels}
+                onchange={(e) =>
+                  patchGridChrome({
+                    showXTickLabels: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                  })
+                }
+              >
+                <option value="all">All</option>
+                <option value="bottom">Bottom</option>
+                <option value="none">None</option>
+              </Select>
+            </label>
+            <label>
+              <span class="sidebar-label mb-0 block">Y ticks</span>
+              <Select
+                size="sm"
+                className="w-full"
+                value={activeMosaicLayout.showYTickLabels}
+                onchange={(e) =>
+                  patchGridChrome({
+                    showYTickLabels: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                  })
+                }
+              >
+                <option value="all">All</option>
+                <option value="left">Left</option>
+                <option value="none">None</option>
+              </Select>
+            </label>
+          </div>
+        </div>
+        {/if}
+
+        {#if toolbarIsGrid && activeMosaicLayout.legendMode === 'one'}
+          <Divider />
+          <label class="block">
+            <span class="sidebar-label mb-0 block">Legend cell</span>
+            <Select
+              size="sm"
+              className="w-full"
+              value={String(activeMosaicLayout.legendCell)}
+              onchange={(e) =>
+                patchGridChrome({
+                  legendCell: Number(/** @type {HTMLSelectElement} */ (e.currentTarget).value)
+                })
+              }
+            >
+              {#each activeMosaicLayout.cells as cell, i (i)}
+                <option value={String(i)}>Cell {i + 1}{cell.title ? ` · ${cell.title}` : ''}</option>
+              {/each}
+            </Select>
+          </label>
+        {/if}
+
+        {#if activeMosaicLayout.legendMode === 'outside'}
+          <Divider />
+          <div
+            class="space-y-2 {optionsSearchHighlightId === 'grid-outside-legend'
+              ? 'option-pulse-highlight rounded p-1'
+              : ''}"
+            data-option-id="grid-outside-legend"
+          >
+            <p class="sidebar-subheading">Outside legend</p>
+
+            <div class="space-y-1">
+              <p class="sidebar-label mb-0">Placement</p>
+              <div class="grid grid-cols-2 gap-1.5">
+                <label>
+                  <span class="sidebar-label mb-0 block">Side</span>
+                  <Select
+                    size="sm"
+                    className="w-full"
+                    value={activeMosaicLayout.legendOutside}
+                    onchange={(e) =>
+                      patchGridChrome({
+                        legendOutside: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                      })
+                    }
+                  >
+                    <option value="bottom">Bottom</option>
+                    <option value="top">Top</option>
+                    <option value="right">Right</option>
+                    <option value="left">Left</option>
+                  </Select>
+                </label>
+                <label>
+                  <span class="sidebar-label mb-0 block">Align</span>
+                  <Select
+                    size="sm"
+                    className="w-full"
+                    value={activeMosaicLayout.legendOutsideAlign || 'center'}
+                    onchange={(e) =>
+                      patchGridChrome({
+                        legendOutsideAlign: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                      })
+                    }
+                  >
+                    <option value="start">Start</option>
+                    <option value="center">Center</option>
+                    <option value="end">End</option>
+                  </Select>
+                </label>
+                <label>
+                  <span class="sidebar-label mb-0 block">Entries</span>
+                  <Select
+                    size="sm"
+                    className="w-full"
+                    value={activeMosaicLayout.legendEntries}
+                    onchange={(e) =>
+                      setLegendEntriesMode(/** @type {HTMLSelectElement} */ (e.currentTarget).value)
+                    }
+                  >
+                    <option value="sets">Sets</option>
+                    <option value="roles">Roles</option>
+                    <option value="both">Both</option>
+                    <option value="manual">Manual</option>
+                  </Select>
+                </label>
+                <label>
+                  <span class="sidebar-label mb-0 block">Columns</span>
+                  <Input
+                    size="sm"
+                    type="number"
+                    min="1"
+                    max="8"
+                    step="1"
+                    value={activeMosaicLayout.legendColumns}
+                    className="w-full"
+                    oninput={(e) =>
+                      patchGridChrome({
+                        legendColumns: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                      })
+                    }
+                  />
+                </label>
+                <label class="col-span-2">
+                  <span class="sidebar-label mb-0 block">Title</span>
+                  <Input
+                    size="sm"
+                    value={activeMosaicLayout.legendTitle}
+                    className="w-full"
+                    oninput={(e) =>
+                      patchGridChrome({
+                        legendTitle: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                      })
+                    }
+                  />
+                </label>
+                <label title="Legend label font size (px)">
+                  <span class="sidebar-label mb-0 block">Font</span>
+                  <Input
+                    size="sm"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={activeMosaicLayout.legendFontSize ||
+                      outsideLegendFontSize(activeMosaicLayout)}
+                    className="w-full"
+                    oninput={(e) =>
+                      patchGridChrome({
+                        legendFontSize: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                      })
+                    }
+                  />
+                </label>
+                <label title="Legend title font size (px); empty = same as label font">
+                  <span class="sidebar-label mb-0 block">Title font</span>
+                  <Input
+                    size="sm"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={activeMosaicLayout.legendTitleFontSize ||
+                      outsideLegendTitleFontSize(activeMosaicLayout)}
+                    className="w-full"
+                    oninput={(e) =>
+                      patchGridChrome({
+                        legendTitleFontSize: /** @type {HTMLInputElement} */ (e.currentTarget)
+                          .value
+                      })
+                    }
+                  />
+                </label>
+                <label
+                  class="col-span-2"
+                  title="Space between the title and the first legend labels (px)"
+                >
+                  <span class="sidebar-label mb-0 block">Title gap</span>
+                  <Input
+                    size="sm"
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={activeMosaicLayout.legendTitleGap === '' ||
+                    activeMosaicLayout.legendTitleGap == null
+                      ? '8'
+                      : activeMosaicLayout.legendTitleGap}
+                    className="w-full"
+                    oninput={(e) =>
+                      patchGridChrome({
+                        legendTitleGap: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                      })
+                    }
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div class="space-y-1">
+              <p class="sidebar-label mb-0">Color squares</p>
+              <div class="grid grid-cols-2 gap-1.5">
+                <label title="Square width (px)">
+                  <span class="sidebar-label mb-0 block">Width</span>
+                  <Input
+                    size="sm"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={activeMosaicLayout.legendSwatchWidth ||
+                      outsideLegendSwatchWidth(activeMosaicLayout)}
+                    className="w-full"
+                    oninput={(e) =>
+                      patchGridChrome({
+                        legendSwatchWidth: /** @type {HTMLInputElement} */ (e.currentTarget).value,
+                        legendSwatchSize: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                      })
+                    }
+                  />
+                </label>
+                <label title="Square height (px)">
+                  <span class="sidebar-label mb-0 block">Height</span>
+                  <Input
+                    size="sm"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={activeMosaicLayout.legendSwatchHeight ||
+                      outsideLegendSwatchHeight(activeMosaicLayout)}
+                    className="w-full"
+                    oninput={(e) =>
+                      patchGridChrome({
+                        legendSwatchHeight: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                      })
+                    }
+                  />
+                </label>
+                <label class="col-span-2 flex items-center gap-1.5" title="Rounded color squares">
+                  <Checkbox
+                    size="sm"
+                    name="legend-swatch-round"
+                    checked={activeMosaicLayout.legendSwatchRound !== false}
+                    onchange={(e) =>
+                      patchGridChrome({
+                        legendSwatchRound: /** @type {HTMLInputElement} */ (e.currentTarget).checked
+                      })}
+                  />
+                  <span class="sidebar-label mb-0">Round squares</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="space-y-1">
+              <p class="sidebar-label mb-0">Legend frame</p>
+              <div class="grid grid-cols-2 gap-1.5">
+                <label title="Inner padding of the legend box (px)">
+                  <span class="sidebar-label mb-0 block">Padding</span>
+                  <Input
+                    size="sm"
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={activeMosaicLayout.legendBoxPadding || '8'}
+                    className="w-full"
+                    oninput={(e) =>
+                      patchGridChrome({
+                        legendBoxPadding: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                      })
+                    }
+                  />
+                </label>
+                <label
+                  title="Outer legend box width (px). Empty = fit content; focusing an empty field seeds the current natural size."
+                >
+                  <span class="sidebar-label mb-0 block">Box width</span>
+                  <Input
+                    size="sm"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={activeMosaicLayout.legendBoxMinWidth || ''}
+                    placeholder="auto"
+                    className="w-full"
+                    onfocus={(e) => {
+                      if (!(activeMosaicLayout.legendBoxMinWidth || '').trim()) {
+                        commitLegendBoxDim(
+                          'legendBoxMinWidth',
+                          /** @type {HTMLInputElement} */ (e.currentTarget).value || '1',
+                          'focus'
+                        )
+                      }
+                    }}
+                    oninput={(e) =>
+                      commitLegendBoxDim(
+                        'legendBoxMinWidth',
+                        /** @type {HTMLInputElement} */ (e.currentTarget).value,
+                        'input'
+                      )
+                    }
+                  />
+                </label>
+                <label
+                  title="Outer legend box height (px). Empty = fit content; focusing an empty field seeds the current natural size."
+                >
+                  <span class="sidebar-label mb-0 block">Box height</span>
+                  <Input
+                    size="sm"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={activeMosaicLayout.legendBoxMinHeight || ''}
+                    placeholder="auto"
+                    className="w-full"
+                    onfocus={(e) => {
+                      if (!(activeMosaicLayout.legendBoxMinHeight || '').trim()) {
+                        commitLegendBoxDim(
+                          'legendBoxMinHeight',
+                          /** @type {HTMLInputElement} */ (e.currentTarget).value || '1',
+                          'focus'
+                        )
+                      }
+                    }}
+                    oninput={(e) =>
+                      commitLegendBoxDim(
+                        'legendBoxMinHeight',
+                        /** @type {HTMLInputElement} */ (e.currentTarget).value,
+                        'input'
+                      )
+                    }
+                  />
+                </label>
+                <div class="col-span-2">
+                  <span class="sidebar-label mb-0 block">Border color</span>
+                  <div class="flex items-center gap-1">
+                    <ColorInput
+                      size="sm"
+                      value={activeMosaicLayout.legendBoxBorderColor || '#a3a3a3'}
+                      oninput={(e) =>
+                        patchGridChrome({
+                          legendBoxBorderColor: /** @type {HTMLInputElement} */ (e.currentTarget)
+                            .value
+                        })
+                      }
+                    />
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      title="Use theme border color"
+                      onclick={() => patchGridChrome({ legendBoxBorderColor: '' })}>Theme</Button
+                    >
+                  </div>
+                </div>
+                <label title="Border width (px); 0 = no border">
+                  <span class="sidebar-label mb-0 block">Border width</span>
+                  <Input
+                    size="sm"
+                    type="number"
+                    min="0"
+                    max="8"
+                    step="1"
+                    value={activeMosaicLayout.legendBoxBorderWidth ?? '1'}
+                    className="w-full"
+                    oninput={(e) =>
+                      patchGridChrome({
+                        legendBoxBorderWidth: /** @type {HTMLInputElement} */ (e.currentTarget)
+                          .value
+                      })
+                    }
+                  />
+                </label>
+                <label class="flex items-end gap-1.5 pb-1" title="Rounded legend box corners">
+                  <Checkbox
+                    size="sm"
+                    name="legend-box-round"
+                    checked={activeMosaicLayout.legendBoxRound !== false}
+                    onchange={(e) =>
+                      patchGridChrome({
+                        legendBoxRound: /** @type {HTMLInputElement} */ (e.currentTarget).checked
+                      })}
+                  />
+                  <span class="sidebar-label mb-0">Box round</span>
+                </label>
+              </div>
+            </div>
+
+            {#if activeMosaicLayout.legendEntries === 'manual'}
+              <div
+                class="space-y-1 rounded border border-neutral-200 bg-neutral-50/80 p-1.5 dark:border-neutral-700/80 dark:bg-neutral-950/40"
+              >
+                <div class="flex flex-wrap items-center justify-between gap-1">
+                  <p class="sidebar-label mb-0">Manual entries</p>
+                  <div class="flex flex-wrap gap-1">
+                    <Button size="sm" variant="ghost" onclick={() => reseedManualLegendFromMosaic()}
+                      >Seed</Button
+                    >
+                    <Button size="sm" variant="secondary" onclick={() => addManualLegendItem()}
+                      >Add</Button
+                    >
+                  </div>
+                </div>
+                {#each normalizeManualLegendItems(activeMosaicLayout.legendManualItems) as item, i (item.id)}
+                  <div
+                    class="space-y-0.5 rounded border border-neutral-200 bg-white/80 p-1 dark:border-neutral-800 dark:bg-neutral-900/60"
+                  >
+                    <div class="flex items-center gap-1">
+                      <ColorInput
+                        size="sm"
+                        value={item.color}
+                        oninput={(e) =>
+                          patchManualLegendItem(i, {
+                            color: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                          })
+                        }
+                      />
+                      <Input
+                        size="sm"
+                        value={item.label}
+                        className="min-w-0 flex-1"
+                        oninput={(e) =>
+                          patchManualLegendItem(i, {
+                            label: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                          })
+                        }
+                      />
+                    </div>
+                    <div class="flex flex-wrap items-center gap-0.5">
+                      <Select
+                        size="sm"
+                        className="min-w-0 flex-1"
+                        value={item.marker}
+                        onchange={(e) =>
+                          patchManualLegendItem(i, {
+                            marker: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                          })
+                        }
+                      >
+                        {#each LEGEND_MARKERS as mk (mk)}
+                          <option value={mk}>{mk}</option>
+                        {/each}
+                      </Select>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        title="Move up"
+                        disabled={i === 0}
+                        onclick={() => moveManualLegendItem(i, -1)}>↑</Button
+                      >
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        title="Move down"
+                        disabled={i >=
+                          normalizeManualLegendItems(activeMosaicLayout.legendManualItems).length -
+                            1}
+                        onclick={() => moveManualLegendItem(i, 1)}>↓</Button
+                      >
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        title={item.visible ? 'Hide' : 'Show'}
+                        onclick={() => patchManualLegendItem(i, { visible: !item.visible })}
+                        >{item.visible ? 'Hide' : 'Show'}</Button
+                      >
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        title="Remove"
+                        onclick={() => removeManualLegendItem(i)}>✕</Button
+                      >
+                    </div>
+                  </div>
+                {:else}
+                  <p class="sidebar-hint">No entries — Seed or Add.</p>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {/if}
+
+        {#if toolbarIsGrid || activeMosaicLayout.legendMode === 'outside'}
+        <Divider />
+        <div class="space-y-1">
+          <p class="sidebar-subheading">Background</p>
+          <div class="space-y-1.5">
+            <div>
+              <span class="sidebar-label mb-0 block">Figure</span>
+              <div class="flex items-center gap-1">
+                <ColorInput
+                  size="sm"
+                  value={activeMosaicLayout.figureBg || displayPlotBg}
+                  oninput={(e) =>
+                    patchGridChrome({
+                      figureBg: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    })
+                  }
+                />
+                <Button size="sm" variant="ghost" onclick={() => patchGridChrome({ figureBg: '' })}
+                  >Theme</Button
+                >
+              </div>
+            </div>
+            {#if toolbarIsGrid}
+            <div>
+              <span class="sidebar-label mb-0 block">Cell</span>
+              <div class="flex items-center gap-1">
+                <ColorInput
+                  size="sm"
+                  value={activeMosaicLayout.cellBg || displayPlotBg}
+                  oninput={(e) =>
+                    patchGridChrome({
+                      cellBg: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    })
+                  }
+                />
+                <Button size="sm" variant="ghost" onclick={() => patchGridChrome({ cellBg: '' })}
+                  >Theme</Button
+                >
+              </div>
+            </div>
+            <Button size="sm" variant="outline" className="w-full" onclick={resetGridToAuto}
+              >Reset auto</Button
+            >
+            {/if}
+          </div>
+        </div>
+        {/if}
+
+        <div class="space-y-1">
+          {#if toolbarIsGrid || activeMosaicLayout.legendMode === 'outside'}<Divider />{/if}
+          <p class="sidebar-subheading">Panel letter</p>
+          <p class="sidebar-hint">
+            {toolbarIsGrid
+              ? 'Outside placement keeps plot sizes; Apply to = every cell, or first of each row/column.'
+              : 'Outside sits beside the plot with an optional letter background.'}
+          </p>
+          <label class="flex items-center gap-1.5">
+            <Checkbox
+              size="sm"
+              name="panel-letter-show"
+              checked={activeMosaicLayout.panelLetterShow === true}
+              onchange={(e) =>
+                patchGridChrome({
+                  panelLetterShow: /** @type {HTMLInputElement} */ (e.currentTarget).checked
+                })}
+            />
+            <span class="sidebar-label mb-0">Show letter</span>
+          </label>
+          {#if activeMosaicLayout.panelLetterShow}
+            <div class="grid grid-cols-2 gap-1.5">
+              <label title={toolbarIsGrid ? 'First cell letter (then B, C…)' : 'Letter on the plot'}>
+                <span class="sidebar-label mb-0 block"
+                  >{toolbarIsGrid ? 'Start' : 'Letter'}</span
+                >
+                <Input
+                  size="sm"
+                  value={activeMosaicLayout.panelLetterText || 'A'}
+                  maxlength={4}
+                  className="w-full"
+                  oninput={(e) =>
+                    patchGridChrome({
+                      panelLetterText: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    })
+                  }
+                />
+              </label>
+              {#if toolbarIsGrid}
+                <label title="Which mosaic cells get a letter">
+                  <span class="sidebar-label mb-0 block">Apply to</span>
+                  <Select
+                    size="sm"
+                    className="w-full"
+                    value={activeMosaicLayout.panelLetterScope || 'each'}
+                    onchange={(e) =>
+                      patchGridChrome({
+                        panelLetterScope: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                      })
+                    }
+                  >
+                    <option value="each">Every cell</option>
+                    <option value="row">First of each row</option>
+                    <option value="col">First of each column</option>
+                  </Select>
+                </label>
+              {/if}
+              <label class="col-span-2" title="Outside sits beside the panel without reshaping plots">
+                <span class="sidebar-label mb-0 block">Placement</span>
+                <Select
+                  size="sm"
+                  className="w-full"
+                  value={activeMosaicLayout.panelLetterPlacement || 'outside'}
+                  onchange={(e) =>
+                    patchGridChrome({
+                      panelLetterPlacement: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                    })
+                  }
+                >
+                  <option value="outside">Outside panel</option>
+                  <option value="inside">Inside plot</option>
+                </Select>
+              </label>
+              <label>
+                <span class="sidebar-label mb-0 block">Corner</span>
+                <Select
+                  size="sm"
+                  className="w-full"
+                  value={activeMosaicLayout.panelLetterPosition || 'outside-tl'}
+                  onchange={(e) =>
+                    patchGridChrome({
+                      panelLetterPosition: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                    })
+                  }
+                >
+                  <option value="outside-tl">Top-left</option>
+                  <option value="outside-tr">Top-right</option>
+                  <option value="inside-tl">Inside · top-left</option>
+                  <option value="inside-tr">Inside · top-right</option>
+                </Select>
+              </label>
+              <label title="Badge behind outside letters">
+                <span class="sidebar-label mb-0 block">Letter bg</span>
+                <Select
+                  size="sm"
+                  className="w-full"
+                  value={activeMosaicLayout.panelLetterBg || 'theme'}
+                  onchange={(e) =>
+                    patchGridChrome({
+                      panelLetterBg: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                    })
+                  }
+                >
+                  <option value="theme">Theme</option>
+                  <option value="white">White</option>
+                  <option value="black">Black</option>
+                  <option value="none">None</option>
+                </Select>
+              </label>
+              <label title="Empty = slightly larger than title font">
+                <span class="sidebar-label mb-0 block">Font size</span>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="8"
+                  max="48"
+                  step="1"
+                  value={activeMosaicLayout.panelLetterFontSize || ''}
+                  placeholder="auto"
+                  className="w-full"
+                  oninput={(e) =>
+                    patchGridChrome({
+                      panelLetterFontSize: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    })
+                  }
+                />
+              </label>
+              <label class="flex items-end gap-1.5 pb-1">
+                <Checkbox
+                  size="sm"
+                  name="panel-letter-bold"
+                  checked={activeMosaicLayout.panelLetterBold !== false}
+                  onchange={(e) =>
+                    patchGridChrome({
+                      panelLetterBold: /** @type {HTMLInputElement} */ (e.currentTarget).checked
+                    })}
+                />
+                <span class="sidebar-label mb-0">Bold</span>
+              </label>
+              <div class="col-span-2" title="Empty = same as plot text / tick color; uses plot font family">
+                <span class="sidebar-label mb-0.5 block">Letter color</span>
+                <div class="flex items-center gap-1">
+                  <input
+                    type="color"
+                    value={activeMosaicLayout.panelLetterColor || displayTextColor}
+                    class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
+                    oninput={(e) =>
+                      patchGridChrome({
+                        panelLetterColor: normalizeHexColor(
+                          /** @type {HTMLInputElement} */ (e.currentTarget).value,
+                          /** @type {HTMLInputElement} */ (e.currentTarget).value
+                        )
+                      })
+                    }
+                  />
+                  <Input
+                    size="sm"
+                    value={activeMosaicLayout.panelLetterColor || ''}
+                    placeholder={displayTextColor}
+                    className="min-w-0 flex-1 font-mono"
+                    oninput={(e) =>
+                      patchGridChrome({
+                        panelLetterColor: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                      })
+                    }
+                  />
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={!String(activeMosaicLayout.panelLetterColor || '').trim()}
+                    onclick={() => patchGridChrome({ panelLetterColor: '' })}>Auto</Button
+                  >
+                </div>
+              </div>
+              <label title="Horizontal shift (px); negative = left">
+                <span class="sidebar-label mb-0 block">Offset X</span>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="-40"
+                  max="40"
+                  step="1"
+                  value={activeMosaicLayout.panelLetterOffsetX ?? '0'}
+                  className="w-full"
+                  oninput={(e) =>
+                    patchGridChrome({
+                      panelLetterOffsetX: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    })
+                  }
+                />
+              </label>
+              <label title="Vertical shift (px); negative = up">
+                <span class="sidebar-label mb-0 block">Offset Y</span>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="-40"
+                  max="40"
+                  step="1"
+                  value={activeMosaicLayout.panelLetterOffsetY ?? '0'}
+                  className="w-full"
+                  oninput={(e) =>
+                    patchGridChrome({
+                      panelLetterOffsetY: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    })
+                  }
+                />
+              </label>
+            </div>
+          {/if}
+        </div>
+      </div>
+    </ResizableSidePanel>
+  {/if}
 </div>

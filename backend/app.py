@@ -656,19 +656,26 @@ _TOPOLOGY_ONLY_SUFFIXES = frozenset(
     {".psf", ".prmtop", ".parm7", ".top", ".itp"}
 )
 _COORDINATE_TRAJECTORY_SUFFIXES = frozenset(
-    {".dcd", ".xtc", ".trr", ".nc", ".mdcrd", ".crd", ".inpcrd", ".dtr", ".lammpstrj", ".h5md"}
+    {".dcd", ".xtc", ".trr", ".nc", ".mdcrd", ".crd", ".dtr", ".lammpstrj", ".h5md"}
 )
+_AMBER_RESTART_SUFFIXES = frozenset({".rst7", ".restrt", ".inpcrd"})
 
 
 def _is_topology_only_file(path: Path) -> bool:
     return path.suffix.lower() in _TOPOLOGY_ONLY_SUFFIXES
 
 
+def _is_amber_restart_file(path: Path) -> bool:
+    return path.suffix.lower() in _AMBER_RESTART_SUFFIXES
+
+
 def _is_coordinate_trajectory_file(path: Path) -> bool:
     ext = path.suffix.lower()
     if ext in _COORDINATE_TRAJECTORY_SUFFIXES:
         return True
-    if ext in _TOPOLOGY_ONLY_SUFFIXES:
+    if ext in _TOPOLOGY_ONLY_SUFFIXES or ext in _AMBER_RESTART_SUFFIXES:
+        return False
+    if ext in {".pdb", ".ent", ".gro"}:
         return False
     return True
 
@@ -676,7 +683,7 @@ def _is_coordinate_trajectory_file(path: Path) -> bool:
 def _filter_coordinate_trajectories(
     topology: Path, trajectories: list[Path]
 ) -> list[Path]:
-    """Drop topology files accidentally listed as trajectories."""
+    """Drop topology / Amber-restart files accidentally listed as trajectories."""
     top_resolved = topology.resolve()
     filtered: list[Path] = []
     for traj in trajectories:
@@ -684,6 +691,8 @@ def _filter_coordinate_trajectories(
         if traj_resolved == top_resolved:
             continue
         if _is_topology_only_file(traj):
+            continue
+        if _is_amber_restart_file(traj):
             continue
         filtered.append(traj)
     return filtered
@@ -693,11 +702,11 @@ def _load_analysis_universe(topology: Path, trajectories: list[Path]) -> mda.Uni
     """Load topology + coordinate trajectory the same way MDAnalysis expects."""
     coord_trajs = _filter_coordinate_trajectories(topology, trajectories)
     if not coord_trajs:
-        traj_names = ", ".join(t.name for t in trajectories)
+        traj_names = ", ".join(t.name for t in trajectories) or "(none)"
         raise ValueError(
             f"No coordinate trajectory found among: {traj_names}. "
-            f"Files like {topology.name!r} are topology only — add DCD, XTC, TRR, "
-            "NC, or similar trajectory files."
+            f"Files like {topology.name!r} are topology only; Amber .rst7/.inpcrd "
+            "are restarts, not trajectories — add DCD, XTC, TRR, NC, or similar."
         )
     top_str = str(topology.resolve())
     if len(coord_trajs) == 1:
@@ -706,23 +715,27 @@ def _load_analysis_universe(topology: Path, trajectories: list[Path]) -> mda.Uni
 
 
 def _companion_coordinate_file(topology: Path) -> Path | None:
-    """Find a coordinate file next to the topology (AMBER inpcrd, PDB, etc.)."""
+    """Find a coordinate file next to the topology (PDB preferred over Amber restart)."""
     directory = topology.parent
     stem = topology.stem.lower()
+    # Prefer PDB/GRO for companions — Charmm-gui folders often have step5_input.rst7
+    # beside the PSF, and MDAnalysis cannot auto-detect .rst7 (needs format=INPCRD).
     preferred_names = (
+        topology.name.replace(topology.suffix, ".pdb"),
+        topology.name.replace(topology.suffix, ".gro"),
         topology.name.replace(topology.suffix, ".inpcrd"),
         topology.name.replace(topology.suffix, ".rst7"),
-        topology.name.replace(topology.suffix, ".pdb"),
+        "system.pdb",
+        "system.gro",
         "system.inpcrd",
         "system.rst7",
-        "system.pdb",
     )
     for name in preferred_names:
         candidate = directory / name
         if candidate.is_file() and not _is_topology_only_file(candidate):
             return candidate
 
-    for pattern in ("*.inpcrd", "*.rst7", "*.pdb", "*.gro"):
+    for pattern in ("*.pdb", "*.gro", "*.inpcrd", "*.rst7"):
         for candidate in sorted(directory.glob(pattern)):
             if candidate.resolve() == topology.resolve():
                 continue
@@ -733,10 +746,31 @@ def _companion_coordinate_file(topology: Path) -> Path | None:
     return None
 
 
+def _open_topology_companion_universe(topology: Path, companion: Path) -> mda.Universe:
+    """Open PSF/PRMTOP + companion coords; map Amber .rst7 to INPCRD."""
+    top_str = str(topology.resolve())
+    coord = companion.resolve()
+    if _is_amber_restart_file(coord):
+        return mda.Universe(top_str, str(coord), format="INPCRD")
+    return mda.Universe(top_str, str(coord))
+
+
 def _load_structure_for_headgroup_detection(
-    topology: Path, trajectories: list[Path] | None = None
+    topology: Path,
+    trajectories: list[Path] | None = None,
+    companion_structure: Path | None = None,
 ) -> mda.Universe:
-    """Load a universe suitable for inspecting lipid atom names."""
+    """Load a universe suitable for inspecting lipid atom names / counting selection.
+
+    When ``trajectories`` is empty (GUI avoids opening large DCDs for a quick
+    selection count), uses ``companion_structure`` or a same-stem PDB/GRO next to
+    the topology — never prefers Amber ``.rst7`` over PDB.
+    """
+    if companion_structure is not None and companion_structure.is_file():
+        if _is_topology_only_file(topology):
+            return _open_topology_companion_universe(topology, companion_structure)
+        return load_structure(str(companion_structure))[0]
+
     if trajectories:
         coord_trajs = _filter_coordinate_trajectories(topology, trajectories)
         if coord_trajs:
@@ -745,7 +779,7 @@ def _load_structure_for_headgroup_detection(
     if _is_topology_only_file(topology):
         companion = _companion_coordinate_file(topology)
         if companion is not None:
-            return mda.Universe(str(topology.resolve()), str(companion.resolve()))
+            return _open_topology_companion_universe(topology, companion)
 
     return load_structure(str(topology))[0]
 
@@ -3567,7 +3601,13 @@ class StructuralAnalysisRequest(BaseModel):
         None,
         description="Optional PDB/GRO used as RMSD reference instead of reference_frame",
     )
-    align: bool = Field(True, description="Align structures before RMSD")
+    align: bool = Field(
+        True,
+        description=(
+            "RMSD: align before RMSD. RMSF: on-the-fly unwrap polymer + align to "
+            "average structure before RMSF (helps when trajs were membrane-centered)."
+        ),
+    )
     file_times: dict[str, float] | None = Field(
         None, description="Optional per-file durations in ns"
     )
@@ -3591,7 +3631,7 @@ class StructuralAnalysisRequest(BaseModel):
     )
     exclude_sel: str | None = Field(
         "protein",
-        description="Non-lipid atoms for exclusion-aware APL (protein, peptide, DNA, ligands; ignored by lipyphilic)",
+        description="Non-lipid atoms for exclusion-aware APL (protein, peptide, DNA, ligands). With apl_method=lipyphilic, requires lipyphilic with AreaPerLipid exclude_sel (git install until PyPI)",
     )
     exclude_cutoff: float = Field(
         30.0,
@@ -3602,8 +3642,8 @@ class StructuralAnalysisRequest(BaseModel):
         description="Exclude cutoff dimension: 3 = 3D distance, 1 = z to leaflet midplane",
     )
     apl_method: str | None = Field(
-        "auto",
-        description="APL algorithm: auto, evapl (default Exclusion-aware Voronoi Area Per Lipid), lipyphilic (pure lipids only), gridmat, vtmc",
+        "fatslim",
+        description="APL algorithm: fatslim (default; external FATSLiM CLI), auto→fatslim, evapl (experimental), lipyphilic, gridmat, vtmc",
     )
     gridmat_n: int = Field(
         20,
@@ -3620,6 +3660,27 @@ class StructuralAnalysisRequest(BaseModel):
     vtmc_protein_radius: float = Field(
         1.7,
         description="VTMC protein atom disk radius in Å (default 1.7 ≈ C VDW)",
+    )
+    fatslim_nthreads: int = Field(
+        1,
+        description=(
+            "FATSLiM --nthreads per process (-1 = all CPUs). "
+            "Prefer 1–4 when fatslim_jobs > 1"
+        ),
+    )
+    fatslim_jobs: int = Field(
+        1,
+        description=(
+            "Parallel FATSLiM frame chunks via --begin-frame/--end-frame. "
+            "Prefer several jobs with small nthreads over one job with all CPUs"
+        ),
+    )
+    gridmat_md_jobs: int | None = Field(
+        None,
+        description=(
+            "Parallel Perl workers for apl_method=gridmat_md "
+            "(default min(8, cpu_count) when omitted)"
+        ),
     )
     start: int | None = Field(None, description="First trajectory frame (inclusive)")
     stop: int | None = Field(None, description="Last trajectory frame (exclusive)")
@@ -4482,6 +4543,32 @@ class AnalysisCountSelectionRequest(BaseModel):
     selection2: str | None = Field(
         None, description="Optional second selection (distance analysis)"
     )
+    companion_structure: str | None = Field(
+        None,
+        description=(
+            "Optional PDB/GRO companion for PSF/PRMTOP when trajectories are omitted "
+            "(e.g. Analysis Reference PDB). Preferred over auto-detected .rst7."
+        ),
+    )
+
+
+@app.get("/analysis-fatslim-status")
+def analysis_fatslim_status() -> dict:
+    """Probe whether the external FATSLiM CLI is resolvable for APL runs."""
+    try:
+        from gatewizard.utils.fatslim_apl import resolve_fatslim_executable
+    except Exception as ex:
+        return {
+            "available": False,
+            "path": None,
+            "error": str(ex),
+        }
+    path = resolve_fatslim_executable()
+    return {
+        "available": path is not None,
+        "path": path,
+        "error": None,
+    }
 
 
 @app.post("/analysis-count-selection")
@@ -4496,12 +4583,23 @@ def analysis_count_selection(payload: AnalysisCountSelectionRequest) -> dict:
         for p in payload.trajectory_paths
         if p and str(p).strip()
     ]
+    companion = None
+    if payload.companion_structure and str(payload.companion_structure).strip():
+        companion = Path(
+            os.path.abspath(os.path.expanduser(payload.companion_structure))
+        )
+        if not companion.is_file():
+            raise HTTPException(
+                status_code=404, detail=f"Companion structure not found: {companion}"
+            )
     sel = payload.selection.strip()
     if not sel:
         raise HTTPException(status_code=400, detail="Selection is empty.")
 
     try:
-        u = _load_structure_for_headgroup_detection(top, trajs if trajs else None)
+        u = _load_structure_for_headgroup_detection(
+            top, trajs if trajs else None, companion_structure=companion
+        )
         count = _count_selection_atoms(u, sel)
         result: dict[str, Any] = {
             "count": count,
@@ -4535,13 +4633,20 @@ def run_structural_analysis(payload: StructuralAnalysisRequest) -> dict:
         )
     coord_trajs = _filter_coordinate_trajectories(top, trajs)
     if not coord_trajs:
-        raise HTTPException(
-            status_code=400,
-            detail=(
+        restarts = [p.name for p in trajs if _is_amber_restart_file(p)]
+        if restarts:
+            detail = (
+                f"{', '.join(restarts)}: Amber restart/inpcrd files are not MD "
+                "trajectories (PSF/PRMTOP need a separate .dcd/.xtc/.trr/.nc). "
+                "Remove .rst7/.inpcrd from Trajectories and add the production "
+                "trajectory. For RMSD vs a start structure, use Reference PDB."
+            )
+        else:
+            detail = (
                 f"No coordinate trajectory files found. Topology {top.name!r} cannot "
                 "be used as a trajectory. Add DCD, XTC, TRR, NC, or similar files."
-            ),
-        )
+            )
+        raise HTTPException(status_code=400, detail=detail)
 
     try:
         atype = _normalize_analysis_type(payload.analysis_type)
@@ -4577,6 +4682,9 @@ def run_structural_analysis(payload: StructuralAnalysisRequest) -> dict:
                     gridmat_precision=payload.gridmat_precision,
                     vtmc_n_samples=payload.vtmc_n_samples,
                     vtmc_protein_radius=payload.vtmc_protein_radius,
+                    fatslim_nthreads=payload.fatslim_nthreads,
+                    fatslim_jobs=payload.fatslim_jobs,
+                    gridmat_md_jobs=payload.gridmat_md_jobs,
                     file_times=payload.file_times,
                     file_strides=payload.file_strides,
                     start=payload.start,

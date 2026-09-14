@@ -35,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Analysis GridMAT-MD.pl:** APL method **GridMAT-MD.pl (external)** plus **GridMAT (GW, experimental)** and **VTMC (GW, experimental)** labels; optional jobs control for the Perl path (`GATEWIZARD_GRIDMAT_MD`).
+- **Analysis FATSLiM Threads / Jobs:** when APL method is FATSLiM, sidebar exposes `fatslim_nthreads` and `fatslim_jobs` (prefer small threads 1–4 and more jobs for wall-clock). Clear install hint when the CLI is missing (`scripts/install_fatslim_env.sh` / `GATEWIZARD_FATSLIM`).
 - **Builder peptide caps:** Detect lists FVA/FOR/ETA polymer caps separately from free ligands; **Parametrize caps** runs GAFF with head/tail libs into `peptide_cap_params/` and passes them into packmol-memgen / tleap. Caps are **auto-scanned when a PDB is selected** (shown above Ligand Parametrization), so users who skip free-ligand Detect still see ETA/FVA.
 - **Analysis Grid options:** **Cells** count (1…cols×rows) to leave unused trailing squares out of a frame (e.g. 4×2 with 7 cells), and **Right** last-row align alongside Left / Center.
 - **Settings → Appearance:** UI scale (80–150%, default **110%**). Startup uses this value; **Ctrl+=** / **Ctrl+Shift+=** zoom in, **Ctrl+-** zoom out, **Ctrl+0** resets to the Settings scale (not always 100%).
@@ -50,7 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Analysis RMSD reference PDB:** optional starting structure instead of Ref. frame. PDB/GRO files in the trajectory list are ignored when DCD/XTC files are present (they have no periodic box and were breaking membrane thickness).
 - **Analysis area per lipid:** show/hide Average, Upper leaflet, and Lower leaflet on the plot (and publication PNG). CSV still stores all three.
 - **Builder:** bilayer-only packing (uncheck **Include protein**, set **Membrane XY**) and **Free molecules** (`--solute` / `--solute_con`, optional in-membrane and protein distance). Protein+membrane jobs are unchanged.
-- **Analysis area per lipid:** exclusion-aware Voronoi APL (**EVAPL**, default) — **Exclude selection** (default `protein`; also peptide, DNA, ligands). Occupants in the leaflet headgroup Z-range reduce mean APL instead of tiling the full box.
+- **Analysis area per lipid:** exclusion-aware Voronoi APL (**EVAPL**) — **Exclude selection** (default `protein`; also peptide, DNA, ligands). Occupants in the leaflet headgroup Z-range reduce mean APL instead of tiling the full box. (Default method is now **FATSLiM**; EVAPL remains available and is labeled experimental / not yet validated.)
 - **Analysis:** **Cancel analysis** while a run is in progress (single set or all sets). The UI unblocks immediately and shows “Analysis cancelled” instead of a browser abort error.
 - **Analysis trajectories:** per-file time offset (ns) accepts **four decimal places** (e.g. `200.1234`, `2000.1234`); inputs use `0.0001` step and a wider field.
 - **Analysis run all sets:** skips hidden sets and sets missing trajectories/logs, then continues with every remaining set that has data (empty sets in between no longer stop the batch).
@@ -69,6 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Analysis FATSLiM notice:** sidebar probes `/analysis-fatslim-status` when FATSLiM is selected and shows a short install hint only if the CLI is missing (clone the **API** `gatewizard` repo — not the GUI install — then `scripts/install_fatslim_env.sh` / `docs/analysis.md`).
 - **Job finish toasts:** the bottom-right cards shown when the app is unfocused and an analysis/job finishes use a solid theme-aware fill (separate from in-tab `gw-notice` cards).
 - **Analysis plot tools:** Pan is off by default so page scroll works over charts; click **Pan** to enable (click again to turn off). Wheel zoom only runs when a plot tool is active.
 - **Analysis light theme:** Reset view menu and grid-cell set picker (and OrderedSetChips) use light/dark styles instead of always-dark chrome.
@@ -115,6 +118,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Area per lipid default:** Analysis APL method defaults to **FATSLiM (external CLI)**. EVAPL is labeled experimental / not yet validated. Method picker shows algorithm names only; **LiPyphilic AreaPerLipid** (official `AreaPerLipid`) warns for pure lipids. **Run all / selected** uses the sidebar APL method (and exclude / GridMAT / VTMC params) for every set — hint + **Apply to all sets** + per-set method badges. LiPyphilic / GridMAT / VTMC expose **Exclude cutoff (Å)** and **Cutoff dim**; EVAPL uses leaflet headgroup Z-range instead. Install companion env + set `GATEWIZARD_FATSLIM` (see gatewizard `scripts/install_fatslim_env.sh` / docs).
 - **Sidebar output folder:** Preparation, Builder, and Equilibration use the shared `OutputPathFields` control (folder name + browse parent path), matching Tools and Analysis.
 - **Sidebar output folder placement:** Preparation, Builder, and Equilibration place the output folder next to the primary actions (Prepare / Generate / Run), matching Tools and Analysis, instead of under Input at the top.
 - **Equilibration default protocol:** Eq6 packing extended from 17.625 ns to **47.625 ns** so Eq1–6 total **50 ns** of MD (was 20 ns) in GUI `base.json` and matching banner copy.
