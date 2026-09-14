@@ -153,11 +153,13 @@ function groupAtoms(atoms, mode, effective, bonds) {
     return components.map((component, i) => {
       const componentSet = new Set(component)
       const componentAtoms = atoms.filter((a) => componentSet.has(a.index))
+      // Absolute index selection only — do not AND with a parent resname/chain
+      // selection. Duplicate ligands (same UNK/resid) stay visible after rename.
       const partSel = `index ${component.join(' ')}`
       return {
         key: `mol-${i}`,
         label: `Molecule ${i + 1}`,
-        selection: combineSelection(effective, partSel),
+        selection: partSel,
         atoms: componentAtoms,
         atomIdx: componentSet
       }

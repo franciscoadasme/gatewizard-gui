@@ -1716,6 +1716,16 @@
       await loadStructure(result.path, { resetCamera: false })
       return
     }
+    // Snapshot per-view atom indices before clearing so index-/fragment-based
+    // representations (e.g. split molecules) can be rebuilt after rename/renumber.
+    const viewIndexSnapshots = views.map((v) => ({
+      id: v.id,
+      indices: (v.atoms || [])
+        .map((/** @type {{ index?: number }} */ a) => a.index)
+        .filter((/** @type {unknown} */ n) => typeof n === 'number'),
+      selection: String(v.selection || ''),
+      lockToIndices: /\bindex\b/i.test(String(v.selection || v.baseSelection || ''))
+    }))
     // Keep the previous structure on screen until reload succeeds.
     // Never null `structure` on failure (that blacked out the canvas while
     // leaving representation chips, and disabled Clear scene).
@@ -1742,13 +1752,37 @@
       atomLabels = []
       measureMode = null
       ctxMenu = null
-      // Update each view's path; ViewItem's path $effect will re-fetch atoms
-      // preserving all visual settings (representation, colors, etc.)
+      const byIndex = new Map()
+      for (const a of newStructure.atoms || []) {
+        if (typeof a.index === 'number') byIndex.set(a.index, a)
+      }
+      const allBonds = Array.isArray(newStructure.bonds) ? newStructure.bonds : []
       for (const v of views) {
+        const snap = viewIndexSnapshots.find((s) => s.id === v.id)
+        v.path = filePath
+        if (snap?.lockToIndices && snap.indices.length) {
+          const atoms = snap.indices.map((i) => byIndex.get(i)).filter(Boolean)
+          if (atoms.length) {
+            const idxSet = new Set(snap.indices)
+            v.atoms = atoms
+            v.bonds = allBonds.filter(
+              ([i, j]) => idxSet.has(i) && idxSet.has(j)
+            )
+            const indexSel = `index ${snap.indices.join(' ')}`
+            v.selection = indexSel
+            v.baseSelection = indexSel
+            v.residues = Array.isArray(newStructure.residues)
+              ? newStructure.residues.filter((r) =>
+                  (r.atom_indices || []).some((/** @type {number} */ i) => idxSet.has(i))
+                )
+              : []
+            v._prefetched = true
+            continue
+          }
+        }
         v.atoms = []
         v.bonds = []
         v.residues = []
-        v.path = filePath
         v._prefetched = false
       }
       views = [...views]
