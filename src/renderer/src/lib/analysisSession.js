@@ -418,6 +418,10 @@ export async function hydrateAnalysisSetsFromCsv(sets, sessionDir, readText, mod
  * @property {AnalysisSet[]} sets
  * @property {object} [gridLayout] Custom mosaic (cols/rows, per-cell setIds, legends)
  * @property {object} [energeticGridLayout] Energetic mosaic (setIds + propertyKeys)
+ * @property {string} [residueMappingPath] Legacy single mapping path
+ * @property {boolean} [useOriginalResidueNumbers] Legacy single mapping toggle
+ * @property {import('./residueMapping.js').ResidueMappingGroupSpec[]} [residueMappingGroups]
+ *   Multiple mapping files, each applied to selected analysis sets
  * @property {{
  *   structural?: Record<string, Record<string, unknown>>,
  *   energeticGlobal?: Record<string, unknown>,
@@ -625,11 +629,22 @@ export function inferEnergeticGridFill(rawLayout, legacyCompareLayout) {
  *   sets: AnalysisSet[],
  *   gridLayout?: object,
  *   energeticGridLayout?: object,
+ *   residueMappingPath?: string,
+ *   useOriginalResidueNumbers?: boolean,
+ *   residueMappingGroups?: import('./residueMapping.js').ResidueMappingGroupSpec[],
  *   plotSettings?: AnalysisSessionV1['plotSettings'],
  * }} state
  * @returns {AnalysisSessionV1}
  */
 export function serializeAnalysisSession(state) {
+  const groups = (state.residueMappingGroups || [])
+    .map((g) => ({
+      id: String(g.id || ''),
+      path: String(g.path || '').trim(),
+      enabled: g.enabled !== false,
+      setIds: Array.isArray(g.setIds) ? g.setIds.map((id) => String(id)).filter(Boolean) : []
+    }))
+    .filter((g) => g.path)
   return {
     version: ANALYSIS_SESSION_VERSION,
     savedAt: new Date().toISOString(),
@@ -647,6 +662,10 @@ export function serializeAnalysisSession(state) {
     energeticGridLayout: state.energeticGridLayout
       ? clonePlainAnalysisData(state.energeticGridLayout)
       : null,
+    residueMappingGroups: groups,
+    // Keep legacy fields for older GUI builds reading this session.
+    residueMappingPath: groups[0]?.path || '',
+    useOriginalResidueNumbers: Boolean(groups.some((g) => g.enabled)),
     plotSettings: state.plotSettings ? clonePlainAnalysisData(state.plotSettings) : null
   }
 }
@@ -709,6 +728,15 @@ export function deserializeAnalysisSession(raw) {
       obj.energeticGridLayout && typeof obj.energeticGridLayout === 'object'
         ? obj.energeticGridLayout
         : null,
+    residueMappingPath: String(obj.residueMappingPath || obj.residue_mapping_path || '').trim(),
+    useOriginalResidueNumbers: Boolean(
+      obj.useOriginalResidueNumbers ?? obj.use_original_residue_numbers
+    ),
+    residueMappingGroups: Array.isArray(obj.residueMappingGroups)
+      ? obj.residueMappingGroups
+      : Array.isArray(obj.residue_mapping_groups)
+        ? obj.residue_mapping_groups
+        : undefined,
     plotSettings:
       obj.plotSettings && typeof obj.plotSettings === 'object'
         ? normalizeSessionPlotSettings(obj.plotSettings)

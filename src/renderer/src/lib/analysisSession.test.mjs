@@ -524,3 +524,25 @@ test('hydrate restores the on-disk Charmm-gui vs GateWizard session', async (t) 
   assert.equal(typeof session.sets[0].trajectoryFiles[0].stride, 'string')
   assert.ok(setsHaveAnyPlottableResults(session.sets))
 })
+
+test('deserializeAnalysisSession fills missing energeticOptions', () => {
+  const session = deserializeAnalysisSession({
+    version: 1,
+    mode: 'structural',
+    compareLayout: 'grid',
+    sets: [
+      {
+        id: 'set-gromacs-nvt-lipyphilic',
+        label: 'GROMACS · NVT · LiPyphilic',
+        topologyPath: '/tmp/step7.gro',
+        trajectoryFiles: [{ path: '/tmp/step7.xtc', timeNs: '200', stride: '20' }],
+        structuralOptions: { structuralType: 'area_per_lipid', selection: 'name P31' }
+      }
+    ]
+  })
+  const opts = session.sets[0].energeticOptions
+  assert.equal(opts.energeticEngine, 'namd')
+  assert.deepEqual(opts.logFiles, [])
+  assert.deepEqual(opts.availableProperties, [])
+  assert.deepEqual(opts.selectedProperties, [])
+})

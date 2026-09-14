@@ -18,9 +18,13 @@ import { clonePlainAnalysisData } from './analysisSession.js'
  * @property {boolean} [interpolate]
  * @property {string} [excludeSel]
  * @property {string} [excludeCutoff]
+ * @property {string} [excludeDim]
  * @property {string} [aplMethod]
+ * @property {string} [fatslimNthreads]
+ * @property {string} [fatslimJobs]
  * @property {string} [gridmatN]
  * @property {string} [gridmatPrecision]
+ * @property {string} [gridmatMdJobs]
  * @property {string} [vtmcNSamples]
  * @property {string} [vtmcProteinRadius]
  * @property {Array<{ name: string, atomCount: number, enabled: boolean }>} [lipidHeadgroupAtoms]
@@ -41,59 +45,88 @@ import { clonePlainAnalysisData } from './analysisSession.js'
  * @property {boolean} interpolate
  * @property {string} [excludeSel]
  * @property {string} [excludeCutoff]
+ * @property {string} [excludeDim]
  * @property {string} [aplMethod]
+ * @property {string} [fatslimNthreads]
+ * @property {string} [fatslimJobs]
  * @property {string} [gridmatN]
  * @property {string} [gridmatPrecision]
+ * @property {string} [gridmatMdJobs]
  * @property {string} [vtmcNSamples]
  * @property {string} [vtmcProteinRadius]
  * @property {Record<string, StructuralTypeSelection>} [selectionsByType]
  */
 
-/** GUI APL methods. */
+/** GUI APL methods. Default is FATSLiM (external CLI). */
 export const APL_METHODS = [
   {
+    id: 'fatslim',
+    label: 'FATSLiM (default, external CLI)',
+    hint: 'Original archived FATSLiM apl (companion Python ≤3.8 env). Exclude → --interacting-group. Prefer small nthreads (1–4) with several jobs.'
+  },
+  {
     id: 'evapl',
-    label: 'EVAPL (default)',
-    hint: 'Exclusion-aware Voronoi APL: protein (and other) atoms in the leaflet headgroup Z-range shrink lipid cells.'
+    label: 'EVAPL (experimental)',
+    hint: 'Exclusion-aware Voronoi APL (freud): not yet validated. Protein (and other) atoms in the leaflet headgroup Z-range shrink lipid cells.'
   },
   {
     id: 'lipyphilic',
-    label: 'Box Voronoi (lipyphilic)',
-    hint: 'Pure-lipid reference only. Ignores occupants; mean ≈ box XY / lipids per leaflet. Prefer EVAPL when protein or other non-lipids are present.'
+    label: 'LiPyphilic AreaPerLipid',
+    hint: 'Official lipyphilic.AreaPerLipid. Set exclude atoms, cutoff (Å), and cutoff dimension (3D or z). Protein exclude needs the git lipyphilic pin until PyPI ships PR #164.'
   },
   {
     id: 'gridmat',
-    label: 'GridMAT-MD',
-    hint: 'Grid assigned to the nearest headgroup or nearby protein atom (Allen et al. 2009).'
+    label: 'GridMAT (GW, experimental)',
+    hint: 'GateWizard in-process GridMAT-style grid (closer to Allen et al. 2009 / GridMAT-MD.pl, not bit-identical). Protein proximity via precision (Å); exclude cutoff unused.'
+  },
+  {
+    id: 'gridmat_md',
+    label: 'GridMAT-MD.pl (external)',
+    hint: 'Original GridMAT-MD.pl via Perl (literature-faithful). Set GATEWIZARD_GRIDMAT_MD to the .pl script (see gatewizard scripts/install_gridmat_md.sh).'
   },
   {
     id: 'vtmc',
-    label: 'VTMC (Voronoi + Monte Carlo)',
-    hint: 'Subtract protein disks by Monte Carlo sampling (Mori, Ogushi & Sugita 2012).'
+    label: 'VTMC (GW, experimental)',
+    hint: 'GateWizard reimplementation of Voronoi + Monte Carlo protein-disk subtraction (Mori, Ogushi & Sugita 2012). Experimental — not yet validated against the original binary.'
   }
 ]
 
 export const APL_METHOD_DEFAULTS = {
-  aplMethod: 'evapl',
+  aplMethod: 'fatslim',
+  excludeCutoff: '30',
+  excludeDim: '3',
+  fatslimNthreads: '1',
+  fatslimJobs: '1',
   gridmatN: '20',
   gridmatPrecision: '13',
+  gridmatMdJobs: '8',
   vtmcNSamples: '50000',
   vtmcProteinRadius: '1.7'
 }
 
+/** Methods that use exclude_cutoff / exclude_dim (FATSLiM/EVAPL/GridMAT GW/GridMAT-MD.pl do not). */
+export const APL_METHODS_WITH_EXCLUDE_CUTOFF = new Set(['lipyphilic', 'vtmc'])
+
+/** @param {string | null | undefined} method */
+export function aplMethodUsesExcludeCutoff(method) {
+  return APL_METHODS_WITH_EXCLUDE_CUTOFF.has(normalizeAplMethod(method))
+}
+
 /** @param {string | null | undefined} method */
 export function normalizeAplMethod(method) {
-  const m = String(method || 'evapl')
+  const m = String(method || 'fatslim')
     .trim()
     .toLowerCase()
     .replace(/-/g, '_')
-  if (m === 'auto' || m === '') return 'evapl'
+  if (m === 'auto' || m === '') return 'fatslim'
+  if (m === 'fatslim' || m === 'fatslim_cli') return 'fatslim'
   if (m === 'voronoi' || m === 'standard') return 'lipyphilic'
   if (m === 'evapl') return 'evapl'
-  if (m === 'gridmat' || m === 'gridmat_md' || m === 'grid') return 'gridmat'
+  if (m === 'gridmat' || m === 'grid') return 'gridmat'
+  if (m === 'gridmat_md' || m === 'gridmat_pl' || m === 'gridmat_cli') return 'gridmat_md'
   if (m === 'vtmc' || m === 'voronoi_mc' || m === 'mori') return 'vtmc'
   if (m === 'lipyphilic') return 'lipyphilic'
-  return 'evapl'
+  return 'fatslim'
 }
 
 /** @param {string | null | undefined} method */
@@ -103,6 +136,38 @@ export function aplMethodLabel(method) {
 }
 
 export const BILAYER_STRUCTURAL_TYPES = new Set(['area_per_lipid', 'membrane_thickness'])
+
+/** Display titles for structural analysis types. */
+export const STRUCTURAL_TYPE_TITLES = {
+  rmsd: 'RMSD',
+  rmsf: 'RMSF',
+  distance: 'Distance',
+  radius_of_gyration: 'Radius of Gyration',
+  membrane_thickness: 'Membrane Thickness',
+  area_per_lipid: 'Area per Lipid'
+}
+
+/**
+ * Grouped structural types for the Analysis type picker / options catalog.
+ * @type {Array<{ id: string, label: string, types: string[] }>}
+ */
+export const STRUCTURAL_TYPE_GROUPS = [
+  {
+    id: 'stability',
+    label: 'Stability',
+    types: ['rmsd', 'rmsf', 'radius_of_gyration']
+  },
+  {
+    id: 'geometry',
+    label: 'Geometry',
+    types: ['distance']
+  },
+  {
+    id: 'membrane',
+    label: 'Membrane',
+    types: ['membrane_thickness', 'area_per_lipid']
+  }
+]
 
 /** @param {string} type */
 export function isBilayerStructuralType(type) {
@@ -207,9 +272,13 @@ export function resolveStructuralTypeSelection(opts, type) {
         interpolate: opts.interpolate,
         excludeSel: opts.excludeSel,
         excludeCutoff: opts.excludeCutoff,
+        excludeDim: opts.excludeDim,
         aplMethod: normalizeAplMethod(opts.aplMethod),
+        fatslimNthreads: opts.fatslimNthreads,
+        fatslimJobs: opts.fatslimJobs,
         gridmatN: opts.gridmatN,
         gridmatPrecision: opts.gridmatPrecision,
+        gridmatMdJobs: opts.gridmatMdJobs,
         vtmcNSamples: opts.vtmcNSamples,
         vtmcProteinRadius: opts.vtmcProteinRadius
       }
@@ -228,10 +297,14 @@ export function resolveStructuralTypeSelection(opts, type) {
     nBins: opts?.nBins ?? '1',
     interpolate: opts?.interpolate ?? false,
     excludeSel: opts?.excludeSel ?? 'protein',
-    excludeCutoff: opts?.excludeCutoff ?? '30',
+    excludeCutoff: opts?.excludeCutoff ?? APL_METHOD_DEFAULTS.excludeCutoff,
+    excludeDim: opts?.excludeDim ?? APL_METHOD_DEFAULTS.excludeDim,
     aplMethod: normalizeAplMethod(opts?.aplMethod),
+    fatslimNthreads: opts?.fatslimNthreads ?? APL_METHOD_DEFAULTS.fatslimNthreads,
+    fatslimJobs: opts?.fatslimJobs ?? APL_METHOD_DEFAULTS.fatslimJobs,
     gridmatN: opts?.gridmatN ?? APL_METHOD_DEFAULTS.gridmatN,
     gridmatPrecision: opts?.gridmatPrecision ?? APL_METHOD_DEFAULTS.gridmatPrecision,
+    gridmatMdJobs: opts?.gridmatMdJobs ?? APL_METHOD_DEFAULTS.gridmatMdJobs,
     vtmcNSamples: opts?.vtmcNSamples ?? APL_METHOD_DEFAULTS.vtmcNSamples,
     vtmcProteinRadius: opts?.vtmcProteinRadius ?? APL_METHOD_DEFAULTS.vtmcProteinRadius,
     lipidHeadgroupAtoms: []
@@ -257,6 +330,8 @@ export function resolveStructuralTypeSelection(opts, type) {
  * @property {number[]} rawX
  * @property {number[]} rawY
  * @property {string[]} [xLabels]
+ * @property {number[]} [resids] RMSF topology residue ids (final numbering)
+ * @property {string[]} [resnames] RMSF residue names parallel to resids
  * @property {Array<{ name: string, rawY: number[] }>} [extraSeries]
  * @property {string} seriesName
  * @property {{ mean: number, std: number, min: number, max: number } | null} primaryStats
@@ -324,7 +399,6 @@ export function defaultStructuralOptions() {
     nBins: '1',
     interpolate: false,
     excludeSel: 'protein',
-    excludeCutoff: '30',
     ...APL_METHOD_DEFAULTS,
     selectionsByType: {
       rmsd: {
@@ -339,7 +413,6 @@ export function defaultStructuralOptions() {
         nBins: '1',
         interpolate: false,
         excludeSel: 'protein',
-        excludeCutoff: '30',
         ...APL_METHOD_DEFAULTS,
         lipidHeadgroupAtoms: []
       }
@@ -410,14 +483,23 @@ export function normalizeAnalysisSetFiles(set) {
       ? set.trajectoryFiles.map(normalizeAnalysisFileRow)
       : []
   }
-  if (set.energeticOptions && typeof set.energeticOptions === 'object') {
-    const logs = set.energeticOptions.logFiles
-    next.energeticOptions = {
-      ...set.energeticOptions,
-      logFiles: Array.isArray(logs) ? logs.map(normalizeAnalysisFileRow) : logs
-    }
-  }
+  next.energeticOptions = normalizeEnergeticOptions(set.energeticOptions)
   return next
+}
+
+/** Offline / older sessions may omit energeticOptions; fill defaults so load never crashes. */
+export function normalizeEnergeticOptions(opts) {
+  const defaults = defaultEnergeticOptions()
+  if (!opts || typeof opts !== 'object') return defaults
+  const logs = opts.logFiles
+  return {
+    ...defaults,
+    ...opts,
+    energeticEngine: opts.energeticEngine || defaults.energeticEngine,
+    logFiles: Array.isArray(logs) ? logs.map(normalizeAnalysisFileRow) : [],
+    availableProperties: Array.isArray(opts.availableProperties) ? opts.availableProperties : [],
+    selectedProperties: Array.isArray(opts.selectedProperties) ? opts.selectedProperties : []
+  }
 }
 
 /** Fill missing/duplicate csv stems (`set1`, `set2`, …) without renaming existing unique ones. */
