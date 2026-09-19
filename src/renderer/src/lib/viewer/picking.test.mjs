@@ -45,8 +45,10 @@ test('pickRadiusPx is smaller for ball-stick/points than full VdW', () => {
   const atom = { element: 'C' }
   const vdw = pickRadiusPx('vdw', atom, 10, 20)
   const bs = pickRadiusPx('ball-stick', atom, 10, 20)
+  const lic = pickRadiusPx('licorice', atom, 10, 20)
   const pts = pickRadiusPx('points', atom, 10, 20)
   assert.ok(bs < vdw)
+  assert.equal(lic, bs)
   assert.ok(pts < vdw)
 })
 

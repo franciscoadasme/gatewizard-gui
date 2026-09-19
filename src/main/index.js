@@ -18,6 +18,8 @@ const LAUNCH_CWD = (() => {
  * Prefer an existing directory for native file dialogs.
  * On Linux, a missing/invalid defaultPath often opens the GTK "Recent" view.
  * Order: preferred path → launch cwd → home.
+ * When preferred is a new file under an existing folder, keep the basename so
+ * save dialogs suggest that name in the right directory.
  * @param {string | undefined | null} preferred
  * @returns {string | undefined}
  */
@@ -25,7 +27,12 @@ function resolveDialogDefaultPath(preferred) {
   /** @type {string[]} */
   const candidates = []
   if (typeof preferred === 'string' && preferred.trim()) {
-    candidates.push(preferred.trim())
+    const p = preferred.trim()
+    // Relative names (e.g. "structure.pdb") → under the console launch cwd first.
+    if (!path.isAbsolute(p) && LAUNCH_CWD) {
+      candidates.push(path.join(LAUNCH_CWD, p))
+    }
+    candidates.push(p)
   }
   if (LAUNCH_CWD) candidates.push(LAUNCH_CWD)
   try {
@@ -41,6 +48,9 @@ function resolveDialogDefaultPath(preferred) {
       if (!existsSync(resolved)) {
         const parent = path.dirname(resolved)
         if (parent && parent !== resolved && existsSync(parent)) {
+          const base = path.basename(resolved)
+          // Save dialogs pass "dir/name.ext" before the file exists — keep the name.
+          if (base && path.extname(base)) return path.join(parent, base)
           resolved = parent
         } else {
           continue
@@ -48,7 +58,7 @@ function resolveDialogDefaultPath(preferred) {
       }
       const st = statSync(resolved)
       if (st.isDirectory()) return resolved
-      if (st.isFile()) return path.dirname(resolved)
+      if (st.isFile()) return resolved
     } catch {
       /* try next */
     }
@@ -859,6 +869,15 @@ process.on('uncaughtException', (err) => {
   }
 })
 
+// Large multi-structure / licorice scenes can exceed Chromium's default ~2 GB
+// V8 old-space and crash the renderer (exitCode=5). Raise before app.ready.
+// Override with GATEWIZARD_MAX_OLD_SPACE_SIZE (MB), e.g. 8192.
+{
+  const raw = String(process.env.GATEWIZARD_MAX_OLD_SPACE_SIZE || '').trim()
+  const mb = Math.max(2048, Math.min(16384, Number.parseInt(raw || '4096', 10) || 4096))
+  app.commandLine.appendSwitch('js-flags', `--max-old-space-size=${mb}`)
+}
+
 ensureSessionDbus(process.env)
 applyDisplayGpuEnv(process.env)
 if (process.platform === 'linux') {
@@ -1264,18 +1283,26 @@ app.on('window-all-closed', () => {
 ipcMain.handle('dialog:openPdb', async (_event, defaultPath = undefined) => {
   const win = BrowserWindow.getFocusedWindow()
   const result = await dialog.showOpenDialog(win ?? undefined, {
-    title: 'Open PDB',
+    title: 'Open structure',
     defaultPath: resolveDialogDefaultPath(defaultPath),
     filters: [
-      { name: 'Structure', extensions: ['pdb', 'ent', 'cif', 'mmcif'] },
+      {
+        name: 'Structure',
+        extensions: ['pdb', 'ent', 'cif', 'mmcif', 'mae', 'maegz']
+      },
+      { name: 'Maestro', extensions: ['mae', 'maegz'] },
       { name: 'All files', extensions: ['*'] }
     ],
-    properties: ['openFile']
+    properties: ['openFile', 'multiSelections']
   })
   if (result.canceled || result.filePaths.length === 0) {
     return { canceled: true }
   }
-  return { canceled: false, filePath: result.filePaths[0] }
+  return {
+    canceled: false,
+    filePath: result.filePaths[0],
+    filePaths: result.filePaths
+  }
 })
 
 ipcMain.handle('dialog:openTopology', async (_event, defaultPath = undefined) => {

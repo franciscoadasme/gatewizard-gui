@@ -9,7 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Visualize Surface representation:** continuous organic skin (Gaussian metaballs + marching cubes) with **Source** (Atoms/vdW or Backbone/SS), **Inflate**, and **Smooth** (finer voxel sampling 0–8). Backbone mode uses Cα probes with helix/sheet/coil radii. Shares Quality, Opacity, materials/Goodsell/glow; saved in viewpoints and animation keyframes.
+- **Visualize Licorice representation:** split-colored sticks (no atom spheres) with the same multi-bond expansion as ball-and-stick; gear **Bond width** and **Show multiple bonds**.
 - **Visualize multi-structure load:** Maestro / multi-MODEL imports load cache PDBs with bounded concurrency (2), deferred bond guessing, deferred XYZ base snapshots, one workspace commit, and collapse-all-but-first for a lighter panel.
+- **Visualize multiple bonds:** ball-and-stick draws parallel sticks for bond order 2/3 when present (Maestro import); **Show multiple bonds** toggle on the representation card.
 - **Analysis Apply selection to all sets:** copies the current structural type’s selection snapshot (selection, reference, bilayer/APL fields for that type) onto every set without running.
 - **Analysis options search:** left-sidebar search navigates to Plot Settings / Structural / Grid options controls and briefly pulse-highlights the target. Type groups (Stability / Geometry / Membrane) stay in the picker via a shared options catalog.
 - **Analysis GridMAT-MD.pl:** APL method **GridMAT-MD.pl (external)** plus **GridMAT (GW, experimental)** and **VTMC (GW, experimental)** labels; optional jobs control for the Perl path (`GATEWIZARD_GRIDMAT_MD`).
@@ -47,9 +50,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Remote job dialog:** optional **GPU type** select from probed node/partition GRES. Writes `#SBATCH --gres=gpu:TYPE:N` when set; Any keeps `#SBATCH --gpus=N`. Stored in `execution.resources.gpu_type`.
 - **Cluster profiles:** optional **Default job time limit** (`default_time_limit`, Slurm `#SBATCH -t`) used when opening Remote job for a new submit.
 
+### Changed
+
+- **Visualize ball-and-stick bonds:** sticks dig into atom spheres (~40%) so double/triple caps no longer sit flush on the surface.
+- **Visualize Licorice:** continuous pipe always on between bonds. **Round terminal ends** toggles sphere caps on termini only (multi-bond termini get a small cap per stick, not one fat sphere). Double/triple sticks stay inside a single-bond envelope. Multi-bond offsets follow the **camera** (bond × view) so ring double bonds stay visible while orbiting. Shared Quality 1–5.
+
+- **Visualize ball-and-stick bond color:** **Uniform** (color picker) or **By atom (split)** like licorice; atom/bond size sliders unchanged.
 ### Fixed
 
 - **Visualize Maestro double bonds:** prefetched dense CONECT without bond orders no longer skips the sidecar merge pass; source triples are applied onto dense pairs; `/get-structure` returns sanitized bond-order triples; ball-stick rebuilds when expanded multi-stick count exceeds mesh capacity.
+- **Visualize ball-stick reload loop:** small selections (few atoms/bonds) no longer densify forever after a successful fetch.
 - **Visualize ball-and-stick bonds:** Maestro selected fetches keep bond endpoints in **global** atom index space (no local remap); sparse CONECT no longer blocks densify fetch when switching to ball-and-stick. Bond-order sidecars (``.bonds.json`` / sibling SDF) are merged onto densified connectivity so double/triple sticks render; OpenBabel Maestro fallback also writes the sidecar when possible.
 - **Analysis outside legend:** box width/height are true CSS *minimums* (content can grow). Sessions that saved `1×1` no longer collapse the strip to a dot; load also treats mins < 8 px as auto.
 - **Analysis FATSLiM notice:** sidebar probes `/analysis-fatslim-status` when FATSLiM is selected and shows a short install hint only if the CLI is missing (clone the **API** `gatewizard` repo — not the GUI install — then `scripts/install_fatslim_env.sh` / `docs/analysis.md`).

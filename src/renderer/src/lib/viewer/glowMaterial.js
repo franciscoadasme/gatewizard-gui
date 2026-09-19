@@ -5,8 +5,10 @@ export function clearGlowMaterial(material) {
   material.emissive.setHex(0x000000)
   material.emissiveIntensity = 0
   material.toneMapped = true
-  material.onBeforeCompile = null
-  material.customProgramCacheKey = undefined
+  // Restore prototype methods — assigning `undefined` shadows them and crashes
+  // WebGLRenderer (`customProgramCacheKey is not a function`).
+  delete material.onBeforeCompile
+  delete material.customProgramCacheKey
   material.needsUpdate = true
 }
 
@@ -40,8 +42,8 @@ totalEmissiveRadiance *= diffuseColor.rgb;`
     }
   } else {
     material.emissive.copy(material.color)
-    material.onBeforeCompile = null
-    material.customProgramCacheKey = undefined
+    delete material.onBeforeCompile
+    delete material.customProgramCacheKey
   }
 
   material.needsUpdate = true

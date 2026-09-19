@@ -132,8 +132,8 @@ export function pickRadiusPx(repr, atom, pxPerUnit, minThreshold) {
     // Ribbon is wider than a CA sphere; keep a usable halo without claiming sidechains.
     return Math.max(minThreshold, 1.8 * pxPerUnit)
   }
-  if (repr === 'ball-stick') {
-    // Matches BallStick draw scale (~0.5 × covalent ≈ half VdW for C).
+  if (repr === 'ball-stick' || repr === 'licorice') {
+    // Matches BallStick / Licorice draw scale (~0.5 × covalent ≈ half VdW for C).
     return Math.max(minThreshold * 0.65, vdwRadius(atom.element) * 0.45 * pxPerUnit)
   }
   if (repr === 'points') {
@@ -149,7 +149,7 @@ export function pickRadiusPx(repr, atom, pxPerUnit, minThreshold) {
  * @param {string} repr
  */
 function representationPickPriority(repr) {
-  if (repr === 'vdw' || repr === 'ball-stick') return 0
+  if (repr === 'vdw' || repr === 'ball-stick' || repr === 'licorice') return 0
   if (repr === 'points') return 1
   if (repr === 'cartoon' || repr === 'tube') return 2
   return 3
