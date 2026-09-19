@@ -15,6 +15,7 @@ The app uses the **[GateWizard API](https://github.com/maurobedoya/gatewizard)**
 
 ## Features
 
+- **Visualize** — 3D representations with multi-structure workspace (append PDBs/CIFs; Maestro `.mae`/`.maegz` and multi-MODEL PDB entry picker), viewpoints/animation, Apply representation across structures, and multiple-bond sticks when bond orders are known
 - **Preparation** — clean structures, pKa (PROPKA), protonation, and termini capping
 - **Membrane builder** — orient protein, pack lipids and solvent, Amber parametrization (tleap)
 - **Equilibration** — CHARMM-GUI-style protocols for NAMD, GROMACS, and OpenMM (NVT, NPT, NPAT, NPγT)
@@ -202,6 +203,24 @@ Overrides (always win):
 | `GATEWIZARD_GALLIUM_DRIVER=llvmpipe` | Force Mesa software GL (empty value disables auto d3d12) |
 | `GALLIUM_DRIVER` | Left as-is if already set |
 | `MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA` | Optional, if Mesa picked the wrong GPU on a hybrid laptop |
+| `GATEWIZARD_MAX_OLD_SPACE_SIZE` | Renderer V8 heap limit in **MB** (default **4096**, clamp 2048–16384) |
+
+#### Renderer out-of-memory (large Maestro / multi-structure scenes)
+
+If the console shows `JavaScript heap out of memory` / `renderer process gone` while loading many CTs, raise the heap before launching (value is megabytes; `8192` = 8 GB):
+
+```bash
+# Linux / WSL / macOS (one session)
+GATEWIZARD_MAX_OLD_SPACE_SIZE=8192 gatewizard-gui-linux
+```
+
+```powershell
+# Windows PowerShell (one session)
+$env:GATEWIZARD_MAX_OLD_SPACE_SIZE = "8192"
+# then start the app as usual (e.g. npm run dev, or the installed shortcut)
+```
+
+To keep it across sessions, set a permanent user environment variable named `GATEWIZARD_MAX_OLD_SPACE_SIZE` (Windows: System Properties → Environment Variables; Linux/macOS: add `export GATEWIZARD_MAX_OLD_SPACE_SIZE=8192` to your shell profile). Restart the app after changing it.
 
 WSL often has no session D-Bus. The app starts one when needed so Chromium does not print `Failed to connect to socket /run/user/…/bus`.
 

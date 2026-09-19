@@ -1485,20 +1485,22 @@ electron.app.on("window-all-closed", () => {
     electron.app.quit();
   }
 });
-electron.ipcMain.handle("dialog:openPdb", async () => {
+electron.ipcMain.handle("dialog:openPdb", async (_event, defaultPath = void 0) => {
   const win = electron.BrowserWindow.getFocusedWindow();
   const result = await electron.dialog.showOpenDialog(win ?? void 0, {
-    title: "Open PDB",
+    title: "Open structure",
+    defaultPath,
     filters: [
-      { name: "Structure", extensions: ["pdb", "ent", "cif", "mmcif"] },
+      { name: "Structure", extensions: ["pdb", "ent", "cif", "mmcif", "mae", "maegz"] },
+      { name: "Maestro", extensions: ["mae", "maegz"] },
       { name: "All files", extensions: ["*"] }
     ],
-    properties: ["openFile"]
+    properties: ["openFile", "multiSelections"]
   });
   if (result.canceled || result.filePaths.length === 0) {
     return { canceled: true };
   }
-  return { canceled: false, filePath: result.filePaths[0] };
+  return { canceled: false, filePath: result.filePaths[0], filePaths: result.filePaths };
 });
 electron.ipcMain.handle(
   "dialog:openDirectory",

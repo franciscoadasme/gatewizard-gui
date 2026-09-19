@@ -68,8 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Visualize Maestro viewpoint / animation save:** multi-CT entries store the original `.mae`/`.maegz` path + `ctIndex` (not ephemeral `structure_cache` PDBs) so Open view / Open animation rematerializes from the source file.
 - **Visualize selection:** named **polar** preset and **∩ polar** button keep heavy atoms + H bonded to O/N/S (hide non-polar hydrogens); selections that use ``bonded`` force bond loading first.
 - **Visualize Apply to…:** picker matches other app dialogs (theme, outline buttons, yellow **Apply**).
+
 ### Fixed
 
+- **Visualize renderer OOM:** raising the Electron V8 heap default to **4 GB** (`GATEWIZARD_MAX_OLD_SPACE_SIZE` override); deferring per-structure XYZ base snapshots until a transform/animation needs them; avoiding full atom-array clones in `viewAtoms` when coords are unchanged; expanding columnar `/get-structure` payloads in place; lowering multi-CT import concurrency; skipping a second full-structure fetch for `"all"` views on viewpoint/animation restore.
 - **Visualize Maestro double bonds:** prefetched dense CONECT without bond orders no longer skips the sidecar merge pass; source triples are applied onto dense pairs; `/get-structure` returns sanitized bond-order triples; ball-stick rebuilds when expanded multi-stick count exceeds mesh capacity.
 - **Visualize ball-stick reload loop:** small selections (few atoms/bonds) no longer densify forever after a successful fetch.
 - **Visualize ball-and-stick bonds:** Maestro selected fetches keep bond endpoints in **global** atom index space (no local remap); sparse CONECT no longer blocks densify fetch when switching to ball-and-stick. Bond-order sidecars (``.bonds.json`` / sibling SDF) are merged onto densified connectivity so double/triple sticks render; OpenBabel Maestro fallback also writes the sidecar when possible.
