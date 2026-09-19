@@ -26,14 +26,19 @@ function applyViewVisibilityFromState(live, stateView, template, hasSnapshotAtOr
   if (stateView) {
     const opacity = typeof stateView.opacity === 'number' ? stateView.opacity : 1
     live.visible = opacity > 0.001
-    if (typeof stateView.opacity === 'number') live.opacity = stateView.opacity
-    else delete live.opacity
+    live.opacity = opacity
     return
   }
   if (hasSnapshotAtOrBeforeTime && template) {
     live.visible = template.visible !== false
-    if (live.visible) delete live.opacity
-    else live.opacity = 0
+    if (live.visible) {
+      live.opacity =
+        typeof template.opacity === 'number' && Number.isFinite(template.opacity)
+          ? Math.max(0, Math.min(1, template.opacity))
+          : 1
+    } else {
+      live.opacity = 0
+    }
     return
   }
   live.visible = false

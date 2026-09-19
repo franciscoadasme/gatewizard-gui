@@ -4,6 +4,8 @@ import { reconcileViewTracks } from './tracks.js'
 import { DEFAULT_EASING_KIND, normalizeBezier, normalizeEasingKind } from './easing.js'
 import { normalizeFadeSettings } from './fade.js'
 import { DEFAULT_ANIMATION_EXPORT_FORMAT, normalizeExportFormat } from './exportFormats.js'
+import { normalizeStructuresMeta } from '../visualizeStructures.js'
+import { normalizeVisibilityGroups } from '../visualizeGroups.js'
 
 /**
  * @typedef {Object} AnimationCameraFraming
@@ -32,6 +34,7 @@ import { DEFAULT_ANIMATION_EXPORT_FORMAT, normalizeExportFormat } from './export
  * @property {string} id
  * @property {number} atomIndex
  * @property {string} text
+ * @property {string} [structureId]
  * @property {number} [size]
  * @property {string} [color]
  * @property {string} [background]
@@ -57,6 +60,7 @@ import { DEFAULT_ANIMATION_EXPORT_FORMAT, normalizeExportFormat } from './export
  * @property {string} id
  * @property {'distance' | 'angle' | 'dihedral'} type
  * @property {number[]} atomIndices
+ * @property {string} [structureId]
  * @property {string} [color]
  * @property {number} [size]
  * @property {number} [lineWidth]
@@ -81,6 +85,8 @@ import { DEFAULT_ANIMATION_EXPORT_FORMAT, normalizeExportFormat } from './export
 /**
  * @typedef {Object} SerializedView
  * @property {string} id
+ * @property {string} [structureId]
+ * @property {string} [componentKey]
  * @property {string} selection
  * @property {string} baseSelection
  * @property {{ type: string }} representation
@@ -96,6 +102,14 @@ import { DEFAULT_ANIMATION_EXPORT_FORMAT, normalizeExportFormat } from './export
  * @property {number} [bondScale]
  * @property {number} [pointSize]
  * @property {number} [quality]
+ * @property {number} [meshSegments]
+ * @property {boolean} [showMultipleBonds]
+ * @property {number} [stickRoundness]
+ * @property {'uniform' | 'atoms'} [bondColorMode]
+ * @property {string} [bondColor]
+ * @property {number} [surfaceInflate]
+ * @property {'atoms' | 'backbone'} [surfaceSource]
+ * @property {number} [surfaceSubdivision]
  * @property {boolean} [fadeEnabled]
  * @property {number} [fadeIn_s]
  * @property {number} [fadeOut_s]
@@ -103,7 +117,7 @@ import { DEFAULT_ANIMATION_EXPORT_FORMAT, normalizeExportFormat } from './export
  * @property {import('./easing.js').AnimationEasingKind} [fadeOutEasing]
  * @property {[number, number, number, number]} [fadeInBezier]
  * @property {[number, number, number, number]} [fadeOutBezier]
- * @property {number} [opacity]
+ * @property {number} [opacity] Base representation opacity 0–1 (animation fade multiplies this)
  */
 
 /**
@@ -121,7 +135,10 @@ import { DEFAULT_ANIMATION_EXPORT_FORMAT, normalizeExportFormat } from './export
  * @property {SerializedAtomLabel[]} [labels]
  * @property {SerializedMeasurement[]} [measurements]
  * @property {{ indices: number[], xyz: number[] } | null} [coordPatch]
- *   Sparse absolute coordinates for atoms that differ from the project base pose.
+ *   Sparse absolute coordinates for atoms that differ from the project base pose
+ *   (legacy single-structure / primary structure). Prefer ``coordPatches`` when multi-structure.
+ * @property {Record<string, { indices: number[], xyz: number[] }> | null} [coordPatches]
+ *   Per-structureId sparse absolute coordinates (v5+).
  */
 
 /**
@@ -147,6 +164,8 @@ import { DEFAULT_ANIMATION_EXPORT_FORMAT, normalizeExportFormat } from './export
  * @property {number} version
  * @property {string} name
  * @property {{ path: string, topology?: string | null }} structure
+ * @property {Array<{ id?: string, path: string, topology?: string | null, sourcePath?: string, kind?: string, label?: string, ctIndex?: number | null, modelIndex?: number | null, visible?: boolean }>} [structures]
+ * @property {import('../visualizeGroups.js').VisibilityGroup[]} [visibilityGroups]
  * @property {number} fps
  * @property {number} duration_s
  * @property {AnimationKeyframe[]} keyframes
@@ -157,8 +176,12 @@ import { DEFAULT_ANIMATION_EXPORT_FORMAT, normalizeExportFormat } from './export
  */
 
 export const ANIMATION_FORMAT = 'gatewizard-animation'
-/** v4: optional per-keyframe sparse `coordPatch` for atom motion. */
-export const ANIMATION_VERSION = 4
+/**
+ * v4: optional per-keyframe sparse `coordPatch` for atom motion.
+ * v5: multi-structure ``structures[]``, ``structureId`` on views, per-structure ``coordPatches``.
+ * v6: ordered ``visibilityGroups`` for the Representations panel.
+ */
+export const ANIMATION_VERSION = 6
 export const DEFAULT_FPS = 30
 export const DEFAULT_EASING = DEFAULT_EASING_KIND
 
@@ -226,6 +249,8 @@ export function createEmptyProject(overrides = {}) {
     version: ANIMATION_VERSION,
     name: 'Untitled animation',
     structure: { path: '', topology: null },
+    structures: [],
+    visibilityGroups: [],
     fps: DEFAULT_FPS,
     duration_s: 10,
     keyframes: [],
@@ -247,12 +272,16 @@ export function normalizeProject(data) {
     throw new Error('Not a GateWizard animation file (expected format gatewizard-animation)')
   }
   const keyframes = Array.isArray(raw.keyframes) ? raw.keyframes : []
+  const structures = normalizeStructuresMeta(raw.structures ?? raw.structure)
+  const primary = structures[0] || { path: '', topology: null }
   const project = createEmptyProject({
     name: typeof raw.name === 'string' ? raw.name : 'Animation',
-    structure:
-      raw.structure && typeof raw.structure === 'object'
-        ? /** @type {{ path: string, topology?: string | null }} */ (raw.structure)
-        : { path: '', topology: null },
+    structure: {
+      path: primary.path || '',
+      topology: primary.topology ?? null
+    },
+    structures,
+    visibilityGroups: normalizeVisibilityGroups(raw.visibilityGroups),
     fps: typeof raw.fps === 'number' && raw.fps > 0 ? raw.fps : DEFAULT_FPS,
     duration_s:
       typeof raw.duration_s === 'number' && raw.duration_s > 0
@@ -269,6 +298,15 @@ export function normalizeProject(data) {
         ? /** @type {Record<string, unknown>} */ (raw.sceneDefaults)
         : {}
   })
+  // Migrate v1–v4 views: assign primary structureId when missing
+  const primaryId = primary.id
+  if (primaryId) {
+    for (const kf of project.keyframes) {
+      kf.views = (kf.views || []).map((v) =>
+        v.structureId ? v : { ...v, structureId: primaryId }
+      )
+    }
+  }
   project.viewTracks = reconcileViewTracks(project.viewTracks, project.keyframes)
   return project
 }
@@ -282,6 +320,7 @@ function normalizeAtomLabel(raw) {
     id: l.id,
     atomIndex: l.atomIndex,
     text: l.text,
+    structureId: typeof l.structureId === 'string' ? l.structureId : undefined,
     size: typeof l.size === 'number' ? l.size : 12,
     color: typeof l.color === 'string' ? l.color : '#ffffff',
     background: typeof l.background === 'string' ? l.background : '#000000',
@@ -316,6 +355,7 @@ function normalizeMeasurement(raw) {
     id: m.id,
     type: /** @type {'distance' | 'angle' | 'dihedral'} */ (m.type),
     atomIndices,
+    structureId: typeof m.structureId === 'string' ? m.structureId : undefined,
     color: typeof m.color === 'string' ? m.color : '#facc15',
     size: typeof m.size === 'number' ? m.size : 15,
     lineWidth: typeof m.lineWidth === 'number' ? m.lineWidth : 3,
@@ -383,12 +423,28 @@ export function normalizeCoordPatch(raw) {
   return { indices, xyz: xyz.map(Number) }
 }
 
+/**
+ * @param {unknown} raw
+ * @returns {Record<string, { indices: number[], xyz: number[] }> | null}
+ */
+export function normalizeCoordPatches(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  /** @type {Record<string, { indices: number[], xyz: number[] }>} */
+  const out = {}
+  for (const [sid, patch] of Object.entries(/** @type {Record<string, unknown>} */ (raw))) {
+    const n = normalizeCoordPatch(patch)
+    if (n) out[sid] = n
+  }
+  return Object.keys(out).length ? out : null
+}
+
 function normalizeKeyframe(raw, index) {
   const k = /** @type {Record<string, unknown>} */ (raw ?? {})
   const camera = normalizeCamera(k.camera)
   const viewportRaw = /** @type {Record<string, unknown>} */ (k.viewport ?? {})
   const easing = normalizeEasingKind(k.easing)
   const coordPatch = normalizeCoordPatch(k.coordPatch)
+  const coordPatches = normalizeCoordPatches(k.coordPatches)
   return {
     id: typeof k.id === 'string' ? k.id : crypto.randomUUID(),
     name: typeof k.name === 'string' ? k.name : `Keyframe ${index + 1}`,
@@ -412,7 +468,8 @@ function normalizeKeyframe(raw, index) {
     measurements: Array.isArray(k.measurements)
       ? k.measurements.map(normalizeMeasurement).filter(Boolean)
       : [],
-    ...(coordPatch ? { coordPatch } : {})
+    ...(coordPatch ? { coordPatch } : {}),
+    ...(coordPatches ? { coordPatches } : {})
   }
 }
 
@@ -431,11 +488,21 @@ export function toPlainJson(value) {
  * @returns {AnimationProject}
  */
 export function serializeAnimationProject(project, structure) {
+  const structures =
+    Array.isArray(project.structures) && project.structures.length
+      ? project.structures
+      : structure
+        ? [structure]
+        : project.structure
+          ? [project.structure]
+          : []
   return toPlainJson({
     format: ANIMATION_FORMAT,
     version: ANIMATION_VERSION,
     name: project.name,
     structure: structure ?? project.structure,
+    structures,
+    visibilityGroups: normalizeVisibilityGroups(project.visibilityGroups),
     fps: project.fps,
     duration_s: project.duration_s,
     viewTracks: [...(project.viewTracks ?? [])],
@@ -462,6 +529,8 @@ export function serializeAnimationProject(project, structure) {
       },
       views: k.views.map((v) => ({
         id: v.id,
+        structureId: v.structureId,
+        componentKey: v.componentKey,
         selection: v.selection,
         baseSelection: v.baseSelection,
         representation: { type: v.representation.type },
@@ -477,6 +546,15 @@ export function serializeAnimationProject(project, structure) {
         bondScale: v.bondScale,
         pointSize: v.pointSize,
         quality: v.quality,
+        meshSegments: v.meshSegments,
+        showMultipleBonds: v.showMultipleBonds !== false,
+        stickRoundness: v.stickRoundness,
+        bondColorMode: v.bondColorMode === 'atoms' ? 'atoms' : 'uniform',
+        bondColor: v.bondColor,
+        surfaceInflate: v.surfaceInflate,
+        surfaceSource: v.surfaceSource,
+        surfaceSubdivision: v.surfaceSubdivision,
+        opacity: v.opacity,
         ...normalizeFadeSettings(v)
       })),
       scene: {
@@ -501,6 +579,16 @@ export function serializeAnimationProject(project, structure) {
               indices: [...k.coordPatch.indices],
               xyz: [...k.coordPatch.xyz]
             }
+          }
+        : {}),
+      ...(k.coordPatches && Object.keys(k.coordPatches).length
+        ? {
+            coordPatches: Object.fromEntries(
+              Object.entries(k.coordPatches).map(([sid, patch]) => [
+                sid,
+                { indices: [...patch.indices], xyz: [...patch.xyz] }
+              ])
+            )
           }
         : {})
     })),

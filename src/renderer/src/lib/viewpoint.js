@@ -1,15 +1,21 @@
 /**
  * GateWizard viewpoint / session files — a single snapshot of the visualizer:
- * structure path, camera orbit+zoom, representations (materials/colors), scene lights,
+ * structure path(s), camera orbit+zoom, representations (materials/colors), scene lights,
  * axes, labels, and measurements. Reuses animation serialization primitives so the
  * saved look matches what the user sees.
+ *
+ * v2: ``structures[]`` multi-structure workspace; legacy v1 singular ``structure`` migrates.
+ * v3: ordered ``visibilityGroups`` for the Representations panel.
  */
 
 import { toPlainJson } from './animation/schema.js'
 import { normalizeFadeSettings } from './animation/fade.js'
+import { normalizeStructuresMeta } from './visualizeStructures.js'
+import { normalizeVisibilityGroups } from './visualizeGroups.js'
 
 export const VIEWPOINT_FORMAT = 'gatewizard-viewpoint'
-export const VIEWPOINT_VERSION = 1
+/** v3: visibility groups + multi-structure workspace. */
+export const VIEWPOINT_VERSION = 3
 
 /**
  * @typedef {Object} ViewerViewpoint
@@ -17,6 +23,8 @@ export const VIEWPOINT_VERSION = 1
  * @property {number} version
  * @property {string} name
  * @property {{ path: string, topology?: string | null }} structure
+ * @property {Array<{ id?: string, path: string, topology?: string | null, sourcePath?: string, kind?: string, label?: string, ctIndex?: number | null, modelIndex?: number | null, visible?: boolean }>} [structures]
+ * @property {import('./visualizeGroups.js').VisibilityGroup[]} [visibilityGroups]
  * @property {import('./animation/schema.js').AnimationCameraPose} camera
  * @property {import('./animation/schema.js').SerializedView[]} views
  * @property {Record<string, unknown>} scene
@@ -69,6 +77,7 @@ function normalizeAtomLabel(raw) {
     id: l.id,
     atomIndex: l.atomIndex,
     text: l.text,
+    structureId: typeof l.structureId === 'string' ? l.structureId : undefined,
     size: typeof l.size === 'number' ? l.size : 12,
     color: typeof l.color === 'string' ? l.color : '#ffffff',
     background: typeof l.background === 'string' ? l.background : '#000000',
@@ -107,6 +116,7 @@ function normalizeMeasurement(raw) {
     id: m.id,
     type: /** @type {'distance' | 'angle' | 'dihedral'} */ (m.type),
     atomIndices,
+    structureId: typeof m.structureId === 'string' ? m.structureId : undefined,
     color: typeof m.color === 'string' ? m.color : '#facc15',
     size: typeof m.size === 'number' ? m.size : 15,
     lineWidth: typeof m.lineWidth === 'number' ? m.lineWidth : 3,
@@ -139,6 +149,8 @@ function normalizeView(raw) {
   const schemeName = typeof colorScheme.name === 'string' ? colorScheme.name : 'cpk'
   return {
     id: v.id,
+    structureId: typeof v.structureId === 'string' ? v.structureId : undefined,
+    componentKey: typeof v.componentKey === 'string' ? v.componentKey : undefined,
     selection: typeof v.selection === 'string' ? v.selection : 'all',
     baseSelection:
       typeof v.baseSelection === 'string'
@@ -170,6 +182,27 @@ function normalizeView(raw) {
     bondScale: typeof v.bondScale === 'number' ? v.bondScale : 1,
     pointSize: typeof v.pointSize === 'number' ? v.pointSize : 3,
     quality: typeof v.quality === 'number' ? v.quality : 3,
+    showMultipleBonds: v.showMultipleBonds !== false,
+    stickRoundness: typeof v.stickRoundness === 'number' ? v.stickRoundness : 1,
+    meshSegments:
+      typeof v.meshSegments === 'number' && Number.isFinite(v.meshSegments)
+        ? Math.max(8, Math.min(500, Math.round(v.meshSegments)))
+        : 48,
+    bondColorMode: v.bondColorMode === 'atoms' ? 'atoms' : 'uniform',
+    bondColor: typeof v.bondColor === 'string' ? v.bondColor : '#b8b8bc',
+    surfaceInflate:
+      typeof v.surfaceInflate === 'number' && Number.isFinite(v.surfaceInflate)
+        ? Math.max(0, Math.min(1, v.surfaceInflate))
+        : 0.25,
+    surfaceSource: v.surfaceSource === 'backbone' ? 'backbone' : 'atoms',
+    surfaceSubdivision: Math.max(
+      0,
+      Math.min(8, Number(v.surfaceSubdivision ?? 0) || 0)
+    ),
+    opacity:
+      typeof v.opacity === 'number' && Number.isFinite(v.opacity)
+        ? Math.max(0, Math.min(1, v.opacity))
+        : 1,
     ...normalizeFadeSettings(v)
   }
 }
@@ -179,6 +212,8 @@ function normalizeView(raw) {
  * @param {{
  *   name?: string
  *   structure: { path: string, topology?: string | null }
+ *   structures?: Array<Record<string, unknown>>
+ *   visibilityGroups?: import('./visualizeGroups.js').VisibilityGroup[]
  *   snapshot: {
  *     camera: import('./animation/schema.js').AnimationCameraPose
  *     views: import('./animation/schema.js').SerializedView[]
@@ -192,14 +227,28 @@ function normalizeView(raw) {
  */
 export function buildViewpoint(opts) {
   const snap = opts.snapshot
+  const structures =
+    Array.isArray(opts.structures) && opts.structures.length
+      ? opts.structures
+      : [
+          {
+            path: opts.structure?.path ?? '',
+            topology: opts.structure?.topology ?? null,
+            sourcePath: opts.structure?.path ?? '',
+            kind: 'file'
+          }
+        ]
+  const primary = structures[0] || opts.structure
   return {
     format: VIEWPOINT_FORMAT,
     version: VIEWPOINT_VERSION,
     name: opts.name || 'Viewpoint',
     structure: {
-      path: opts.structure?.path ?? '',
-      topology: opts.structure?.topology ?? null
+      path: primary?.path ?? opts.structure?.path ?? '',
+      topology: primary?.topology ?? opts.structure?.topology ?? null
     },
+    structures,
+    visibilityGroups: normalizeVisibilityGroups(opts.visibilityGroups),
     camera: snap.camera,
     views: snap.views,
     scene: snap.scene,
@@ -219,6 +268,8 @@ export function serializeViewpoint(viewpoint) {
     version: VIEWPOINT_VERSION,
     name: viewpoint.name,
     structure: viewpoint.structure,
+    structures: viewpoint.structures ?? [viewpoint.structure],
+    visibilityGroups: normalizeVisibilityGroups(viewpoint.visibilityGroups),
     camera: viewpoint.camera,
     views: viewpoint.views,
     scene: viewpoint.scene,
@@ -237,24 +288,33 @@ export function normalizeViewpoint(data) {
   if (raw.format !== VIEWPOINT_FORMAT) {
     throw new Error('Not a GateWizard viewpoint file (expected format gatewizard-viewpoint)')
   }
-  const structureRaw = /** @type {Record<string, unknown>} */ (raw.structure ?? {})
+  const structures = normalizeStructuresMeta(raw.structures ?? raw.structure)
+  const primary = structures[0] || { path: '', topology: null }
   const viewportRaw = /** @type {Record<string, unknown>} */ (raw.viewport ?? {})
   const views = Array.isArray(raw.views)
     ? raw.views.map(normalizeView).filter(Boolean)
     : []
+  // Migrate v1 views: assign first structureId when missing
+  const primaryId = primary.id
+  const migratedViews = views.map((v) => {
+    if (v && !v.structureId && primaryId) return { ...v, structureId: primaryId }
+    if (v && !v.structureId && structures.length === 1) {
+      return { ...v, structureId: structures[0].id }
+    }
+    return v
+  })
   return {
     format: VIEWPOINT_FORMAT,
     version: typeof raw.version === 'number' ? raw.version : VIEWPOINT_VERSION,
     name: typeof raw.name === 'string' ? raw.name : 'Viewpoint',
     structure: {
-      path: typeof structureRaw.path === 'string' ? structureRaw.path : '',
-      topology:
-        typeof structureRaw.topology === 'string' || structureRaw.topology === null
-          ? /** @type {string | null} */ (structureRaw.topology)
-          : null
+      path: primary.path || '',
+      topology: primary.topology ?? null
     },
+    structures,
+    visibilityGroups: normalizeVisibilityGroups(raw.visibilityGroups),
     camera: normalizeCamera(raw.camera),
-    views: /** @type {import('./animation/schema.js').SerializedView[]} */ (views),
+    views: /** @type {import('./animation/schema.js').SerializedView[]} */ (migratedViews),
     scene:
       raw.scene && typeof raw.scene === 'object'
         ? /** @type {Record<string, unknown>} */ (raw.scene)

@@ -1,4 +1,5 @@
 import { DEFAULT_VIEW_MATERIAL } from '../colorSchemes.js'
+import { effectiveViewSelection } from './viewSelection.js'
 
 /** @typedef {'chain' | 'residue' | 'resname' | 'molecule' | 'element'} SplitViewMode */
 
@@ -17,15 +18,6 @@ export const SPLIT_VIEW_MODES = [
  */
 export function splitViewModeLabel(mode) {
   return SPLIT_VIEW_MODES.find((m) => m.id === mode)?.label ?? mode
-}
-
-/** @param {any} view */
-function effectiveViewSelection(view) {
-  const sel = String(view?.selection || '').trim()
-  if (sel) return sel
-  const base = String(view?.baseSelection || '').trim()
-  if (base) return base
-  return 'all'
 }
 
 /** @param {string} effective @param {string} partSel */

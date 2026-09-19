@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { normalizeViewpoint, VIEWPOINT_FORMAT, VIEWPOINT_VERSION } from './viewpoint.js'
+import { effectiveViewSelection, namedSelectionFromView } from './viewer/viewSelection.js'
 
 test('normalizeViewpoint accepts a full session snapshot', () => {
   const vp = normalizeViewpoint({
@@ -85,6 +86,37 @@ test('normalizeViewpoint accepts a full session snapshot', () => {
   assert.equal(vp.measurements[0].offsetY, 12)
   assert.equal(vp.measurements[0].liftDir, 'up')
   assert.equal(vp.measurements[0].lineWidth, 2.5)
+})
+
+test('saved named ion view with empty selection still resolves to ion', () => {
+  const vp = normalizeViewpoint({
+    format: VIEWPOINT_FORMAT,
+    version: VIEWPOINT_VERSION,
+    name: '6rv2',
+    structure: { path: '/tmp/6rv2.pdb' },
+    camera: {
+      position: [0, 0, 10],
+      target: [0, 0, 0],
+      up: [0, 1, 0],
+      zoom: 1,
+      framing: { center: [0, 0, 0], extent: 40, framingZoom: 1 }
+    },
+    views: [
+      {
+        id: 'ion-vdw',
+        selection: '',
+        baseSelection: 'ion',
+        componentKey: 'ion',
+        representation: { type: 'vdw' },
+        visible: true,
+        colorScheme: { name: 'cpk' }
+      }
+    ]
+  })
+  assert.equal(vp.views[0].selection, '')
+  assert.equal(vp.views[0].baseSelection, 'ion')
+  assert.equal(effectiveViewSelection(vp.views[0]), 'ion')
+  assert.equal(namedSelectionFromView(vp.views[0]), 'ion')
 })
 
 test('normalizeViewpoint rejects animation projects and unknown formats', () => {

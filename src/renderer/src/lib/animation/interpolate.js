@@ -453,8 +453,21 @@ function interpolateView(a, b, t) {
     tubeRadius: lerpNum(a.tubeRadius ?? 0.9, b.tubeRadius ?? 0.9, t),
     atomScale: lerpNum(a.atomScale ?? 1, b.atomScale ?? 1, t),
     bondScale: lerpNum(a.bondScale ?? 1, b.bondScale ?? 1, t),
+    stickRoundness: lerpNum(a.stickRoundness ?? 1, b.stickRoundness ?? 1, t),
+    meshSegments: Math.round(lerpNum(a.meshSegments ?? 48, b.meshSegments ?? 48, t)),
     pointSize: lerpNum(a.pointSize ?? 3, b.pointSize ?? 3, t),
     quality: Math.round(lerpNum(a.quality ?? 3, b.quality ?? 3, t)),
+    surfaceInflate: lerpNum(a.surfaceInflate ?? 0.25, b.surfaceInflate ?? 0.25, t),
+    surfaceSource: (t < 0.5 ? a.surfaceSource : b.surfaceSource) === 'backbone' ? 'backbone' : 'atoms',
+    surfaceSubdivision: Math.max(
+      0,
+      Math.min(8, lerpNum(a.surfaceSubdivision ?? 0, b.surfaceSubdivision ?? 0, t))
+    ),
+    opacity: lerpNum(
+      typeof a.opacity === 'number' ? a.opacity : 1,
+      typeof b.opacity === 'number' ? b.opacity : 1,
+      t
+    ),
     ...interpolateViewFade(a, b, t)
   }
 }
@@ -483,7 +496,7 @@ function interpolateViews(keyframes, time_s, from, to, localT, rawT, segmentDura
     const fb = toMap.get(id)
     if (!fa && !fb) continue
 
-    const opacity = computeOverlayOpacity(fa, fb, rawT, segmentDuration)
+    const fadeFactor = computeOverlayOpacity(fa, fb, rawT, segmentDuration)
     const stepped = viewSnapshotAtOrBeforeTime(keyframes, id, time_s)
     /** @type {import('./schema.js').SerializedView} */
     let base
@@ -502,6 +515,8 @@ function interpolateViews(keyframes, time_s, from, to, localT, rawT, segmentDura
       fb ?? stepped ?? base,
       localT
     )
+    const baseOpacity = typeof base.opacity === 'number' ? base.opacity : 1
+    const opacity = Math.max(0, Math.min(1, baseOpacity * fadeFactor))
     out.push({
       ...base,
       ...fade,

@@ -11,6 +11,7 @@ import {
 import { viewerSettings } from '../viewerSettings.svelte.js'
 import { captureCameraPose } from './cameraPose.js'
 import { defaultFadeSettings, normalizeFadeSettings } from './fade.js'
+import { effectiveViewSelection } from '../viewer/viewSelection.js'
 
 /** @param {Record<string, unknown> | null | undefined} material */
 export function cloneMaterial(material) {
@@ -222,10 +223,20 @@ export function serializeView(view) {
   const cs = /** @type {{ name?: string, color?: string }} */ (view.colorScheme ?? {})
   const schemeName = cs.name === 'default' ? 'cpk' : (cs.name ?? 'cpk')
   const fade = normalizeFadeSettings(view)
+  const opacity =
+    typeof view.opacity === 'number' && Number.isFinite(view.opacity)
+      ? Math.max(0, Math.min(1, view.opacity))
+      : 1
+  const surfaceInflate =
+    typeof view.surfaceInflate === 'number' && Number.isFinite(view.surfaceInflate)
+      ? Math.max(0, Math.min(1, view.surfaceInflate))
+      : 0.25
   return {
     id: String(view.id),
-    selection: String(view.selection ?? 'all'),
-    baseSelection: String(view.baseSelection ?? view.selection ?? 'all'),
+    ...(typeof view.structureId === 'string' ? { structureId: view.structureId } : {}),
+    ...(typeof view.componentKey === 'string' ? { componentKey: view.componentKey } : {}),
+    selection: effectiveViewSelection(view),
+    baseSelection: String(view.baseSelection || view.selection || 'all'),
     representation: { type: String(view.representation?.type ?? 'points') },
     visible: view.visible !== false,
     colorScheme: {
@@ -242,6 +253,18 @@ export function serializeView(view) {
     bondScale: Number(view.bondScale ?? 1),
     pointSize: Number(view.pointSize ?? 3),
     quality: Number(view.quality ?? 3),
+    showMultipleBonds: view.showMultipleBonds !== false,
+    stickRoundness: Number(view.stickRoundness ?? 1),
+    meshSegments: Math.max(8, Math.min(500, Math.round(Number(view.meshSegments ?? 48)))),
+    bondColorMode: view.bondColorMode === 'atoms' ? 'atoms' : 'uniform',
+    bondColor: String(view.bondColor ?? '#b8b8bc'),
+    surfaceInflate,
+    surfaceSource: view.surfaceSource === 'backbone' ? 'backbone' : 'atoms',
+    surfaceSubdivision: Math.max(
+      0,
+      Math.min(8, Number(view.surfaceSubdivision ?? 0) || 0)
+    ),
+    opacity,
     ...fade
   }
 }
@@ -274,6 +297,25 @@ export function mergeSerializedViewInto(live, data) {
   live.bondScale = data.bondScale ?? 1
   live.pointSize = data.pointSize ?? 3
   live.quality = data.quality ?? 3
+  live.showMultipleBonds = data.showMultipleBonds !== false
+  live.stickRoundness = data.stickRoundness ?? 1
+  live.meshSegments =
+    typeof data.meshSegments === 'number' && Number.isFinite(data.meshSegments)
+      ? Math.max(8, Math.min(500, Math.round(data.meshSegments)))
+      : 48
+  live.bondColorMode = data.bondColorMode === 'atoms' ? 'atoms' : 'uniform'
+  live.bondColor = data.bondColor ?? '#b8b8bc'
+  live.surfaceInflate =
+    typeof data.surfaceInflate === 'number' && Number.isFinite(data.surfaceInflate)
+      ? Math.max(0, Math.min(1, data.surfaceInflate))
+      : 0.25
+  live.surfaceSource = data.surfaceSource === 'backbone' ? 'backbone' : 'atoms'
+  live.surfaceSubdivision = Math.max(
+    0,
+    Math.min(8, Number(data.surfaceSubdivision ?? 0) || 0)
+  )
+  if (typeof data.structureId === 'string') live.structureId = data.structureId
+  if (typeof data.componentKey === 'string') live.componentKey = data.componentKey
   // `colorScheme.resolver` is a function identity that representation components
   // (Cartoon/Tube in particular) use as an effect dependency to rebuild their whole
   // mesh geometry. Rebuilding it on every animation frame — even when the scheme
@@ -304,8 +346,12 @@ export function mergeSerializedViewInto(live, data) {
   live.fadeInBezier = fade.fadeInBezier
   live.fadeOutBezier = fade.fadeOutBezier
   live.fadeEnabled = fade.fadeEnabled
-  if (typeof data.opacity === 'number') live.opacity = data.opacity
-  else delete live.opacity
+  // Effective opacity (base × fade) when present; otherwise keep opaque.
+  if (typeof data.opacity === 'number' && Number.isFinite(data.opacity)) {
+    live.opacity = Math.max(0, Math.min(1, data.opacity))
+  } else {
+    live.opacity = 1
+  }
   if (panelSyncNeeded) {
     live._animSyncRev = (/** @type {number} */ (live._animSyncRev) || 0) + 1
   }
@@ -321,15 +367,20 @@ export function deserializeView(data, structureCtx) {
     residues: structureCtx.residues,
     ssColors: data.ssColors
   })
+  // Named presets save `selection: ""` + `baseSelection: "ion"`. Sharing the
+  // full-structure atom list would draw the protein in the ion vdW view.
+  const shareAllAtoms = effectiveViewSelection(data) === 'all'
   return {
     id: data.id || crypto.randomUUID(),
+    structureId: typeof data.structureId === 'string' ? data.structureId : undefined,
+    componentKey: typeof data.componentKey === 'string' ? data.componentKey : undefined,
     selection: data.selection,
     baseSelection: data.baseSelection ?? data.selection,
     representation: { type: data.representation?.type ?? 'points' },
     path: structureCtx.path,
-    atoms: structureCtx.atoms,
-    bonds: structureCtx.bonds,
-    residues: structureCtx.residues,
+    atoms: shareAllAtoms ? structureCtx.atoms : [],
+    bonds: shareAllAtoms ? structureCtx.bonds : undefined,
+    residues: shareAllAtoms ? structureCtx.residues : undefined,
     visible: data.visible !== false,
     colorScheme,
     _colorSchemeSig: JSON.stringify([
@@ -348,6 +399,27 @@ export function deserializeView(data, structureCtx) {
     bondScale: data.bondScale ?? 1,
     pointSize: data.pointSize ?? 3,
     quality: data.quality ?? 3,
+    showMultipleBonds: data.showMultipleBonds !== false,
+    stickRoundness: data.stickRoundness ?? 1,
+    meshSegments:
+      typeof data.meshSegments === 'number' && Number.isFinite(data.meshSegments)
+        ? Math.max(8, Math.min(500, Math.round(data.meshSegments)))
+        : 48,
+    bondColorMode: data.bondColorMode === 'atoms' ? 'atoms' : 'uniform',
+    bondColor: data.bondColor ?? '#b8b8bc',
+    surfaceInflate:
+      typeof data.surfaceInflate === 'number' && Number.isFinite(data.surfaceInflate)
+        ? Math.max(0, Math.min(1, data.surfaceInflate))
+        : 0.25,
+    surfaceSource: data.surfaceSource === 'backbone' ? 'backbone' : 'atoms',
+    surfaceSubdivision: Math.max(
+      0,
+      Math.min(8, Number(data.surfaceSubdivision ?? 0) || 0)
+    ),
+    opacity:
+      typeof data.opacity === 'number' && Number.isFinite(data.opacity)
+        ? Math.max(0, Math.min(1, data.opacity))
+        : 1,
     ...normalizeFadeSettings(data)
   }
 }
