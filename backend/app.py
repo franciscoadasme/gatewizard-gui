@@ -231,6 +231,8 @@ NAMED_SELECTIONS = {
     "peptide": PROTEIN_OR_PEPTIDE_SELECTION,
     "backbone": f"({PROTEIN_OR_PEPTIDE_SELECTION}) and name N CA C O",
     "sidechain": f"({PROTEIN_OR_PEPTIDE_SELECTION}) and not name N CA C O H HN HA* OXT",
+    # Heavy atoms + hydrogens bonded to O/N/S (hide non-polar H). Needs bonds.
+    "polar": "(not element H) or (element H and bonded element O N S)",
     "water": "water",
     "lipid": LIPID_SELECTION,
     "ion": ION_SELECTION,
@@ -253,6 +255,9 @@ class FileCacheEntry:
 
 FILE_CACHE: dict[str, FileCacheEntry] = {}
 FILE_CACHE_LOCK = threading.Lock()
+# MDAnalysis SelectionParser is a process-wide singleton; concurrent
+# select_atoms() calls corrupt its token stream (Unknown token: 'None').
+_MDA_SELECT_LOCK = threading.Lock()
 
 _TOPOLOGY_COMPANION_SUFFIXES = (".prmtop", ".parm7", ".psf")
 _WATER_RESNAMES = frozenset(
@@ -470,10 +475,11 @@ def _ensure_bonds_efficient(u: mda.Universe, pdb_path: str | None = None) -> str
 
     solute = None
     try:
-        solute = u.select_atoms(
-            "not (water or resname HOH WAT TIP3 TIP3P TIP4 TIP4P TIP4PEW OPC OPC3 SOL "
-            f"or ({ION_SELECTION}))"
-        )
+        with _MDA_SELECT_LOCK:
+            solute = u.select_atoms(
+                "not (water or resname HOH WAT TIP3 TIP3P TIP4 TIP4P TIP4PEW OPC OPC3 SOL "
+                f"or ({ION_SELECTION}))"
+            )
     except Exception:
         solute = None
     try:
@@ -587,6 +593,34 @@ def get_atoms_columnar(atoms: mda.AtomGroup | mda.Universe) -> dict[str, list]:
     }
 
 
+def _residue_ca_index(res) -> int | None:
+    """Index of the unique backbone CA, or None.
+
+    Uses the names array instead of ``select_atoms("name CA")``. MDAnalysis's
+    selection parser is a process-wide singleton; a session restore fires many
+    ``/get-structure`` calls at once and the parser's token stream can be
+    overwritten mid-parse (``Unknown selection token: 'None'``).
+    """
+    try:
+        atoms = res.atoms
+    except Exception:
+        return None
+    if len(atoms) == 0:
+        return None
+    try:
+        names = atoms.names
+        indices = atoms.indices
+    except Exception:
+        return None
+    found: list[int] = []
+    for idx, name in zip(indices, names):
+        if str(name).strip() == "CA":
+            found.append(int(idx))
+            if len(found) > 1:
+                return None
+    return found[0] if found else None
+
+
 def get_residues(
     u: mda.Universe,
     needs_secondary_structure: bool = False,
@@ -630,25 +664,28 @@ def get_residues(
     residues = []
     for res in u.residues:
         try:
-            chain_id_attr = str(res.atoms[0].chainID or "")
-        except (AttributeError, IndexError):
-            chain_id_attr = ""
-        chain = resolve_pdb_chain_id(str(res.segid), chain_id_attr)
-        ca_atoms = res.atoms.select_atoms("name CA")
-        rid = int(res.resid)
-        sec = residue_sec_table.get((chain, rid, None))
-        if sec is None and rid not in resid_ambiguous:
-            sec = resid_unique.get(rid)
-        residues.append(
-            dict(
-                chain=chain,
-                resname=str(res.resname).strip(),
-                number=int(res.resid),
-                atom_indices=sorted(int(i) for i in res.atoms.indices.tolist()),
-                sec=sec,
-                ca_index=(int(ca_atoms.indices[0]) if ca_atoms.n_atoms == 1 else None),
+            try:
+                chain_id_attr = str(res.atoms[0].chainID or "")
+            except (AttributeError, IndexError):
+                chain_id_attr = ""
+            chain = resolve_pdb_chain_id(str(res.segid), chain_id_attr)
+            rid = int(res.resid)
+            sec = residue_sec_table.get((chain, rid, None))
+            if sec is None and rid not in resid_ambiguous:
+                sec = resid_unique.get(rid)
+            residues.append(
+                dict(
+                    chain=chain,
+                    resname=str(res.resname).strip(),
+                    number=int(res.resid),
+                    atom_indices=sorted(int(i) for i in res.atoms.indices.tolist()),
+                    sec=sec,
+                    ca_index=_residue_ca_index(res),
+                )
             )
-        )
+        except Exception as exc:
+            logger.warning("Skipping residue in get_residues: %s", exc)
+            continue
     return residues
 
 
@@ -5291,6 +5328,66 @@ class StructureRequest(BaseModel):
     )
 
 
+class StructureInspectRequest(BaseModel):
+    path: str = Field(..., description="Absolute path to structure / Maestro file")
+
+
+class StructureImportRequest(BaseModel):
+    path: str = Field(..., description="Absolute path to structure / Maestro file")
+    indices: list[int] | None = Field(
+        None,
+        description="Entry indices to materialize; omit for all",
+    )
+
+
+@app.post("/structure/inspect")
+def structure_inspect(payload: StructureInspectRequest) -> dict:
+    """List entries in a Maestro / multi-MODEL PDB / single file."""
+    try:
+        from structure_import import inspect_structure_file
+
+        return sanitize_value(inspect_structure_file(payload.path))
+    except FileNotFoundError as ex:
+        raise HTTPException(status_code=404, detail=str(ex)) from ex
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+@app.post("/structure/import")
+def structure_import(payload: StructureImportRequest) -> dict:
+    """Materialize selected multi-entry structures to cache PDBs."""
+    try:
+        from structure_import import import_structure_entries
+
+        return sanitize_value(import_structure_entries(payload.path, payload.indices))
+    except FileNotFoundError as ex:
+        raise HTTPException(status_code=404, detail=str(ex)) from ex
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+def _select_universe_atoms(u: mda.Universe, selection: str | None):
+    """Apply a Visualize selection. ``ion`` uses residue-name matching (not MDA ``ion``).
+
+    An empty selection means the full structure (used when opening a file).
+    Named presets are resolved case-insensitively. ``ion`` matches the same
+    residue names as ``/detect-molecules`` so protein is never included.
+    """
+    raw = (selection or "").strip()
+    if not raw:
+        return u.atoms
+    key = raw.lower()
+    if key == "ion":
+        mask = [is_ion_resname(str(rn)) for rn in u.atoms.resnames]
+        return u.atoms[mask]
+    if key in NAMED_SELECTIONS:
+        sel = NAMED_SELECTIONS[key]
+    else:
+        sel = raw
+    with _MDA_SELECT_LOCK:
+        return u.select_atoms(sel)
+
+
 @app.post("/get-structure")
 def get_structure(payload: StructureRequest) -> dict:
     if len(payload.path) == 4:  # PDB ID
@@ -5320,8 +5417,12 @@ def get_structure(payload: StructureRequest) -> dict:
         raise HTTPException(status_code=404, detail=f"File not found: {payload.path}")
 
     try:
+        sel_raw = (payload.selection or "").strip().lower()
+        needs_bonds = bool(payload.needs_bonds)
+        if sel_raw == "polar" or "bonded" in sel_raw:
+            needs_bonds = True
         u, topology_used, bond_source = load_structure(
-            payload.path, payload.topology, payload.needs_bonds
+            payload.path, payload.topology, needs_bonds
         )
     except Exception as ex:
         raise HTTPException(status_code=400, detail=f"Could not read structure: {ex}")
@@ -5330,41 +5431,58 @@ def get_structure(payload: StructureRequest) -> dict:
     if n_atoms == 0:
         raise HTTPException(status_code=400, detail="Empty structure")
 
-    if payload.selection:
-        sel = NAMED_SELECTIONS.get(payload.selection, payload.selection)
-        try:
-            atoms = u.select_atoms(sel)
-        except mda.exceptions.SelectionError as ex:
-            # Typing a selection in the UI can transiently produce incomplete expressions.
-            # Return a validation-style error instead of an unhandled 500 traceback.
-            raise HTTPException(status_code=422, detail=f"Invalid selection: {ex}")
-        except Exception as ex:
-            raise HTTPException(status_code=400, detail=f"Selection error: {ex}")
-    else:
-        atoms = u.atoms
+    try:
+        atoms = _select_universe_atoms(u, payload.selection)
+    except mda.exceptions.SelectionError as ex:
+        # Typing a selection in the UI can transiently produce incomplete expressions.
+        # Return a validation-style error instead of an unhandled 500 traceback.
+        raise HTTPException(status_code=422, detail=f"Invalid selection: {ex}")
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=f"Selection error: {ex}")
 
     data = dict(path=payload.path)
     # Columnar payload is much faster to build for 80k–150k atom systems.
     data["atoms_format"] = "columnar"
     data["atoms"] = get_atoms_columnar(atoms)
     try:
-        data["bonds"] = atoms.bonds.indices.tolist()
+        bond_idx = atoms.bonds.indices.tolist()
     except mda.exceptions.NoDataError:
-        data["bonds"] = []
+        bond_idx = []
+    data["bonds"] = bond_idx
+    # Maestro cache sidecars may carry bond orders [[i,j,order], ...] in full-structure
+    # atom index space. Merge onto connectivity (densify/topology) so doubles survive.
+    try:
+        from structure_import import annotate_bonds_with_orders, load_bond_orders_sidecar
+
+        orders = load_bond_orders_sidecar(payload.path)
+    except Exception:
+        orders = None
+    if orders:
+        selected = None
+        if payload.selection:
+            selected = {int(g) for g in atoms.indices}
+        annotated = annotate_bonds_with_orders(bond_idx, orders, selected=selected)
+        if annotated:
+            data["bonds"] = annotated
+            data["bond_orders"] = annotated
     data["topology_used"] = topology_used
     data["bond_source"] = bond_source
     if payload.needs_secondary_structure:
-        atom_indices = {int(i) for i in atoms.indices}
-        all_residues = get_residues(
-            u, needs_secondary_structure=True, source_path=payload.path
-        )
-        data["residues"] = [
-            r
-            for r in all_residues
-            if r.get("ca_index") is not None and int(r["ca_index"]) in atom_indices
-        ]
+        try:
+            atom_indices = {int(i) for i in atoms.indices}
+            all_residues = get_residues(
+                u, needs_secondary_structure=True, source_path=payload.path
+            )
+            data["residues"] = [
+                r
+                for r in all_residues
+                if r.get("ca_index") is not None and int(r["ca_index"]) in atom_indices
+            ]
+        except Exception as exc:
+            logger.warning("get-structure residue list failed: %s", exc)
+            data["residues"] = []
 
-    return data
+    return sanitize_value(data)
 
 
 class DetectMoleculesRequest(BaseModel):

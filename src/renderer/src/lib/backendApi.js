@@ -440,30 +440,65 @@ export function detectLipidHeadgroups(payload) {
 
 /**
  * Expand columnar atom arrays from /get-structure into the object list the viewer expects.
+ * Also ensures ``bonds`` carry order triples when ``bond_orders`` is present.
  * @param {any} data
  * @returns {any}
  */
 function normalizeStructurePayload(data) {
-  if (!data || !data.atoms) return data
-  if (Array.isArray(data.atoms)) return data
-  if (data.atoms_format === 'columnar' || (data.atoms.x && Array.isArray(data.atoms.x))) {
-    const cols = data.atoms
-    const n = cols.x?.length ?? 0
-    const atoms = new Array(n)
-    for (let i = 0; i < n; i++) {
-      atoms[i] = {
-        x: cols.x[i],
-        y: cols.y[i],
-        z: cols.z[i],
-        element: cols.element[i],
-        name: cols.name[i],
-        index: cols.index[i],
-        res_name: cols.res_name[i],
-        res_id: cols.res_id[i],
-        chain_id: cols.chain_id[i]
+  if (!data) return data
+  // Mutate in place so the columnar payload can be GC'd after expansion
+  // (a shallow `{ ...data, atoms }` copy would keep both layouts alive longer).
+  if (data.atoms && !Array.isArray(data.atoms)) {
+    if (data.atoms_format === 'columnar' || (data.atoms.x && Array.isArray(data.atoms.x))) {
+      const cols = data.atoms
+      const n = cols.x?.length ?? 0
+      const atoms = new Array(n)
+      for (let i = 0; i < n; i++) {
+        atoms[i] = {
+          x: cols.x[i],
+          y: cols.y[i],
+          z: cols.z[i],
+          element: cols.element[i],
+          name: cols.name[i],
+          index: cols.index[i],
+          res_name: cols.res_name[i],
+          res_id: cols.res_id[i],
+          chain_id: cols.chain_id[i]
+        }
       }
+      data.atoms = atoms
+      data.atoms_format = 'objects'
     }
-    return { ...data, atoms, atoms_format: 'objects' }
+  }
+  const orders = Array.isArray(data.bond_orders) ? data.bond_orders : null
+  const bonds = Array.isArray(data.bonds) ? data.bonds : null
+  if (orders?.length) {
+    const hasMulti = orders.some((b) => Array.isArray(b) && b.length > 2 && Number(b[2]) >= 2)
+    const bondsHaveMulti = bonds?.some((b) => Array.isArray(b) && b.length > 2 && Number(b[2]) >= 2)
+    if (hasMulti && !bondsHaveMulti) {
+      data.bonds = orders
+    } else if (bonds?.length && hasMulti) {
+      /** @type {Map<string, number>} */
+      const omap = new Map()
+      for (const row of orders) {
+        if (!Array.isArray(row) || row.length < 2) continue
+        const i = Number(row[0])
+        const j = Number(row[1])
+        const o = row.length > 2 ? Number(row[2]) : 1
+        const a = Math.min(i, j)
+        const b = Math.max(i, j)
+        omap.set(`${a}:${b}`, o)
+      }
+      data.bonds = bonds.map((row) => {
+        if (!Array.isArray(row) || row.length < 2) return row
+        const i = Number(row[0])
+        const j = Number(row[1])
+        const key = `${Math.min(i, j)}:${Math.max(i, j)}`
+        const o = omap.get(key)
+        if (o == null) return row.length > 2 ? row : [i, j, 1]
+        return [i, j, o]
+      })
+    }
   }
   return data
 }
@@ -481,6 +516,25 @@ function normalizeStructurePayload(data) {
 export async function getStructure(payload) {
   const data = await backendJson('/get-structure', payload)
   return normalizeStructurePayload(data)
+}
+
+/**
+ * List entries in a Maestro / multi-MODEL PDB / single structure file.
+ * @param {string} path
+ * @returns {Promise<{ kind: string, sourcePath: string, entries: Array<{ index: number, label: string, kind?: string, atomCount?: number, title?: string }> }>}
+ */
+export async function inspectStructure(path) {
+  return backendJson('/structure/inspect', { path })
+}
+
+/**
+ * Materialize selected multi-entry structures to cache PDBs.
+ * @param {string} path
+ * @param {number[] | null | undefined} indices
+ * @returns {Promise<{ sourcePath: string, kind: string, structures: Array<Record<string, unknown>> }>}
+ */
+export async function importStructureEntries(path, indices = null) {
+  return backendJson('/structure/import', { path, indices })
 }
 
 /**

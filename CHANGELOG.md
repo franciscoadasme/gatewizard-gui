@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Visualize multi-structure load:** Maestro / multi-MODEL imports load cache PDBs with bounded concurrency (2), deferred bond guessing, deferred XYZ base snapshots, one workspace commit, and collapse-all-but-first for a lighter panel.
 - **Analysis Apply selection to all sets:** copies the current structural type’s selection snapshot (selection, reference, bilayer/APL fields for that type) onto every set without running.
 - **Analysis options search:** left-sidebar search navigates to Plot Settings / Structural / Grid options controls and briefly pulse-highlights the target. Type groups (Stability / Geometry / Membrane) stay in the picker via a shared options catalog.
 - **Analysis GridMAT-MD.pl:** APL method **GridMAT-MD.pl (external)** plus **GridMAT (GW, experimental)** and **VTMC (GW, experimental)** labels; optional jobs control for the Perl path (`GATEWIZARD_GRIDMAT_MD`).
@@ -48,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Visualize Maestro double bonds:** prefetched dense CONECT without bond orders no longer skips the sidecar merge pass; source triples are applied onto dense pairs; `/get-structure` returns sanitized bond-order triples; ball-stick rebuilds when expanded multi-stick count exceeds mesh capacity.
+- **Visualize ball-and-stick bonds:** Maestro selected fetches keep bond endpoints in **global** atom index space (no local remap); sparse CONECT no longer blocks densify fetch when switching to ball-and-stick. Bond-order sidecars (``.bonds.json`` / sibling SDF) are merged onto densified connectivity so double/triple sticks render; OpenBabel Maestro fallback also writes the sidecar when possible.
 - **Analysis outside legend:** box width/height are true CSS *minimums* (content can grow). Sessions that saved `1×1` no longer collapse the strip to a dot; load also treats mins < 8 px as auto.
 - **Analysis FATSLiM notice:** sidebar probes `/analysis-fatslim-status` when FATSLiM is selected and shows a short install hint only if the CLI is missing (clone the **API** `gatewizard` repo — not the GUI install — then `scripts/install_fatslim_env.sh` / `docs/analysis.md`).
 - **Analysis session load:** sessions that omit per-set `energeticOptions` (offline APL mosaics) no longer crash with `Cannot read properties of undefined (reading 'energeticEngine')`.
