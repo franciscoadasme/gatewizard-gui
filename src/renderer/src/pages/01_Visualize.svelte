@@ -3,6 +3,7 @@
     AxesGizmo,
     AxesLines,
     BallStick,
+    Licorice,
     CameraRig,
     Canvas,
     Cartoon,
@@ -11,8 +12,10 @@
     MeasureOverlay,
     Tube,
     VdwSpheres,
+    OrganicSurface,
     HydrationBoxOverlay
   } from '../components/viewer'
+  import { T } from '@threlte/core'
   import {
     mainViewerCamera,
     mainViewerFramingAnchor,
@@ -30,6 +33,7 @@
   import { PADDING_FIELD_STYLE, VIEWER_AXES, axisInputStyle } from '../lib/viewer/axisColors.js'
   import { measureDistance, measureAngle, measureDihedral } from '../lib/viewer/measure.js'
   import { splitViewIntoParts, splitViewModeLabel } from '../lib/viewer/splitView.js'
+  import { effectiveViewSelection } from '../lib/viewer/viewSelection.js'
   import { Color } from 'three'
   import { tick, untrack } from 'svelte'
 
@@ -39,6 +43,8 @@
   import {
     getStructure,
     detectMolecules,
+    inspectStructure,
+    importStructureEntries,
     editRenameChain,
     editRenameResidues,
     editRenumberResidues,
@@ -80,6 +86,31 @@
     normalizeViewpoint,
     serializeViewpoint
   } from '../lib/viewpoint.js'
+  import {
+    createStructureEntry,
+    findStructure,
+    isMaestroPath,
+    serializeStructuresMeta,
+    normalizeStructuresMeta,
+    groupStructureMetasForLoad,
+    componentKeyFromSelection,
+    componentLabel
+  } from '../lib/visualizeStructures.js'
+  import {
+    claimedStructureIds,
+    claimedViewIds,
+    createVisibilityGroup,
+    dissolveVisibilityGroup,
+    groupsForStructure,
+    normalizeVisibilityGroups,
+    pruneVisibilityGroups,
+    rangeSelectIds,
+    reorderVisibilityGroup,
+    serializeVisibilityGroups,
+    structureGroups
+  } from '../lib/visualizeGroups.js'
+  import StructureEntryPicker from '../components/StructureEntryPicker.svelte'
+  import ApplyRepresentationPicker from '../components/ApplyRepresentationPicker.svelte'
   import {
     deriveViewTracks,
     isTrackInAnimation,
@@ -139,7 +170,7 @@
 
   /** @typedef {{ x: number, y: number, z: number, element: string, name: string }} Atom */
   /** @typedef {{ chain: string, resname: string, number: number, atom_indices: number[], ca_index?: number, sec?: string }} Residue */
-  /** @typedef {{ type: 'cartoon' | 'ball-stick' | 'vdw' | 'tube' | 'points' }} Representation */
+  /** @typedef {{ type: 'cartoon' | 'ball-stick' | 'licorice' | 'vdw' | 'tube' | 'points' }} Representation */
   /** @typedef {{ name: string, color?: string, resolver: (atom: Atom) => import('three').Color }} ColorScheme */
   /** @typedef {{ id: string, selection: string, representation: Representation, atoms: Atom[], bonds?: [number, number][], residues?: Residue[], visible: boolean, colorScheme: ColorScheme }} View */
   /** @typedef {ReturnType<typeof getCameraForAtoms> & { framingZoom: number, framingGeneration: number, poseResetGeneration: number }} ViewerFraming */
@@ -148,8 +179,89 @@
   let { workingDir = '' } = $props()
 
   // form fields
-  // TODO: do we need filepath? structure.path may be enough
-  let filePath = $state(null)
+  // ── Multi-structure workspace ────────────────────────────────────────
+  /** @type {import('../lib/visualizeStructures.js').StructureEntry[]} */
+  let structures = $state([])
+  /** @type {string | null} */
+  let activeStructureId = $state(null)
+  /**
+   * Active structure's getStructure-shaped object (atoms/bonds/residues/path).
+   * Derived compat for the edit / measure / tool code that expects a single
+   * `structure`. Editing tools operate on the ACTIVE structure.
+   */
+  let structure = $derived(findStructure(structures, activeStructureId))
+  /** Active structure path (derived compat). */
+  let filePath = $derived(structure?.path ?? null)
+  /** Active structure topology (derived compat). */
+  let topologyPath = $derived(structure?.topologyPath ?? null)
+
+  /**
+   * Multi-entry picker modal state. `resolve` is fulfilled with the selected
+   * entry indices (or null on cancel) by the picker callbacks.
+   * @type {{ open: boolean, sourcePath: string, entries: Array<{ index: number, label: string, atomCount?: number, title?: string }>, resolve: ((indices: number[] | null) => void) | null }}
+   */
+  let entryPicker = $state({ open: false, sourcePath: '', entries: [], resolve: null })
+
+  /** Apply-representation menu: which view is targeting other structures. */
+  /** @type {{ viewId: string | null, open: boolean }} */
+  let applyMenu = $state({ viewId: null, open: false })
+  /** @type {Set<string>} */
+  let applyMenuSelected = $state(new Set())
+  /**
+   * Structure groups collapsed in the Representations panel (separate from entry
+   * objects so toggling one header does not rebuild every StructureEntry).
+   * @type {Set<string>}
+   */
+  let collapsedStructureIds = $state(new Set())
+  /**
+   * Structures hidden via the eye toggle. Kept separate from StructureEntry
+   * objects so flipping visibility does not rewrite `structures` / `viewAtoms`
+   * and rebuild GPU meshes (same pattern as collapse).
+   * @type {Set<string>}
+   */
+  let structureHiddenIds = $state(new Set())
+  /**
+   * User-created visibility groups (ordered). Empty → implicit Workspace.
+   * @type {import('../lib/visualizeGroups.js').VisibilityGroup[]}
+   */
+  let visibilityGroups = $state([])
+  /** @type {Set<string>} */
+  let selectedStructureIds = $state(new Set())
+  /** @type {Set<string>} */
+  let selectedViewIds = $state(new Set())
+  /** @type {string | null} */
+  let selectionAnchorStructureId = $state(null)
+  /** @type {string | null} */
+  let selectionAnchorViewId = $state(null)
+  /** Right-click menu on a structure row. @type {{ x: number, y: number, id: string } | null} */
+  let structureCtxMenu = $state(null)
+  /** @type {{ x: number, y: number }} */
+  let structureCtxMenuPos = $state({ x: 0, y: 0 })
+  /** @type {HTMLDivElement | null} */
+  let structureCtxMenuEl = $state(null)
+  /** Inline rename for a visibility group. @type {string | null} */
+  let editingGroupId = $state(null)
+  let editingGroupName = $state('')
+  /** @type {HTMLInputElement | null} */
+  let editingGroupInputEl = $state(null)
+  /** Progress while applying structure representations across targets. */
+  let applyRepsBusy = $state(false)
+  let applyRepsPhase = $state('')
+
+  /** @type {Map<string, Array<{ view: View, index: number }>>} */
+  const viewsByStructureId = $derived.by(() => {
+    /** @type {Map<string, Array<{ view: View, index: number }>>} */
+    const map = new Map()
+    for (let i = 0; i < views.length; i++) {
+      const v = views[i]
+      if (v._isSelHighlight) continue
+      const sid = v.structureId || ''
+      if (!map.has(sid)) map.set(sid, [])
+      map.get(sid).push({ view: v, index: i })
+    }
+    return map
+  })
+
   let pdbId = $state('')
 
   // state
@@ -176,16 +288,58 @@
    */
   let sceneRestoring = $state(false)
   let sceneRestoringPhase = $state('')
-  /** Optional topology paired with the open coordinate file. */
-  let topologyPath = $state(/** @type {string | null} */ (null))
+  /** Optional subtitle (e.g. current structure label) under the phase. */
+  let sceneRestoringDetail = $state('')
+  /** 0 / 0 hides the restore progress bar. */
+  let sceneRestoringCurrent = $state(0)
+  let sceneRestoringTotal = $state(0)
   /** Status line after load (e.g. Using system.prmtop for bonds). */
   let loadBondStatus = $state('')
   let loadingElapsedTimer = 0
 
+  function startOverlayElapsed() {
+    loadingElapsedSec = 0
+    const started = Date.now()
+    if (loadingElapsedTimer) clearInterval(loadingElapsedTimer)
+    loadingElapsedTimer = setInterval(() => {
+      loadingElapsedSec = Math.floor((Date.now() - started) / 1000)
+    }, 250)
+  }
+
+  function stopOverlayElapsed() {
+    if (loadingElapsedTimer) {
+      clearInterval(loadingElapsedTimer)
+      loadingElapsedTimer = 0
+    }
+  }
+
+  function clearSceneRestoreUi() {
+    sceneRestoring = false
+    sceneRestoringPhase = ''
+    sceneRestoringDetail = ''
+    sceneRestoringCurrent = 0
+    sceneRestoringTotal = 0
+    stopOverlayElapsed()
+  }
+
+  /**
+   * @param {number} current
+   * @param {number} total
+   * @param {string} [detail]
+   */
+  function reportStructureLoadProgress(current, total, detail) {
+    sceneRestoringCurrent = current
+    sceneRestoringTotal = total
+    if (total > 1) {
+      sceneRestoringPhase = `Loading structures… ${current} / ${total}`
+    } else {
+      sceneRestoringPhase = 'Loading structure…'
+    }
+    sceneRestoringDetail = detail ? String(detail) : ''
+  }
+
   /** True while Auto-generate representations is fetching/building views. */
   let autoGeneratingViews = $state(false)
-  /** @type {null | Awaited<ReturnType<typeof getStructure>>} */
-  let structure = $state(null)
   /** @type {View[]} */
   let views = $state([])
 
@@ -413,6 +567,20 @@
   /** Base pose XYZ at structure load (for animation diffs + undo). */
   /** @type {Map<number, [number, number, number]>} */
   let baseAtomCoords = $state(new Map())
+  /**
+   * Per-structure animation coord overlays keyed by structureId. Views owned by a
+   * non-active structure resolve their overlay here so multi-structure animation
+   * still applies the right coordinates. The active structure mirrors this via
+   * `animCoordOverlay`.
+   * @type {Map<string, number[][]>}
+   */
+  let animCoordOverlayByStructure = $state(new Map())
+  /**
+   * Per-structure base pose snapshots keyed by structureId (source of truth for
+   * coordinate diffs / undo when switching the active structure).
+   * @type {Map<string, Map<number, [number, number, number]>>}
+   */
+  let baseAtomCoordsByStructure = new Map()
   let coordsDirty = $state(false)
   /** Bump to force representation geometry rebuild after in-memory XYZ commits. */
   let coordsGeneration = $state(0)
@@ -660,67 +828,93 @@
     return () => clearInterval(interval)
   })
 
+  /**
+   * Build default representation views for one structure via detectMolecules.
+   * Returned views carry the owning structureId + componentKey.
+   * @param {import('../lib/visualizeStructures.js').StructureEntry} entry
+   * @returns {Promise<View[]>}
+   */
+  async function buildAutoViewsForStructure(entry) {
+    if (!entry?.path) return []
+    const data = await detectMolecules(entry.path)
+    /** @type {View[]} */
+    const next = []
+    const globalBonds = entry.bonds ?? []
+    for (const [i, struc] of data.entries()) {
+      const representation = isBiopolymerSelection(struc.selection)
+        ? { type: 'cartoon' }
+        : { type: 'vdw' }
+      const atomIdx = new Set((struc.atoms || []).map((a) => a.index))
+      const molBonds =
+        struc.bonds && struc.bonds.length
+          ? struc.bonds
+          : globalBonds.filter(([ai, bi]) => atomIdx.has(ai) && atomIdx.has(bi))
+      let colorScheme
+      if (isBiopolymerSelection(struc.selection) && struc.residues?.length) {
+        colorScheme = { name: 'ss', resolver: ssScheme(struc.residues, {}) }
+      } else if (struc.selection.startsWith('resname')) {
+        const color = `#${COLOR_PALETTE[i % COLOR_PALETTE.length].getHexString()}`
+        colorScheme = {
+          name: 'cpk-carbon',
+          color,
+          resolver: cpkScheme({ carbonColor: color })
+        }
+      } else {
+        colorScheme = { name: 'cpk', resolver: cpkScheme() }
+      }
+      next.push({
+        id: crypto.randomUUID(),
+        structureId: entry.id,
+        componentKey: componentKeyFromSelection(struc.selection),
+        selection: struc.selection,
+        baseSelection: struc.selection,
+        representation,
+        path: entry.path,
+        atoms: struc.atoms,
+        bonds: molBonds,
+        residues: struc.residues ?? null,
+        visible: struc.selection !== 'water',
+        colorScheme,
+        helixWidth: 1.0,
+        sheetWidth: 0.875,
+        coilWidth: 0.125,
+        ssColors: null,
+        tubeRadius: 0.9,
+        atomScale: 1.0,
+        bondScale: 1.0,
+        pointSize: 3,
+        quality: 3,
+        showMultipleBonds: true,
+        stickRoundness: 1.0,
+        bondColorMode: 'uniform',
+        bondColor: '#b8b8bc',
+        opacity: 1,
+        surfaceInflate: 0.25,
+        surfaceSource: 'atoms',
+        surfaceSubdivision: 0,
+        material: { ...DEFAULT_VIEW_MATERIAL },
+        _prefetched: true
+      })
+    }
+    return next
+  }
+
+  /** Auto-generate representations for the ACTIVE structure (replaces its views). */
   async function onAutoGenerateViews() {
-    if (!filePath || autoGeneratingViews) return
+    const entry = structure
+    if (!entry || autoGeneratingViews) return
     autoGeneratingViews = true
     try {
-      const data = await detectMolecules(filePath)
-      /** @type {View[]} */
-      const next = []
-      const globalBonds = structure?.bonds ?? []
-      for (const [i, struc] of data.entries()) {
-        const representation = isBiopolymerSelection(struc.selection)
-          ? { type: 'cartoon' }
-          : { type: 'vdw' }
-        const atomIdx = new Set((struc.atoms || []).map((a) => a.index))
-        const molBonds =
-          (struc.bonds && struc.bonds.length
-            ? struc.bonds
-            : globalBonds.filter(([ai, bi]) => atomIdx.has(ai) && atomIdx.has(bi)))
-        let colorScheme
-        if (isBiopolymerSelection(struc.selection) && struc.residues?.length) {
-          colorScheme = { name: 'ss', resolver: ssScheme(struc.residues, {}) }
-        } else if (struc.selection.startsWith('resname')) {
-          const color = `#${COLOR_PALETTE[i % COLOR_PALETTE.length].getHexString()}`
-          colorScheme = {
-            name: 'cpk-carbon',
-            color,
-            resolver: cpkScheme({ carbonColor: color })
-          }
-        } else {
-          colorScheme = { name: 'cpk', resolver: cpkScheme() }
-        }
-        next.push({
-          id: crypto.randomUUID(),
-          selection: struc.selection,
-          baseSelection: struc.selection,
-          representation,
-          path: filePath,
-          atoms: struc.atoms,
-          bonds: molBonds,
-          residues: struc.residues ?? null,
-          visible: struc.selection !== 'water',
-          colorScheme,
-          helixWidth: 1.0,
-          sheetWidth: 0.875,
-          coilWidth: 0.125,
-          ssColors: null,
-          tubeRadius: 0.9,
-          atomScale: 1.0,
-          bondScale: 1.0,
-          pointSize: 3,
-          quality: 3,
-          material: { ...DEFAULT_VIEW_MATERIAL },
-          _prefetched: true
-        })
-      }
-      views = next
-      reframeCameraOnAtoms(collectVisibleViewAtoms(next))
+      const generated = await buildAutoViewsForStructure(entry)
+      // Replace only this structure's views; keep other structures untouched.
+      const others = views.filter((v) => v.structureId !== entry.id)
+      views = [...others, ...generated]
+      reframeCameraOnAtoms(collectVisibleViewAtoms(views))
       logEvent(
         'detail',
         'view',
         'Auto-generated views',
-        `${next.length} view(s) from detected molecules`
+        `${generated.length} view(s) from detected molecules`
       )
     } catch (err) {
       console.error(err)
@@ -732,20 +926,28 @@
 
   async function onFetchPDB() {
     if (!isPdbIdValid) return
-    await loadStructure(pdbId)
-    if (structure) {
+    const before = structures.length
+    await appendStructure(pdbId, { topology: null })
+    if (structures.length > before) {
       pdbId = ''
     }
   }
 
+  /**
+   * Open one-or-more structure files (multi-select). Maestro / multi-MODEL files
+   * prompt the entry picker; every selection is APPENDED to the workspace.
+   */
   async function onOpenPdb() {
     const dlg = await window.api.openPdbDialog(workingDir || undefined)
-    if (dlg.canceled || !dlg.filePath) {
-      return
-    }
-    // Fresh open: let backend auto-detect a companion topology beside this PDB.
-    topologyPath = null
-    await loadStructure(dlg.filePath, { topology: null })
+    if (dlg.canceled) return
+    const paths =
+      Array.isArray(dlg.filePaths) && dlg.filePaths.length
+        ? dlg.filePaths
+        : dlg.filePath
+          ? [dlg.filePath]
+          : []
+    if (!paths.length) return
+    await openFiles(paths)
   }
 
   /** Explicit topology + coordinate pair when auto-detect is wrong or paths differ. */
@@ -754,14 +956,855 @@
     if (topDlg.canceled || !topDlg.filePath) return
     const pdbDlg = await window.api.openPdbDialog(workingDir || undefined)
     if (pdbDlg.canceled || !pdbDlg.filePath) return
-    topologyPath = topDlg.filePath
-    await loadStructure(pdbDlg.filePath, { topology: topDlg.filePath })
+    await appendStructure(pdbDlg.filePath, { topology: topDlg.filePath })
   }
 
-  /** @param {string} selection */
-  /** @param {Representation} representation */
-  function addView(selection = 'all', representation = { type: 'points' }) {
+  // ── Multi-structure workspace helpers ─────────────────────────────────────
+
+  /**
+   * Patch the ACTIVE structure entry in place (edit tools mutate the active
+   * structure; this keeps the derived `structure`/`filePath` in sync).
+   * @param {Partial<import('../lib/visualizeStructures.js').StructureEntry> & Record<string, unknown>} patch
+   */
+  function patchActiveStructure(patch) {
+    if (!activeStructureId) return
+    structures = structures.map((s) => (s.id === activeStructureId ? { ...s, ...patch } : s))
+  }
+
+  /** Resolve the owning structure entry for a view (falls back to active). */
+  function ownerStructure(view) {
+    return findStructure(structures, view?.structureId) ?? structure
+  }
+
+  /**
+   * Prompt the user to choose entries from a Maestro / multi-MODEL file.
+   * @param {string} sourcePath
+   * @param {Array<{ index: number, label: string, atomCount?: number, title?: string }>} entries
+   * @returns {Promise<number[] | null>} selected indices or null on cancel
+   */
+  function showEntryPicker(sourcePath, entries) {
+    return new Promise((resolve) => {
+      entryPicker = { open: true, sourcePath, entries, resolve }
+    })
+  }
+
+  function resolveEntryPicker(indices) {
+    const resolve = entryPicker.resolve
+    entryPicker = { open: false, sourcePath: '', entries: [], resolve: null }
+    resolve?.(indices)
+  }
+
+  /**
+   * Open a list of paths, appending every resulting structure. Multi-entry files
+   * (Maestro CT / multi-MODEL) prompt the entry picker.
+   * @param {string[]} paths
+   */
+  async function openFiles(paths) {
+    for (const path of paths) {
+      await openOnePath(path)
+    }
+  }
+
+  /** @param {string} path */
+  async function openOnePath(path) {
+    // Inspect for multi-entry (Maestro CT or multi-MODEL PDB).
+    /** @type {Awaited<ReturnType<typeof inspectStructure>> | null} */
+    let info = null
+    try {
+      info = await inspectStructure(path)
+    } catch {
+      info = null
+    }
+    const entries = info?.entries ?? []
+    const isMulti = entries.length > 1 || (isMaestroPath(path) && entries.length >= 1)
+    if (info && isMulti) {
+      const indices = await showEntryPicker(path, entries)
+      if (!indices || !indices.length) return
+      // Show the loading overlay immediately — Maestro import can take many
+      // seconds before batchAppendImported starts (users otherwise re-open the file).
+      const started = Date.now()
+      loadingPDB = true
+      loadingElapsedSec = 0
+      loadingPhase = 'Importing structures…'
+      loadBondStatus = ''
+      if (loadingElapsedTimer) clearInterval(loadingElapsedTimer)
+      loadingElapsedTimer = setInterval(() => {
+        loadingElapsedSec = Math.floor((Date.now() - started) / 1000)
+      }, 250)
+      await tick()
+      try {
+        loadingPhase = 'Materializing entries…'
+        const imported = await importStructureEntries(path, indices)
+        const chosen = entries.filter((e) => indices.includes(e.index))
+        await batchAppendImported(path, imported, chosen)
+      } catch (ex) {
+        if (loadingElapsedTimer) {
+          clearInterval(loadingElapsedTimer)
+          loadingElapsedTimer = 0
+        }
+        loadingPDB = false
+        loadingPhase = ''
+        alert(ex instanceof Error ? ex.message : String(ex))
+      }
+      return
+    }
+    // Single structure file.
+    await appendStructure(path, { topology: null })
+  }
+
+  /**
+   * Run async work over items with a fixed concurrency limit.
+   * @template T, R
+   * @param {T[]} items
+   * @param {number} concurrency
+   * @param {(item: T, index: number) => Promise<R>} fn
+   * @returns {Promise<R[]>}
+   */
+  async function mapPool(items, concurrency, fn) {
+    /** @type {R[]} */
+    const results = new Array(items.length)
+    let next = 0
+    async function worker() {
+      while (next < items.length) {
+        const i = next++
+        results[i] = await fn(items[i], i)
+      }
+    }
+    const n = Math.max(1, Math.min(concurrency, items.length))
+    await Promise.all(Array.from({ length: n }, () => worker()))
+    return results
+  }
+
+  /**
+   * Build a default "all" points view for an entry without mutating `views`.
+   * @param {import('../lib/visualizeStructures.js').StructureEntry} entry
+   */
+  function makeDefaultPointsView(entry) {
+    return {
+      id: crypto.randomUUID(),
+      structureId: entry.id,
+      componentKey: componentKeyFromSelection('all'),
+      selection: 'all',
+      baseSelection: 'all',
+      representation: { type: 'points' },
+      path: entry.path,
+      atoms: entry.atoms,
+      bonds: entry.bonds,
+      residues: entry.residues,
+      visible: true,
+      colorScheme: { name: 'cpk', resolver: cpkScheme() },
+      helixWidth: 1.0,
+      sheetWidth: 0.875,
+      coilWidth: 0.125,
+      ssColors: null,
+      tubeRadius: 0.9,
+      atomScale: 1.0,
+      bondScale: 1.0,
+      pointSize: 3,
+      quality: 3,
+      showMultipleBonds: true,
+      stickRoundness: 1.0,
+      bondColorMode: 'uniform',
+      bondColor: '#b8b8bc',
+      opacity: 1,
+      surfaceInflate: 0.25,
+      surfaceSource: 'atoms',
+      surfaceSubdivision: 0,
+      material: { ...DEFAULT_VIEW_MATERIAL }
+    }
+  }
+
+  /**
+   * Append many imported cache PDBs with bounded concurrency and one UI commit.
+   * @param {string} sourcePath
+   * @param {{ kind?: string, structures?: Array<Record<string, unknown>> }} imported
+   * @param {Array<{ index: number, label: string }>} chosenEntries
+   */
+  async function batchAppendImported(sourcePath, imported, chosenEntries) {
+    const list = imported.structures ?? []
+    if (!list.length) {
+      if (loadingElapsedTimer) {
+        clearInterval(loadingElapsedTimer)
+        loadingElapsedTimer = 0
+      }
+      loadingPDB = false
+      loadingPhase = ''
+      return
+    }
+    const started = Date.now() - loadingElapsedSec * 1000
+    const workspaceWasEmpty = structures.length === 0
+    const kind =
+      imported.kind === 'maestro'
+        ? /** @type {'maestro_ct'} */ ('maestro_ct')
+        : /** @type {'pdb_model'} */ ('pdb_model')
+
+    loadingPDB = true
+    loadingPhase = `Loading structures… 0 / ${list.length}`
+    loadBondStatus = ''
+    if (loadingElapsedTimer) clearInterval(loadingElapsedTimer)
+    loadingElapsedTimer = setInterval(() => {
+      loadingElapsedSec = Math.floor((Date.now() - started) / 1000)
+    }, 250)
+
+    let done = 0
+    try {
+      const specs = list.map((st, i) => ({
+        st,
+        meta: chosenEntries[i] ?? { index: i, label: String(st.label || '') }
+      }))
+
+      // Concurrency 2: parallel /get-structure JSON peaks dominate heap on large CTs.
+      const fetched = await mapPool(specs, 2, async ({ st, meta }) => {
+        const path = String(st.path ?? st.pdbPath ?? '')
+        const top =
+          typeof st.topology === 'string'
+            ? st.topology
+            : st.topologyPath != null
+              ? String(st.topologyPath)
+              : null
+        try {
+          const raw = await getStructure({
+            path,
+            topology: top,
+            needs_bonds: false,
+            needs_secondary_structure: false,
+            save_dir: workingDir || null
+          })
+          done += 1
+          loadingPhase = `Loading structures… ${done} / ${specs.length}`
+          return { ok: true, raw, st, meta, top }
+        } catch (ex) {
+          done += 1
+          loadingPhase = `Loading structures… ${done} / ${specs.length}`
+          return {
+            ok: false,
+            error: ex instanceof Error ? ex.message : String(ex),
+            label: st.label || meta.label || path
+          }
+        }
+      })
+
+      loadingPhase = 'Building workspace…'
+      /** @type {import('../lib/visualizeStructures.js').StructureEntry[]} */
+      const newEntries = []
+      /** @type {View[]} */
+      const newViews = []
+      const failures = []
+
+      for (const item of fetched) {
+        if (!item?.ok) {
+          if (item?.label) failures.push(`${item.label}: ${item.error || 'failed'}`)
+          continue
+        }
+        const { raw, st, meta, top } = item
+        const resolvedTopology = raw.topology_used || top || null
+        const entry = createStructureEntry({
+          sourcePath,
+          kind,
+          ctIndex: kind === 'maestro_ct' ? meta.index : null,
+          modelIndex: kind === 'pdb_model' ? meta.index : null,
+          label: st.label || meta.label,
+          path: raw.path,
+          topologyPath: resolvedTopology,
+          atoms: raw.atoms,
+          bonds: raw.bonds || [],
+          residues: raw.residues,
+          bond_source: raw.bond_source
+        })
+        newEntries.push(entry)
+        // Defer XYZ base snapshots until a transform / animation needs them.
+        newViews.push(makeDefaultPointsView(entry))
+        // Drop fetch wrapper refs so GC can reclaim mid-loop on huge batches.
+        item.raw = null
+      }
+
+      if (!newEntries.length) {
+        throw new Error(
+          failures.length
+            ? `No structures loaded:\n${failures.slice(0, 8).join('\n')}`
+            : 'No structures loaded'
+        )
+      }
+
+      structures = [...structures, ...newEntries]
+      views = [...views, ...newViews]
+      syncStructureHiddenFromEntries(newEntries)
+
+      // Collapse all but the first workspace structure after a multi-entry import.
+      const keepOpen = structures[0]?.id
+      const nextCollapsed = new Set(collapsedStructureIds)
+      for (const s of structures) {
+        if (s.id !== keepOpen) nextCollapsed.add(s.id)
+        else nextCollapsed.delete(s.id)
+      }
+      collapsedStructureIds = nextCollapsed
+
+      activeStructureId = newEntries[0].id
+      baseAtomCoords = new Map()
+      coordsDirty = false
+      coordsGeneration += 1
+      coordUndoStack.clear()
+      previewPositions = null
+      animCoordOverlay = null
+
+      logEvent(
+        'info',
+        'view',
+        `Opened ${newEntries.length} structure(s)`,
+        sourcePath
+      )
+      if (failures.length) {
+        alert(`Some entries failed to load:\n${failures.slice(0, 12).join('\n')}`)
+      }
+
+      if (workspaceWasEmpty || !camera) {
+        reframeCameraOnAtoms(collectVisibleViewAtoms(views))
+      }
+      requestSidePanelExpand('visualize')
+    } finally {
+      if (loadingElapsedTimer) {
+        clearInterval(loadingElapsedTimer)
+        loadingElapsedTimer = 0
+      }
+      loadingPDB = false
+      loadingPhase = ''
+    }
+  }
+
+  /**
+   * Fetch a structure and APPEND it to the workspace (never clobbers existing
+   * structures). Becomes the active structure. Adds a default points view.
+   * @param {string} path
+   * @param {{ topology?: string | null, sourcePath?: string, kind?: import('../lib/visualizeStructures.js').StructureEntry['kind'], ctIndex?: number | null, modelIndex?: number | null, label?: string | null, resetCamera?: boolean }} [opts]
+   * @returns {Promise<import('../lib/visualizeStructures.js').StructureEntry | null>}
+   */
+  async function appendStructure(path, opts = {}) {
+    const started = Date.now()
+    const firstStructure = structures.length === 0
+    try {
+      loadingPDB = true
+      loadingElapsedSec = 0
+      loadingPhase = 'Reading file…'
+      loadBondStatus = ''
+      if (loadingElapsedTimer) clearInterval(loadingElapsedTimer)
+      loadingElapsedTimer = setInterval(() => {
+        loadingElapsedSec = Math.floor((Date.now() - started) / 1000)
+      }, 250)
+
+      const top = opts.topology ?? null
+      loadingPhase = top
+        ? 'Using topology for bonds…'
+        : 'Looking for companion topology / bonds…'
+
+      const raw = await getStructure({
+        path,
+        topology: top,
+        needs_bonds: true,
+        needs_secondary_structure: false,
+        save_dir: workingDir || null
+      })
+      loadingPhase = 'Building atom list…'
+
+      const resolvedTopology = raw.topology_used || top || null
+      if (resolvedTopology) {
+        const topName = String(resolvedTopology).split(/[/\\]/).pop()
+        const src = raw.bond_source || 'topology'
+        loadBondStatus =
+          src === 'topology'
+            ? `Using ${topName} for bonds`
+            : `Bonds: ${src}` + (topName ? ` (${topName})` : '')
+      } else {
+        loadBondStatus =
+          raw.bond_source && raw.bond_source !== 'none' ? `Bonds: ${raw.bond_source}` : ''
+      }
+
+      const entry = createStructureEntry({
+        sourcePath: opts.sourcePath || raw.path,
+        kind: opts.kind || 'file',
+        ctIndex: opts.ctIndex ?? null,
+        modelIndex: opts.modelIndex ?? null,
+        label: opts.label || undefined,
+        path: raw.path,
+        topologyPath: resolvedTopology,
+        atoms: raw.atoms,
+        bonds: raw.bonds,
+        residues: raw.residues,
+        bond_source: raw.bond_source
+      })
+
+      structures = [...structures, entry]
+      syncStructureHiddenFromEntries([entry])
+      activeStructureId = entry.id
+      baseAtomCoords = new Map()
+      coordsDirty = false
+      coordsGeneration += 1
+      coordUndoStack.clear()
+      previewPositions = null
+      animCoordOverlay = null
+
+      logEvent('info', 'view', `Opened ${entry.label}`, entry.path)
+
+      // Default "all" points view for the freshly added structure.
+      addView('all', { type: 'points' }, { structureId: entry.id })
+
+      const resetCam = opts.resetCamera ?? firstStructure
+      if (resetCam || !camera) {
+        reframeCameraOnAtoms(collectVisibleViewAtoms(views))
+      }
+      requestSidePanelExpand('visualize')
+      return entry
+    } catch (ex) {
+      alert(ex instanceof Error ? ex.message : String(ex))
+      return null
+    } finally {
+      if (loadingElapsedTimer) {
+        clearInterval(loadingElapsedTimer)
+        loadingElapsedTimer = 0
+      }
+      loadingPDB = false
+      loadingPhase = ''
+    }
+  }
+
+  /**
+   * Switch the active (edit-target) structure, persisting the current structure's
+   * coord working-state and restoring the target's.
+   * @param {string} id
+   */
+  function setActiveStructure(id) {
+    if (id === activeStructureId) return
+    // Persist current active coord state.
+    if (activeStructureId) {
+      baseAtomCoordsByStructure.set(activeStructureId, baseAtomCoords)
+      if (animCoordOverlay) animCoordOverlayByStructure.set(activeStructureId, animCoordOverlay)
+      else animCoordOverlayByStructure.delete(activeStructureId)
+    }
+    activeStructureId = id
+    // Restore target coord state (lazy — empty until a transform/animation needs it).
+    baseAtomCoords = baseAtomCoordsByStructure.get(id) ?? new Map()
+    animCoordOverlay = animCoordOverlayByStructure.get(id) ?? null
+    previewPositions = null
+    coordUndoStack.clear()
+    coordsDirty = false
+  }
+
+  /**
+   * Snapshot load-time XYZ for undo / dirty / animation patches. Deferred until
+   * first needed so multi-structure open does not double atom storage.
+   * @param {string | null | undefined} [structureId]
+   * @returns {Map<number, [number, number, number]>}
+   */
+  function ensureBaseAtomCoords(structureId = activeStructureId) {
+    if (!structureId) return baseAtomCoords
+    let map = baseAtomCoordsByStructure.get(structureId)
+    if (map && map.size) {
+      if (structureId === activeStructureId) baseAtomCoords = map
+      return map
+    }
+    const entry = findStructure(structures, structureId)
+    map = entry?.atoms?.length ? snapshotAtomCoords(entry.atoms) : new Map()
+    baseAtomCoordsByStructure.set(structureId, map)
+    if (structureId === activeStructureId) baseAtomCoords = map
+    return map
+  }
+
+  /** Remove a structure and all of its representations from the workspace. */
+  function removeStructure(id) {
+    const entry = findStructure(structures, id)
+    if (!entry) return
+    const removedViewIds = new Set(
+      views.filter((v) => v.structureId === id).map((v) => v.id)
+    )
+    views = views.filter((v) => v.structureId !== id)
+    for (const vid of removedViewIds) viewAtomsCache.delete(vid)
+    structures = structures.filter((s) => s.id !== id)
+    visibilityGroups = pruneVisibilityGroups(
+      visibilityGroups,
+      structures.map((s) => s.id),
+      views.filter((v) => !v._isSelHighlight).map((v) => v.id),
+      new Map(
+        views
+          .filter((v) => !v._isSelHighlight && v.structureId)
+          .map((v) => /** @type {[string, string]} */ ([v.id, v.structureId]))
+      )
+    )
+    baseAtomCoordsByStructure.delete(id)
+    animCoordOverlayByStructure.delete(id)
+    if (collapsedStructureIds.has(id)) {
+      const next = new Set(collapsedStructureIds)
+      next.delete(id)
+      collapsedStructureIds = next
+    }
+    if (structureHiddenIds.has(id)) {
+      const next = new Set(structureHiddenIds)
+      next.delete(id)
+      structureHiddenIds = next
+    }
+    if (activeStructureId === id) {
+      const next = structures[0]?.id ?? null
+      activeStructureId = next
+      baseAtomCoords = next ? (baseAtomCoordsByStructure.get(next) ?? new Map()) : new Map()
+      animCoordOverlay = next ? (animCoordOverlayByStructure.get(next) ?? null) : null
+      previewPositions = null
+      coordUndoStack.clear()
+      coordsDirty = false
+    }
+    if (structures.length === 0) {
+      camera = null
+      measurements = []
+      measurePicks = []
+      atomLabels = []
+      measureMode = null
+      ctxMenu = null
+      collapsedStructureIds = new Set()
+      structureHiddenIds = new Set()
+      visibilityGroups = []
+      clearPanelSelection()
+    }
+    logEvent('detail', 'view', `Removed structure`, entry.label)
+  }
+
+  /** Rename a structure entry's display label. */
+  function renameStructure(id, label) {
+    const next = String(label ?? '').trim()
+    if (!next) return
+    structures = structures.map((s) => (s.id === id ? { ...s, label: next } : s))
+  }
+
+  /** Toggle structure eye: hide/show without touching `structures` (keeps meshes warm). */
+  function toggleStructureVisible(id) {
+    if (!id || !findStructure(structures, id)) return
+    const next = new Set(structureHiddenIds)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    structureHiddenIds = next
+    // Keep entry.visible in sync for viewpoint serialization (in-place; no array rewrite).
+    const entry = findStructure(structures, id)
+    if (entry) entry.visible = !next.has(id)
+  }
+
+  /** Fast lookup: structureId → drawn in canvas? */
+  const structureVisibleById = $derived.by(() => {
+    /** @type {Map<string, boolean>} */
+    const m = new Map()
+    for (const s of structures) m.set(s.id, !structureHiddenIds.has(s.id))
+    return m
+  })
+
+  /** @param {{ structureId?: string | null }} view */
+  function isOwnerStructureVisible(view) {
+    if (!view?.structureId) return true
+    return structureVisibleById.get(view.structureId) !== false
+  }
+
+  function isStructureHidden(id) {
+    return structureHiddenIds.has(id)
+  }
+
+  /** Meta for viewpoint/animation save: honor the eye-toggle Set. */
+  function structuresMetaForSave() {
+    return serializeStructuresMeta(structures).map((s) => ({
+      ...s,
+      visible: !structureHiddenIds.has(s.id)
+    }))
+  }
+
+  /** Seed eye-toggle Set from StructureEntry.visible (e.g. restored meta). */
+  function syncStructureHiddenFromEntries(entries) {
+    if (!entries?.length) return
+    const next = new Set(structureHiddenIds)
+    for (const e of entries) {
+      if (e.visible === false) next.add(e.id)
+      else next.delete(e.id)
+    }
+    structureHiddenIds = next
+  }
+
+  const panelViews = $derived(views.filter((v) => !v._isSelHighlight))
+  const panelViewIds = $derived(panelViews.map((v) => v.id))
+  const panelStructureIds = $derived(structures.map((s) => s.id))
+  const viewToStructureId = $derived.by(() => {
+    /** @type {Map<string, string>} */
+    const m = new Map()
+    for (const v of panelViews) {
+      if (v.structureId) m.set(v.id, v.structureId)
+    }
+    return m
+  })
+  const visibilityGroupsPruned = $derived(
+    pruneVisibilityGroups(visibilityGroups, panelStructureIds, panelViewIds, viewToStructureId)
+  )
+  const claimedRepIds = $derived(claimedViewIds(visibilityGroupsPruned))
+  const claimedStructIds = $derived(claimedStructureIds(visibilityGroupsPruned))
+  const outerStructureGroups = $derived(structureGroups(visibilityGroupsPruned))
+  const ungroupedStructures = $derived(
+    structures.filter((s) => !claimedStructIds.has(s.id))
+  )
+  const selectionCount = $derived(selectedStructureIds.size + selectedViewIds.size)
+  const workspaceAnyVisible = $derived(
+    structures.some((s) => !structureHiddenIds.has(s.id)) ||
+      panelViews.some((v) => v.visible !== false)
+  )
+  const applyMenuSourceView = $derived(
+    applyMenu.viewId ? views.find((v) => v.id === applyMenu.viewId) : null
+  )
+  const applyMenuTargets = $derived(
+    applyMenuSourceView
+      ? structures
+          .filter((s) => s.id !== applyMenuSourceView.structureId)
+          .map((s) => ({ id: s.id, label: s.label }))
+      : []
+  )
+
+  function clearPanelSelection() {
+    selectedStructureIds = new Set()
+    selectedViewIds = new Set()
+    selectionAnchorStructureId = null
+    selectionAnchorViewId = null
+  }
+
+  /** Keep multi-select if already selected; otherwise select only this structure. */
+  function ensureStructureInSelection(id) {
+    if (selectedStructureIds.has(id)) return
+    selectedStructureIds = new Set([id])
+    selectedViewIds = new Set()
+    selectionAnchorStructureId = id
+    selectionAnchorViewId = null
+  }
+
+  /** Keep multi-select if already selected; otherwise select only this representation. */
+  function ensureViewInSelection(id) {
+    if (selectedViewIds.has(id)) return
+    selectedViewIds = new Set([id])
+    selectedStructureIds = new Set()
+    selectionAnchorViewId = id
+    selectionAnchorStructureId = null
+  }
+
+  function showPanelSelection() {
+    if (selectedStructureIds.size) setStructuresVisible([...selectedStructureIds], true)
+    if (selectedViewIds.size) setViewsVisible([...selectedViewIds], true)
+  }
+
+  function hidePanelSelection() {
+    if (selectedStructureIds.size) setStructuresVisible([...selectedStructureIds], false)
+    if (selectedViewIds.size) setViewsVisible([...selectedViewIds], false)
+  }
+
+  async function layoutStructureCtxMenu() {
+    if (!structureCtxMenu || !structureCtxMenuEl) return
+    await tick()
+    if (!structureCtxMenu || !structureCtxMenuEl) return
+    const pad = 8
+    const rect = structureCtxMenuEl.getBoundingClientRect()
+    let x = structureCtxMenu.x
+    let y = structureCtxMenu.y
+    if (x + rect.width > window.innerWidth - pad) {
+      x = Math.max(pad, window.innerWidth - rect.width - pad)
+    }
+    if (y + rect.height > window.innerHeight - pad) {
+      y = Math.max(pad, structureCtxMenu.y - rect.height)
+    }
+    structureCtxMenuPos = { x, y }
+  }
+
+  /** @param {string} id @param {MouseEvent} e */
+  function openStructureCtxMenu(id, e) {
+    e.preventDefault()
+    e.stopPropagation()
+    ensureStructureInSelection(id)
+    structureCtxMenu = { x: e.clientX, y: e.clientY, id }
+    structureCtxMenuPos = { x: e.clientX, y: e.clientY }
+    layoutStructureCtxMenu()
+  }
+
+  /** @param {string} id @param {MouseEvent} e */
+  function onStructureRowSelect(id, e) {
+    const ordered = panelStructureIds
+    if (e.shiftKey) {
+      const range = rangeSelectIds(ordered, selectionAnchorStructureId, id)
+      selectedStructureIds = new Set([...selectedStructureIds, ...range])
+    } else if (e.ctrlKey || e.metaKey) {
+      const next = new Set(selectedStructureIds)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      selectedStructureIds = next
+      selectionAnchorStructureId = id
+    } else {
+      selectedStructureIds = new Set([id])
+      selectedViewIds = new Set()
+      selectionAnchorStructureId = id
+      selectionAnchorViewId = null
+    }
+  }
+
+  /** @param {string} id @param {MouseEvent} e */
+  function onViewRowSelect(id, e) {
+    const ordered = panelViewIds
+    if (e.shiftKey) {
+      const range = rangeSelectIds(ordered, selectionAnchorViewId, id)
+      selectedViewIds = new Set([...selectedViewIds, ...range])
+    } else if (e.ctrlKey || e.metaKey) {
+      const next = new Set(selectedViewIds)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      selectedViewIds = next
+      selectionAnchorViewId = id
+    } else {
+      selectedViewIds = new Set([id])
+      selectedStructureIds = new Set()
+      selectionAnchorViewId = id
+      selectionAnchorStructureId = null
+    }
+  }
+
+  function onCreateGroupFromSelection() {
+    if (!selectionCount) return
+    const structureIds = Array.from(selectedStructureIds)
+    const viewIds = Array.from(selectedViewIds)
+    if (!structureIds.length && !viewIds.length) return
+    // Structures-only selection → one outer structure group.
+    // Representation selection → nested groups inside each structure.
+    const kindLabel =
+      viewIds.length > 0
+        ? visibilityGroups.filter((g) => g.kind === 'views').length + 1
+        : visibilityGroups.filter((g) => g.kind === 'structures').length + 1
+    const name = `Group ${kindLabel}`
+    visibilityGroups = createVisibilityGroup(visibilityGroups, {
+      name,
+      structureIds,
+      viewIds,
+      views: panelViews.map((v) => ({ id: v.id, structureId: v.structureId }))
+    })
+    clearPanelSelection()
+  }
+
+  /** @param {string} groupId */
+  function onDissolveGroup(groupId) {
+    visibilityGroups = dissolveVisibilityGroup(visibilityGroups, groupId)
+  }
+
+  /** @param {string} groupId @param {-1|1} delta */
+  function onReorderGroup(groupId, delta) {
+    visibilityGroups = reorderVisibilityGroup(visibilityGroups, groupId, delta)
+  }
+
+  /** @param {string} groupId @param {string} name */
+  function onRenameGroup(groupId, name) {
+    const next = String(name ?? '').trim()
+    if (!next) return
+    visibilityGroups = visibilityGroups.map((g) => (g.id === groupId ? { ...g, name: next } : g))
+  }
+
+  /** @param {string} groupId @param {string} currentName */
+  function beginGroupRename(groupId, currentName) {
+    editingGroupId = groupId
+    editingGroupName = currentName || ''
+    tick().then(() => {
+      editingGroupInputEl?.focus()
+      editingGroupInputEl?.select()
+    })
+  }
+
+  function commitGroupRename() {
+    if (!editingGroupId) return
+    const id = editingGroupId
+    const name = editingGroupName
+    editingGroupId = null
+    editingGroupName = ''
+    onRenameGroup(id, name)
+  }
+
+  function cancelGroupRename() {
+    editingGroupId = null
+    editingGroupName = ''
+  }
+
+  /** @param {string} groupId */
+  function toggleGroupCollapsed(groupId) {
+    visibilityGroups = visibilityGroups.map((g) =>
+      g.id === groupId ? { ...g, collapsed: !g.collapsed } : g
+    )
+  }
+
+  /** @param {string[]} viewIds @param {boolean} visible */
+  function setViewsVisible(viewIds, visible) {
+    const set = new Set(viewIds)
+    for (const v of panelViews) {
+      if (set.has(v.id)) v.visible = visible
+    }
+  }
+
+  /** @param {string[]} structureIds @param {boolean} visible */
+  function setStructuresVisible(structureIds, visible) {
+    const next = new Set(structureHiddenIds)
+    for (const id of structureIds) {
+      if (visible) next.delete(id)
+      else next.add(id)
+    }
+    structureHiddenIds = next
+    for (const s of structures) {
+      if (structureIds.includes(s.id)) s.visible = visible
+    }
+  }
+
+  /** Toggle visibility for a structure group (outer) or representation group (nested). */
+  function toggleGroupVisible(group) {
+    if (!group) return
+    if (group.kind === 'structures') {
+      const ids = group.structureIds || []
+      if (!ids.length) return
+      const anyOn = ids.some((id) => !structureHiddenIds.has(id))
+      setStructuresVisible(ids, !anyOn)
+      return
+    }
+    const ids = group.viewIds || []
+    if (!ids.length) return
+    const anyOn = panelViews.some((v) => ids.includes(v.id) && v.visible !== false)
+    setViewsVisible(ids, !anyOn)
+  }
+
+  function toggleWorkspaceVisible() {
+    const show = !workspaceAnyVisible
+    structureHiddenIds = show ? new Set() : new Set(structures.map((s) => s.id))
+    for (const s of structures) s.visible = show
+    for (const v of panelViews) v.visible = show
+  }
+
+  /** Snapshot groups for save (prune dangling ids). */
+  function visibilityGroupsForSave() {
+    return serializeVisibilityGroups(
+      pruneVisibilityGroups(visibilityGroups, panelStructureIds, panelViewIds, viewToStructureId)
+    )
+  }
+
+  /** @param {unknown} raw */
+  function restoreVisibilityGroups(raw) {
+    visibilityGroups = normalizeVisibilityGroups(raw)
+    clearPanelSelection()
+  }
+
+  /** Collapse / expand a structure group in the panel. */
+  function toggleStructureCollapse(id) {
+    const next = new Set(collapsedStructureIds)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    collapsedStructureIds = next
+  }
+
+  function isStructureCollapsed(id) {
+    return collapsedStructureIds.has(id)
+  }
+
+  /**
+   * @param {string} selection
+   * @param {Representation} representation
+   * @param {{ structureId?: string | null, componentKey?: string }} [opts]
+   */
+  function addView(selection = 'all', representation = { type: 'points' }, opts = {}) {
     const id = crypto.randomUUID()
+    const sid = opts.structureId ?? activeStructureId
+    const owner = findStructure(structures, sid) ?? structure
     logEvent(
       'detail',
       'view',
@@ -772,13 +1815,15 @@
       ...views,
       {
         id,
+        structureId: sid,
+        componentKey: opts.componentKey ?? componentKeyFromSelection(selection),
         selection,
         baseSelection: selection,
         representation,
-        path: filePath,
-        atoms: structure?.atoms,
-        bonds: structure?.bonds,
-        residues: structure?.residues,
+        path: owner?.path,
+        atoms: owner?.atoms,
+        bonds: owner?.bonds,
+        residues: owner?.residues,
         visible: true,
         colorScheme: {
           name: 'cpk',
@@ -793,6 +1838,14 @@
         bondScale: 1.0,
         pointSize: 3,
         quality: 3,
+        showMultipleBonds: true,
+        stickRoundness: 1.0,
+        bondColorMode: 'uniform',
+        bondColor: '#b8b8bc',
+        opacity: 1,
+        surfaceInflate: 0.25,
+        surfaceSource: 'atoms',
+        surfaceSubdivision: 0,
         material: { ...DEFAULT_VIEW_MATERIAL }
       }
     ]
@@ -870,88 +1923,239 @@
     syncControlsTarget(atoms)
   }
 
-  /** @param {string} path */
-  async function loadStructure(path, { resetCamera = true, topology = null } = {}) {
-    const started = Date.now()
-    try {
-      loadingPDB = true
-      loadingElapsedSec = 0
-      loadingPhase = 'Reading file…'
-      loadBondStatus = ''
-      if (loadingElapsedTimer) clearInterval(loadingElapsedTimer)
-      loadingElapsedTimer = setInterval(() => {
-        loadingElapsedSec = Math.floor((Date.now() - started) / 1000)
-      }, 250)
-
-      const top = topology !== undefined ? topology : topologyPath
-      loadingPhase = top
-        ? 'Using topology for bonds…'
-        : 'Looking for companion topology / bonds…'
-
-      // Prefer companion topology when present (backend auto-detects if topology is null).
-      // Bonds are ready before first paint so ball-and-stick stays instant afterward.
-      structure = await getStructure({
-        path,
-        topology: top,
-        needs_bonds: true,
-        needs_secondary_structure: false,
-        save_dir: workingDir || null
-      })
-      loadingPhase = 'Building atom list…'
-      filePath = structure.path
-      if (structure.topology_used) {
-        topologyPath = structure.topology_used
-        const topName = String(structure.topology_used).split(/[/\\]/).pop()
-        const src = structure.bond_source || 'topology'
-        loadBondStatus =
-          src === 'topology'
-            ? `Using ${topName} for bonds`
-            : `Bonds: ${src}` + (topName ? ` (${topName})` : '')
-      } else {
-        topologyPath = null
-        loadBondStatus =
-          structure.bond_source && structure.bond_source !== 'none'
-            ? `Bonds: ${structure.bond_source}`
-            : ''
-      }
-      logEvent(
-        'info',
-        'view',
-        `Opened ${String(structure.path).split(/[/\\]/).pop()}`,
-        structure.path
-      )
-      baseAtomCoords = snapshotAtomCoords(structure.atoms)
-      coordsDirty = false
-      coordsGeneration = 0
-      coordUndoStack.clear()
-      previewPositions = null
-      animCoordOverlay = null
-      views = []
-      measurements = []
-      measurePicks = []
-      atomLabels = []
-      measureMode = null
-      ctxMenu = null
-      addView('all', { type: 'points' })
-      if (resetCamera || !camera) {
-        const base = getCameraForAtoms(structure.atoms)
-        camera = base
-          ? { ...base, framingZoom: 1, framingGeneration: 0, poseResetGeneration: 0 }
-          : null
-      }
-      // Reveal Representations dock so users notice views after Open.
-      requestSidePanelExpand('visualize')
-    } catch (ex) {
-      structure = null
-      alert(ex instanceof Error ? ex.message : String(ex))
-    } finally {
-      if (loadingElapsedTimer) {
-        clearInterval(loadingElapsedTimer)
-        loadingElapsedTimer = 0
-      }
-      loadingPDB = false
-      loadingPhase = ''
+  /**
+   * REPLACE the workspace from viewpoint/animation ``structures[]`` meta.
+   * Re-materializes Maestro / multi-MODEL entries from the durable ``sourcePath``
+   * (not ephemeral structure_cache PDBs). Preserves meta ``id`` values so saved
+   * views / visibility groups keep matching ``structureId``s.
+   * @param {Array<{ id?: string, path: string, topology?: string | null, sourcePath?: string, kind?: string, label?: string, ctIndex?: number | null, modelIndex?: number | null, visible?: boolean }>} metas
+   * @param {{
+   *   addDefaultViews?: boolean,
+   *   resetCamera?: boolean,
+   *   onProgress?: (done: number, total: number, label?: string) => void
+   * }} [opts]
+   */
+  async function loadStructuresFromMeta(metas, opts = {}) {
+    const list = normalizeStructuresMeta(metas)
+    if (!list.length) throw new Error('No structures to load')
+    const addDefaultViews = opts.addDefaultViews === true
+    const resetCamera = opts.resetCamera !== false
+    const onProgress = opts.onProgress
+    let progressDone = 0
+    const progressTotal = list.length
+    /** @param {string} [label] */
+    const tickProgress = (label) => {
+      progressDone += 1
+      onProgress?.(progressDone, progressTotal, label)
     }
+
+    structures = []
+    activeStructureId = null
+    views = []
+    measurements = []
+    measurePicks = []
+    atomLabels = []
+    measureMode = null
+    ctxMenu = null
+    visibilityGroups = []
+    clearPanelSelection()
+    baseAtomCoordsByStructure = new Map()
+    animCoordOverlayByStructure = new Map()
+    structureHiddenIds = new Set()
+    collapsedStructureIds = new Set()
+    coordsGeneration += 1
+
+    const { singles, maestro, models } = groupStructureMetasForLoad(list)
+    /** @type {import('../lib/visualizeStructures.js').StructureEntry[]} */
+    const loaded = []
+    /** @type {View[]} */
+    const defaultViews = []
+
+    /**
+     * @param {string} sourcePath
+     * @param {number[]} indices
+     * @param {typeof list} metaSlice
+     * @param {'maestro_ct' | 'pdb_model'} kind
+     */
+    async function appendImportedGroup(sourcePath, indices, metaSlice, kind) {
+      const base = String(sourcePath).split(/[/\\]/).pop() || 'file'
+      onProgress?.(progressDone, progressTotal, `Unpacking ${base}…`)
+      const imported = await importStructureEntries(sourcePath, indices)
+      const byIndex = new Map(
+        (imported.structures || []).map((st) => {
+          const idx =
+            kind === 'maestro_ct'
+              ? Number(st.ctIndex)
+              : Number(st.modelIndex)
+          return [idx, st]
+        })
+      )
+      for (const meta of metaSlice) {
+        const idx = kind === 'maestro_ct' ? Number(meta.ctIndex) : Number(meta.modelIndex)
+        const st = byIndex.get(idx)
+        if (!st) continue
+        const path = String(st.path ?? st.pdbPath ?? '')
+        const top =
+          typeof meta.topology === 'string'
+            ? meta.topology
+            : st.topology != null
+              ? String(st.topology)
+              : null
+        const raw = await getStructure({
+          path,
+          topology: top,
+          needs_bonds: false,
+          needs_secondary_structure: false,
+          save_dir: workingDir || null
+        })
+        const entry = createStructureEntry({
+          id: meta.id,
+          sourcePath,
+          kind,
+          ctIndex: kind === 'maestro_ct' ? idx : null,
+          modelIndex: kind === 'pdb_model' ? idx : null,
+          label: meta.label || st.label || `${String(sourcePath).split(/[/\\]/).pop() || 'entry'} · ${idx}`,
+          path: raw.path,
+          topologyPath: raw.topology_used || top || null,
+          atoms: raw.atoms,
+          bonds: raw.bonds || [],
+          residues: raw.residues,
+          bond_source: raw.bond_source,
+          visible: meta.visible !== false
+        })
+        loaded.push(entry)
+        if (addDefaultViews) defaultViews.push(makeDefaultPointsView(entry))
+        tickProgress(entry.label)
+      }
+    }
+
+    onProgress?.(0, progressTotal, '')
+    for (const [sourcePath, slice] of maestro) {
+      const indices = slice
+        .map((m) => m.ctIndex)
+        .filter((n) => typeof n === 'number')
+      if (!indices.length) continue
+      await appendImportedGroup(sourcePath, /** @type {number[]} */ (indices), slice, 'maestro_ct')
+    }
+    for (const [sourcePath, slice] of models) {
+      const indices = slice
+        .map((m) => m.modelIndex)
+        .filter((n) => typeof n === 'number')
+      if (!indices.length) continue
+      await appendImportedGroup(sourcePath, /** @type {number[]} */ (indices), slice, 'pdb_model')
+    }
+    for (const meta of singles) {
+      const path = meta.path || meta.sourcePath
+      if (!path) continue
+      // Prefer existing file path; if cache PDB is gone but sourcePath is a real file, use that.
+      let openPath = path
+      try {
+        const raw = await getStructure({
+          path: openPath,
+          topology: meta.topology ?? null,
+          needs_bonds: false,
+          needs_secondary_structure: false,
+          save_dir: workingDir || null
+        })
+        const entry = createStructureEntry({
+          id: meta.id,
+          sourcePath: meta.sourcePath || openPath,
+          kind: /** @type {any} */ (meta.kind || 'file'),
+          ctIndex: meta.ctIndex ?? null,
+          modelIndex: meta.modelIndex ?? null,
+          label: meta.label,
+          path: raw.path,
+          topologyPath: raw.topology_used || meta.topology || null,
+          atoms: raw.atoms,
+          bonds: raw.bonds || [],
+          residues: raw.residues,
+          bond_source: raw.bond_source,
+          visible: meta.visible !== false
+        })
+        loaded.push(entry)
+        if (addDefaultViews) defaultViews.push(makeDefaultPointsView(entry))
+        tickProgress(entry.label)
+      } catch (ex) {
+        const fallback = meta.sourcePath && meta.sourcePath !== openPath ? meta.sourcePath : null
+        if (!fallback) throw ex
+        const raw = await getStructure({
+          path: fallback,
+          topology: meta.topology ?? null,
+          needs_bonds: false,
+          needs_secondary_structure: false,
+          save_dir: workingDir || null
+        })
+        const entry = createStructureEntry({
+          id: meta.id,
+          sourcePath: fallback,
+          kind: 'file',
+          label: meta.label,
+          path: raw.path,
+          topologyPath: raw.topology_used || meta.topology || null,
+          atoms: raw.atoms,
+          bonds: raw.bonds || [],
+          residues: raw.residues,
+          bond_source: raw.bond_source,
+          visible: meta.visible !== false
+        })
+        loaded.push(entry)
+        if (addDefaultViews) defaultViews.push(makeDefaultPointsView(entry))
+        tickProgress(entry.label)
+      }
+    }
+
+    if (!loaded.length) throw new Error('No structures could be loaded from the saved file')
+
+    // Keep saved order when possible.
+    const byId = new Map(loaded.map((e) => [e.id, e]))
+    const ordered = []
+    for (const m of list) {
+      const e = m.id ? byId.get(m.id) : null
+      if (e) {
+        ordered.push(e)
+        byId.delete(e.id)
+      }
+    }
+    ordered.push(...byId.values())
+
+    structures = ordered
+    syncStructureHiddenFromEntries(ordered)
+    activeStructureId = ordered[0].id
+    baseAtomCoords = new Map()
+    coordsDirty = false
+    coordsGeneration += 1
+    coordUndoStack.clear()
+    previewPositions = null
+    animCoordOverlay = null
+    if (addDefaultViews) views = defaultViews
+    if (resetCamera) {
+      reframeCameraOnAtoms(ordered.flatMap((e) => e.atoms || []))
+    }
+    requestSidePanelExpand('visualize')
+  }
+
+  /**
+   * REPLACE the workspace with a single structure. Used by viewpoint / animation
+   * load and in-place edit reloads. The multi-structure Open flow uses
+   * `appendStructure` / `openFiles` instead.
+   * @param {string} path
+   * @param {{ resetCamera?: boolean, topology?: string | null }} [opts]
+   */
+  async function loadStructure(path, { resetCamera = true, topology = null } = {}) {
+    // Clear existing workspace state (single-structure replace semantics).
+    structures = []
+    activeStructureId = null
+    views = []
+    measurements = []
+    measurePicks = []
+    atomLabels = []
+    measureMode = null
+    ctxMenu = null
+    baseAtomCoordsByStructure = new Map()
+    animCoordOverlayByStructure = new Map()
+    coordsGeneration += 1
+    const entry = await appendStructure(path, { topology, resetCamera })
+    if (!entry && resetCamera) camera = null
   }
 
   // ── Measurement helpers ──────────────────────────────────────────────
@@ -1352,6 +2556,17 @@
     }
     logEvent('detail', 'view', 'Removed representation', id)
     views = views.filter((it) => it.id !== id)
+    viewAtomsCache.delete(id)
+    visibilityGroups = pruneVisibilityGroups(
+      visibilityGroups,
+      structures.map((s) => s.id),
+      views.filter((v) => !v._isSelHighlight).map((v) => v.id),
+      new Map(
+        views
+          .filter((v) => !v._isSelHighlight && v.structureId)
+          .map((v) => /** @type {[string, string]} */ ([v.id, v.structureId]))
+      )
+    )
   }
 
   /** Duplicate a representation so the copy can be edited independently (e.g. selection). */
@@ -1455,8 +2670,13 @@
 
   function clearWorkspace() {
     logEvent('detail', 'view', 'Workspace cleared')
-    structure = null
-    filePath = null
+    structures = []
+    activeStructureId = null
+    collapsedStructureIds = new Set()
+    structureHiddenIds = new Set()
+    visibilityGroups = []
+    clearPanelSelection()
+    viewAtomsCache.clear()
     views = []
     measurements = []
     measurePicks = []
@@ -1467,8 +2687,10 @@
     previewPositions = null
     animCoordOverlay = null
     baseAtomCoords = new Map()
+    baseAtomCoordsByStructure = new Map()
+    animCoordOverlayByStructure = new Map()
     coordsDirty = false
-    coordsGeneration = 0
+    coordsGeneration += 1
     coordUndoStack.clear()
     stopAnimPlayback()
     if (animExporting) {
@@ -1503,13 +2725,24 @@
       })
       const baseName =
         String(filePath).split(/[/\\]/).pop()?.replace(/\.[^.]+$/, '') || 'Viewpoint'
+      const metas = structuresMetaForSave()
+      const primary = metas[0] || {
+        path: filePath,
+        topology: topologyPath,
+        sourcePath: filePath
+      }
       const viewpoint = buildViewpoint({
         name: baseName,
-        structure: { path: filePath, topology: topologyPath },
+        structure: { path: primary.path, topology: primary.topology ?? topologyPath },
+        structures: metas,
+        visibilityGroups: visibilityGroupsForSave(),
         snapshot
       })
-      // Prefer the project working directory; fall back to the structure's folder.
-      const defaultDir = workingDir || parentOfFile(filePath || '') || undefined
+      // Prefer the project working directory; fall back to the durable source folder.
+      const defaultDir =
+        workingDir ||
+        parentOfFile(primary.sourcePath || primary.path || filePath || '') ||
+        undefined
       const defaultPath = defaultDir
         ? `${String(defaultDir).replace(/[/\\]+$/, '')}/${baseName}_view.json`
         : `${baseName}_view.json`
@@ -1543,12 +2776,19 @@
       }
     }
 
-    const structureCtx = animStructureCtx()
     // Views mount under the opaque restore cover so glow lights / meshes can
     // finish building before the user ever sees the canvas.
-    views = viewpoint.views.map((v) =>
-      /** @type {View} */ (deserializeView(v, structureCtx))
-    )
+    views = viewpoint.views.map((v) => {
+      const owner = findStructure(structures, v.structureId) ?? structure
+      const ctx = {
+        path: owner?.path ?? null,
+        atoms: owner?.atoms,
+        bonds: owner?.bonds,
+        residues: owner?.residues
+      }
+      return /** @type {View} */ (deserializeView(v, ctx))
+    })
+    restoreVisibilityGroups(viewpoint.visibilityGroups)
     sceneRestoringPhase = 'Loading atom selections…'
     await refreshAnimationViewAtoms()
 
@@ -1617,6 +2857,7 @@
 
     // Let glowing materials / mesh rebuilds finish before revealing the canvas.
     sceneRestoringPhase = 'Finishing materials…'
+    sceneRestoringDetail = ''
     await waitForViewerIdle({ idleFrames: 4, timeoutMs: 20000, settleMs: 80 })
   }
 
@@ -1629,43 +2870,65 @@
     if (!dlg || dlg.canceled || !dlg.filePath) return
     sceneRestoring = true
     sceneRestoringPhase = 'Opening view…'
+    sceneRestoringDetail = ''
+    sceneRestoringCurrent = 0
+    sceneRestoringTotal = 0
+    startOverlayElapsed()
     try {
       const data = await window.api.readJson(dlg.filePath)
       if (data && typeof data === 'object' && data.format === 'gatewizard-animation') {
         throw new Error('That file is an animation project. Use Open ▾ → Animation… instead.')
       }
       const viewpoint = normalizeViewpoint(data)
-      const wantedPath = viewpoint.structure?.path || ''
-      if (!wantedPath) {
+      const metas =
+        Array.isArray(viewpoint.structures) && viewpoint.structures.length
+          ? viewpoint.structures
+          : viewpoint.structure?.path
+            ? [viewpoint.structure]
+            : []
+      if (!metas.length) {
         throw new Error('Viewpoint file has no structure path')
       }
-      // Auto-load the PDB/topology so a saved view can be opened standalone —
-      // same pattern as Load Animation.
-      if (wantedPath !== filePath) {
-        sceneRestoringPhase = 'Loading structure…'
-        await loadStructure(wantedPath, {
-          topology: viewpoint.structure?.topology ?? null,
-          resetCamera: true
+      // Auto-load structures (including Maestro source + CT indices) so a saved
+      // view can be opened standalone without depending on structure_cache PDBs.
+      const sameWorkspace =
+        metas.length === structures.length &&
+        metas.every((m, i) => m.path === structures[i]?.path || m.id === structures[i]?.id)
+      if (!sameWorkspace) {
+        reportStructureLoadProgress(0, metas.length, '')
+        await loadStructuresFromMeta(metas, {
+          addDefaultViews: false,
+          resetCamera: true,
+          onProgress: reportStructureLoadProgress
         })
         if (!structure) return
-        // Drop the temporary default "all" points view before restore paints.
         views = []
       }
+      sceneRestoringCurrent = 0
+      sceneRestoringTotal = 0
+      sceneRestoringDetail = ''
       await applyViewpoint(viewpoint)
       logEvent('info', 'view', 'Loaded viewpoint', dlg.filePath)
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : String(ex))
     } finally {
-      sceneRestoring = false
-      sceneRestoringPhase = ''
+      clearSceneRestoreUi()
     }
   }
 
   async function onSavePdb() {
     if (!filePath || !structure?.atoms?.length) return
-    const r = await window.api.saveFileDialog('Save PDB', [
-      { name: 'PDB files', extensions: ['pdb'] }
-    ])
+    const baseName =
+      String(filePath).split(/[/\\]/).pop()?.replace(/\.[^.]+$/, '') || 'structure'
+    const defaultDir = (workingDir || '').trim()
+    const defaultPath = defaultDir
+      ? `${defaultDir.replace(/[/\\]+$/, '')}/${baseName}.pdb`
+      : `${baseName}.pdb`
+    const r = await window.api.saveFileDialog(
+      'Save PDB',
+      [{ name: 'PDB files', extensions: ['pdb'] }],
+      defaultPath
+    )
     if (!r || r.canceled || !r.filePath) return
     try {
       if (coordsDirty) {
@@ -1686,8 +2949,12 @@
         await editSavePdb({ source: filePath, dest: r.filePath })
       }
       logEvent('info', 'view', `Saved PDB: ${String(r.filePath).split(/[/\\]/).pop()}`, r.filePath)
-      filePath = r.filePath
-      if (structure) structure.path = r.filePath
+      patchActiveStructure({ path: r.filePath })
+      const sid = activeStructureId
+      for (const v of views) {
+        if (v.structureId === sid) v.path = r.filePath
+      }
+      views = [...views]
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : String(ex))
     }
@@ -1696,9 +2963,20 @@
   async function onSaveImage() {
     const canvas = viewerEl?.querySelector('canvas')
     if (!canvas) return
-    const r = await window.api.saveFileDialog('Save Image', [
-      { name: 'PNG Image', extensions: ['png'] }
-    ])
+    const baseName =
+      String(filePath || 'viewport')
+        .split(/[/\\]/)
+        .pop()
+        ?.replace(/\.[^.]+$/, '') || 'viewport'
+    const defaultDir = (workingDir || '').trim()
+    const defaultPath = defaultDir
+      ? `${defaultDir.replace(/[/\\]+$/, '')}/${baseName}.png`
+      : `${baseName}.png`
+    const r = await window.api.saveFileDialog(
+      'Save Image',
+      [{ name: 'PNG Image', extensions: ['png'] }],
+      defaultPath
+    )
     if (!r || r.canceled || !r.filePath) return
     const dataUrl = /** @type {HTMLCanvasElement} */ (canvas).toDataURL('image/png')
     const base64 = dataUrl.split(',')[1]
@@ -1739,9 +3017,17 @@
         needs_secondary_structure: false,
         save_dir: workingDir || null
       })
-      filePath = newStructure.path
-      structure = newStructure
+      const editedId = activeStructureId
+      patchActiveStructure({
+        path: newStructure.path,
+        atoms: newStructure.atoms,
+        bonds: newStructure.bonds,
+        residues: newStructure.residues,
+        bond_source: newStructure.bond_source
+      })
       baseAtomCoords = snapshotAtomCoords(newStructure.atoms)
+      if (editedId) baseAtomCoordsByStructure.set(editedId, baseAtomCoords)
+      const editedPath = newStructure.path
       coordsDirty = false
       coordsGeneration += 1
       coordUndoStack.clear()
@@ -1758,8 +3044,9 @@
       }
       const allBonds = Array.isArray(newStructure.bonds) ? newStructure.bonds : []
       for (const v of views) {
+        if (v.structureId !== editedId) continue
         const snap = viewIndexSnapshots.find((s) => s.id === v.id)
-        v.path = filePath
+        v.path = editedPath
         if (snap?.lockToIndices && snap.indices.length) {
           const atoms = snap.indices.map((i) => byIndex.get(i)).filter(Boolean)
           if (atoms.length) {
@@ -1791,7 +3078,9 @@
       // and was a common "Failed to fetch" source after chain delete.
       try {
         const detected = await detectMolecules(result.path)
-        const coveredSels = new Set(views.map((v) => v.baseSelection).filter(Boolean))
+        const coveredSels = new Set(
+          views.filter((v) => v.structureId === editedId).map((v) => v.baseSelection).filter(Boolean)
+        )
         if (!coveredSels.has('all')) {
           const extras = []
           for (const [i, mol] of detected.entries()) {
@@ -1814,10 +3103,12 @@
               }
               extras.push({
                 id: crypto.randomUUID(),
+                structureId: editedId,
+                componentKey: componentKeyFromSelection(mol.selection),
                 selection: mol.selection,
                 baseSelection: mol.selection,
                 representation: repr,
-                path: filePath,
+                path: editedPath,
                 atoms: mol.atoms,
                 bonds: mol.bonds ?? [],
                 residues: mol.residues ?? null,
@@ -1832,6 +3123,14 @@
                 bondScale: 1.0,
                 pointSize: 3,
                 quality: 3,
+                showMultipleBonds: true,
+                stickRoundness: 1.0,
+                bondColorMode: 'uniform',
+                bondColor: '#b8b8bc',
+                opacity: 1,
+                surfaceInflate: 0.25,
+                surfaceSource: 'atoms',
+                surfaceSubdivision: 0,
                 material: { ...DEFAULT_VIEW_MATERIAL },
                 _prefetched: true
               })
@@ -1868,6 +3167,9 @@
       )
     if (!patch?.indices?.length) return
 
+    // Capture load-time XYZ before the first mutation (deferred at structure open).
+    ensureBaseAtomCoords(activeStructureId)
+
     if (opts.pushUndo !== false) {
       const before = snapshotAtomCoords(structure.atoms)
       coordUndoStack.push(inversePatchFromBefore(before, patch))
@@ -1875,14 +3177,14 @@
 
     animCoordOverlay = null
     previewPositions = null
-    structure = {
-      ...structure,
-      atoms: applyPatchToAtoms(structure.atoms, patch)
-    }
-    // Sync every representation from the working structure (source of truth).
-    const byIndex = new Map(structure.atoms.map((a) => [a.index, a]))
+    const editedId = activeStructureId
+    const newAtoms = applyPatchToAtoms(structure.atoms, patch)
+    patchActiveStructure({ atoms: newAtoms })
+    // Sync this structure's representations from the working structure (source of truth).
+    const byIndex = new Map(newAtoms.map((a) => [a.index, a]))
     for (const v of views) {
       if (v._isSelHighlight) continue
+      if (v.structureId !== editedId) continue
       skipNextPathFetch.add(v.id)
       skipNextAtomsFetch.add(v.id)
       v.atoms = (v.atoms ?? []).map((a) => {
@@ -1910,8 +3212,7 @@
       }
       applyCoordOpResult({ positions })
       if (result.path) {
-        filePath = result.path
-        if (structure) structure = { ...structure, path: result.path }
+        patchActiveStructure({ path: result.path })
       }
     }
   }
@@ -2070,37 +3371,264 @@
 
   // ── Preview helper ─────────────────────────────────────────────────
   /**
-   * Atoms for 3D drawing: XYZ from the in-memory working structure (source of
-   * truth), then live preview / animation overlay. ViewItem may still hold
-   * on-disk coords after a late /get-structure; never let that undraw a transform.
-   * @param {import('../lib/backendApi.js').View} view
+   * Stable atom arrays for the canvas. Returning a new array on every call
+   * (e.g. after an unrelated visibility update) forces nxt representations to
+   * dispose and rebuild GPU meshes. XYZ comes from the working structure, then
+   * live preview / animation overlay.
+   * @type {Map<string, { working: unknown, overlay: unknown, sourceAtoms: unknown, gen: number, result: object[] }>}
    */
+  const viewAtomsCache = new Map()
+
+  /** @param {import('../lib/backendApi.js').View} view */
   function viewAtoms(view) {
     if (!view?.atoms?.length) return view?.atoms
-    const overlay = previewPositions ?? animCoordOverlay
-    const working = structure?.atoms
+    const owner = findStructure(structures, view.structureId) ?? structure
+    const sid = owner?.id ?? view.structureId ?? activeStructureId
+    const structOverlay =
+      sid && animCoordOverlayByStructure.has(sid)
+        ? animCoordOverlayByStructure.get(sid)
+        : sid === activeStructureId
+          ? animCoordOverlay
+          : null
+    // Live gizmo preview only applies to the active structure
+    const overlay =
+      sid === activeStructureId && previewPositions ? previewPositions : (structOverlay ?? null)
+    const working = owner?.atoms
     if (!working?.length && !overlay) return view.atoms
+
+    // Shared ref + no overlay: returning view.atoms avoids cloning ~all atoms per view.
+    if (!overlay && working === view.atoms) return view.atoms
+
+    const cacheKey = view.id || ''
+    const hit = cacheKey ? viewAtomsCache.get(cacheKey) : null
+    if (
+      hit &&
+      hit.working === working &&
+      hit.overlay === overlay &&
+      hit.sourceAtoms === view.atoms &&
+      hit.gen === coordsGeneration
+    ) {
+      return hit.result
+    }
 
     /** @type {Map<number, { x: number, y: number, z: number }> | null} */
     let byIndex = null
-    if (working?.length) {
+    if (working?.length && working !== view.atoms) {
       byIndex = new Map()
       for (const a of working) {
         if (typeof a.index === 'number') byIndex.set(a.index, a)
       }
     }
 
-    return view.atoms.map((a) => {
+    let anyChanged = false
+    const result = new Array(view.atoms.length)
+    for (let i = 0; i < view.atoms.length; i++) {
+      const a = view.atoms[i]
       const src = typeof a.index === 'number' ? byIndex?.get(a.index) : undefined
       const pos = typeof a.index === 'number' ? overlay?.[a.index] : undefined
-      if (!src && !pos) return a
-      return {
-        ...a,
-        x: pos ? pos[0] : src.x,
-        y: pos ? pos[1] : src.y,
-        z: pos ? pos[2] : src.z
+      if (!src && !pos) {
+        result[i] = a
+        continue
       }
-    })
+      const x = pos ? pos[0] : src.x
+      const y = pos ? pos[1] : src.y
+      const z = pos ? pos[2] : src.z
+      if (!pos && src && src.x === a.x && src.y === a.y && src.z === a.z) {
+        result[i] = a
+        continue
+      }
+      anyChanged = true
+      result[i] = { ...a, x, y, z }
+    }
+    const out = anyChanged || overlay ? result : view.atoms
+    if (cacheKey) {
+      viewAtomsCache.set(cacheKey, {
+        working,
+        overlay,
+        sourceAtoms: view.atoms,
+        gen: coordsGeneration,
+        result: out
+      })
+    }
+    return out
+  }
+
+  /**
+   * Resolve a cloned view on a target structure (selection string + style only).
+   * Never reuses source atom indices.
+   * @param {View} src
+   * @param {import('../lib/visualizeStructures.js').StructureEntry} target
+   * @returns {Promise<{ view: View | null, skip?: string }>}
+   */
+  async function resolveClonedViewOnTarget(src, target) {
+    try {
+      const clonedSel = effectiveViewSelection(src)
+      const data = await getStructure({
+        path: target.path,
+        topology: target.topologyPath,
+        selection: clonedSel,
+        needs_bonds:
+          src.representation?.type === 'ball-stick' || src.representation?.type === 'licorice',
+        needs_secondary_structure:
+          src.representation?.type === 'cartoon' || src.representation?.type === 'tube',
+        save_dir: workingDir || null
+      })
+      if (!data?.atoms?.length) {
+        return { view: null, skip: `${target.label}: "${clonedSel}" matched 0 atoms` }
+      }
+      const id = crypto.randomUUID()
+      return {
+        view: {
+          ...src,
+          id,
+          structureId: target.id,
+          componentKey: src.componentKey ?? componentKeyFromSelection(clonedSel),
+          path: target.path,
+          atoms: data.atoms,
+          bonds: data.bonds ?? [],
+          residues: data.residues,
+          representation: { ...src.representation },
+          colorScheme: { ...src.colorScheme },
+          material: src.material ? { ...src.material } : { ...DEFAULT_VIEW_MATERIAL },
+          ssColors: src.ssColors ? { ...src.ssColors } : null,
+          visible: true
+        }
+      }
+    } catch (ex) {
+      return {
+        view: null,
+        skip: `${target.label}: ${ex instanceof Error ? ex.message : String(ex)}`
+      }
+    }
+  }
+
+  /**
+   * Clone a representation onto other structures (append; does not replace).
+   * @param {string} viewId
+   * @param {string[]} targetStructureIds
+   */
+  async function applyViewToStructures(viewId, targetStructureIds) {
+    const src = views.find((v) => v.id === viewId)
+    if (!src || src._isSelHighlight) return
+    const targets = targetStructureIds
+      .map((tid) => findStructure(structures, tid))
+      .filter((t) => t && t.id !== src.structureId)
+    if (!targets.length) return
+
+    applyRepsBusy = true
+    applyRepsPhase = `Applying… 0 / ${targets.length}`
+    const failed = []
+    /** @type {View[]} */
+    const created = []
+    let done = 0
+    try {
+      await mapPool(targets, 4, async (target) => {
+        const { view, skip } = await resolveClonedViewOnTarget(src, target)
+        done += 1
+        applyRepsPhase = `Applying… ${done} / ${targets.length}`
+        if (view) created.push(view)
+        else if (skip) failed.push(skip)
+      })
+      if (created.length) {
+        views = [...views, ...created]
+        if (animateMode) {
+          for (const v of created) {
+            registerViewTrack(animProject, v.id, [...views.map((x) => String(x.id))])
+          }
+          animProject = { ...animProject }
+        }
+        logEvent(
+          'info',
+          'view',
+          `Applied representation to ${created.length} structure(s)`,
+          src.selection
+        )
+      }
+      if (failed.length) {
+        alert(`Could not apply to:\n${failed.slice(0, 20).join('\n')}`)
+      }
+    } finally {
+      applyRepsBusy = false
+      applyRepsPhase = ''
+    }
+  }
+
+  /**
+   * Replace every other structure's representations with clones of this
+   * structure's views (selection+style resolved per target).
+   * @param {string} sourceStructureId
+   */
+  async function applyStructureRepsToAll(sourceStructureId) {
+    const sourceViews = views.filter(
+      (v) => v.structureId === sourceStructureId && !v._isSelHighlight
+    )
+    if (!sourceViews.length) {
+      alert('This structure has no representations to apply.')
+      return
+    }
+    const targets = structures.filter((s) => s.id !== sourceStructureId)
+    if (!targets.length) {
+      alert('No other structures in the workspace.')
+      return
+    }
+    const ok = confirm(
+      `Replace representations on ${targets.length} other structure(s) with the ${sourceViews.length} representation(s) from this structure?\n\nSelections that match no atoms on a target are skipped.`
+    )
+    if (!ok) return
+
+    applyRepsBusy = true
+    applyRepsPhase = `Applying… 0 / ${targets.length}`
+    const skips = []
+    /** @type {View[]} */
+    const allNew = []
+    let done = 0
+    try {
+      const results = await mapPool(targets, 3, async (target) => {
+        /** @type {View[]} */
+        const forTarget = []
+        for (const src of sourceViews) {
+          const { view, skip } = await resolveClonedViewOnTarget(src, target)
+          if (view) forTarget.push(view)
+          else if (skip) skips.push(skip)
+        }
+        done += 1
+        applyRepsPhase = `Applying… ${done} / ${targets.length}`
+        return { targetId: target.id, views: forTarget }
+      })
+
+      const byTarget = new Map(results.map((r) => [r.targetId, r.views]))
+      const keep = views.filter(
+        (v) =>
+          v._isSelHighlight ||
+          v.structureId === sourceStructureId ||
+          !byTarget.has(v.structureId)
+      )
+      for (const [, tv] of byTarget) {
+        allNew.push(...tv)
+      }
+      views = [...keep, ...allNew]
+
+      if (animateMode) {
+        for (const v of allNew) {
+          registerViewTrack(animProject, v.id, views.map((x) => String(x.id)))
+        }
+        animProject = { ...animProject }
+      }
+      logEvent(
+        'info',
+        'view',
+        `Applied ${sourceViews.length} representation(s) to ${targets.length} structure(s)`,
+        `${allNew.length} view(s) created`
+      )
+      if (skips.length) {
+        alert(
+          `Some selections did not match (heterogeneous structures):\n${skips.slice(0, 24).join('\n')}${skips.length > 24 ? `\n…and ${skips.length - 24} more` : ''}`
+        )
+      }
+    } finally {
+      applyRepsBusy = false
+      applyRepsPhase = ''
+    }
   }
 
   /** Commit any live gizmo preview into the working structure (no-op if none). */
@@ -2114,7 +3642,9 @@
 
   /** Views with overlay XYZ applied — used for picking while previewing / scrubbing. */
   function viewsForPicking() {
-    return views.map((v) => ({ ...v, atoms: viewAtoms(v) }))
+    return views
+      .filter((v) => v.visible !== false && isOwnerStructureVisible(v))
+      .map((v) => ({ ...v, atoms: viewAtoms(v) }))
   }
 
   /**
@@ -2271,6 +3801,7 @@
     applyCoordOpResult({ patch: inverse, pushUndo: false })
     if (coordUndoStack.size === 0) {
       // May still differ from base if multiple ops — recompute dirty vs base
+      ensureBaseAtomCoords(activeStructureId)
       coordsDirty = !!diffFromBase(baseAtomCoords, structure?.atoms ?? [])
     }
   }
@@ -2599,6 +4130,10 @@
       atomScale: 1.1,
       bondScale: 1.0,
       quality: 3,
+      opacity: 1,
+      surfaceInflate: 0.25,
+      surfaceSource: 'atoms',
+      surfaceSubdivision: 0,
       material: { ...DEFAULT_VIEW_MATERIAL, emissiveIntensity: 0.25 }
     })
   }
@@ -2759,19 +4294,6 @@
     }
   }
 
-  const NAMED_VIEW_SELECTIONS = new Set([
-    'all',
-    'protein',
-    'peptide',
-    'backbone',
-    'sidechain',
-    'water',
-    'lipid',
-    'ion',
-    'ligand',
-    'other'
-  ])
-
   /** Cartoon / SS coloring for protein and peptide biopolymers. */
   function isBiopolymerSelection(sel) {
     return sel === 'protein' || sel === 'peptide'
@@ -2779,19 +4301,32 @@
 
   /** Reload per-view atom subsets after animation load (split/custom selections). */
   async function refreshAnimationViewAtoms() {
-    if (!filePath) return
+    if (!structures.length) return
     let changed = false
     for (const view of views) {
       if (view._isSelHighlight) continue
-      const base = String(view.baseSelection || view.selection || 'all')
-      const selection = NAMED_VIEW_SELECTIONS.has(base) ? base : String(view.selection || base)
+      const owner = ownerStructure(view)
+      const ownerPath = owner?.path || view.path
+      if (!ownerPath) continue
+      const selection = effectiveViewSelection(view)
       const repr = view.representation?.type
+      // "all" already shares the structure atom array — avoid a second full payload.
+      if (selection === 'all' && owner?.atoms?.length) {
+        if (view.atoms !== owner.atoms) {
+          view.atoms = owner.atoms
+          view.bonds = owner.bonds ?? view.bonds
+          view.residues = owner.residues ?? view.residues
+          changed = true
+        }
+        view._prefetched = true
+        continue
+      }
       try {
         const struc = await getStructure({
-          path: filePath,
-          topology: topologyPath,
+          path: ownerPath,
+          topology: owner?.topologyPath ?? null,
           selection,
-          needs_bonds: repr === 'ball-stick',
+          needs_bonds: repr === 'ball-stick' || repr === 'licorice',
           needs_secondary_structure: repr === 'cartoon' || repr === 'tube'
         })
         if (!struc.atoms?.length) continue
@@ -2841,12 +4376,16 @@
         _dragStartPositions = null
         if (animProject.keyframes.length > 0 && structure?.atoms?.length && baseAtomCoords.size) {
           const atoms = atomsFromBaseAndPatch(structure.atoms, baseAtomCoords, patch ?? null)
-          structure = { ...structure, atoms }
+          patchActiveStructure({ atoms })
           animCoordOverlay = null
+          if (activeStructureId) animCoordOverlayByStructure.delete(activeStructureId)
           coordUndoStack.clear()
           coordsDirty = !!diffFromBase(baseAtomCoords, atoms)
         } else {
           animCoordOverlay = coordPatchToPreviewArray(patch)
+          if (activeStructureId && animCoordOverlay) {
+            animCoordOverlayByStructure.set(activeStructureId, animCoordOverlay)
+          }
         }
       }
     }, animProject.viewTracks ?? [])
@@ -2871,10 +4410,12 @@
       stopAnimPlayback()
       animateMode = false
       animCoordOverlay = null
+      // Keep user/keyframe base opacity; only clear fully faded (hidden) views.
       views = views.map((v) => {
         if (typeof v.opacity !== 'number') return v
+        if (v.opacity > 0.001) return v
         const next = { ...v }
-        delete next.opacity
+        next.opacity = 1
         return next
       })
       coordsGeneration += 1
@@ -2884,7 +4425,7 @@
     animateMode = true
     // Freeze base pose for sparse coord diffs when entering animate (if not dirty mid-edit,
     // keep load-time base; if dirty, base stays as original load so patches stay compact).
-    if (!baseAtomCoords.size) baseAtomCoords = snapshotAtomCoords(structure.atoms)
+    ensureBaseAtomCoords(activeStructureId)
     if (!animProject.outputFolder && filePath) {
       animProject.outputFolder = defaultAnimationFolderName(filePath)
     }
@@ -2933,6 +4474,7 @@
       })
       const time_s = Math.max(0, Math.min(animProject.duration_s, animPlayhead))
       const existing = animProject.keyframes.find((k) => Math.abs(k.time_s - time_s) < 0.05)
+      ensureBaseAtomCoords(activeStructureId)
       const coordPatch = diffFromBase(baseAtomCoords, structure?.atoms ?? [])
       const keyframe = existing
         ? {
@@ -3160,10 +4702,17 @@
       const path = `${base}/animation.json`
       await window.api.writeJson(
         path,
-        serializeAnimationProject(animProject, {
-          path: filePath ?? '',
-          topology: topologyPath
-        })
+        serializeAnimationProject(
+          {
+            ...animProject,
+            structures: structuresMetaForSave(),
+            visibilityGroups: visibilityGroupsForSave()
+          },
+          {
+            path: filePath ?? '',
+            topology: topologyPath
+          }
+        )
       )
       logEvent('info', 'view', 'Saved animation project', path)
     } catch (ex) {
@@ -3180,6 +4729,10 @@
     if (!dlg || dlg.canceled || !dlg.filePath) return
     sceneRestoring = true
     sceneRestoringPhase = 'Opening animation…'
+    sceneRestoringDetail = ''
+    sceneRestoringCurrent = 0
+    sceneRestoringTotal = 0
+    startOverlayElapsed()
     try {
       const data = await window.api.readJson(dlg.filePath)
       const project = normalizeProject(data)
@@ -3187,16 +4740,24 @@
       // (including its topology) so a project can be opened standalone without
       // requiring a PDB to already be loaded — matching the "all-in-one" load a user
       // expects from a saved animation file.
-      const wantedPath = project.structure?.path || ''
-      if (wantedPath && wantedPath !== filePath) {
-        sceneRestoringPhase = 'Loading structure…'
-        await loadStructure(wantedPath, {
-          topology: project.structure?.topology ?? null,
-          resetCamera: true
-        })
-        if (!structure) return // loadStructure already alerted the user on failure
-        views = []
+      const metas =
+        Array.isArray(project.structures) && project.structures.length
+          ? project.structures
+          : project.structure?.path
+            ? [project.structure]
+            : []
+      const sameSingle =
+        metas.length === 1 &&
+        structures.length === 1 &&
+        structures[0].path === metas[0].path
+      if (metas.length && !sameSingle) {
+        reportStructureLoadProgress(0, metas.length, '')
+        await loadStructuresFromMeta(metas, { onProgress: reportStructureLoadProgress })
+        if (!structure) return
       }
+      sceneRestoringCurrent = 0
+      sceneRestoringTotal = 0
+      sceneRestoringDetail = ''
       animProject = project
       syncProjectViewTracks(animProject)
       repairForwardViewInheritance(animProject.keyframes, animProject.viewTracks ?? [])
@@ -3208,6 +4769,7 @@
         ...deriveViewTracks(animProject.keyframes)
       ])
       views = views.filter((v) => animatedTrackIds.has(String(v.id)))
+      restoreVisibilityGroups(project.visibilityGroups)
       animPlayhead = 0
       if (animProject.keyframes.length) {
         sceneRestoringPhase = 'Restoring representations…'
@@ -3223,8 +4785,7 @@
       if (ex instanceof Error && ex.message.includes('cancelled')) return
       alert(ex instanceof Error ? ex.message : String(ex))
     } finally {
-      sceneRestoring = false
-      sceneRestoringPhase = ''
+      clearSceneRestoreUi()
     }
   }
 
@@ -3338,10 +4899,17 @@
       await tick()
       await window.api.writeJson(
         `${base}/animation.json`,
-        serializeAnimationProject(animProject, {
-          path: filePath ?? '',
-          topology: topologyPath
-        })
+        serializeAnimationProject(
+          {
+            ...animProject,
+            structures: structuresMetaForSave(),
+            visibilityGroups: visibilityGroupsForSave()
+          },
+          {
+            path: filePath ?? '',
+            topology: topologyPath
+          }
+        )
       )
     } catch (ex) {
       if (ex instanceof Error && ex.message.includes('cancelled')) {
@@ -3641,6 +5209,7 @@
         >
           <CameraRig framing={camera} />
           {#each views.filter((v) => v.visible !== false && (v.opacity ?? 1) > 0.001) as view (view.id)}
+            <T.Group visible={isOwnerStructureVisible(view)}>
             {#key `${view.representation.type}-${coordsGeneration}`}
             {#if view.representation.type === 'ball-stick'}
               <BallStick
@@ -3660,6 +5229,29 @@
                 outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
                 highlightIndices={editHoverGroupIndices}
                 opacity={view.opacity ?? 1}
+                showMultipleBonds={view.showMultipleBonds !== false}
+                bondColorMode={view.bondColorMode === 'atoms' ? 'atoms' : 'uniform'}
+                bondColor={view.bondColor ?? '#b8b8bc'}
+              />
+            {:else if view.representation.type === 'licorice'}
+              <Licorice
+                atoms={viewAtoms(view)}
+                bonds={view.bonds}
+                getColor={view.colorScheme.resolver}
+                quality={view.quality ?? 3}
+                bondScale={view.bondScale ?? 1.0}
+                stickRoundness={view.stickRoundness ?? 1.0}
+                metalness={view.material?.metalness ?? 0.08}
+                roughness={view.material?.roughness ?? 0.48}
+                emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
+                glowBulb={isGlowingMaterial(view.material)}
+                goodsell={isGoodsellMaterial(view.material)}
+                outlinesEnabled={view.material?.outlinesEnabled ?? GOODSELL_MATERIAL_DEFAULTS.outlinesEnabled}
+                outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
+                outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
+                highlightIndices={editHoverGroupIndices}
+                opacity={view.opacity ?? 1}
+                showMultipleBonds={view.showMultipleBonds !== false}
               />
             {:else if view.representation.type === 'cartoon'}
               <Cartoon
@@ -3716,6 +5308,26 @@
                 highlightIndices={editHoverGroupIndices}
                 opacity={view.opacity ?? 1}
               />
+            {:else if view.representation.type === 'surface'}
+              <OrganicSurface
+                atoms={viewAtoms(view)}
+                residues={view.residues ?? []}
+                getColor={view.colorScheme.resolver}
+                quality={view.quality ?? 3}
+                surfaceInflate={view.surfaceInflate ?? 0.25}
+                surfaceSource={view.surfaceSource === 'backbone' ? 'backbone' : 'atoms'}
+                surfaceSubdivision={view.surfaceSubdivision ?? 0}
+                metalness={view.material?.metalness ?? 0.08}
+                roughness={view.material?.roughness ?? 0.52}
+                emissiveIntensity={view.material?.emissiveIntensity ?? 0.0}
+                glowBulb={isGlowingMaterial(view.material)}
+                goodsell={isGoodsellMaterial(view.material)}
+                outlinesEnabled={view.material?.outlinesEnabled ?? GOODSELL_MATERIAL_DEFAULTS.outlinesEnabled}
+                outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
+                outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
+                highlightIndices={editHoverGroupIndices}
+                opacity={view.opacity ?? 1}
+              />
             {:else if view.representation.type === 'points'}
               <AtomPoints
                 atoms={viewAtoms(view)}
@@ -3739,11 +5351,12 @@
                 highlightIndices={glowHighlightIndices}
               />
             {/if}
+            </T.Group>
           {/each}
           <!-- Edit mode selected outline: scale adapted to the current representation -->
           {#if editSelectedAtoms.length > 0}
             {@const _selIdxSet = new Set(editSelectedAtoms.map((a) => a.index))}
-            {#each views.filter((v) => v.visible && !v._isSelHighlight) as _sv}
+            {#each views.filter((v) => v.visible && !v._isSelHighlight && isOwnerStructureVisible(v)) as _sv}
               {@const _svAtoms = viewAtoms(_sv).filter((a) => _selIdxSet.has(a.index))}
               {#if _svAtoms.length > 0}
                 {#if _sv.representation.type === 'vdw'}
@@ -3759,6 +5372,21 @@
                     opacity={1}
                     outline={true}
                   />
+                {:else if _sv.representation.type === 'surface'}
+                  <OrganicSurface
+                    atoms={_svAtoms}
+                    residues={_sv.residues ?? []}
+                    getColor={_outlineGetColor}
+                    quality={2}
+                    surfaceInflate={Math.min(1, (_sv.surfaceInflate ?? 0.25) + 0.12)}
+                    surfaceSource={_sv.surfaceSource === 'backbone' ? 'backbone' : 'atoms'}
+                    surfaceSubdivision={0}
+                    metalness={0}
+                    roughness={0.6}
+                    emissiveIntensity={0.05}
+                    renderOrder={8}
+                    opacity={1}
+                  />
                 {:else if _sv.representation.type === 'points'}
                   <AtomPoints
                     atoms={_svAtoms}
@@ -3767,7 +5395,7 @@
                     atomScale={_sv.atomScale ?? 1.0}
                     renderOrder={8}
                   />
-                {:else if _sv.representation.type === 'ball-stick'}
+                {:else if _sv.representation.type === 'ball-stick' || _sv.representation.type === 'licorice'}
                   <!-- Match covalent radius: BALL_STICK_ATOM_SCALE=0.5, VDW_C=1.7, coval_C=0.76 → ratio≈0.26 with margin -->
                   <VdwSpheres
                     atoms={_svAtoms}
@@ -3976,10 +5604,10 @@
           aria-busy="true"
         >
           <div
-            class="flex max-w-sm flex-col items-center gap-3 rounded-xl border border-neutral-600/50 bg-neutral-900/95 px-6 py-5 text-center text-neutral-100 shadow-xl"
+            class="flex w-[min(22rem,90vw)] flex-col items-center gap-3 rounded-xl border border-neutral-600/50 bg-neutral-900/95 px-6 py-5 text-center text-neutral-100 shadow-xl"
           >
             <Spinner className="size-8 text-sky-400" />
-            <div class="space-y-1">
+            <div class="w-full space-y-1">
               <p class="text-sm font-medium">
                 {#if loadingPDB}
                   {loadingPhase || 'Loading structure…'}
@@ -3987,16 +5615,47 @@
                   {sceneRestoringPhase || 'Restoring view…'}
                 {/if}
               </p>
+              {#if sceneRestoring && sceneRestoringDetail}
+                <p class="truncate text-xs text-neutral-400" title={sceneRestoringDetail}>
+                  {sceneRestoringDetail}
+                </p>
+              {/if}
               <p class="text-xs text-neutral-400">
                 {#if loadingPDB}
                   {loadingElapsedSec < 1 ? 'Starting…' : `${loadingElapsedSec}s elapsed`}
                 {:else if viewerBusy.active}
                   {viewerBusy.label || 'Preparing materials…'}
+                  {loadingElapsedSec >= 1 ? ` · ${loadingElapsedSec}s` : ''}
+                {:else if sceneRestoringPhase === 'Finishing materials…'}
+                  Building 3D meshes…
+                  {loadingElapsedSec >= 1 ? ` · ${loadingElapsedSec}s` : ''}
                 {:else}
-                  Almost ready…
+                  {loadingElapsedSec < 1 ? 'Starting…' : `${loadingElapsedSec}s elapsed`}
                 {/if}
               </p>
             </div>
+            {#if sceneRestoring && sceneRestoringTotal > 0}
+              <div class="w-full">
+                <div class="mb-1 flex justify-between text-[10px] tabular-nums text-neutral-500">
+                  <span>{sceneRestoringCurrent} / {sceneRestoringTotal}</span>
+                  <span
+                    >{Math.min(
+                      100,
+                      Math.round((100 * sceneRestoringCurrent) / sceneRestoringTotal)
+                    )}%</span
+                  >
+                </div>
+                <div class="h-1.5 overflow-hidden rounded-full bg-neutral-800">
+                  <div
+                    class="h-full rounded-full bg-sky-500 transition-[width] duration-200"
+                    style="width: {Math.min(
+                      100,
+                      (100 * sceneRestoringCurrent) / sceneRestoringTotal
+                    )}%"
+                  ></div>
+                </div>
+              </div>
+            {/if}
           </div>
         </div>
       {:else if !structure || !camera}
@@ -4022,7 +5681,8 @@
     <ResizableSidePanel
       side="right"
       storageKey="visualize"
-      defaultWidth={290}
+      defaultWidth={320}
+      maxWidth={560}
       minWidth={160}
       className="flex min-h-0 min-w-0 flex-col border-l border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950"
     >
@@ -4217,21 +5877,410 @@
           {@render measureBtn('Dihedral — click 4 atoms', 'dihedral')}
         </div>
         <div class="min-h-0 flex-1 overflow-y-auto">
-          {#each views as view, i (view.id)}
-            <ViewItem
-              bind:view={views[i]}
-              {animateMode}
-              onFadeEdit={() => {
-                overlayFadeEditor = { kind: 'view', id: view.id }
-              }}
-              sourceBonds={structure?.bonds ?? null}
-              topology={topologyPath}
-              onremove={() => removeView(view.id)}
-              onduplicate={() => duplicateView(view.id)}
-              onsplitby={(mode) => splitViewBy(view.id, mode)}
-              oncenter={() => centerCameraOnAtoms(view.atoms)}
-            />
+          {#if applyRepsBusy}
+            <div class="border-b border-neutral-200 px-2 py-1.5 text-[11px] text-neutral-500 dark:border-neutral-800">
+              {applyRepsPhase || 'Applying…'}
+            </div>
+          {/if}
+
+          {#snippet groupNameEdit(g)}
+            {#if editingGroupId === g.id}
+              <input
+                bind:this={editingGroupInputEl}
+                type="text"
+                class="min-w-0 flex-1 rounded border border-yellow-500/70 bg-white px-1 py-0.5 text-[10px] font-semibold text-neutral-900 outline-none dark:bg-neutral-950 dark:text-neutral-100"
+                bind:value={editingGroupName}
+                onclick={(e) => e.stopPropagation()}
+                onkeydown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    commitGroupRename()
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault()
+                    cancelGroupRename()
+                  }
+                }}
+                onblur={() => commitGroupRename()}
+              />
+            {:else}
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div
+                class="min-w-0 flex-1 cursor-text truncate text-left text-[10px] font-semibold uppercase tracking-wide text-neutral-700 dark:text-neutral-200"
+                title="Double-click to rename"
+                ondblclick={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  beginGroupRename(g.id, g.name)
+                }}
+              >{g.name}</div>
+            {/if}
+          {/snippet}
+
+          {#snippet groupNameEditNested(g)}
+            {#if editingGroupId === g.id}
+              <input
+                bind:this={editingGroupInputEl}
+                type="text"
+                class="min-w-0 flex-1 rounded border border-yellow-500/70 bg-white px-1 py-0.5 text-[10px] font-semibold text-neutral-900 outline-none dark:bg-neutral-950 dark:text-neutral-100"
+                bind:value={editingGroupName}
+                onclick={(e) => e.stopPropagation()}
+                onkeydown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    commitGroupRename()
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault()
+                    cancelGroupRename()
+                  }
+                }}
+                onblur={() => commitGroupRename()}
+              />
+            {:else}
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div
+                class="min-w-0 flex-1 cursor-text truncate text-left text-[10px] font-semibold text-neutral-600 dark:text-neutral-300"
+                title="Double-click to rename"
+                ondblclick={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  beginGroupRename(g.id, g.name)
+                }}
+              >{g.name}</div>
+            {/if}
+          {/snippet}
+
+          {#snippet eyeIcon(open)}
+
+            {#if open}
+              <svg viewBox="0 0 16 10" class="size-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+                <path d="M1,5 Q8,-1.5 15,5 Q8,11.5 1,5" />
+                <circle cx="8" cy="5" r="2.5" fill="currentColor" stroke="none" />
+              </svg>
+            {:else}
+              <svg viewBox="0 0 16 10" class="size-3.5 opacity-50" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+                <path d="M1,5 Q8,-1.5 15,5 Q8,11.5 1,5" />
+                <circle cx="8" cy="5" r="2.5" fill="currentColor" stroke="none" />
+                <line x1="2" y1="9" x2="14" y2="1" />
+              </svg>
+            {/if}
+          {/snippet}
+
+          {#snippet renderViewItems(st, items)}
+            {@const buckets = (() => {
+              const order = ['polymer', 'lipid', 'water', 'ion', 'other']
+              /** @type {Record<string, Array<{ view: any, index: number }>>} */
+              const map = {}
+              for (const item of items) {
+                const key =
+                  item.view.componentKey || componentKeyFromSelection(item.view.selection)
+                if (!map[key]) map[key] = []
+                map[key].push(item)
+              }
+              return order.filter((k) => map[k]?.length).map((k) => ({ key: k, items: map[k] }))
+            })()}
+            {#each buckets as bucket (bucket.key)}
+              <div class="px-2 pb-1">
+                <p class="px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide text-neutral-500">
+                  {componentLabel(bucket.key)}
+                </p>
+                {#each bucket.items as { view, index } (view.id)}
+                  <div class="relative">
+                    <ViewItem
+                      bind:view={views[index]}
+                      {animateMode}
+                      selected={selectedViewIds.has(view.id)}
+                      onRowSelect={(e) => onViewRowSelect(view.id, e)}
+                      onContextOpen={() => ensureViewInSelection(view.id)}
+                      onCreateGroup={onCreateGroupFromSelection}
+                      onShowSelection={showPanelSelection}
+                      onHideSelection={hidePanelSelection}
+                      onFadeEdit={() => {
+                        overlayFadeEditor = { kind: 'view', id: view.id }
+                      }}
+                      sourceBonds={st.bonds ?? null}
+                      topology={st.topologyPath}
+                      onremove={() => removeView(view.id)}
+                      onduplicate={() => duplicateView(view.id)}
+                      onsplitby={(mode) => splitViewBy(view.id, mode)}
+                      oncenter={() => centerCameraOnAtoms(view.atoms)}
+                    />
+                    {#if structures.length > 1}
+                      <div class="flex justify-end px-2 pb-1">
+                        <button
+                          type="button"
+                          class="text-[10px] text-neutral-500 hover:text-yellow-500"
+                          disabled={applyRepsBusy}
+                          onclick={() => {
+                            applyMenu = { viewId: view.id, open: true }
+                            applyMenuSelected = new Set(
+                              structures.filter((s) => s.id !== view.structureId).map((s) => s.id)
+                            )
+                          }}
+                        >Apply to…</button>
+                      </div>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            {/each}
+            {#if items.length === 0}
+              <p class="px-3 pb-2 text-[11px] text-neutral-500">No representations</p>
+            {/if}
+          {/snippet}
+
+          {#snippet renderStructureBlock(st, inStructureGroup = false)}
+            {@const allItems = viewsByStructureId.get(st.id) ?? []}
+            {@const stGroups = groupsForStructure(visibilityGroupsPruned, st.id)}
+            {@const ungroupedItems = allItems.filter(({ view }) => !claimedRepIds.has(view.id))}
+            {@const collapsed = isStructureCollapsed(st.id)}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="{inStructureGroup
+                ? 'border-b border-neutral-200/80 last:border-b-0 dark:border-neutral-700/60'
+                : 'border-b border-neutral-200 dark:border-neutral-800'} {activeStructureId === st.id
+                ? 'bg-neutral-50/80 dark:bg-neutral-900/40'
+                : ''} {selectedStructureIds.has(st.id) ? 'ring-1 ring-inset ring-yellow-500/60' : ''}"
+              oncontextmenu={(e) => openStructureCtxMenu(st.id, e)}
+            >
+              <div class="flex items-center gap-1 px-2 py-1.5">
+                <button
+                  type="button"
+                  class="text-xs text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
+                  title={collapsed ? 'Expand' : 'Collapse'}
+                  onclick={() => toggleStructureCollapse(st.id)}
+                >{collapsed ? '▸' : '▾'}</button>
+                <button
+                  type="button"
+                  class="min-w-0 flex-1 truncate text-left text-xs font-semibold {activeStructureId === st.id
+                    ? 'text-yellow-600 dark:text-yellow-400'
+                    : 'text-neutral-800 dark:text-neutral-100'}"
+                  title={st.label}
+                  onclick={(e) => {
+                    if (e.ctrlKey || e.metaKey || e.shiftKey) {
+                      onStructureRowSelect(st.id, e)
+                      return
+                    }
+                    setActiveStructure(st.id)
+                    onStructureRowSelect(st.id, e)
+                  }}
+                >{st.label}</button>
+                <button
+                  type="button"
+                  class="px-1 text-xs text-neutral-500 hover:text-neutral-200"
+                  title={isStructureHidden(st.id) ? 'Show structure' : 'Hide structure'}
+                  onclick={() => toggleStructureVisible(st.id)}
+                >{isStructureHidden(st.id) ? '○' : '●'}</button>
+                {#if structures.length > 1}
+                  <button
+                    type="button"
+                    class="px-1 text-[10px] text-neutral-500 hover:text-yellow-500 disabled:opacity-40"
+                    title="Replace representations on all other structures with this structure's views"
+                    disabled={applyRepsBusy || allItems.length === 0}
+                    onclick={() => applyStructureRepsToAll(st.id)}
+                  >⇢all</button>
+                {/if}
+                <button
+                  type="button"
+                  class="px-1 text-xs text-neutral-500 hover:text-neutral-200"
+                  title="Rename"
+                  onclick={() => {
+                    const next = prompt('Rename structure', st.label)
+                    if (next != null) renameStructure(st.id, next)
+                  }}
+                >✎</button>
+                <button
+                  type="button"
+                  class="px-1 text-xs text-neutral-500 hover:text-red-400"
+                  title="Remove structure"
+                  onclick={() => removeStructure(st.id)}
+                >✕</button>
+              </div>
+              <div class:hidden={collapsed}>
+                {#each stGroups as g, gi (g.id)}
+                  {@const gItems = allItems.filter(({ view }) => (g.viewIds || []).includes(view.id))}
+                  {@const gAnyVisible = gItems.some(({ view }) => view.visible !== false)}
+                  <div class="mx-1 mb-1 rounded border border-neutral-200/80 dark:border-neutral-800">
+                    <div class="flex items-center gap-1 bg-neutral-50/80 px-1.5 py-0.5 dark:bg-neutral-900/60">
+                      <button
+                        type="button"
+                        class="text-xs text-neutral-500"
+                        title={g.collapsed ? 'Expand group' : 'Collapse group'}
+                        onclick={() => toggleGroupCollapsed(g.id)}
+                      >{g.collapsed ? '▸' : '▾'}</button>
+                      {@render groupNameEditNested(g)}
+                      <button
+                        type="button"
+                        class="flex size-6 items-center justify-center rounded text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                        title={gAnyVisible ? 'Hide group' : 'Show group'}
+                        onclick={() => toggleGroupVisible(g)}
+                      >{@render eyeIcon(gAnyVisible)}</button>
+                      <button
+                        type="button"
+                        class="flex size-6 items-center justify-center rounded text-xs text-neutral-500 hover:bg-neutral-100 disabled:opacity-30 dark:hover:bg-neutral-800"
+                        title="Move group up"
+                        disabled={gi <= 0}
+                        onclick={() => onReorderGroup(g.id, -1)}
+                      >↑</button>
+                      <button
+                        type="button"
+                        class="flex size-6 items-center justify-center rounded text-xs text-neutral-500 hover:bg-neutral-100 disabled:opacity-30 dark:hover:bg-neutral-800"
+                        title="Move group down"
+                        disabled={gi >= stGroups.length - 1}
+                        onclick={() => onReorderGroup(g.id, 1)}
+                      >↓</button>
+                      <button
+                        type="button"
+                        class="flex size-6 items-center justify-center rounded text-xs text-neutral-500 hover:text-red-400"
+                        title="Dissolve group"
+                        onclick={() => onDissolveGroup(g.id)}
+                      >✕</button>
+                    </div>
+                    <div class:hidden={g.collapsed}>
+                      {@render renderViewItems(st, gItems)}
+                    </div>
+                  </div>
+                {/each}
+                {@render renderViewItems(st, ungroupedItems)}
+              </div>
+            </div>
+          {/snippet}
+
+          {#if structures.length > 1}
+            <div class="flex items-center gap-1 border-b border-neutral-200 px-2 py-1 dark:border-neutral-800">
+              <span class="min-w-0 flex-1 truncate text-[10px] font-semibold uppercase tracking-wide text-neutral-500"
+                >Workspace</span
+              >
+              <button
+                type="button"
+                class="flex size-6 items-center justify-center rounded text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                title={workspaceAnyVisible ? 'Hide everything' : 'Show everything'}
+                onclick={toggleWorkspaceVisible}
+              >{@render eyeIcon(workspaceAnyVisible)}</button>
+            </div>
+          {/if}
+
+          <!-- Outer structure groups (select structures → Create group) -->
+          {#each outerStructureGroups as sg, sgi (sg.id)}
+            {@const memberStructs = (sg.structureIds || [])
+              .map((id) => findStructure(structures, id))
+              .filter(Boolean)}
+            {@const sgAnyVisible = (sg.structureIds || []).some((id) => !structureHiddenIds.has(id))}
+            <div
+              class="mx-1.5 mb-2 overflow-hidden rounded-md border border-yellow-600/30 bg-yellow-500/[0.04] dark:border-yellow-500/25 dark:bg-yellow-500/[0.07]"
+            >
+              <div
+                class="flex items-center gap-1 border-b border-yellow-600/20 bg-yellow-500/10 px-2 py-1.5 dark:border-yellow-500/20 dark:bg-yellow-500/15"
+              >
+                <button
+                  type="button"
+                  class="text-xs text-neutral-500"
+                  title={sg.collapsed ? 'Expand structure group' : 'Collapse structure group'}
+                  onclick={() => toggleGroupCollapsed(sg.id)}
+                >{sg.collapsed ? '▸' : '▾'}</button>
+                {@render groupNameEdit(sg)}
+                <span class="shrink-0 text-[9px] tabular-nums text-neutral-500"
+                  >{memberStructs.length}</span
+                >
+                <button
+                  type="button"
+                  class="flex size-6 items-center justify-center rounded text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                  title={sgAnyVisible ? 'Hide structures' : 'Show structures'}
+                  onclick={() => toggleGroupVisible(sg)}
+                >{@render eyeIcon(sgAnyVisible)}</button>
+                <button
+                  type="button"
+                  class="flex size-6 items-center justify-center rounded text-xs text-neutral-500 hover:bg-neutral-100 disabled:opacity-30 dark:hover:bg-neutral-800"
+                  title="Move group up"
+                  disabled={sgi <= 0}
+                  onclick={() => onReorderGroup(sg.id, -1)}
+                >↑</button>
+                <button
+                  type="button"
+                  class="flex size-6 items-center justify-center rounded text-xs text-neutral-500 hover:bg-neutral-100 disabled:opacity-30 dark:hover:bg-neutral-800"
+                  title="Move group down"
+                  disabled={sgi >= outerStructureGroups.length - 1}
+                  onclick={() => onReorderGroup(sg.id, 1)}
+                >↓</button>
+                <button
+                  type="button"
+                  class="flex size-6 items-center justify-center rounded text-xs text-neutral-500 hover:text-red-400"
+                  title="Dissolve structure group"
+                  onclick={() => onDissolveGroup(sg.id)}
+                >✕</button>
+              </div>
+              <div class:hidden={sg.collapsed}>
+                <div
+                  class="ml-2 border-l-2 border-yellow-500/45 bg-white/40 dark:border-yellow-500/35 dark:bg-neutral-950/30"
+                >
+                  {#each memberStructs as st (st.id)}
+                    {@render renderStructureBlock(st, true)}
+                  {/each}
+                </div>
+              </div>
+            </div>
           {/each}
+
+          <!-- Structures not in an outer structure group -->
+          {#if outerStructureGroups.length > 0 && ungroupedStructures.length > 0}
+            <div
+              class="mx-1.5 mb-1 mt-0.5 border-t border-dashed border-neutral-300 px-1 pt-1.5 dark:border-neutral-700"
+            >
+              <p class="text-[9px] font-medium uppercase tracking-wide text-neutral-500">
+                Ungrouped
+              </p>
+            </div>
+          {/if}
+          {#each ungroupedStructures as st (st.id)}
+            {@render renderStructureBlock(st)}
+          {/each}
+
+          {#if structureCtxMenu}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="fixed inset-0 z-50"
+              onpointerdown={() => {
+                structureCtxMenu = null
+              }}
+            >
+              <div
+                bind:this={structureCtxMenuEl}
+                class="absolute z-50 min-w-40 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+                style="left:{structureCtxMenuPos.x}px;top:{structureCtxMenuPos.y}px"
+                role="menu"
+                tabindex="-1"
+                onpointerdown={(e) => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="block w-full px-3 py-1.5 text-left text-neutral-800 hover:bg-neutral-100 dark:text-neutral-100 dark:hover:bg-neutral-800"
+                  title="Group selected structures into one outer group"
+                  onclick={() => {
+                    structureCtxMenu = null
+                    onCreateGroupFromSelection()
+                  }}
+                >Create group</button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="block w-full px-3 py-1.5 text-left text-neutral-800 hover:bg-neutral-100 dark:text-neutral-100 dark:hover:bg-neutral-800"
+                  onclick={() => {
+                    structureCtxMenu = null
+                    showPanelSelection()
+                  }}
+                >Show</button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="block w-full px-3 py-1.5 text-left text-neutral-800 hover:bg-neutral-100 dark:text-neutral-100 dark:hover:bg-neutral-800"
+                  onclick={() => {
+                    structureCtxMenu = null
+                    hidePanelSelection()
+                  }}
+                >Hide</button>
+              </div>
+            </div>
+          {/if}
         <!-- Measurements collapsible section (always shown; same chip style model as Labels) -->
         <div class="border-t border-neutral-800">
           <div class="flex items-center">
@@ -5186,6 +7235,32 @@
     </ResizableSidePanel>
   </div>
   <!-- end inner row -->
+
+<StructureEntryPicker
+  open={entryPicker.open}
+  sourcePath={entryPicker.sourcePath}
+  entries={entryPicker.entries}
+  onConfirm={(indices) => resolveEntryPicker(indices)}
+  onCancel={() => resolveEntryPicker(null)}
+/>
+
+<ApplyRepresentationPicker
+  open={applyMenu.open && !!applyMenu.viewId}
+  sourceLabel={applyMenuSourceView?.selection ?? ''}
+  targets={applyMenuTargets}
+  selected={applyMenuSelected}
+  busy={applyRepsBusy}
+  onSelectedChange={(next) => (applyMenuSelected = next)}
+  onCancel={() => (applyMenu = { viewId: null, open: false })}
+  onConfirm={async () => {
+    const vid = applyMenu.viewId
+    const targets = [...applyMenuSelected]
+    applyMenu = { viewId: null, open: false }
+    if (vid) await applyViewToStructures(vid, targets)
+  }}
+/>
+
+
 
   {#if animateMode}
     <AnimationTimeline

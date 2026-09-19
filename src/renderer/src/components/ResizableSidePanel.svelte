@@ -2,7 +2,7 @@
   /**
    * Page options / representations panel. Drag the inner edge to resize.
    * Drag past minWidth collapses to a thin rail; click or drag the rail to restore
-   * at defaultWidth (also the max — the previous fixed w-80 / Visualize default).
+   * at defaultWidth. Optional maxWidth (defaults to defaultWidth) allows a wider drag range.
    */
   import { onMount } from 'svelte'
   import { pageSidePanelStore } from '../lib/pageSidePanelStore.svelte.js'
@@ -12,6 +12,7 @@
    *   storageKey?: string,
    *   defaultWidth?: number,
    *   minWidth?: number,
+   *   maxWidth?: number,
    *   className?: string,
    *   collapsed?: boolean,
    *   children?: import('svelte').Snippet
@@ -21,13 +22,18 @@
     storageKey = '',
     defaultWidth = 320,
     minWidth = 200,
+    maxWidth: maxWidthProp = undefined,
     className = '',
     collapsed = $bindable(false),
     children
   } = $props()
 
-  // Max is the historical fixed size (w-80 = 320, Visualize right = 290).
-  const maxWidth = $derived(defaultWidth)
+  /** Cap drag width; when unset, max equals defaultWidth (historical fixed panel size). */
+  const maxWidth = $derived(
+    typeof maxWidthProp === 'number' && maxWidthProp >= minWidth
+      ? maxWidthProp
+      : defaultWidth
+  )
 
   let width = $state(320)
   /** Last width while expanded (for mid-session memory); rail click still opens to defaultWidth. */
@@ -112,8 +118,8 @@
   })
 
   function expandToDefault() {
-    width = maxWidth
-    lastExpandedWidth = maxWidth
+    width = clampWidth(defaultWidth)
+    lastExpandedWidth = width
     collapsed = false
     saveState()
   }

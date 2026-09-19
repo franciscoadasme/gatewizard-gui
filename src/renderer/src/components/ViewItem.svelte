@@ -36,6 +36,11 @@
   import { countGlowPool, selectGlowLightAtoms, clampGlowMaxLights, GLOW_LIGHTS_HARD_MAX } from '../lib/viewer/glowLights.js'
   import { fadeSummary } from '../lib/animation/fade.js'
   import { SPLIT_VIEW_MODES } from '../lib/viewer/splitView.js'
+  import {
+    NAMED_SELECTION_KEYWORDS,
+    namedSelectionFromView,
+    structureFetchSelection
+  } from '../lib/viewer/viewSelection.js'
   import { GLOW_LIGHTS_PERF_WARN } from '../lib/viewer/viewerDiagnostics.js'
   import { viewerBusy } from '../lib/viewer/viewerBusy.svelte.js'
   import { getStructure } from '../lib/backendApi'
@@ -50,24 +55,19 @@
   import Spinner from './ui/Spinner.svelte'
   import { themeState } from '../lib/theme.svelte.js'
 
-  const NAMED_SELECTIONS = [
-    'all',
-    'protein',
-    'backbone',
-    'sidechain',
-    'water',
-    'lipid',
-    'ion',
-    'ligand',
-    'other'
-  ]
-  const REPR_TYPES = ['points', 'ball-stick', 'cartoon', 'tube', 'vdw']
+  const NAMED_SELECTIONS = [...NAMED_SELECTION_KEYWORDS, 'other']
+  /** All heavy atoms + H bonded to O/N/S (hides non-polar hydrogens). Needs bonds. */
+  const POLAR_SELECTION =
+    '(not element H) or (element H and bonded element O N S)'
+  const REPR_TYPES = ['points', 'ball-stick', 'licorice', 'cartoon', 'tube', 'vdw', 'surface']
   const REPR_LABELS = {
     points: 'Points',
     'ball-stick': 'Ball & Stick',
+    licorice: 'Licorice',
     cartoon: 'Cartoon',
     tube: 'Tube',
-    vdw: 'vdW'
+    vdw: 'vdW',
+    surface: 'Surface'
   }
 
   const MDA_HELP = `Basic:
@@ -88,13 +88,17 @@ Logic:
   not water
   (resid 1 to 10) and name CA
 
+Polar (heavy atoms + polar H only; hides C–H etc.):
+  (not element H) or (element H and bonded element O N S)
+  (resid 48) and ((not element H) or (element H and bonded element O N S))
+
 Distance:
   around 5.0 protein    (within 5 Å of protein)
   byres (around 5 resname LIG)   (whole residues)`
 
   /** @typedef {{ x: number, y: number, z: number, element: string, name: string, index?: number, res_name?: string, chain_id?: string }} Atom */
   /** @typedef {{ chain: string, resname: string, number: number, atom_indices: number[], ca_index?: number, sec?: string }} Residue */
-  /** @typedef {{ type: 'cartoon' | 'ball-stick' | 'vdw' | 'tube' | 'points' }} Representation */
+  /** @typedef {{ type: 'cartoon' | 'ball-stick' | 'licorice' | 'vdw' | 'tube' | 'points' | 'surface' }} Representation */
   /** @typedef {{ name: string, color?: string, resolver: (atom: Atom) => import('three').Color }} ColorScheme */
   /**
    * @typedef {{
@@ -107,9 +111,14 @@ Distance:
    *   tubeRadius: number,
    *   atomScale: number,
    *   bondScale: number,
+   *   stickRoundness?: number,
    *   pointSize: number,
    *   material: { preset?: string, metalness: number, roughness: number, emissiveIntensity: number },
-   *   quality: number
+   *   quality: number,
+   *   opacity?: number,
+   *   surfaceInflate?: number,
+   *   surfaceSource?: 'atoms' | 'backbone',
+   *   surfaceSubdivision?: number
    * }} View
    */
 
@@ -123,7 +132,13 @@ Distance:
    *   animateMode?: boolean,
    *   onFadeEdit?: () => void,
    *   sourceBonds?: [number, number][] | null,
-   *   topology?: string | null
+   *   topology?: string | null,
+   *   selected?: boolean,
+   *   onRowSelect?: (e: MouseEvent) => void,
+   *   onContextOpen?: (e: MouseEvent) => void,
+   *   onCreateGroup?: () => void,
+   *   onShowSelection?: () => void,
+   *   onHideSelection?: () => void
    * }}
    */
   let {
@@ -135,7 +150,13 @@ Distance:
     animateMode = false,
     onFadeEdit,
     sourceBonds = null,
-    topology = null
+    topology = null,
+    selected = false,
+    onRowSelect,
+    onContextOpen,
+    onCreateGroup,
+    onShowSelection,
+    onHideSelection
   } = $props()
 
   let colorPickerOpen = $state(false)
@@ -160,7 +181,7 @@ Distance:
   let constantColorHex = $state(view.colorScheme.color || '#00aaff')
   let invalidSelection = $state(false)
   let loadingStructure = $state(false)
-  let namedSelection = $state(NAMED_SELECTIONS.includes(view.selection) ? view.selection : 'other')
+  let namedSelection = $state(namedSelectionFromView(view))
   let gearBackdropPointerDown = $state(false)
   let helpBackdropPointerDown = $state(false)
   // Dialogs are moved to document.body (outside #app), so they need their own .dark class.
@@ -222,9 +243,21 @@ Distance:
 
   // ── Reactivity ────────────────────────────────────────────────────────────
 
+  let _selectionEffectReady = false
   $effect(() => {
     const sel = view.selection
-    if (sel === '' || view._isSelHighlight) return
+    if (sel === '' || view._isSelHighlight) {
+      _selectionEffectReady = true
+      return
+    }
+    // First run (mount / panel remount) must not refetch — atoms are already
+    // on the view. Collapse/expand used to destroy these rows and spin surfaces.
+    if (!_selectionEffectReady) {
+      _selectionEffectReady = true
+      return
+    }
+    // New selection → allow one densify / bond-order pass again.
+    view._bondOrderFetchDone = false
     const tid = setTimeout(scheduleStructureUpdate, 500)
     return () => clearTimeout(tid)
   })
@@ -249,7 +282,10 @@ Distance:
   $effect(() => {
     const sel = namedSelection
     untrack(() => {
-      if (sel !== 'other') view.selection = ''
+      if (sel !== 'other') {
+        view.selection = ''
+        view.baseSelection = sel
+      }
       if (!_namedSelInit) {
         _namedSelInit = true
         // Parent (load / auto-generate) already populated atoms — skip redundant fetch.
@@ -274,13 +310,38 @@ Distance:
     return (bonds?.length || 0) < n / 2
   }
 
+  /** @param {unknown} bonds */
+  function bondsHaveMultiOrder(bonds) {
+    if (!Array.isArray(bonds)) return false
+    return bonds.some(
+      (b) => Array.isArray(b) && b.length > 2 && Number.isFinite(Number(b[2])) && Number(b[2]) >= 2
+    )
+  }
+
+  /** @param {string | undefined} type */
+  function representationNeedsBonds(type) {
+    return type === 'ball-stick' || type === 'licorice'
+  }
+
   /** Prefer bonds already loaded with the full structure (e.g. from prmtop). */
   function tryApplySourceBonds() {
-    if (!bondsLookSparse(view.atoms, view.bonds)) return true
+    if (!bondsLookSparse(view.atoms, view.bonds)) {
+      if (bondsHaveMultiOrder(view.bonds)) return true
+      // Dense CONECT pairs without orders: copy Maestro/source triples if available.
+      if (bondsHaveMultiOrder(sourceBonds)) {
+        const filtered = filterSourceBonds(view.atoms)
+        if (filtered?.length) {
+          view.bonds = filtered
+          return true
+        }
+      }
+      // Still may need /get-structure so sidecar orders can be merged.
+      return false
+    }
     const filtered = filterSourceBonds(view.atoms)
     if (filtered && !bondsLookSparse(view.atoms, filtered)) {
       view.bonds = filtered
-      return true
+      return bondsHaveMultiOrder(filtered) || !sourceBonds?.length
     }
     return false
   }
@@ -291,6 +352,8 @@ Distance:
     // commits replace view.atoms with the same indices; refetching would wipe those edits.
     void sourceBonds
     void view.bonds
+    void view._prefetched
+    void view.surfaceSource
     const atomCount = view.atoms?.length ?? 0
     const residueCount = view.residues?.length ?? 0
     if (skipNextAtomsFetch.has(view.id)) {
@@ -302,14 +365,15 @@ Distance:
     }
     const needsFetch = untrack(() => {
       if ((repr === 'cartoon' || repr === 'tube') && residueCount === 0) return true
-      if (repr === 'ball-stick') {
-        // Already have atoms from a coord commit or prior fetch — keep them.
-        if (atomCount > 0 && !bondsLookSparse(view.atoms, view.bonds)) return false
-        if (atomCount > 0 && tryApplySourceBonds()) return false
-        // Coord-only updates leave atomCount unchanged; do not reload from disk.
-        if (atomCount > 0 && view.bonds?.length) return false
-        if (tryApplySourceBonds()) return false
-        return atomCount === 0 || bondsLookSparse(view.atoms, view.bonds)
+      if (repr === 'surface' && view.surfaceSource === 'backbone' && residueCount === 0) return true
+      if (representationNeedsBonds(repr)) {
+        // After one densify for this selection, stop — small fragments stay
+        // "sparse" by the bonds/atoms ratio and would otherwise loop forever.
+        if (view._bondOrderFetchDone) return false
+        if (atomCount > 0 && bondsHaveMultiOrder(view.bonds)) return false
+        if (atomCount > 0 && tryApplySourceBonds() && bondsHaveMultiOrder(view.bonds)) return false
+        if (tryApplySourceBonds() && bondsHaveMultiOrder(view.bonds)) return false
+        return atomCount === 0 || bondsLookSparse(view.atoms, view.bonds) || !bondsHaveMultiOrder(view.bonds)
       }
       return false
     })
@@ -365,17 +429,20 @@ Distance:
     const needsSS =
       view.representation.type === 'cartoon' ||
       view.representation.type === 'tube' ||
-      colorSchemeName === 'ss'
-    const wantsBallStick = view.representation.type === 'ball-stick'
-    // If we already have (or can filter) enough bonds, skip needs_bonds on the server.
-    const canReuseBonds = wantsBallStick && tryApplySourceBonds()
+      colorSchemeName === 'ss' ||
+      (view.representation.type === 'surface' && view.surfaceSource === 'backbone')
+    const wantsBonds = representationNeedsBonds(view.representation.type)
+    // If we already have (or can filter) enough bonds *with orders*, skip densify.
+    // Otherwise force needs_bonds so Maestro sidecars can annotate doubles/triples.
+    const canReuseBonds =
+      wantsBonds && tryApplySourceBonds() && bondsHaveMultiOrder(view.bonds)
     const fetchGen = ++structureFetchGen
     loadingStructure = true
     getStructure({
       path: view.path,
       topology: topology || null,
-      selection: namedSelection === 'other' ? view.selection : namedSelection,
-      needs_bonds: wantsBallStick && !canReuseBonds,
+      selection: structureFetchSelection(namedSelection, view),
+      needs_bonds: wantsBonds && !canReuseBonds,
       needs_secondary_structure: needsSS
     })
       .then((structure) => {
@@ -383,16 +450,18 @@ Distance:
         if (structure.atoms?.length) view.atoms = structure.atoms
         if (structure.bonds?.length) {
           view.bonds = structure.bonds
-        } else if (wantsBallStick || bondsLookSparse(view.atoms, view.bonds)) {
+        } else if (wantsBonds || bondsLookSparse(view.atoms, view.bonds)) {
           const filtered = filterSourceBonds(view.atoms)
           if (filtered?.length) view.bonds = filtered
         }
         if (structure.residues?.length) view.residues = structure.residues
+        if (wantsBonds) view._bondOrderFetchDone = true
         invalidSelection = false
         loadingStructure = false
       })
       .catch(() => {
         if (fetchGen !== structureFetchGen) return
+        if (wantsBonds) view._bondOrderFetchDone = true
         invalidSelection = true
         loadingStructure = false
       })
@@ -400,7 +469,14 @@ Distance:
 
   /** Skip redundant /get-structure while auto-generate data is still settling in. */
   function scheduleStructureUpdate() {
-    if (view._prefetched) return
+    const wantsBonds = representationNeedsBonds(view.representation.type)
+    const needsBondsNow =
+      wantsBonds && bondsLookSparse(view.atoms, view.bonds) && !tryApplySourceBonds()
+    // Prefetched dense CONECT without orders still needs a sidecar merge pass.
+    const needsBondOrders =
+      wantsBonds && !view._bondOrderFetchDone && !bondsHaveMultiOrder(view.bonds)
+    if (view._prefetched && !needsBondsNow && !needsBondOrders) return
+    if (needsBondsNow || needsBondOrders) view._prefetched = false
     updateStructure()
   }
 
@@ -597,13 +673,33 @@ Distance:
   </div>
 {:else}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div
     class="relative gap-2 border-b border-neutral-200 p-2 select-none dark:border-neutral-800 {view.visible
       ? 'bg-neutral-50 text-neutral-900 dark:bg-neutral-900 dark:text-white'
-      : 'text-neutral-500 dark:text-neutral-400'}"
+      : 'text-neutral-500 dark:text-neutral-400'} {selected
+      ? 'ring-1 ring-inset ring-yellow-500/70 bg-yellow-500/5'
+      : ''}"
+    role="option"
+    aria-selected={selected}
+    tabindex="-1"
+    onclick={(e) => {
+      // Row multi-select (Ctrl/Shift); ignore clicks on interactive controls.
+      const t = /** @type {HTMLElement} */ (e.target)
+      if (t.closest('input,button,select,a,[role="button"]')) return
+      onRowSelect?.(e)
+    }}
+    onkeydown={(e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return
+      const t = /** @type {HTMLElement} */ (e.target)
+      if (t !== e.currentTarget) return
+      e.preventDefault()
+      onRowSelect?.(/** @type {MouseEvent} */ (/** @type {unknown} */ (e)))
+    }}
     oncontextmenu={(e) => {
       e.preventDefault()
       e.stopPropagation()
+      onContextOpen?.(e)
       rowCtxMenu = { x: e.clientX, y: e.clientY }
       rowCtxMenuPos = { x: e.clientX, y: e.clientY }
       rowCtxSplitOpen = false
@@ -792,6 +888,49 @@ Distance:
         tabindex="-1"
         onpointerdown={(e) => e.stopPropagation()}
       >
+        {#if onCreateGroup || onShowSelection || onHideSelection}
+          {#if onCreateGroup}
+            <button
+              type="button"
+              role="menuitem"
+              class="block w-full px-3 py-1.5 text-left text-neutral-800 hover:bg-neutral-100 dark:text-neutral-100 dark:hover:bg-neutral-800"
+              title="Group selected representations under each structure"
+              onclick={() => {
+                rowCtxMenu = null
+                onCreateGroup()
+              }}
+            >
+              Create group
+            </button>
+          {/if}
+          {#if onShowSelection}
+            <button
+              type="button"
+              role="menuitem"
+              class="block w-full px-3 py-1.5 text-left text-neutral-800 hover:bg-neutral-100 dark:text-neutral-100 dark:hover:bg-neutral-800"
+              onclick={() => {
+                rowCtxMenu = null
+                onShowSelection()
+              }}
+            >
+              Show
+            </button>
+          {/if}
+          {#if onHideSelection}
+            <button
+              type="button"
+              role="menuitem"
+              class="block w-full px-3 py-1.5 text-left text-neutral-800 hover:bg-neutral-100 dark:text-neutral-100 dark:hover:bg-neutral-800"
+              onclick={() => {
+                rowCtxMenu = null
+                onHideSelection()
+              }}
+            >
+              Hide
+            </button>
+          {/if}
+          <div class="my-1 border-t border-neutral-200 dark:border-neutral-700" role="separator"></div>
+        {/if}
         <button
           type="button"
           role="menuitem"
@@ -927,6 +1066,20 @@ Distance:
               />
               <button
                 type="button"
+                class="shrink-0 rounded border border-neutral-300 px-1.5 py-0.5 text-[10px] text-neutral-600 transition-colors hover:border-yellow-500/60 hover:text-yellow-600 dark:border-neutral-600 dark:text-neutral-400 dark:hover:border-yellow-500/50 dark:hover:text-yellow-400"
+                title="Keep heavy atoms + polar H only (hide non-polar hydrogens)"
+                onclick={() => {
+                  const base = String(view.selection || view.baseSelection || 'all').trim()
+                  const wrapped =
+                    !base || base === 'all'
+                      ? POLAR_SELECTION
+                      : `(${base}) and (${POLAR_SELECTION})`
+                  view.selection = wrapped
+                  view.baseSelection = wrapped
+                }}
+              >∩ polar</button>
+              <button
+                type="button"
                 class="shrink-0 rounded border border-neutral-300 px-2 py-0.5 text-neutral-600 transition-colors hover:border-neutral-400 hover:text-neutral-900 dark:border-neutral-600 dark:text-neutral-400 dark:hover:border-neutral-400 dark:hover:text-white"
                 title="MDAnalysis selection help"
                 onclick={openHelpDialog}>?</button
@@ -963,14 +1116,25 @@ Distance:
               () => view.representation.type,
               (reprType) => {
                 view.representation = { type: reprType }
+                if (representationNeedsBonds(reprType)) {
+                  view._prefetched = false
+                  if (!bondsHaveMultiOrder(view.bonds)) {
+                    view._bondOrderFetchDone = false
+                    if (!tryApplySourceBonds() || !bondsHaveMultiOrder(view.bonds)) {
+                      updateStructure()
+                    }
+                  }
+                }
               }
             }
           >
             <option value="points">Points</option>
             <option value="ball-stick">Ball &amp; Stick</option>
+            <option value="licorice">Licorice</option>
             <option value="cartoon">Cartoon</option>
             <option value="tube">Tube</option>
             <option value="vdw">vdW</option>
+            <option value="surface">Surface</option>
           </Select>
         </section>
 
@@ -1018,6 +1182,75 @@ Distance:
           </section>
         {/if}
 
+        <!-- Organic surface options -->
+        {#if view.representation.type === 'surface'}
+          <section class="space-y-2">
+            <p class="font-medium text-neutral-800 dark:text-neutral-300">Surface source</p>
+            <Select
+              size="sm"
+              className="w-full"
+              bind:value={
+                () => view.surfaceSource ?? 'atoms',
+                (v) => {
+                  view.surfaceSource = v === 'backbone' ? 'backbone' : 'atoms'
+                  if (view.surfaceSource === 'backbone') updateStructure()
+                }
+              }
+            >
+              <option value="atoms">Atoms (vdW)</option>
+              <option value="backbone">Backbone (SS)</option>
+            </Select>
+            <p class="text-[10px] leading-snug text-neutral-500 dark:text-neutral-400">
+              Atoms = van der Waals skin. Backbone = Cα path with helix/sheet/coil radii (needs
+              protein residues).
+            </p>
+          </section>
+          <section class="space-y-2">
+            <p class="font-medium text-neutral-800 dark:text-neutral-300">Inflate</p>
+            <div class="flex items-center gap-2">
+              <span class="w-10 shrink-0 text-neutral-600 dark:text-neutral-400">Puff</span>
+              <RangeInput
+                value={view.surfaceInflate ?? 0.25}
+                min={0}
+                max={1}
+                step={0.01}
+                decimals={2}
+                oninput={(v) => {
+                  view.surfaceInflate = v
+                }}
+              />
+            </div>
+            <div class="flex justify-between text-[10px] text-neutral-500 dark:text-neutral-500">
+              <span>vdW tight</span>
+              <span>Puffy</span>
+            </div>
+          </section>
+          <section class="space-y-2">
+            <p class="font-medium text-neutral-800 dark:text-neutral-300">Smooth</p>
+            <div class="flex items-center gap-2">
+              <span class="w-10 shrink-0 text-neutral-600 dark:text-neutral-400">Level</span>
+              <RangeInput
+                value={typeof view.surfaceSubdivision === 'number' ? view.surfaceSubdivision : 0}
+                min={0}
+                max={8}
+                step={0.05}
+                decimals={2}
+                oninput={(v) => {
+                  view.surfaceSubdivision = Math.max(0, Math.min(8, v))
+                }}
+              />
+            </div>
+            <div class="flex justify-between text-[10px] text-neutral-500 dark:text-neutral-500">
+              <span>Off</span>
+              <span>Max</span>
+            </div>
+            <p class="text-[10px] leading-snug text-neutral-500 dark:text-neutral-400">
+              Off keeps the raw isosurface. Higher levels round ridges and cream the lighting.
+              Rebuild waits until you pause dragging.
+            </p>
+          </section>
+        {/if}
+
         <!-- Ball-stick atom & bond size -->
         {#if view.representation.type === 'ball-stick'}
           <section class="space-y-2">
@@ -1039,6 +1272,109 @@ Distance:
                 />
               </div>
             {/each}
+            <div class="space-y-1.5 pt-1">
+              <p class="text-[11px] font-medium text-neutral-700 dark:text-neutral-300">Bond color</p>
+              <label class="flex cursor-pointer items-center gap-2">
+                <input
+                  type="radio"
+                  class="radio radio-xs"
+                  name="bond-color-{view.id}"
+                  checked={(view.bondColorMode ?? 'uniform') === 'uniform'}
+                  onchange={() => {
+                    view.bondColorMode = 'uniform'
+                  }}
+                />
+                <span class="text-neutral-700 dark:text-neutral-300">Uniform</span>
+              </label>
+              {#if (view.bondColorMode ?? 'uniform') === 'uniform'}
+                <div class="flex items-center gap-2 pl-5">
+                  <input
+                    type="color"
+                    class="h-6 w-8 cursor-pointer rounded border border-neutral-300 bg-transparent p-0 dark:border-neutral-600"
+                    value={view.bondColor ?? '#b8b8bc'}
+                    oninput={(e) => {
+                      view.bondColor = e.currentTarget.value
+                    }}
+                  />
+                  <span class="text-[10px] text-neutral-500">{view.bondColor ?? '#b8b8bc'}</span>
+                </div>
+              {/if}
+              <label class="flex cursor-pointer items-center gap-2">
+                <input
+                  type="radio"
+                  class="radio radio-xs"
+                  name="bond-color-{view.id}"
+                  checked={view.bondColorMode === 'atoms'}
+                  onchange={() => {
+                    view.bondColorMode = 'atoms'
+                  }}
+                />
+                <span
+                  class="text-neutral-700 dark:text-neutral-300"
+                  title="Each half of the stick uses the atom color scheme (like licorice)"
+                  >By atom (split)</span
+                >
+              </label>
+            </div>
+            <label class="flex cursor-pointer items-center gap-2 pt-1">
+              <input
+                type="checkbox"
+                class="checkbox checkbox-xs"
+                checked={view.showMultipleBonds !== false}
+                onchange={(e) => {
+                  view.showMultipleBonds = e.currentTarget.checked
+                }}
+              />
+              <span class="text-neutral-700 dark:text-neutral-300">Show multiple bonds</span>
+            </label>
+          </section>
+        {/if}
+
+        <!-- Licorice bond width -->
+        {#if view.representation.type === 'licorice'}
+          <section class="space-y-2">
+            <p class="font-medium text-neutral-800 dark:text-neutral-300">Bond width</p>
+            <div class="flex items-center gap-2">
+              <span class="w-10 shrink-0 text-neutral-600 dark:text-neutral-400">Bond</span>
+              <RangeInput
+                bind:value={
+                  () => view.bondScale ?? 1.0,
+                  (v) => {
+                    view.bondScale = v
+                  }
+                }
+                min={0.3}
+                max={2.0}
+                step={0.05}
+                decimals={2}
+              />
+            </div>
+            <label class="flex cursor-pointer items-center gap-2 pt-1">
+              <input
+                type="checkbox"
+                class="checkbox checkbox-xs"
+                checked={(view.stickRoundness ?? 1) > 0}
+                onchange={(e) => {
+                  view.stickRoundness = e.currentTarget.checked ? 1 : 0
+                }}
+              />
+              <span
+                class="text-neutral-700 dark:text-neutral-300"
+                title="Round sphere caps on chain ends only. Bonds always form a continuous pipe (elbows / branch spheres)."
+                >Round terminal ends</span
+              >
+            </label>
+            <label class="flex cursor-pointer items-center gap-2 pt-1">
+              <input
+                type="checkbox"
+                class="checkbox checkbox-xs"
+                checked={view.showMultipleBonds !== false}
+                onchange={(e) => {
+                  view.showMultipleBonds = e.currentTarget.checked
+                }}
+              />
+              <span class="text-neutral-700 dark:text-neutral-300">Show multiple bonds</span>
+            </label>
           </section>
         {/if}
 
@@ -1297,22 +1633,44 @@ Distance:
           {/if}
         </section>
 
-        <!-- Quality -->
+        <!-- Opacity (shared for all representations) -->
+        <section class="space-y-2">
+          <p class="font-medium text-neutral-800 dark:text-neutral-300">Opacity</p>
+          <div class="flex items-center gap-2">
+            <span class="w-10 shrink-0 text-neutral-600 dark:text-neutral-400">Alpha</span>
+            <RangeInput
+              value={typeof view.opacity === 'number' ? view.opacity : 1}
+              min={0}
+              max={1}
+              step={0.01}
+              decimals={2}
+              oninput={(v) => {
+                view.opacity = Math.max(0, Math.min(1, v))
+              }}
+            />
+          </div>
+        </section>
+
+        <!-- Quality (shared 1–5 for all representations) -->
         <section class="space-y-2">
           <p class="font-medium text-neutral-800 dark:text-neutral-300">Quality</p>
-          <div class="flex gap-1">
-            {#each [{ v: 1, l: 'Low' }, { v: 2, l: 'Med' }, { v: 3, l: 'High' }, { v: 4, l: 'Ultra' }, { v: 5, l: 'Max' }] as q (q.v)}
-              <button
-                type="button"
-                class="flex-1 rounded px-1 py-0.5 text-xs transition-colors
-                {(view.quality ?? 3) === q.v
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-neutral-200 text-neutral-700 hover:bg-neutral-300 dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700'}"
-                onclick={() => {
-                  view.quality = q.v
-                }}>{q.l}</button
-              >
-            {/each}
+          <div class="flex items-center gap-2">
+            <span class="w-10 shrink-0 text-neutral-600 dark:text-neutral-400">Level</span>
+            <RangeInput
+              value={view.quality ?? 3}
+              min={1}
+              max={5}
+              step={1}
+              decimals={0}
+              inputClassName="w-10"
+              oninput={(v) => {
+                view.quality = Math.max(1, Math.min(5, Math.round(v)))
+              }}
+            />
+          </div>
+          <div class="flex justify-between text-[10px] text-neutral-500 dark:text-neutral-500">
+            <span>Low</span>
+            <span>Max</span>
           </div>
         </section>
 

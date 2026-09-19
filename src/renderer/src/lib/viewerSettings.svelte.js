@@ -42,7 +42,7 @@ export const DEFAULT_VIEWER_SETTINGS = {
   hemisphereSky: '#c4d2e8',
   hemisphereGround: '#0c0e12',
   hemisphereIntensity: 1.4,
-  ambientIntensity: 1.0,
+  ambientIntensity: 1.4,
   directionalLights: DEFAULT_DIRECTIONAL_LIGHTS.map((l) => ({
     enabled: l.enabled,
     position: [...l.position],

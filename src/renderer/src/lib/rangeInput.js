@@ -32,14 +32,24 @@ export function formatRangeValue(value, decimals) {
 export function setRangeValue(node, value) {
   node.value = String(value)
   let dragging = false
-  const onDown = () => {
+  /** @param {PointerEvent | MouseEvent} e */
+  const onDown = (e) => {
     dragging = true
+    if ('pointerId' in e && typeof node.setPointerCapture === 'function') {
+      try {
+        node.setPointerCapture(e.pointerId)
+      } catch {
+        /* ignore — some hosts reject capture */
+      }
+    }
   }
   const onUp = () => {
     dragging = false
   }
   node.addEventListener('pointerdown', onDown)
   node.addEventListener('mousedown', onDown)
+  node.addEventListener('pointerup', onUp)
+  node.addEventListener('pointercancel', onUp)
   window.addEventListener('pointerup', onUp)
   window.addEventListener('mouseup', onUp)
   return {
@@ -49,6 +59,8 @@ export function setRangeValue(node, value) {
     destroy() {
       node.removeEventListener('pointerdown', onDown)
       node.removeEventListener('mousedown', onDown)
+      node.removeEventListener('pointerup', onUp)
+      node.removeEventListener('pointercancel', onUp)
       window.removeEventListener('pointerup', onUp)
       window.removeEventListener('mouseup', onUp)
     }

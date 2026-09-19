@@ -10,9 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Visualize Surface representation:** continuous organic skin (Gaussian metaballs + marching cubes) with **Source** (Atoms/vdW or Backbone/SS), **Inflate**, and **Smooth** (finer voxel sampling 0–8). Backbone mode uses Cα probes with helix/sheet/coil radii. Shares Quality, Opacity, materials/Goodsell/glow; saved in viewpoints and animation keyframes.
+- **Visualize Opacity:** shared **Opacity** slider on every representation (0–1). Animation fade-in/out multiplies this base alpha so fades still work with translucent styles.
 - **Visualize Licorice representation:** split-colored sticks (no atom spheres) with the same multi-bond expansion as ball-and-stick; gear **Bond width** and **Show multiple bonds**.
+- **Visualize Representations panel:** drag wider (up to ~560px) so long Maestro / multi-MODEL labels are readable; full name on hover.
 - **Visualize multi-structure load:** Maestro / multi-MODEL imports load cache PDBs with bounded concurrency (2), deferred bond guessing, deferred XYZ base snapshots, one workspace commit, and collapse-all-but-first for a lighter panel.
+- **Visualize Apply reps to all:** structure header action replaces other structures’ representations with this structure’s views (per-target selection resolve; skips empty matches on heterogeneous CTs).
 - **Visualize multi-structure workspace:** Open can multi-select PDB/CIF files and **append** without clearing. Maestro `.mae`/`.maegz` and multi-MODEL PDBs open an entry picker; each CT/MODEL becomes its own structure group. Representations dock is Structure → component → representation; Clear workspace / Remove structure available. Viewpoint (v2) and animation (v5) files store `structures[]` and per-view `structureId` (older files migrate).
+- **Visualize Apply representation:** clone a representation’s selection/style onto other loaded structures (skips empty matches).
 - **Visualize multiple bonds:** ball-and-stick draws parallel sticks for bond order 2/3 when present (Maestro import); **Show multiple bonds** toggle on the representation card.
 - **Analysis Apply selection to all sets:** copies the current structural type’s selection snapshot (selection, reference, bilayer/APL fields for that type) onto every set without running.
 - **Analysis options search:** left-sidebar search navigates to Plot Settings / Structural / Grid options controls and briefly pulse-highlights the target. Type groups (Stability / Geometry / Membrane) stay in the picker via a shared options catalog.
@@ -57,9 +61,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Visualize Licorice:** continuous pipe always on between bonds. **Round terminal ends** toggles sphere caps on termini only (multi-bond termini get a small cap per stick, not one fat sphere). Double/triple sticks stay inside a single-bond envelope. Multi-bond offsets follow the **camera** (bond × view) so ring double bonds stay visible while orbiting. Shared Quality 1–5.
 
 - **Visualize ball-and-stick bond color:** **Uniform** (color picker) or **By atom (split)** like licorice; atom/bond size sliders unchanged.
+- **Visualize lighting defaults:** Ambient light power default is **1.40** (same as Hemisphere) for new sessions / resets; saved viewpoints keep their stored ambient value.
+- **Visualize structure entry picker:** Maestro / multi-MODEL picker matches other app dialogs (theme-aware panel, outline buttons with hover, yellow **Load selected**).
+- **Visualize structure show/hide:** eye toggle uses a separate hidden-id Set (like collapse) and memoized `viewAtoms`, so Three.js meshes stay warm — hide/show only flips `T.Group.visible` instead of rebuilding GPU geometry.
 - **Visualize Representations groups:** Ctrl/Shift multi-select **structures** → one outer structure group; multi-select **representations** → nested groups under each structure. Right-click a selected row for **Create group** / **Show** / **Hide**. Double-click a group name to rename. Icon toolbar on group headers: eye toggle, ↑↓ reorder, dissolve. Persisted in **viewpoint v3** / **animation v6**.
 - **Visualize Maestro viewpoint / animation save:** multi-CT entries store the original `.mae`/`.maegz` path + `ctIndex` (not ephemeral `structure_cache` PDBs) so Open view / Open animation rematerializes from the source file.
 - **Visualize selection:** named **polar** preset and **∩ polar** button keep heavy atoms + H bonded to O/N/S (hide non-polar hydrogens); selections that use ``bonded`` force bond loading first.
+- **Visualize Apply to…:** picker matches other app dialogs (theme, outline buttons, yellow **Apply**).
 ### Fixed
 
 - **Visualize Maestro double bonds:** prefetched dense CONECT without bond orders no longer skips the sidecar merge pass; source triples are applied onto dense pairs; `/get-structure` returns sanitized bond-order triples; ball-stick rebuilds when expanded multi-stick count exceeds mesh capacity.
