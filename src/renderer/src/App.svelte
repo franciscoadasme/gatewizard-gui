@@ -28,6 +28,8 @@
     toolsStatus,
     visualizeStatus
   } from './lib/pageStatus.svelte.js'
+  import { formatSystemRam } from './lib/systemRam.js'
+  import { projectStatusPollMs, projectStatusTasksEqual } from './lib/projectStatusPoll.js'
 
   const windowIcon = $derived(getAppWindowIconUrl(themeState.current))
   const wordmark = $derived(getWordmarkUrl(themeState.current))
@@ -94,15 +96,41 @@
   // ── Status bar ──
   /** @type {import('./lib/backendApi').ProjectTask[]} */
   let statusTasks = $state([])
+  /** @type {import('./lib/backendApi').ProjectTask[]} */
+  let lastStatusTasks = []
+  let lastStatusEmpty = false
   /** @type {ReturnType<typeof setInterval> | null} */
   let statusPollId = null
+
+  function clearStatusPoll() {
+    if (statusPollId) {
+      clearInterval(statusPollId)
+      statusPollId = null
+    }
+  }
+
+  function armStatusPoll() {
+    clearStatusPoll()
+    if (!workingDir) return
+    const ms = projectStatusPollMs({ pageId: currentId, emptyTasks: lastStatusEmpty })
+    if (!(ms > 0)) return
+    statusPollId = setInterval(() => void refreshStatus(), ms)
+  }
 
   async function refreshStatus() {
     if (!workingDir) return
     try {
       const { tasks } = await getProjectStatus(workingDir)
-      await maybeNotifyJobTransitions(tasks)
-      statusTasks = tasks
+      const list = Array.isArray(tasks) ? tasks : []
+      await maybeNotifyJobTransitions(list)
+      const empty = list.length === 0
+      if (empty !== lastStatusEmpty) {
+        lastStatusEmpty = empty
+        armStatusPoll()
+      }
+      if (projectStatusTasksEqual(lastStatusTasks, list)) return
+      lastStatusTasks = list
+      statusTasks = list
     } catch {
       // backend not yet ready — silently skip
     }
@@ -258,15 +286,64 @@
   })
 
   $effect(() => {
-    if (statusPollId) clearInterval(statusPollId)
-    statusTasks = []
-    if (!workingDir) return
-    refreshStatus()
-    statusPollId = setInterval(refreshStatus, 5000)
+    const dir = workingDir
+    untrack(() => {
+      if (dir) return
+      statusTasks = []
+      lastStatusTasks = []
+      lastStatusEmpty = false
+    })
+  })
+
+  $effect(() => {
+    const dir = workingDir
+    const page = currentId
+    clearStatusPoll()
+    if (!dir) return
+    if (page === 'visualize') return
+    void refreshStatus()
+    armStatusPoll()
+  })
+
+  /** @type {ReturnType<typeof formatSystemRam> | null} */
+  let systemRam = $state(null)
+  /** @type {ReturnType<typeof setInterval> | null} */
+  let ramPollId = null
+
+  function clearRamPoll() {
+    if (ramPollId) {
+      clearInterval(ramPollId)
+      ramPollId = null
+    }
+  }
+
+  function armRamPoll() {
+    clearRamPoll()
+    if (currentId === 'visualize') return
+    void pollSystemRam()
+    ramPollId = setInterval(() => void pollSystemRam(), 2000)
+  }
+
+  async function pollSystemRam() {
+    const api = /** @type {{ getSystemMemoryInfo?: () => Promise<{ totalKb?: number, freeKb?: number }> } | undefined} */ (
+      window.api
+    )
+    if (!api?.getSystemMemoryInfo) return
+    try {
+      systemRam = formatSystemRam(await api.getSystemMemoryInfo())
+    } catch {
+      /* keep last sample */
+    }
+  }
+
+  $effect(() => {
+    void currentId
+    armRamPoll()
   })
 
   onDestroy(() => {
-    if (statusPollId) clearInterval(statusPollId)
+    clearStatusPoll()
+    clearRamPoll()
   })
 
   /** @param {string|null} iso */
@@ -301,17 +378,19 @@
     })
 
     void runStartupUpdateCheck()
+    void pollSystemRam()
 
     return () => {
       removeBoundsListener?.()
       restoreAlert()
       removeOpenPageListener?.()
+      clearRamPoll()
     }
   })
 
   // ── Settings / updates ──
   let showSettings = $state(false)
-  /** @type {'notifications' | 'appearance' | 'scene' | 'versions' | 'clusters' | 'about'} */
+  /** @type {'notifications' | 'appearance' | 'scene' | 'visualize' | 'versions' | 'clusters' | 'about'} */
   let settingsSection = $state('notifications')
   let updatesPending = $state(false)
   let showUpdateAvailableDialog = $state(false)
@@ -1026,9 +1105,18 @@
       {/if}
     </div>
 
-    <!-- ── Actions: always visible when workingDir is set ── -->
-    {#if workingDir}
-      <div class="flex shrink-0 items-center gap-1 border-l border-neutral-200 px-2 dark:border-neutral-800">
+    <!-- ── Actions + system RAM ── -->
+    <div class="flex shrink-0 items-center gap-1.5 border-l border-neutral-200 px-2 dark:border-neutral-800">
+      {#if systemRam}
+        <span
+          class="shrink-0 font-mono tabular-nums text-[10px] {systemRam.low
+            ? 'text-red-600 dark:text-red-400'
+            : 'text-neutral-500 dark:text-neutral-400'}"
+          title="Physical memory reported by the operating system. Used / total, then available."
+          >RAM {systemRam.label}</span
+        >
+      {/if}
+      {#if workingDir}
         <button
           onclick={clearBar}
           title="Hide completed status chips (does not clear the Visualize scene)"
@@ -1043,8 +1131,8 @@
           class="rounded px-1.5 py-0.5 text-[10px] text-neutral-500 hover:bg-neutral-200 hover:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
           >{statusExpanded ? '▼' : '▲'}</button
         >
-      </div>
-    {/if}
+      {/if}
+    </div>
   </footer>
 </div>
 

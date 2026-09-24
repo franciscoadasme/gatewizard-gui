@@ -33,11 +33,12 @@
   } from '../lib/outputFolders.js'
   import { logEvent, toolsStatus } from '../lib/pageStatus.svelte.js'
   import { liveReorderAtMidpoint, LIST_REORDER_FLIP } from '../lib/liveListReorder.js'
+  import { shouldStartToolsPrune } from '../lib/toolsJobPoll.js'
   import { themeState } from '../lib/theme.svelte.js'
   import { themeBackgroundHex } from '../lib/viewerSettings.svelte.js'
 
-  /** @type {{ workingDir?: string }} */
-  let { workingDir = '' } = $props()
+  /** @type {{ workingDir?: string, pageActive?: boolean }} */
+  let { workingDir = '', pageActive = true } = $props()
 
   const paneBackgroundStyle = $derived(
     `background-color: ${themeBackgroundHex(themeState.current)}`
@@ -387,9 +388,15 @@
   // Reload Tools jobs when the working directory or output path changes.
   // Merge into the live list — never replace it, or a job started outside the
   // working directory is wiped by an in-flight scan that started before launch.
+  // Hidden keep-alive: no folder walk (Visualize hitch). Rescan when Tools is shown.
   $effect(() => {
     const roots = jobScanRoots()
+    const active = pageActive
     if (roots.length === 0) return
+    if (!active) {
+      stopPrunePolling()
+      return
+    }
     let cancelled = false
     scanMergedToolsJobs()
       .then((found) => {
@@ -397,7 +404,7 @@
         jobs = mergeJobsFromScan(found, { dropMissing: false })
         if (jobs.some((j) => jobNeedsPoll(j))) startPolling()
         else stopPollingIfDone()
-        if (jobs.length > 0) startPrunePolling()
+        if (shouldStartToolsPrune({ pageActive: true, jobCount: jobs.length })) startPrunePolling()
         else stopPrunePolling()
       })
       .catch(() => {})
@@ -479,11 +486,12 @@
       }
     }
     // Keep a slow prune loop while any cards remain (catch deleted folders).
-    if (jobs.length > 0) startPrunePolling()
+    if (shouldStartToolsPrune({ pageActive, jobCount: jobs.length })) startPrunePolling()
     else stopPrunePolling()
   }
 
   function startPrunePolling() {
+    if (!shouldStartToolsPrune({ pageActive, jobCount: jobs.length })) return
     if (pruneIntervalId) return
     pruneIntervalId = setInterval(() => {
       void pruneMissingJobCards()
@@ -596,6 +604,7 @@
    * Never drop a still-running card just because a scan missed its parent folder.
    */
   async function pruneMissingJobCards() {
+    if (!pageActive) return
     if (jobScanRoots().length === 0 || jobs.length === 0) return
     try {
       const found = await scanMergedToolsJobs()
@@ -1135,7 +1144,7 @@
       // Duplicate jobDir keys break Svelte keyed {#each} and freeze progress UI.
       jobs = [newJob, ...jobs.filter((j) => jobDirKey(j.jobDir) !== jobDir)]
       startPolling()
-      startPrunePolling()
+      if (shouldStartToolsPrune({ pageActive, jobCount: jobs.length })) startPrunePolling()
       logEvent(
         'info',
         'tools',

@@ -9,7 +9,6 @@ const {
   WSL_DXG_PATH,
   WSL_D3D12_PATH,
   getGpuPolicyPath,
-  persistGpuSafeMode,
   applyDisplayGpuEnv,
   buildDisplayGpuShell
 } = require('./display-gpu-policy.cjs')
@@ -176,7 +175,7 @@ test('empty GATEWIZARD_GALLIUM_DRIVER disables auto d3d12', () => {
   assert.equal(env.GALLIUM_DRIVER, undefined)
 })
 
-test('persisted safeMode skips d3d12 and sets GATEWIZARD_GPU_SAFE_MODE', () => {
+test('a leftover gpu-policy.json does not keep the CPU and is deleted', () => {
   const persistPath = '/tmp/gw-gpu-policy.json'
   const fs = wslGpuFs({
     [persistPath]: JSON.stringify({ safeMode: true, reason: 'test', at: '2026-01-01' })
@@ -188,24 +187,9 @@ test('persisted safeMode skips d3d12 and sets GATEWIZARD_GPU_SAFE_MODE', () => {
     persistPath,
     log: () => {}
   })
-  assert.equal(result.policy, 'safe')
-  assert.equal(env.GATEWIZARD_GPU_SAFE_MODE, '1')
-  assert.equal(env.GALLIUM_DRIVER, undefined)
-})
-
-test('GATEWIZARD_GPU_RETRY=1 ignores persist and applies d3d12', () => {
-  const persistPath = '/tmp/gw-gpu-policy.json'
-  const fs = wslGpuFs({
-    [persistPath]: JSON.stringify({ safeMode: true, reason: 'test' })
-  })
-  const env = { WSL_DISTRO_NAME: 'Ubuntu', GATEWIZARD_GPU_RETRY: '1' }
-  const result = applyDisplayGpuEnv(env, {
-    platform: 'linux',
-    fs,
-    persistPath,
-    log: () => {}
-  })
   assert.equal(result.policy, 'd3d12')
+  assert.equal(result.reason, 'wsl-gpu')
+  assert.equal(env.GATEWIZARD_GPU_SAFE_MODE, undefined)
   assert.equal(env.GALLIUM_DRIVER, 'd3d12')
   assert.equal(fs._files[persistPath], undefined)
 })
@@ -219,20 +203,6 @@ test('never writes MESA_D3D12_DEFAULT_ADAPTER_NAME', () => {
     log: () => {}
   })
   assert.ok(!Object.prototype.hasOwnProperty.call(env, 'MESA_D3D12_DEFAULT_ADAPTER_NAME'))
-})
-
-test('persistGpuSafeMode writes safeMode json', () => {
-  const persistPath = '/tmp/gw-written-gpu-policy.json'
-  const fs = makeFs({})
-  persistGpuSafeMode('child-process-gone:crashed', {
-    fs,
-    persistPath,
-    at: '2026-09-01T00:00:00.000Z'
-  })
-  const written = JSON.parse(fs._files[persistPath])
-  assert.equal(written.safeMode, true)
-  assert.equal(written.reason, 'child-process-gone:crashed')
-  assert.equal(written.at, '2026-09-01T00:00:00.000Z')
 })
 
 test('buildDisplayGpuShell is valid dash/sh', () => {

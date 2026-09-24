@@ -9,3 +9,9 @@ gatewizard[full]>=1.0.53
 # gatewizard[full] @ git+https://github.com/maurobedoya/gatewizard.git@main
 # RELEASE: GitHub tag pin
 # gatewizard[full] @ git+https://github.com/maurobedoya/gatewizard.git@v1.0.53
+# AreaPerLipid exclude_sel (PR #164) — not on PyPI 0.12.x yet; overrides gatewizard’s lipyphilic pin
+lipyphilic @ git+https://github.com/p-j-smith/lipyphilic.git@11c7c15b4d0c1aac87484a0f2775eb7d8ebbc46f
+# Visualize mutator (vendored pyMUT) and chain superposition. GUI backend only.
+biopython>=1.79
+scipy>=1.7
+biotite>=1.0

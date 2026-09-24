@@ -184,16 +184,7 @@ This is the Electron / WebGL path, not OpenMM or GROMACS compute. There is no na
 | Native Linux | Unchanged (Mesa or the NVIDIA driver). |
 | macOS | Unchanged (Metal). |
 
-If Chromium’s GPU process crashes, the app relaunches in software mode (SwiftShader) and writes `gpu-policy.json` so the next launch stays on software:
-
-- Linux / WSL: `~/.config/gatewizard-gui/gpu-policy.json`
-- macOS: `~/Library/gatewizard-gui/gpu-policy.json`
-
-Retry hardware:
-
-```bash
-GATEWIZARD_GPU_RETRY=1 gatewizard-gui-linux
-```
+If Chromium’s GPU process crashes, that session relaunches once in software mode (SwiftShader). The next launch tries the GPU again. A `gpu-policy.json` left by an older build is deleted on startup.
 
 Overrides (always win):
 
