@@ -239,7 +239,7 @@ export async function captureCanvasWithOverlayPng(canvas, opts = {}) {
   const tmp = document.createElement('canvas')
   tmp.width = outW
   tmp.height = outH
-  const ctx = tmp.getContext('2d')
+  const ctx = tmp.getContext('2d', { alpha: true })
   if (!ctx) throw new Error('Could not create export canvas')
   ctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, outW, outH)
 

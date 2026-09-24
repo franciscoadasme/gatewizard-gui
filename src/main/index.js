@@ -1566,6 +1566,7 @@ ipcMain.handle('animation:encodeVideo', async (_event, payload) => {
   const outputPath = String(payload?.outputPath ?? '')
   const format = String(payload?.format ?? 'mp4')
   const fps = typeof payload?.fps === 'number' && payload.fps > 0 ? payload.fps : 30
+  const transparentBg = payload?.transparentBg === true
   if (!framesDir || !outputPath) {
     return { ok: false, error: 'animation:encodeVideo requires framesDir and outputPath' }
   }
@@ -1574,7 +1575,7 @@ ipcMain.handle('animation:encodeVideo', async (_event, payload) => {
     animationEncodeChild = null
   }
   const bin = resolveFfmpegBinary()
-  const args = buildFfmpegEncodeArgs({ framesDir, outputPath, fps, format })
+  const args = buildFfmpegEncodeArgs({ framesDir, outputPath, fps, format, transparentBg })
   return await new Promise((resolve) => {
     /** @type {string[]} */
     const stderrChunks = []
@@ -1589,7 +1590,7 @@ ipcMain.handle('animation:encodeVideo', async (_event, payload) => {
       if (animationEncodeChild === child) animationEncodeChild = null
       resolve(result)
     }
-    child = spawn(bin, args, { windowsHide: true })
+    child = spawn(bin, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     animationEncodeChild = child
     child.stderr?.setEncoding('utf8')
     child.stdout?.setEncoding('utf8')

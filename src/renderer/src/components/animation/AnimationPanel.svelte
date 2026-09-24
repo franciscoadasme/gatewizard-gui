@@ -5,9 +5,14 @@
   import Save from '../icons/Save.svelte'
   import Load from '../icons/Load.svelte'
   import ExportVideo from '../icons/ExportVideo.svelte'
+  import Trash from '../icons/Trash.svelte'
   import { clampNumber } from '../../lib/rangeInput.js'
   import { EXPORT_ASPECT_PRESETS } from '../../lib/animation/schema.js'
-  import { ANIMATION_EXPORT_FORMATS } from '../../lib/animation/exportFormats.js'
+  import {
+    coerceExportFormat,
+    exportFormatsForBackground
+  } from '../../lib/animation/exportFormats.js'
+  import ConfirmPrompt from './ConfirmPrompt.svelte'
 
   /**
    * @type {{
@@ -59,6 +64,10 @@
   } = $props()
 
   const aspectOptions = Object.keys(EXPORT_ASPECT_PRESETS)
+  const formatOptions = $derived(exportFormatsForBackground(exportFrame.transparentBg === true))
+  const selectedFormat = $derived(
+    coerceExportFormat(exportFrame.exportFormat, exportFrame.transparentBg === true)
+  )
 
   const fieldClass =
     'min-w-0 flex-1 rounded border border-neutral-300 bg-transparent px-1.5 py-0.5 text-xs dark:border-neutral-800 dark:bg-neutral-950'
@@ -68,6 +77,8 @@
 
   const numSmClass =
     'field-input w-14 shrink-0 rounded px-1 py-0.5 text-right font-mono text-[10px] tabular-nums'
+
+  let clearConfirmOpen = $state(false)
 
   /** @param {Event} e @param {(v: number) => void} apply @param {number} min @param {number} max @param {number} step */
   function onNumInput(e, apply, min, max, step) {
@@ -220,28 +231,47 @@
           />
           Show safe area in viewer
         </label>
+        <label
+          class="flex items-center gap-1.5 text-[10px] text-neutral-500"
+          title="Transparent movies are GIF, WebM, or PNG frames. MP4 and MOV stay opaque."
+        >
+          <input
+            type="checkbox"
+            checked={exportFrame.transparentBg === true}
+            onchange={(e) => {
+              const transparentBg = e.currentTarget.checked
+              onExportFrameChange({
+                ...exportFrame,
+                transparentBg,
+                exportFormat: coerceExportFormat(exportFrame.exportFormat, transparentBg)
+              })
+            }}
+          />
+          Transparent background
+        </label>
         <label class="flex min-w-0 items-center gap-1.5 text-[10px] text-neutral-500">
           <span class="shrink-0">Format</span>
           <select
             class="field-input min-w-0 flex-1 rounded px-1 py-0.5 text-[10px]"
-            value={exportFrame.exportFormat ?? 'mp4'}
+            value={selectedFormat}
             onchange={(e) =>
               onExportFrameChange({
                 ...exportFrame,
-                exportFormat: /** @type {import('../../lib/animation/exportFormats.js').AnimationExportFormat} */ (
-                  e.currentTarget.value
+                exportFormat: coerceExportFormat(
+                  e.currentTarget.value,
+                  exportFrame.transparentBg === true
                 )
               })}
             title="Export format"
           >
-            {#each ANIMATION_EXPORT_FORMATS as fmt}
+            {#each formatOptions as fmt}
               <option value={fmt.id}>{fmt.label}</option>
             {/each}
           </select>
         </label>
       </div>
 
-      <div class="grid grid-cols-4 gap-1">
+      <div class="grid grid-cols-5 gap-1">
         <Button
           variant="outline"
           size="sm"
@@ -290,20 +320,35 @@
             <ExportVideo className={iconClass} />
           {/if}
         </Button>
+        {#if onClearKeyframes}
+          <Button
+            variant="outline"
+            size="sm"
+            className={iconBtnClass}
+            title="Clear all keyframes"
+            aria-label="Clear all keyframes"
+            onclick={() => {
+              if (keyframeCount < 1) return
+              clearConfirmOpen = true
+            }}
+            disabled={exporting || keyframeCount < 1}
+          >
+            <Trash className={iconClass} />
+          </Button>
+        {/if}
       </div>
-      {#if onClearKeyframes}
-        <button
-          type="button"
-          class="w-full rounded px-1 py-1 text-left text-[10px] text-neutral-500 hover:bg-neutral-100 hover:text-red-400 disabled:opacity-40 dark:hover:bg-neutral-800"
-          disabled={exporting || keyframeCount < 1}
-          onclick={() => {
-            if (!onClearKeyframes || keyframeCount < 1) return
-            const n = keyframeCount
-            if (!confirm(`Remove all ${n} keyframe${n === 1 ? '' : 's'}? Duration and FPS stay.`)) return
-            onClearKeyframes()
-          }}
-        >Clear keyframes…</button>
-      {/if}
     </div>
   {/if}
 </div>
+
+<ConfirmPrompt
+  open={clearConfirmOpen}
+  title="Clear all keyframes?"
+  message="Remove all {keyframeCount} keyframe{keyframeCount === 1 ? '' : 's'}? Duration and FPS stay."
+  confirmLabel="Clear"
+  onCancel={() => (clearConfirmOpen = false)}
+  onConfirm={() => {
+    clearConfirmOpen = false
+    onClearKeyframes?.()
+  }}
+/>

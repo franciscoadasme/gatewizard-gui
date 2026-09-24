@@ -14,6 +14,7 @@
     snapAnimTime
   } from '../../lib/animation/timelinePlayhead.js'
   import { isTrajHotkeyBlocked } from '../../lib/viewer/trajectoryFrames.js'
+  import ConfirmPrompt from './ConfirmPrompt.svelte'
 
   /**
    * @type {{
@@ -177,18 +178,32 @@
     scrubTo(animFrameToTime(n, safeFps, duration_s))
   }
 
+  let confirmKind = $state(/** @type {null | 'clear' | 'delete'} */ (null))
+  let confirmDeleteId = $state(/** @type {string | null} */ (null))
+
   function deletePlayheadKeyframe() {
     const kf = playheadKeyframe
     if (!kf?.id || exporting || !onDeleteKeyframe) return
-    if (!confirm('Delete this keyframe?')) return
-    onDeleteKeyframe(kf.id)
+    confirmDeleteId = kf.id
+    confirmKind = 'delete'
   }
 
   function confirmClearKeyframes() {
     if (!keyframes.length || exporting || !onClearKeyframes) return
-    const n = keyframes.length
-    if (!confirm(`Remove all ${n} keyframe${n === 1 ? '' : 's'}? Duration and FPS stay.`)) return
-    onClearKeyframes()
+    confirmKind = 'clear'
+  }
+
+  function closeConfirm() {
+    confirmKind = null
+    confirmDeleteId = null
+  }
+
+  function acceptConfirm() {
+    const kind = confirmKind
+    const id = confirmDeleteId
+    closeConfirm()
+    if (kind === 'clear') onClearKeyframes?.()
+    else if (kind === 'delete' && id) onDeleteKeyframe?.(id)
   }
 
   /** @param {MouseEvent} e */
@@ -527,8 +542,8 @@
 
   function menuDelete() {
     if (!contextMenu) return
-    if (!confirm('Delete this keyframe?')) return
-    onDeleteKeyframe?.(contextMenu.keyframeId)
+    confirmDeleteId = contextMenu.keyframeId
+    confirmKind = 'delete'
     closeContextMenu()
   }
 
@@ -1034,3 +1049,14 @@
     />
   {/key}
 {/if}
+
+<ConfirmPrompt
+  open={confirmKind !== null}
+  title={confirmKind === 'clear' ? 'Clear all keyframes?' : 'Delete this keyframe?'}
+  message={confirmKind === 'clear'
+    ? `Remove all ${keyframes.length} keyframe${keyframes.length === 1 ? '' : 's'}? Duration and FPS stay.`
+    : 'This keyframe is removed from the timeline.'}
+  confirmLabel={confirmKind === 'clear' ? 'Clear' : 'Delete'}
+  onCancel={closeConfirm}
+  onConfirm={acceptConfirm}
+/>

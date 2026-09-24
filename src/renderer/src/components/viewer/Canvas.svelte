@@ -33,6 +33,9 @@
   let controls = $state(null)
   let resizeFrame = 0
 
+  const ZOOM_SPEED = 3.5
+  const FINE_ZOOM_SPEED = 0.4
+
   $effect(() => {
     if (!registerAsMain) return
     mainViewerControls.current = controls
@@ -54,6 +57,16 @@
     controls.handleResize?.()
     controls.update?.()
   }
+
+  $effect(() => {
+    if (!wrapEl || !controls) return
+    const onWheel = (e) => {
+      controls.zoomSpeed = e.ctrlKey ? FINE_ZOOM_SPEED : ZOOM_SPEED
+      if (e.ctrlKey) e.preventDefault()
+    }
+    wrapEl.addEventListener('wheel', onWheel, { passive: false, capture: true })
+    return () => wrapEl.removeEventListener('wheel', onWheel, { capture: true })
+  })
 
   $effect(() => {
     if (!wrapEl || !controls || typeof ResizeObserver === 'undefined') return
@@ -140,7 +153,7 @@
       staticMoving={false}
       dynamicDampingFactor={0.3}
       rotateSpeed={3.5}
-      zoomSpeed={3.5}
+      zoomSpeed={ZOOM_SPEED}
     />
 
     <T.HemisphereLight args={[hemisphereSky, hemisphereGround, hemisphereIntensity]} />

@@ -3,7 +3,7 @@
 import { reconcileViewTracks } from './tracks.js'
 import { DEFAULT_EASING_KIND, normalizeBezier, normalizeEasingKind } from './easing.js'
 import { normalizeFadeSettings } from './fade.js'
-import { DEFAULT_ANIMATION_EXPORT_FORMAT, normalizeExportFormat } from './exportFormats.js'
+import { DEFAULT_ANIMATION_EXPORT_FORMAT, coerceExportFormat } from './exportFormats.js'
 import { normalizeStructuresMeta } from '../visualizeStructures.js'
 import { normalizeVisibilityGroups } from '../visualizeGroups.js'
 
@@ -162,6 +162,7 @@ import { normalizeVisibilityGroups } from '../visualizeGroups.js'
  * @property {number} height
  * @property {boolean} showGuide
  * @property {AnimationExportFormat} [exportFormat]
+ * @property {boolean} [transparentBg]
  */
 
 /**
@@ -209,7 +210,8 @@ export function defaultExportFrame() {
     width: 1920,
     height: 1080,
     showGuide: true,
-    exportFormat: DEFAULT_ANIMATION_EXPORT_FORMAT
+    exportFormat: DEFAULT_ANIMATION_EXPORT_FORMAT,
+    transparentBg: false
   }
 }
 
@@ -242,7 +244,8 @@ export function normalizeExportFrame(raw) {
     width,
     height,
     showGuide: r.showGuide !== false,
-    exportFormat: normalizeExportFormat(r.exportFormat)
+    exportFormat: coerceExportFormat(r.exportFormat, r.transparentBg === true),
+    transparentBg: r.transparentBg === true
   }
 }
 

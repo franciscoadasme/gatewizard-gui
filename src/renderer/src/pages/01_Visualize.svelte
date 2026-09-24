@@ -20,7 +20,9 @@
   import {
     mainViewerCamera,
     mainViewerFramingAnchor,
-    mainViewerInvalidate
+    mainViewerInvalidate,
+    mainViewerRenderer,
+    mainViewerScene
   } from '../components/viewer/CameraRig.svelte'
   import { mainViewerControls } from '../components/viewer/Canvas.svelte'
   import SaveIcon from '../components/icons/Save.svelte'
@@ -140,6 +142,7 @@
   } from '../lib/visualizeGroups.js'
   import StructureEntryPicker from '../components/StructureEntryPicker.svelte'
   import TrajectoryOpenDialog from '../components/TrajectoryOpenDialog.svelte'
+  import FigureExportDialog from '../components/FigureExportDialog.svelte'
   import TrajAlignPanel from '../components/TrajAlignPanel.svelte'
   import MutateResiduePanel from '../components/MutateResiduePanel.svelte'
   import SplitChainPanel from '../components/SplitChainPanel.svelte'
@@ -166,8 +169,14 @@
     frameFileName,
     renderFrame
   } from '../lib/animation/export.js'
-  import { animationOutputFileName } from '../lib/animation/exportFormats.js'
+  import { animationOutputFileName, coerceExportFormat } from '../lib/animation/exportFormats.js'
   import { captureCanvasWithOverlayPng } from '../lib/animation/overlayCapture.js'
+  import {
+    beginExportRendererSize,
+    beginTransparentCapture,
+    endExportRendererSize,
+    endTransparentCapture
+  } from '../lib/viewer/exportCapture.js'
   import AnimationPanel from '../components/animation/AnimationPanel.svelte'
   import AnimationTimeline from '../components/animation/AnimationTimeline.svelte'
   import AnimationFadeEditor from '../components/animation/AnimationFadeEditor.svelte'
@@ -281,6 +290,13 @@
    */
   let entryPicker = $state({ open: false, sourcePath: '', entries: [], resolve: null })
   let trajDialogOpen = $state(false)
+  let figureDialogOpen = $state(false)
+  let figureDefaultWidth = $state(1280)
+  let figureDefaultHeight = $state(720)
+  let figurePreviewWidth = $state(1280)
+  let figurePreviewHeight = $state(720)
+  let lastFigureScale = $state(1)
+  let lastFigureTransparent = $state(false)
   let trajPlayhead = $state(0)
   let trajXyzEpoch = $state(0)
   let trajPlaying = $state(false)
@@ -4324,9 +4340,33 @@
     }
   }
 
-  async function onSaveImage() {
+  function openFigureDialog() {
     const canvas = viewerEl?.querySelector('canvas')
     if (!canvas) return
+    figureDefaultWidth = Math.max(1, Math.round(canvas.clientWidth || canvas.width || 1280))
+    figureDefaultHeight = Math.max(1, Math.round(canvas.clientHeight || canvas.height || 720))
+    figurePreviewWidth = figureDefaultWidth
+    figurePreviewHeight = figureDefaultHeight
+    figureDialogOpen = true
+  }
+
+  /** @param {{ width: number, height: number, scale: number }} opts */
+  function onFigurePreviewChange(opts) {
+    figurePreviewWidth = opts.width
+    figurePreviewHeight = opts.height
+  }
+
+  /**
+   * @param {{ width: number, height: number, scale: number, transparentBg: boolean }} opts
+   */
+  async function onSaveFigure(opts) {
+    figureDialogOpen = false
+    lastFigureScale = opts.scale
+    lastFigureTransparent = opts.transparentBg
+    const canvas = viewerEl?.querySelector('canvas')
+    if (!canvas) return
+    const outW = Math.max(1, Math.round(opts.width * opts.scale))
+    const outH = Math.max(1, Math.round(opts.height * opts.scale))
     const baseName =
       String(filePath || 'viewport')
         .split(/[/\\]/)
@@ -4342,9 +4382,43 @@
       defaultPath
     )
     if (!r || r.canceled || !r.filePath) return
-    const dataUrl = /** @type {HTMLCanvasElement} */ (canvas).toDataURL('image/png')
-    const base64 = dataUrl.split(',')[1]
-    await window.api.writeBinary(r.filePath, base64)
+    const scene = mainViewerScene.current
+    const renderer = mainViewerRenderer.current
+    const cam = mainViewerCamera.current
+    let transparentHandle = /** @type {ReturnType<typeof beginTransparentCapture> | null} */ (null)
+    let sizeHandle = /** @type {ReturnType<typeof beginExportRendererSize>} */ (null)
+    try {
+      if (opts.transparentBg) {
+        transparentHandle = beginTransparentCapture({ scene, renderer })
+      }
+      const cssW = Math.max(1, canvas.clientWidth || figureDefaultWidth)
+      const cssH = Math.max(1, canvas.clientHeight || figureDefaultHeight)
+      sizeHandle = beginExportRendererSize({
+        renderer,
+        camera: cam,
+        width: cssW * opts.scale,
+        height: cssH * opts.scale,
+        adjustFrustum: false
+      })
+      await renderFrame(() => mainViewerInvalidate.fn())
+      const sourceRect = computeSafeAreaForCanvas(
+        /** @type {HTMLCanvasElement} */ (canvas),
+        opts.width,
+        opts.height
+      )
+      const png = await captureCanvasPng(/** @type {HTMLCanvasElement} */ (canvas), {
+        sourceRect,
+        outputWidth: outW,
+        outputHeight: outH
+      })
+      await window.api.writeBinary(r.filePath, png)
+    } catch (ex) {
+      alert(ex instanceof Error ? ex.message : String(ex))
+    } finally {
+      endExportRendererSize(sizeHandle)
+      endTransparentCapture(transparentHandle)
+      mainViewerInvalidate.fn()
+    }
   }
 
   async function applyEditResult(result) {
@@ -6511,6 +6585,7 @@
     animExportTotal = frameCount
     const savedPlayhead = animPlayhead
     stopAnimPlayback()
+    let transparentHandle = /** @type {ReturnType<typeof beginTransparentCapture> | null} */ (null)
     try {
       await tick()
       throwIfAnimExportCancelled()
@@ -6523,14 +6598,23 @@
         width: 1920,
         height: 1080,
         showGuide: true,
-        exportFormat: 'mp4'
+        exportFormat: 'mp4',
+        transparentBg: false
       }
-      const exportFormat = exportFrame.exportFormat ?? 'mp4'
+      const transparentBg = exportFrame.transparentBg === true
+      const exportFormat = coerceExportFormat(exportFrame.exportFormat, transparentBg)
       const formatMeta = exportFormatMeta(exportFormat)
       const encodedFileName = animationOutputFileName(exportFormat)
       const encodedOutputPath = encodedFileName ? `${base}/${encodedFileName}` : ''
       const canvas = viewerEl?.querySelector('canvas')
       if (!canvas) throw new Error('Viewer canvas is not ready — wait for the structure to appear, then export again.')
+      if (transparentBg) {
+        transparentHandle = beginTransparentCapture({
+          scene: mainViewerScene.current,
+          renderer: mainViewerRenderer.current
+        })
+        await renderFrame(() => mainViewerInvalidate.fn())
+      }
       for (let i = 0; i < frameCount; i++) {
         throwIfAnimExportCancelled()
         const t = Math.min(animProject.duration_s, i / fps)
@@ -6580,7 +6664,8 @@
             framesDir,
             outputPath: encodedOutputPath,
             fps,
-            format: exportFormat
+            format: exportFormat,
+            transparentBg
           })
           if (animExportCancelRequested || enc?.cancelled) {
             throw new Error('cancelled')
@@ -6623,6 +6708,8 @@
       }
       alert(ex instanceof Error ? ex.message : String(ex))
     } finally {
+      endTransparentCapture(transparentHandle)
+      mainViewerInvalidate.fn()
       animExportCancelRequested = false
       animExporting = false
       animExportPhase = ''
@@ -7582,7 +7669,14 @@
             />
           {/if}
         </Canvas>
-        {#if animateMode && animProject.exportFrame?.showGuide !== false}
+        {#if figureDialogOpen}
+          <AnimationSafeAreaOverlay
+            {canvasWidth}
+            {canvasHeight}
+            frameWidth={figurePreviewWidth}
+            frameHeight={figurePreviewHeight}
+          />
+        {:else if animateMode && animProject.exportFrame?.showGuide !== false}
           <AnimationSafeAreaOverlay
             {canvasWidth}
             {canvasHeight}
@@ -9483,6 +9577,16 @@
   onConfirm={onOpenTrajectoryConfirm}
   onCancel={() => (trajDialogOpen = false)}
 />
+<FigureExportDialog
+  open={figureDialogOpen}
+  defaultWidth={figureDefaultWidth}
+  defaultHeight={figureDefaultHeight}
+  defaultScale={lastFigureScale}
+  defaultTransparent={lastFigureTransparent}
+  onPreviewChange={onFigurePreviewChange}
+  onCancel={() => (figureDialogOpen = false)}
+  onSave={onSaveFigure}
+/>
 <StructureEntryPicker
   open={entryPicker.open}
   sourcePath={entryPicker.sourcePath}
@@ -10139,9 +10243,9 @@
     <button
       type="button"
       class="flex h-[22px] shrink-0 items-center whitespace-nowrap rounded border border-neutral-300 bg-neutral-100 px-2 py-0 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
-      onclick={onSaveImage}
+      onclick={openFigureDialog}
       disabled={!structure}
-      title="Save viewport as PNG image">Save Image</button
+      title="Save viewport as PNG figure">Save Image</button
     >
 
     <div class="min-w-3 flex-1 shrink"></div>

@@ -12,12 +12,41 @@ export const ANIMATION_EXPORT_FORMATS = [
 /** @type {AnimationExportFormat} */
 export const DEFAULT_ANIMATION_EXPORT_FORMAT = 'mp4'
 
+/** Formats that can keep a transparent background. */
+/** @type {readonly AnimationExportFormat[]} */
+export const TRANSPARENT_ANIMATION_EXPORT_FORMATS = ['webm', 'gif', 'png']
+
+/** PowerPoint-friendly default when Transparent background is turned on over MP4/MOV. */
+/** @type {AnimationExportFormat} */
+export const DEFAULT_TRANSPARENT_ANIMATION_EXPORT_FORMAT = 'gif'
+
 /** @param {unknown} raw */
 export function normalizeExportFormat(raw) {
   const id = typeof raw === 'string' ? raw : ''
   return ANIMATION_EXPORT_FORMATS.some((f) => f.id === id)
     ? /** @type {AnimationExportFormat} */ (id)
     : DEFAULT_ANIMATION_EXPORT_FORMAT
+}
+
+/** @param {boolean} [transparentBg] */
+export function exportFormatsForBackground(transparentBg = false) {
+  if (!transparentBg) return ANIMATION_EXPORT_FORMATS
+  return ANIMATION_EXPORT_FORMATS.filter((f) =>
+    TRANSPARENT_ANIMATION_EXPORT_FORMATS.includes(f.id)
+  )
+}
+
+/**
+ * @param {unknown} raw
+ * @param {boolean} [transparentBg]
+ * @returns {AnimationExportFormat}
+ */
+export function coerceExportFormat(raw, transparentBg = false) {
+  const id = normalizeExportFormat(raw)
+  if (!transparentBg) return id
+  return TRANSPARENT_ANIMATION_EXPORT_FORMATS.includes(id)
+    ? id
+    : DEFAULT_TRANSPARENT_ANIMATION_EXPORT_FORMAT
 }
 
 /** @param {AnimationExportFormat} format */

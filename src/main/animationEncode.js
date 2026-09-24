@@ -6,14 +6,23 @@ import { join } from 'path'
  * Build ffmpeg argv for encoding a PNG frame sequence.
  * Frames are written as frame_000001.png … (1-based).
  *
- * @param {{ framesDir: string, outputPath: string, fps: number, format?: string }} opts
+ * @param {{ framesDir: string, outputPath: string, fps: number, format?: string, transparentBg?: boolean }} opts
  * @returns {string[]}
  */
-export function buildFfmpegEncodeArgs({ framesDir, outputPath, fps, format = 'mp4' }) {
+export function buildFfmpegEncodeArgs({
+  framesDir,
+  outputPath,
+  fps,
+  format = 'mp4',
+  transparentBg = false
+}) {
   const input = [
     '-y',
+    '-nostdin',
     '-framerate',
     String(fps),
+    '-f',
+    'image2',
     '-start_number',
     '1',
     '-i',
@@ -22,8 +31,12 @@ export function buildFfmpegEncodeArgs({ framesDir, outputPath, fps, format = 'mp
 
   switch (format) {
     case 'webm':
+      // libvpx-vp9 looks ahead for alt-ref frames and will sit on the last PNG
+      // forever unless alt-ref/lag are off. -nostdin stops Electron's inherited
+      // stdin from looking like more input.
       return [
         ...input,
+        '-an',
         '-c:v',
         'libvpx-vp9',
         '-crf',
@@ -31,21 +44,28 @@ export function buildFfmpegEncodeArgs({ framesDir, outputPath, fps, format = 'mp
         '-b:v',
         '0',
         '-pix_fmt',
-        'yuv420p',
+        transparentBg ? 'yuva420p' : 'yuv420p',
+        '-auto-alt-ref',
+        '0',
+        '-lag-in-frames',
+        '0',
+        '-deadline',
+        'good',
+        '-cpu-used',
+        '4',
+        '-row-mt',
+        '1',
         outputPath
       ]
     case 'mov':
       return [...input, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', outputPath]
-    case 'gif':
+    case 'gif': {
       // palettegen/paletteuse needs a complex graph (labeled pads), not -vf.
-      return [
-        ...input,
-        '-filter_complex',
-        `fps=${fps},split[s0][s1];[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=bayer`,
-        '-loop',
-        '0',
-        outputPath
-      ]
+      const palette = transparentBg
+        ? `fps=${fps},split[s0][s1];[s0]palettegen=stats_mode=diff:reserve_transparent=1[p];[s1][p]paletteuse=dither=bayer:alpha_threshold=128`
+        : `fps=${fps},split[s0][s1];[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=bayer`
+      return [...input, '-filter_complex', palette, '-loop', '0', outputPath]
+    }
     case 'mp4':
     default:
       return [...input, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', outputPath]

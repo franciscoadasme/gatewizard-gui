@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Visualize animation WebM export:** encoding no longer sits on “Encoding WebM with FFmpeg…” after the PNG frames are written. VP9 was waiting for extra alt-ref frames (and on Electron, for stdin). Export now closes stdin and finishes the last frame.
+- **Visualize Clear keyframes:** the confirm is in-app now. Native `confirm()` on WSLg/Electron was tearing down a GTK dialog and logging `GLib-GObject: instance has no handler with id`. The scene and keyframes were already clearing; only the console noise was from that dialog.
 - **Visualize animation timeline:** clicking or dragging a time no longer clones every atom and does not re-seek the MD frame when nothing moved. Playback no longer waits for that apply before the next clock tick, so the playhead stays responsive.
 - **Visualize Duplicate while playing:** copying a representation (for example lipids with Traj smooth) was an in-memory clone, but the new card could refetch structure data and the play path treated each copy as a new atom-index list. Gaussian + hydrogen restore then ran again every frame and the membrane stuttered. Duplicate now keeps the copied atoms/bonds and play reuses the same smooth buffer when the index set matches.
 - **Visualize hitch from job folder scans:** Tools prune (`/scan-tools-jobs`) and the status-bar `/project-status` walk walked the working directory every 5 s even while Visualize was playing. Those pages stay mounted, so a WSL/OneDrive glob froze play and orbit. Tools now walks the disk only while that page is open (running cards still use `/job-status`). Status-bar folder scans pause entirely on Visualize (chips stay as last seen; 5 s / 15 s empty backoff resume on other pages). The footer RAM read no longer blocks Electron with a synchronous `powershell.exe` every 2 s (that froze orbit on a timer); it is async and does not poll while Visualize is open. Routine 2xx poll lines are hidden in the backend console (`npm run dev` and packaged).
@@ -34,6 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Visualize zoom:** Ctrl + scroll zooms in smaller steps. Plain scroll is unchanged. Ctrl + scroll does not zoom the window.
+- **Visualize Save Image:** opens a figure dialog (width, height, 1–4× scale, transparent PNG). A yellow frame on the viewport shows the exported crop (same as the animation safe area). The viewport background is cleared only for that capture, then restored.
+- **Visualize animation export:** **Transparent background** writes alpha PNG frames. Format is limited to GIF, WebM, or PNG frames (MP4 and MOV stay opaque). GIF reserves a transparent palette; WebM VP9 keeps the alpha channel.
 - **Visualize animation timeline:** Time (s) and Frame jump fields move the playhead (animation FPS, not MD frames). Delete / Backspace, the trash control, and playhead right-click remove the keyframe under the arrow. **Clear** / **Clear keyframes…** wipes all keyframes and keeps duration and FPS.
 - **Visualize Traj smooth hydrogens:** after the Cartesian blend, hydrogens are placed back on their bonded heavy atoms (averaged C–H direction and length) so lipid tails stay fat. Each representation has **Restore hydrogens** (on by default). Turn it off for a VMD-style XYZ-only average. The flag is stored in viewpoints and animation keyframes.
 - **Status bar RAM:** the footer shows the user computer’s physical memory as used / total and available (for example `RAM 12.4 / 16.0 GB · 3.6 free`). Under WSL it reads the Windows host, not the 8 GiB guest. Updates every 2 s; muted red when available is under 2 GB.

@@ -7,6 +7,12 @@
 
   /** Called after animation applies a camera pose so CameraRig does not re-pan on the next frame. */
   export const mainViewerFramingAnchor = { fn: /** @type {(cx: number, cy: number, cz: number, extent: number) => void} */ (() => {}) }
+
+  /** Main viewer Three scene — figure and animation export clear the background here. */
+  export const mainViewerScene = { current: /** @type {import('three').Scene | null} */ (null) }
+
+  /** Main viewer WebGL renderer — figure export may temporarily resize the drawing buffer. */
+  export const mainViewerRenderer = { current: /** @type {import('three').WebGLRenderer | null} */ (null) }
 </script>
 
 <script>
@@ -28,18 +34,24 @@
    */
   let { framing } = $props()
 
-  const { camera, invalidate, size } = useThrelte()
+  const { camera, invalidate, size, scene, renderer } = useThrelte()
   mainViewerInvalidate.fn = invalidate
+  mainViewerScene.current = scene ?? null
+  mainViewerRenderer.current = renderer ?? null
 
   useTask(
     () => {
       mainViewerCamera.current = camera.current
+      mainViewerScene.current = scene ?? null
+      mainViewerRenderer.current = renderer ?? null
     },
     { autoInvalidate: false }
   )
 
   onDestroy(() => {
     mainViewerCamera.current = null
+    mainViewerScene.current = null
+    mainViewerRenderer.current = null
   })
 
   const controlsNamespace = useThrelteUserContext('threlte-controls')
