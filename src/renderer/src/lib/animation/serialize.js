@@ -19,6 +19,24 @@ export function cloneMaterial(material) {
 }
 
 /**
+ * @param {Record<string, unknown>} obj
+ * @param {string} key
+ * @param {unknown} value
+ */
+function assignIf(obj, key, value) {
+  if (obj[key] !== value) obj[key] = value
+}
+
+/**
+ * @param {Record<string, unknown>} obj
+ * @param {string} key
+ * @param {unknown} value
+ */
+function assignJsonIf(obj, key, value) {
+  if (JSON.stringify(obj[key]) !== JSON.stringify(value)) obj[key] = value
+}
+
+/**
  * @param {{ name: string, color?: string }} colorScheme
  * @param {{ residues?: unknown[], ssColors?: Record<string, string> | null }} view
  */
@@ -264,6 +282,9 @@ export function serializeView(view) {
       0,
       Math.min(8, Number(view.surfaceSubdivision ?? 0) || 0)
     ),
+    trajSmooth: Math.max(0, Math.min(8, Number(view.trajSmooth ?? 0) || 0)),
+    trajSmoothRestoreH: view.trajSmoothRestoreH !== false,
+    selectionEachFrame: view.selectionEachFrame === true,
     opacity,
     ...fade
   }
@@ -283,39 +304,52 @@ export function mergeSerializedViewInto(live, data) {
     prevScheme?.color !== data.colorScheme?.color ||
     live.representation?.type !== (data.representation?.type ?? 'points')
 
-  live.selection = data.selection
-  live.baseSelection = data.baseSelection ?? data.selection
-  live.representation = { type: data.representation?.type ?? 'points' }
-  live.visible = data.visible !== false
-  live.ssColors = data.ssColors ? { ...data.ssColors } : null
-  live.material = cloneMaterial(data.material)
-  live.helixWidth = data.helixWidth ?? 1
-  live.sheetWidth = data.sheetWidth ?? 0.875
-  live.coilWidth = data.coilWidth ?? 0.125
-  live.tubeRadius = data.tubeRadius ?? 0.9
-  live.atomScale = data.atomScale ?? 1
-  live.bondScale = data.bondScale ?? 1
-  live.pointSize = data.pointSize ?? 3
-  live.quality = data.quality ?? 3
-  live.showMultipleBonds = data.showMultipleBonds !== false
-  live.stickRoundness = data.stickRoundness ?? 1
-  live.meshSegments =
+  assignIf(live, 'selection', data.selection)
+  assignIf(live, 'baseSelection', data.baseSelection ?? data.selection)
+  const nextReprType = data.representation?.type ?? 'points'
+  if (live.representation?.type !== nextReprType) {
+    live.representation = { type: nextReprType }
+  }
+  assignIf(live, 'visible', data.visible !== false)
+  assignJsonIf(live, 'ssColors', data.ssColors ? { ...data.ssColors } : null)
+  assignJsonIf(live, 'material', cloneMaterial(data.material))
+  assignIf(live, 'helixWidth', data.helixWidth ?? 1)
+  assignIf(live, 'sheetWidth', data.sheetWidth ?? 0.875)
+  assignIf(live, 'coilWidth', data.coilWidth ?? 0.125)
+  assignIf(live, 'tubeRadius', data.tubeRadius ?? 0.9)
+  assignIf(live, 'atomScale', data.atomScale ?? 1)
+  assignIf(live, 'bondScale', data.bondScale ?? 1)
+  assignIf(live, 'pointSize', data.pointSize ?? 3)
+  assignIf(live, 'quality', data.quality ?? 3)
+  assignIf(live, 'showMultipleBonds', data.showMultipleBonds !== false)
+  assignIf(live, 'stickRoundness', data.stickRoundness ?? 1)
+  assignIf(
+    live,
+    'meshSegments',
     typeof data.meshSegments === 'number' && Number.isFinite(data.meshSegments)
       ? Math.max(8, Math.min(500, Math.round(data.meshSegments)))
       : 48
-  live.bondColorMode = data.bondColorMode === 'atoms' ? 'atoms' : 'uniform'
-  live.bondColor = data.bondColor ?? '#b8b8bc'
-  live.surfaceInflate =
+  )
+  assignIf(live, 'bondColorMode', data.bondColorMode === 'atoms' ? 'atoms' : 'uniform')
+  assignIf(live, 'bondColor', data.bondColor ?? '#b8b8bc')
+  assignIf(
+    live,
+    'surfaceInflate',
     typeof data.surfaceInflate === 'number' && Number.isFinite(data.surfaceInflate)
       ? Math.max(0, Math.min(1, data.surfaceInflate))
       : 0.25
-  live.surfaceSource = data.surfaceSource === 'backbone' ? 'backbone' : 'atoms'
-  live.surfaceSubdivision = Math.max(
-    0,
-    Math.min(8, Number(data.surfaceSubdivision ?? 0) || 0)
   )
-  if (typeof data.structureId === 'string') live.structureId = data.structureId
-  if (typeof data.componentKey === 'string') live.componentKey = data.componentKey
+  assignIf(live, 'surfaceSource', data.surfaceSource === 'backbone' ? 'backbone' : 'atoms')
+  assignIf(
+    live,
+    'surfaceSubdivision',
+    Math.max(0, Math.min(8, Number(data.surfaceSubdivision ?? 0) || 0))
+  )
+  assignIf(live, 'trajSmooth', Math.max(0, Math.min(8, Number(data.trajSmooth ?? 0) || 0)))
+  assignIf(live, 'trajSmoothRestoreH', data.trajSmoothRestoreH !== false)
+  assignIf(live, 'selectionEachFrame', data.selectionEachFrame === true)
+  if (typeof data.structureId === 'string') assignIf(live, 'structureId', data.structureId)
+  if (typeof data.componentKey === 'string') assignIf(live, 'componentKey', data.componentKey)
   // `colorScheme.resolver` is a function identity that representation components
   // (Cartoon/Tube in particular) use as an effect dependency to rebuild their whole
   // mesh geometry. Rebuilding it on every animation frame — even when the scheme
@@ -339,19 +373,21 @@ export function mergeSerializedViewInto(live, data) {
     live._colorSchemeSig = schemeSig
   }
   const fade = normalizeFadeSettings(data)
-  live.fadeIn_s = fade.fadeIn_s
-  live.fadeOut_s = fade.fadeOut_s
-  live.fadeInEasing = fade.fadeInEasing
-  live.fadeOutEasing = fade.fadeOutEasing
-  live.fadeInBezier = fade.fadeInBezier
-  live.fadeOutBezier = fade.fadeOutBezier
-  live.fadeEnabled = fade.fadeEnabled
+  assignIf(live, 'fadeIn_s', fade.fadeIn_s)
+  assignIf(live, 'fadeOut_s', fade.fadeOut_s)
+  assignIf(live, 'fadeInEasing', fade.fadeInEasing)
+  assignIf(live, 'fadeOutEasing', fade.fadeOutEasing)
+  assignJsonIf(live, 'fadeInBezier', fade.fadeInBezier)
+  assignJsonIf(live, 'fadeOutBezier', fade.fadeOutBezier)
+  assignIf(live, 'fadeEnabled', fade.fadeEnabled)
   // Effective opacity (base × fade) when present; otherwise keep opaque.
-  if (typeof data.opacity === 'number' && Number.isFinite(data.opacity)) {
-    live.opacity = Math.max(0, Math.min(1, data.opacity))
-  } else {
-    live.opacity = 1
-  }
+  assignIf(
+    live,
+    'opacity',
+    typeof data.opacity === 'number' && Number.isFinite(data.opacity)
+      ? Math.max(0, Math.min(1, data.opacity))
+      : 1
+  )
   if (panelSyncNeeded) {
     live._animSyncRev = (/** @type {number} */ (live._animSyncRev) || 0) + 1
   }
@@ -416,6 +452,9 @@ export function deserializeView(data, structureCtx) {
       0,
       Math.min(8, Number(data.surfaceSubdivision ?? 0) || 0)
     ),
+    trajSmooth: Math.max(0, Math.min(8, Number(data.trajSmooth ?? 0) || 0)),
+    trajSmoothRestoreH: data.trajSmoothRestoreH !== false,
+    selectionEachFrame: data.selectionEachFrame === true,
     opacity:
       typeof data.opacity === 'number' && Number.isFinite(data.opacity)
         ? Math.max(0, Math.min(1, data.opacity))

@@ -15,6 +15,8 @@ import {
   mergeTrackOrder,
   viewSnapshotAtOrBeforeTime
 } from './tracks.js'
+import { viewListNeedsReplace } from './timelinePlayhead.js'
+export { startPlayback } from './playbackClock.js'
 
 /**
  * @param {Record<string, unknown>} live
@@ -141,7 +143,7 @@ function applyViewsFromAnimation(keyframes, time_s, ctx, state, viewTracks) {
     }
   }
 
-  ctx.setViews(result)
+  if (viewListNeedsReplace(liveViews, result)) ctx.setViews(result)
 }
 
 /**
@@ -156,6 +158,7 @@ function applyViewsFromAnimation(keyframes, time_s, ctx, state, viewTracks) {
  *   setLabels?: (labels: Record<string, unknown>[]) => void
  *   setMeasurements?: (measurements: Record<string, unknown>[]) => void
  *   setCoordOverlay?: (patch: { indices: number[], xyz: number[] } | null) => void
+ *   setTrajFrame?: (frame: number) => void
  *   baseCoords?: Map<number, [number, number, number]> | null
  * }} ctx
  * @param {string[]} [viewTracks]
@@ -177,6 +180,9 @@ export function applyAnimationAtTime(keyframes, time_s, ctx, viewTracks = []) {
   applyViewsFromAnimation(keyframes, time_s, ctx, state, viewTracks)
 
   ctx.setCoordOverlay?.(state.coordPatch ?? null)
+  if (typeof state.trajFrame === 'number' && Number.isFinite(state.trajFrame)) {
+    ctx.setTrajFrame?.(state.trajFrame)
+  }
 
   const atoms = /** @type {Array<{ index: number, x: number, y: number, z: number, element?: string, name?: string }>} */ (
     ctx.structureCtx.atoms ?? []
@@ -190,52 +196,3 @@ export function applyAnimationAtTime(keyframes, time_s, ctx, viewTracks = []) {
   }
 }
 
-/**
- * @param {{
- *   keyframes: import('./schema.js').AnimationKeyframe[]
- *   duration_s: number
- *   fps: number
- *   getPlayhead: () => number
- *   setPlayhead: (t: number) => void
- *   isPlaying: () => boolean
- *   setPlaying: (v: boolean) => void
- *   onFrame: (time_s: number) => void
- *   onDone?: () => void
- * }} opts
- */
-export function startPlayback(opts) {
-  let raf = 0
-  let startWall = 0
-  let startPlayhead = opts.getPlayhead()
-
-  const tick = (now) => {
-    if (!opts.isPlaying()) return
-    if (!startWall) startWall = now
-    const elapsed = (now - startWall) / 1000
-    let t = startPlayhead + elapsed
-    if (t >= opts.duration_s) {
-      t = opts.duration_s
-      opts.setPlayhead(t)
-      Promise.resolve()
-        .then(() => opts.onFrame(t))
-        .catch((err) => console.error('[animation] onFrame failed (final frame)', err))
-        .then(() => {
-          opts.setPlaying(false)
-          opts.onDone?.()
-        })
-      return
-    }
-    opts.setPlayhead(t)
-    Promise.resolve()
-      .then(() => opts.onFrame(t))
-      .catch((err) => console.error('[animation] onFrame failed', err))
-      .then(() => {
-        if (opts.isPlaying()) raf = requestAnimationFrame(tick)
-      })
-  }
-
-  raf = requestAnimationFrame(tick)
-  return () => {
-    if (raf) cancelAnimationFrame(raf)
-  }
-}

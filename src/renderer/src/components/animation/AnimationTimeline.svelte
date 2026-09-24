@@ -1,4 +1,5 @@
 <script>
+  import { onDestroy } from 'svelte'
   import Button from '../ui/Button.svelte'
   import Play from '../icons/Play.svelte'
   import Pause from '../icons/Pause.svelte'
@@ -6,6 +7,13 @@
   import AnimationEasingEditor from './AnimationEasingEditor.svelte'
   import { easingLabel } from '../../lib/animation/easing.js'
   import { keyframesForTrackTimeline } from '../../lib/animation/tracks.js'
+  import {
+    animFrameToTime,
+    animTimeToFrame,
+    keyframeAtPlayhead,
+    snapAnimTime
+  } from '../../lib/animation/timelinePlayhead.js'
+  import { isTrajHotkeyBlocked } from '../../lib/viewer/trajectoryFrames.js'
 
   /**
    * @type {{
@@ -25,6 +33,7 @@
    *   onRenameKeyframe?: (id: string, name: string) => void
    *   onDuplicateKeyframe?: (id: string) => void
    *   onDeleteKeyframe?: (id: string) => void
+   *   onClearKeyframes?: () => void
    *   onCaptureKeyframe?: () => void
    *   onEasingChange?: (
    *     toKeyframeId: string,
@@ -53,6 +62,7 @@
     onRenameKeyframe,
     onDuplicateKeyframe,
     onDeleteKeyframe,
+    onClearKeyframes,
     onCaptureKeyframe,
     onEasingChange,
     onClose
@@ -61,12 +71,19 @@
   const safeDuration = $derived(Math.max(duration_s, 0.01))
   const safeFps = $derived(Math.max(1, fps))
   const frameStep = $derived(1 / safeFps)
+  const totalFrames = $derived(Math.max(1, Math.round(safeDuration * safeFps)))
   const sortedKeyframes = $derived([...keyframes].sort((a, b) => a.time_s - b.time_s))
   let trackEl = $state(/** @type {HTMLDivElement | null} */ (null))
   let rulerEl = $state(/** @type {HTMLDivElement | null} */ (null))
   let draggingId = $state(/** @type {string | null} */ (null))
   let draggingPlayhead = $state(false)
+  let displayPlayhead = $state(/** @type {number | null} */ (null))
+  const shownPlayhead = $derived(displayPlayhead ?? playhead)
+  const playheadKeyframe = $derived(keyframeAtPlayhead(keyframes, shownPlayhead, safeFps))
   let suppressTrackClick = false
+  /** @type {number | null} */
+  let pendingScrub = null
+  let scrubRaf = 0
   let tracksExpanded = $state(false)
   /** @type {{ x: number, y: number, keyframeId: string } | null} */
   let contextMenu = $state(null)
@@ -83,11 +100,27 @@
 
   /** @param {number} t */
   function snapTime(t) {
-    const step = frameStep
-    const snapped = Math.round(t / step) * step
-    const precision = Math.min(6, Math.max(2, String(step).split('.')[1]?.length ?? 0) + 1)
-    return Math.max(0, Math.min(duration_s, Number(snapped.toFixed(precision))))
+    return snapAnimTime(t, safeFps, duration_s)
   }
+
+  function flushScrub() {
+    scrubRaf = 0
+    const next = pendingScrub
+    pendingScrub = null
+    if (next == null) return
+    onScrub(next)
+  }
+
+  /** @param {number} time_s */
+  function queueScrub(time_s) {
+    pendingScrub = snapTime(time_s)
+    if (scrubRaf) return
+    scrubRaf = requestAnimationFrame(flushScrub)
+  }
+
+  onDestroy(() => {
+    if (scrubRaf) cancelAnimationFrame(scrubRaf)
+  })
 
   function formatTime(t) {
     const frame = Math.round(t * safeFps)
@@ -121,7 +154,41 @@
 
   /** @param {number} time_s */
   function scrubTo(time_s) {
-    onScrub(snapTime(time_s))
+    const t = snapTime(time_s)
+    displayPlayhead = t
+    queueScrub(t)
+  }
+
+  /** @param {string} raw */
+  function commitJumpTime(raw) {
+    if (exporting) return
+    const n = Number(raw)
+    if (!Number.isFinite(n)) return
+    displayPlayhead = null
+    scrubTo(n)
+  }
+
+  /** @param {string} raw */
+  function commitJumpFrame(raw) {
+    if (exporting) return
+    const n = Number(raw)
+    if (!Number.isFinite(n)) return
+    displayPlayhead = null
+    scrubTo(animFrameToTime(n, safeFps, duration_s))
+  }
+
+  function deletePlayheadKeyframe() {
+    const kf = playheadKeyframe
+    if (!kf?.id || exporting || !onDeleteKeyframe) return
+    if (!confirm('Delete this keyframe?')) return
+    onDeleteKeyframe(kf.id)
+  }
+
+  function confirmClearKeyframes() {
+    if (!keyframes.length || exporting || !onClearKeyframes) return
+    const n = keyframes.length
+    if (!confirm(`Remove all ${n} keyframe${n === 1 ? '' : 's'}? Duration and FPS stay.`)) return
+    onClearKeyframes()
   }
 
   /** @param {MouseEvent} e */
@@ -156,6 +223,11 @@
     }
     const onUp = () => {
       draggingPlayhead = false
+      if (scrubRaf) {
+        cancelAnimationFrame(scrubRaf)
+        flushScrub()
+      }
+      displayPlayhead = null
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp)
       setTimeout(() => {
@@ -492,7 +564,13 @@
         return
       }
       if (canCloseTimeline()) onClose?.()
+      return
     }
+    if (exporting || editDialog) return
+    if (e.key !== 'Delete' && e.key !== 'Backspace') return
+    if (isTrajHotkeyBlocked(e.target)) return
+    e.preventDefault()
+    deletePlayheadKeyframe()
   }}
 />
 
@@ -526,8 +604,60 @@
     </button>
 
     <span class="shrink-0 tabular-nums text-[11px] text-neutral-500" title="Snaps to {safeFps} FPS frames">
-      {formatTime(playhead)} / {formatTime(duration_s)}
+      {formatTime(shownPlayhead)} / {formatTime(duration_s)}
     </span>
+    <label class="flex shrink-0 items-center gap-1 text-[11px] text-neutral-500" title="Jump to animation time (seconds)">
+      Time
+      <input
+        class="field-input w-14 rounded px-1 py-0.5 text-right font-mono text-[10px] tabular-nums"
+        type="number"
+        min="0"
+        max={duration_s}
+        step={frameStep}
+        value={snapTime(shownPlayhead)}
+        disabled={exporting}
+        aria-label="Jump to time in seconds"
+        onkeydown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            commitJumpTime(e.currentTarget.value)
+          }
+        }}
+        onchange={(e) => commitJumpTime(e.currentTarget.value)}
+      />
+    </label>
+    <label class="flex shrink-0 items-center gap-1 text-[11px] text-neutral-500" title="Jump to animation frame (timeline FPS, not MD)">
+      Frame
+      <input
+        class="field-input w-12 rounded px-1 py-0.5 text-right font-mono text-[10px] tabular-nums"
+        type="number"
+        min="0"
+        max={totalFrames}
+        step="1"
+        value={animTimeToFrame(shownPlayhead, safeFps)}
+        disabled={exporting}
+        aria-label="Jump to animation frame"
+        onkeydown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            commitJumpFrame(e.currentTarget.value)
+          }
+        }}
+        onchange={(e) => commitJumpFrame(e.currentTarget.value)}
+      />
+    </label>
+    <button
+      type="button"
+      class={transportBtnClass}
+      onclick={deletePlayheadKeyframe}
+      disabled={exporting || !playheadKeyframe}
+      title={playheadKeyframe ? 'Delete keyframe at playhead' : 'Move the playhead onto a keyframe to delete it'}
+      aria-label="Delete keyframe at playhead"
+    >
+      <svg viewBox="0 0 16 16" class="size-3.5" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+        <path d="M3 4h10M6 4V3h4v1M5 4l.5 9h5L11 4" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    </button>
 
     {#if viewTracks.length > 0 || onClose}
       <div class="ml-auto flex shrink-0 items-center gap-1">
@@ -541,6 +671,17 @@
           </button>
         {/if}
         {#if onClose}
+          {#if onClearKeyframes}
+            <Button
+              variant="outline"
+              size="sm"
+              onclick={confirmClearKeyframes}
+              disabled={exporting || !keyframes.length}
+              title="Remove all keyframes; duration and FPS stay"
+            >
+              Clear
+            </Button>
+          {/if}
           <Button variant="outline" size="sm" onclick={onClose} disabled={exporting} title="Close timeline (Esc)">
             Close
           </Button>
@@ -567,7 +708,7 @@
           aria-label="Time ruler"
           aria-valuemin={0}
           aria-valuemax={duration_s}
-          aria-valuenow={playhead}
+          aria-valuenow={shownPlayhead}
           tabindex="0"
           onclick={onRulerClick}
           onpointerdown={onRulerPointerDown}
@@ -576,10 +717,10 @@
             if (exporting) return
             if (e.key === 'ArrowLeft') {
               e.preventDefault()
-              scrubTo(playhead - frameStep)
+              scrubTo(shownPlayhead - frameStep)
             } else if (e.key === 'ArrowRight') {
               e.preventDefault()
-              scrubTo(playhead + frameStep)
+              scrubTo(shownPlayhead + frameStep)
             }
           }}
         >
@@ -629,11 +770,11 @@
         ></div>
         <div
           class="pointer-events-none absolute top-[1.125rem] h-3 rounded-full bg-yellow-500/70"
-          style="left: 0; width: {pct(playhead)}%"
+          style="left: 0; width: {pct(shownPlayhead)}%"
         ></div>
         {#each keyframes as kf (kf.id)}
           {@const left = pct(kf.time_s)}
-          {@const active = Math.abs(playhead - kf.time_s) < frameStep * 0.51}
+          {@const active = Math.abs(shownPlayhead - kf.time_s) < frameStep * 0.51}
           {@const dragging = draggingId === kf.id}
           <button
             type="button"
@@ -667,8 +808,8 @@
             : draggingPlayhead
               ? 'cursor-grabbing'
               : 'cursor-ew-resize'}"
-          style="left: {pct(playhead)}%"
-          title="Playhead · {snapTime(playhead).toFixed(3)}s — drag to scrub (snaps to frames), right-click to capture keyframe"
+          style="left: {pct(shownPlayhead)}%"
+          title="Playhead · {snapTime(shownPlayhead).toFixed(3)}s — drag to scrub (snaps to frames), right-click to capture or delete"
           aria-label="Playhead"
           onpointerdown={startPlayheadDrag}
           onclick={(e) => e.stopPropagation()}
@@ -760,6 +901,17 @@
       onclick={menuCaptureKeyframe}
       >Capture keyframe at {snapTime(trackContextMenu.time_s).toFixed(2)}s</button
     >
+    {#if playheadKeyframe && Math.abs(trackContextMenu.time_s - playheadKeyframe.time_s) < frameStep * 0.51}
+      <button
+        type="button"
+        role="menuitem"
+        class="block w-full px-3 py-1.5 text-left text-red-300 hover:bg-neutral-800"
+        onclick={() => {
+          closeTrackContextMenu()
+          deletePlayheadKeyframe()
+        }}>Delete keyframe</button
+      >
+    {/if}
   </div>
 {/if}
 

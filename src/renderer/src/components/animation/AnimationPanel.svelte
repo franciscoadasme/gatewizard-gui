@@ -26,7 +26,9 @@
    *   onFpsChange: (v: number) => void
    *   onDurationChange: (v: number) => void
    *   onExportFrameChange: (frame: import('../../lib/animation/schema.js').AnimationExportFrame) => void
+   *   keyframeCount?: number
    *   onCaptureKeyframe: () => void
+   *   onClearKeyframes?: () => void
    *   onSaveProject: () => void
    *   onLoadProject: () => void
    *   onExportVideo: () => void
@@ -48,7 +50,9 @@
     onFpsChange,
     onDurationChange,
     onExportFrameChange,
+    keyframeCount = 0,
     onCaptureKeyframe,
+    onClearKeyframes,
     onSaveProject,
     onLoadProject,
     onExportVideo
@@ -287,6 +291,19 @@
           {/if}
         </Button>
       </div>
+      {#if onClearKeyframes}
+        <button
+          type="button"
+          class="w-full rounded px-1 py-1 text-left text-[10px] text-neutral-500 hover:bg-neutral-100 hover:text-red-400 disabled:opacity-40 dark:hover:bg-neutral-800"
+          disabled={exporting || keyframeCount < 1}
+          onclick={() => {
+            if (!onClearKeyframes || keyframeCount < 1) return
+            const n = keyframeCount
+            if (!confirm(`Remove all ${n} keyframe${n === 1 ? '' : 's'}? Duration and FPS stay.`)) return
+            onClearKeyframes()
+          }}
+        >Clear keyframes…</button>
+      {/if}
     </div>
   {/if}
 </div>
