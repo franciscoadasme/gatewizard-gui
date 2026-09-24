@@ -41,11 +41,15 @@
    *   outlineColor?: string,
    *   outlineWidth?: number,
    *   glowBulb?: boolean,
-   *   highlightIndices?: Set<number>
+   *   highlightIndices?: Set<number>,
+   *   xyzEpoch?: number,
+   *   deferRemesh?: boolean
    * }}
    */
   let {
     atoms = [],
+    xyzEpoch = 0,
+    deferRemesh = false,
     residues = [],
     getColor = defaultColorScheme,
     quality = 3,
@@ -122,6 +126,8 @@
    * (opacity slider used to remarch ~5k-atom proteins and freeze the UI).
    */
   $effect(() => {
+    void xyzEpoch
+    if (deferRemesh && meshRef) return
     const atomList = atoms
     const residueList = residues
     const q = appliedQuality

@@ -6,6 +6,7 @@
  *
  * v2: ``structures[]`` multi-structure workspace; legacy v1 singular ``structure`` migrates.
  * v3: ordered ``visibilityGroups`` for the Representations panel.
+ * v4: optional ``trajectory`` on structures; per-view ``trajSmooth``.
  */
 
 import { toPlainJson } from './animation/schema.js'
@@ -14,8 +15,8 @@ import { normalizeStructuresMeta } from './visualizeStructures.js'
 import { normalizeVisibilityGroups } from './visualizeGroups.js'
 
 export const VIEWPOINT_FORMAT = 'gatewizard-viewpoint'
-/** v3: visibility groups + multi-structure workspace. */
-export const VIEWPOINT_VERSION = 3
+/** v4: trajectory metadata + per-view trajSmooth. */
+export const VIEWPOINT_VERSION = 4
 
 /**
  * @typedef {Object} ViewerViewpoint
@@ -199,6 +200,9 @@ function normalizeView(raw) {
       0,
       Math.min(8, Number(v.surfaceSubdivision ?? 0) || 0)
     ),
+    trajSmooth: Math.max(0, Math.min(8, Number(v.trajSmooth ?? 0) || 0)),
+    trajSmoothRestoreH: v.trajSmoothRestoreH !== false,
+    selectionEachFrame: v.selectionEachFrame === true,
     opacity:
       typeof v.opacity === 'number' && Number.isFinite(v.opacity)
         ? Math.max(0, Math.min(1, v.opacity))

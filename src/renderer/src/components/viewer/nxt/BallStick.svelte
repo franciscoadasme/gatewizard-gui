@@ -18,6 +18,8 @@
   import { applyGlowMaterial } from '../../../lib/viewer/glowMaterial.js'
   import { setMultiBondOffsetAxis } from '../../../lib/viewer/multiBondOffset.js'
   import { untrack } from 'svelte'
+  import { collectAtomIndices, readAtomXyz } from '../../../lib/viewer/trajectoryFrames.js'
+  import { blendPlayXyz, trajPlayClock } from '../../../lib/viewer/trajPlayClock.js'
 
   /** @typedef {{ x: number, y: number, z: number, element: string, name: string }} Atom */
   /** @typedef {(atom: Atom) => import('three').Color} ColorScheme */
@@ -120,11 +122,18 @@
    *   showMultipleBonds?: boolean,
    *   bondColorMode?: 'uniform' | 'atoms',
    *   bondColor?: string,
-   *   highlightIndices?: Set<number>
+   *   highlightIndices?: Set<number>,
+   *   xyzEpoch?: number
+   *   trajSmooth?: number
+   *   trajSmoothRestoreH?: boolean
    * }}
    */
   let {
     atoms = [],
+    xyz = null,
+    xyzEpoch = 0,
+    trajSmooth = 0,
+    trajSmoothRestoreH = true,
     bonds = [],
     getColor = defaultColorScheme,
     quality = 3,
@@ -215,6 +224,25 @@
 
   const count = $derived(atoms.length)
   const { camera, invalidate } = useThrelte()
+
+  /** @type {Float32Array | null | undefined} */
+  let playXyz = null
+  /** @type {Atom[] | null} */
+  let playIdxAtoms = null
+  /** @type {Int32Array | null} */
+  let playIdx = null
+
+  function coords() {
+    return playXyz ?? xyz
+  }
+
+  /** @param {Atom[]} arr */
+  function playIndices(arr) {
+    if (arr === playIdxAtoms) return playIdx
+    playIdxAtoms = arr
+    playIdx = collectAtomIndices(arr)
+    return playIdx
+  }
   const _bondMid = new Vector3()
   const _lastCamPos = new Vector3(NaN, NaN, NaN)
   const _lastCamQuat = new Quaternion(0, 0, 0, 1)
@@ -249,6 +277,7 @@
 
     const sphereMesh = new InstancedMesh(sphereGeom, sphereMat, n)
     sphereMesh.renderOrder = 1
+    sphereMesh.frustumCulled = false
     sphereMesh.instanceColor = new InstancedBufferAttribute(new Float32Array(n * 3), 3)
 
     /** @type {InstancedMesh | null} */
@@ -262,6 +291,7 @@
       })
       sphereOutlineMesh = new InstancedMesh(sphereGeom.clone(), outlineMat, n)
       sphereOutlineMesh.renderOrder = 0
+      sphereOutlineMesh.frustumCulled = false
     }
 
     const sphereMatrix = new Matrix4()
@@ -269,10 +299,12 @@
     const sphereScale = new Vector3()
     const spherePos = new Vector3()
 
-    atoms.forEach((atom, index) => {
+    const atomList = untrack(() => atoms)
+    atomList.forEach((atom, index) => {
       const ri = atomBallRadius(atom.element) * atomScale
       const color = untrack(() => getColor(atom))
-      spherePos.set(atom.x, atom.y, atom.z)
+      const p = readAtomXyz(atom, coords())
+      spherePos.set(p.x, p.y, p.z)
       sphereScale.set(ri, ri, ri)
       sphereMatrix.compose(spherePos, sphereQuat, sphereScale)
       sphereMesh.setMatrixAt(index, sphereMatrix)
@@ -318,6 +350,7 @@
     }
     const bondMesh = new InstancedMesh(cylGeom, cylMat, Math.max(m, 1))
     bondMesh.renderOrder = 1
+    bondMesh.frustumCulled = false
     if (splitBonds) {
       bondMesh.instanceColor = new InstancedBufferAttribute(new Float32Array(Math.max(m, 1) * 3), 3)
     }
@@ -337,6 +370,7 @@
       const outlineCylMat = new MeshBasicMaterial({ color: outlineColor, depthWrite: false })
       bondOutlineMesh = new InstancedMesh(outlineCylGeom, outlineCylMat, m)
       bondOutlineMesh.renderOrder = 0
+      bondOutlineMesh.frustumCulled = false
     }
 
     const cylMatrix = new Matrix4()
@@ -358,8 +392,10 @@
       const aj = atom_by_index.get(j) ?? (atoms[j]?.index === j ? atoms[j] : undefined)
       if (!ai || !aj) continue
 
-      pa.set(ai.x, ai.y, ai.z)
-      pb.set(aj.x, aj.y, aj.z)
+      const pi = readAtomXyz(ai, coords())
+      const pj = readAtomXyz(aj, coords())
+      pa.set(pi.x, pi.y, pi.z)
+      pb.set(pj.x, pj.y, pj.z)
 
       const ri = atomBallRadius(ai.element) * atomScale
       const rj = atomBallRadius(aj.element) * atomScale
@@ -449,8 +485,10 @@
       const aj = atom_by_index.get(j) ?? (arr[j]?.index === j ? arr[j] : undefined)
       if (!ai || !aj) continue
 
-      pa.set(ai.x, ai.y, ai.z)
-      pb.set(aj.x, aj.y, aj.z)
+      const pi = readAtomXyz(ai, coords())
+      const pj = readAtomXyz(aj, coords())
+      pa.set(pi.x, pi.y, pi.z)
+      pb.set(pj.x, pj.y, pj.z)
 
       const ri = atomBallRadius(ai.element) * atomScale
       const rj = atomBallRadius(aj.element) * atomScale
@@ -542,6 +580,56 @@
       sphereOutlineMeshRef = null
       bondOutlineMeshRef = null
     }
+  })
+
+  /**
+   * @param {Atom[]} arr
+   */
+  function uploadBallStick(arr) {
+    const sphereMesh = sphereMeshRef
+    if (!sphereMesh || arr.length !== sphereMesh.count) return
+    const sphereOutline = sphereOutlineMeshRef
+    const sphereMatrix = new Matrix4()
+    const sphereQuat = new Quaternion()
+    const sphereScale = new Vector3()
+    const spherePos = new Vector3()
+    for (let index = 0; index < arr.length; index++) {
+      const atom = arr[index]
+      const ri = atomBallRadius(atom.element) * atomScale
+      const p = readAtomXyz(atom, coords())
+      spherePos.set(p.x, p.y, p.z)
+      sphereScale.set(ri, ri, ri)
+      sphereMatrix.compose(spherePos, sphereQuat, sphereScale)
+      sphereMesh.setMatrixAt(index, sphereMatrix)
+      if (sphereOutline) {
+        const outlineScale = 1 + outlineWidth / Math.max(ri, 0.5)
+        sphereScale.set(ri * outlineScale, ri * outlineScale, ri * outlineScale)
+        sphereMatrix.compose(spherePos, sphereQuat, sphereScale)
+        sphereOutline.setMatrixAt(index, sphereMatrix)
+      }
+    }
+    sphereMesh.instanceMatrix.needsUpdate = true
+    if (sphereOutline) sphereOutline.instanceMatrix.needsUpdate = true
+    const bondMesh = bondMeshRef
+    if (bondMesh) {
+      updateBondMatrices(bondMesh, bondOutlineMeshRef, arr, false)
+    }
+    invalidate()
+  }
+
+  $effect(() => {
+    void xyzEpoch
+    void xyz
+    if (trajPlayClock.playing) return
+    playXyz = xyz
+    uploadBallStick(atoms)
+  })
+
+  useTask(() => {
+    if (!trajPlayClock.playing) return
+    const arr = untrack(() => atoms)
+    playXyz = blendPlayXyz(trajSmooth, playIndices(arr), trajSmoothRestoreH !== false)
+    uploadBallStick(arr)
   })
 
   $effect(() => {

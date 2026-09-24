@@ -7,7 +7,13 @@ import {
   groupStructureMetasForLoad,
   parseBondRow,
   componentKeyFromSelection,
-  componentLabel
+  componentLabel,
+  isCoordinateTrajectoryPath,
+  structureFetchPath,
+  normalizeTrajAlignment,
+  nextDuplicateLabel,
+  highlightIndicesForStructure,
+  editStructureIdFromPanel
 } from './visualizeStructures.js'
 import { normalizeViewpoint, VIEWPOINT_FORMAT, VIEWPOINT_VERSION } from './viewpoint.js'
 import { normalizeProject, ANIMATION_VERSION } from './animation/schema.js'
@@ -17,6 +23,54 @@ test('parseBondRow supports [i,j] and [i,j,order]', () => {
   assert.deepEqual(parseBondRow([0, 3, 2]), { i: 0, j: 3, order: 2 })
   assert.deepEqual(parseBondRow([0, 1, 1.5]), { i: 0, j: 1, order: 1 }) // aromatic → single
   assert.equal(parseBondRow([1]), null)
+})
+
+test('highlightIndicesForStructure stays on one structure', () => {
+  const indices = new Set([0, 1, 2])
+  assert.equal(highlightIndicesForStructure('copy-b', 'copy-a', indices).size, 0)
+  assert.equal(highlightIndicesForStructure('copy-a', 'copy-a', indices), indices)
+  assert.equal(highlightIndicesForStructure(undefined, 'copy-a', indices).size, 0)
+})
+
+test('editStructureIdFromPanel follows the selected representation group', () => {
+  const viewStructureById = new Map([
+    ['v1', 'copy-a'],
+    ['v2', 'copy-a'],
+    ['v3', 'copy-b']
+  ])
+  assert.equal(
+    editStructureIdFromPanel({
+      selectedViewIds: ['v1', 'v2'],
+      viewStructureById,
+      selectedStructureIds: []
+    }),
+    'copy-a'
+  )
+  assert.equal(
+    editStructureIdFromPanel({
+      selectedViewIds: ['v1', 'v3'],
+      viewStructureById,
+      selectedStructureIds: []
+    }),
+    null
+  )
+  assert.equal(
+    editStructureIdFromPanel({
+      selectedViewIds: [],
+      viewStructureById,
+      selectedStructureIds: ['copy-b']
+    }),
+    'copy-b'
+  )
+})
+
+test('nextDuplicateLabel stays unique', () => {
+  assert.equal(nextDuplicateLabel(['prot.pdb'], 'prot.pdb'), 'prot.pdb copy')
+  assert.equal(nextDuplicateLabel(['prot.pdb', 'prot.pdb copy'], 'prot.pdb'), 'prot.pdb copy 2')
+  assert.equal(
+    nextDuplicateLabel(['prot.pdb', 'prot.pdb copy', 'prot.pdb copy 2'], 'prot.pdb copy'),
+    'prot.pdb copy 3'
+  )
 })
 
 test('createStructureEntry fills defaults', () => {
@@ -71,7 +125,7 @@ test('normalizeViewpoint v1 singular migrates to structures[] and structureId on
   assert.ok(Array.isArray(vp.structures))
   assert.equal(vp.structures.length, 1)
   assert.equal(vp.views[0].structureId, vp.structures[0].id)
-  assert.equal(VIEWPOINT_VERSION, 3)
+  assert.equal(VIEWPOINT_VERSION, 4)
 })
 
 test('normalizeProject v4 migrates structures and structureId; version becomes current', () => {
@@ -109,7 +163,7 @@ test('normalizeProject v4 migrates structures and structureId; version becomes c
     ]
   })
   assert.equal(project.version, ANIMATION_VERSION)
-  assert.equal(ANIMATION_VERSION, 6)
+  assert.equal(ANIMATION_VERSION, 7)
   assert.ok(project.structures?.length >= 1)
   assert.equal(project.keyframes[0].views[0].structureId, project.structures[0].id)
   assert.deepEqual(project.keyframes[0].coordPatch?.indices, [3])
@@ -188,4 +242,57 @@ test('componentKeyFromSelection buckets common selections', () => {
   assert.equal(componentKeyFromSelection('protein'), 'polymer')
   assert.equal(componentKeyFromSelection('resname TIP3'), 'water')
   assert.equal(componentLabel('lipid'), 'Lipids')
+})
+
+test('trajectory meta survives serialize / normalize', () => {
+  const s = createStructureEntry({
+    path: '/data/run.xtc',
+    topologyPath: '/data/top.psf',
+    atoms: [{ index: 0, x: 0, y: 0, z: 0 }],
+    trajectory: {
+      files: [{ path: '/data/run.xtc', stride: 2 }],
+      logicalFrame: 12,
+      logicalFrameCount: 100,
+      rawFrameCounts: [200],
+      box: [120.5, 80, 80],
+      alignment: { mode: 'align', apply: true, selection: 'backbone', referenceFrame: 0 }
+    }
+  })
+  const meta = serializeStructuresMeta([s])[0]
+  assert.equal(meta.trajectory.files[0].stride, 2)
+  assert.equal(meta.trajectory.logicalFrame, 12)
+  assert.equal(meta.trajectory.box[0], 120.5)
+  assert.equal(meta.trajectory.alignment.mode, 'align')
+  const [again] = normalizeStructuresMeta(meta)
+  assert.equal(again.trajectory.logicalFrameCount, 100)
+  assert.deepEqual(again.trajectory.box, [120.5, 80, 80])
+  assert.equal(again.trajectory.alignment.apply, true)
+})
+
+test('structureFetchPath keeps the DCD so frame-0 coordinates exist', () => {
+  assert.equal(isCoordinateTrajectoryPath('run.dcd'), true)
+  assert.equal(isCoordinateTrajectoryPath('system.prmtop'), false)
+  assert.equal(
+    structureFetchPath('/data/run.dcd', '/data/system.prmtop'),
+    '/data/run.dcd'
+  )
+  assert.equal(structureFetchPath('/data/prot.pdb', null), '/data/prot.pdb')
+  assert.equal(structureFetchPath('', '/data/system.prmtop'), '/data/system.prmtop')
+})
+
+test('normalizeTrajAlignment keeps apply for align and not for rmsd', () => {
+  const align = normalizeTrajAlignment({
+    mode: 'align',
+    apply: true,
+    selection: 'backbone',
+    referenceFrame: 3
+  })
+  assert.equal(align.mode, 'align')
+  assert.equal(align.apply, true)
+  assert.equal(align.selection, 'backbone')
+  assert.equal(align.referenceFrame, 3)
+  const rmsd = normalizeTrajAlignment({ mode: 'rmsd', selection: 'protein' })
+  assert.equal(rmsd.mode, 'rmsd')
+  assert.equal(rmsd.apply, false)
+  assert.equal(normalizeTrajAlignment({ mode: 'none' }), null)
 })

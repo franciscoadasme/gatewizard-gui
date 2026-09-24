@@ -110,6 +110,9 @@ import { normalizeVisibilityGroups } from '../visualizeGroups.js'
  * @property {number} [surfaceInflate]
  * @property {'atoms' | 'backbone'} [surfaceSource]
  * @property {number} [surfaceSubdivision]
+ * @property {number} [trajSmooth]
+ * @property {boolean} [trajSmoothRestoreH] After Traj smooth, place hydrogens on smoothed parents
+ * @property {boolean} [selectionEachFrame] Re-evaluate MDAnalysis selection each traj frame
  * @property {boolean} [fadeEnabled]
  * @property {number} [fadeIn_s]
  * @property {number} [fadeOut_s]
@@ -139,6 +142,9 @@ import { normalizeVisibilityGroups } from '../visualizeGroups.js'
  *   (legacy single-structure / primary structure). Prefer ``coordPatches`` when multi-structure.
  * @property {Record<string, { indices: number[], xyz: number[] }> | null} [coordPatches]
  *   Per-structureId sparse absolute coordinates (v5+).
+ * @property {number} [trajFrame]
+ *   Logical trajectory playhead for this keyframe (inherited from the previous
+ *   keyframe when omitted).
  */
 
 /**
@@ -180,8 +186,9 @@ export const ANIMATION_FORMAT = 'gatewizard-animation'
  * v4: optional per-keyframe sparse `coordPatch` for atom motion.
  * v5: multi-structure ``structures[]``, ``structureId`` on views, per-structure ``coordPatches``.
  * v6: ordered ``visibilityGroups`` for the Representations panel.
+ * v7: keyframe ``trajFrame`` + per-view ``trajSmooth``; structures may include ``trajectory``.
  */
-export const ANIMATION_VERSION = 6
+export const ANIMATION_VERSION = 7
 export const DEFAULT_FPS = 30
 export const DEFAULT_EASING = DEFAULT_EASING_KIND
 
@@ -469,7 +476,10 @@ function normalizeKeyframe(raw, index) {
       ? k.measurements.map(normalizeMeasurement).filter(Boolean)
       : [],
     ...(coordPatch ? { coordPatch } : {}),
-    ...(coordPatches ? { coordPatches } : {})
+    ...(coordPatches ? { coordPatches } : {}),
+    ...(typeof k.trajFrame === 'number' && Number.isFinite(k.trajFrame)
+      ? { trajFrame: Math.max(0, k.trajFrame) }
+      : {})
   }
 }
 
@@ -554,6 +564,9 @@ export function serializeAnimationProject(project, structure) {
         surfaceInflate: v.surfaceInflate,
         surfaceSource: v.surfaceSource,
         surfaceSubdivision: v.surfaceSubdivision,
+        trajSmooth: v.trajSmooth,
+        trajSmoothRestoreH: v.trajSmoothRestoreH !== false,
+        selectionEachFrame: v.selectionEachFrame === true,
         opacity: v.opacity,
         ...normalizeFadeSettings(v)
       })),
@@ -590,6 +603,9 @@ export function serializeAnimationProject(project, structure) {
               ])
             )
           }
+        : {}),
+      ...(typeof k.trajFrame === 'number' && Number.isFinite(k.trajFrame)
+        ? { trajFrame: k.trajFrame }
         : {})
     })),
     outputFolder: project.outputFolder ?? '',

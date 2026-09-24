@@ -19,6 +19,8 @@ const api = {
 
   readJson: (filePath) => ipcRenderer.invoke('fs:readJson', filePath),
   readText: (filePath) => ipcRenderer.invoke('fs:readText', filePath),
+  readBinarySlice: (filePath, offset, length) =>
+    ipcRenderer.invoke('fs:readBinarySlice', filePath, offset, length),
   writeJson: (filePath, data) => ipcRenderer.invoke('fs:writeJson', filePath, data),
   writeText: (filePath, text) => ipcRenderer.invoke('fs:writeText', filePath, text),
   writeBinary: (filePath, base64) => ipcRenderer.invoke('fs:writeBinary', filePath, base64),
@@ -45,6 +47,7 @@ const api = {
   listSshIdentityFiles: () => ipcRenderer.invoke('ssh:listIdentityFiles'),
 
   isWindowFocused: () => ipcRenderer.invoke('window:isFocused'),
+  getSystemMemoryInfo: () => ipcRenderer.invoke('system:memoryInfo'),
   showJobNotification: (payload) => ipcRenderer.invoke('notifications:showJobFinished', payload),
   onJobNotificationFallback: (callback) => {
     const listener = (_event, data) => callback(data)

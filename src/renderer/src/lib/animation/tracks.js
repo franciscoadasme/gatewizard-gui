@@ -175,6 +175,127 @@ export function viewSnapshotAtOrBeforeTime(keyframes, viewId, time_s) {
 }
 
 /**
+ * Write representation eye-state from the playhead snapshot forward so hide/show
+ * is stored in the animation (later independent keyframes stay editable after this).
+ * @param {AnimationKeyframe[]} keyframes
+ * @param {string} viewId
+ * @param {boolean} visible
+ * @param {number} time_s
+ */
+export function persistViewVisibilityInKeyframes(keyframes, viewId, visible, time_s) {
+  const id = String(viewId)
+  const sorted = [...keyframes].sort((a, b) => a.time_s - b.time_s)
+  let startTime = null
+  for (const kf of sorted) {
+    if (kf.time_s > time_s + 1e-6) break
+    if (kf.views.some((v) => String(v.id) === id)) startTime = kf.time_s
+  }
+  if (startTime == null) {
+    const first = sorted.find((kf) => kf.views.some((v) => String(v.id) === id))
+    if (!first) return false
+    startTime = first.time_s
+  }
+  let any = false
+  for (const kf of sorted) {
+    if (kf.time_s + 1e-6 < startTime) continue
+    const row = kf.views.find((v) => String(v.id) === id)
+    if (!row) continue
+    row.visible = visible !== false
+    any = true
+  }
+  return any
+}
+
+/**
+ * Write ``trajSmoothRestoreH`` from the playhead snapshot forward (same span as eye-state).
+ * @param {AnimationKeyframe[]} keyframes
+ * @param {string} viewId
+ * @param {boolean} enabled
+ * @param {number} time_s
+ */
+export function persistViewTrajSmoothRestoreHInKeyframes(keyframes, viewId, enabled, time_s) {
+  const id = String(viewId)
+  const sorted = [...keyframes].sort((a, b) => a.time_s - b.time_s)
+  let startTime = null
+  for (const kf of sorted) {
+    if (kf.time_s > time_s + 1e-6) break
+    if (kf.views.some((v) => String(v.id) === id)) startTime = kf.time_s
+  }
+  if (startTime == null) {
+    const first = sorted.find((kf) => kf.views.some((v) => String(v.id) === id))
+    if (!first) return false
+    startTime = first.time_s
+  }
+  let any = false
+  for (const kf of sorted) {
+    if (kf.time_s + 1e-6 < startTime) continue
+    const row = kf.views.find((v) => String(v.id) === id)
+    if (!row) continue
+    row.trajSmoothRestoreH = enabled !== false
+    any = true
+  }
+  return any
+}
+
+/**
+ * Write ``selectionEachFrame`` from the playhead snapshot forward (same span as eye-state).
+ * @param {AnimationKeyframe[]} keyframes
+ * @param {string} viewId
+ * @param {boolean} enabled
+ * @param {number} time_s
+ */
+export function persistViewSelectionEachFrameInKeyframes(keyframes, viewId, enabled, time_s) {
+  const id = String(viewId)
+  const sorted = [...keyframes].sort((a, b) => a.time_s - b.time_s)
+  let startTime = null
+  for (const kf of sorted) {
+    if (kf.time_s > time_s + 1e-6) break
+    if (kf.views.some((v) => String(v.id) === id)) startTime = kf.time_s
+  }
+  if (startTime == null) {
+    const first = sorted.find((kf) => kf.views.some((v) => String(v.id) === id))
+    if (!first) return false
+    startTime = first.time_s
+  }
+  let any = false
+  for (const kf of sorted) {
+    if (kf.time_s + 1e-6 < startTime) continue
+    const row = kf.views.find((v) => String(v.id) === id)
+    if (!row) continue
+    row.selectionEachFrame = enabled === true
+    any = true
+  }
+  return any
+}
+
+/**
+ * After leaving Animate, keep playhead hide/fade and restore a usable base opacity.
+ * Do not force faded rows visible — that unhides representations the user hid.
+ * @param {Record<string, unknown>[]} views
+ * @param {AnimationKeyframe[]} keyframes
+ * @param {number} time_s
+ */
+export function restoreViewsAfterLeavingAnimate(views, keyframes, time_s) {
+  for (const live of views) {
+    if (live._isSelHighlight) continue
+    const id = String(live.id ?? '')
+    const snap = id
+      ? (viewSnapshotAtOrBeforeTime(keyframes, id, time_s) ?? firstViewSnapshot(keyframes, id))
+      : null
+    const playheadHidden =
+      live.visible === false ||
+      (typeof live.opacity === 'number' && live.opacity <= 0.001)
+    const authoredHidden = snap ? snap.visible === false : live.visible === false
+    live.visible = !playheadHidden && !authoredHidden
+    const authoredOpacity =
+      snap && typeof snap.opacity === 'number' && Number.isFinite(snap.opacity)
+        ? Math.max(0, Math.min(1, snap.opacity))
+        : 1
+    live.opacity = authoredOpacity > 0.001 ? authoredOpacity : 1
+  }
+}
+
+/**
  * First keyframe that defines a representation track (for panel setup before it is visible).
  * @param {AnimationKeyframe[]} keyframes
  * @param {string} viewId

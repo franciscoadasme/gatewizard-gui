@@ -1,9 +1,11 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, Notification, screen, shell } from 'electron'
 import { spawn, spawnSync } from 'child_process'
-import { existsSync, accessSync, readFileSync, statSync, watch, readdirSync } from 'fs'
-import { mkdir, readFile, writeFile } from 'fs/promises'
+import { existsSync, accessSync, readFileSync, statSync, watch } from 'fs'
+import { mkdir, open as openFile, readFile, writeFile } from 'fs/promises'
 import path, { join } from 'path'
 import { buildFfmpegEncodeArgs, formatFfmpegError } from './animationEncode.js'
+import { resolveWritableDir, sidecarFsCandidates, sidecarReadCandidates } from './wslPaths.js'
+import { readSystemMemoryKbAsync } from './systemMemory.js'
 
 /** Directory from which the process was started (terminal cwd). Captured early. */
 const LAUNCH_CWD = (() => {
@@ -90,7 +92,7 @@ import {
   getPreferredLaunchDisplay
 } from './window-work-area.js'
 import { buildAugmentedPath } from './shell-path.js'
-import { applyDisplayGpuEnv, persistGpuSafeMode } from '../../scripts/display-gpu-policy.cjs'
+import { applyDisplayGpuEnv } from '../../scripts/display-gpu-policy.cjs'
 import { clearCorruptedGpuCache, getAppConfigDir } from '../../scripts/gpu-cache.cjs'
 import { ensureSessionDbus } from '../../scripts/session-dbus.cjs'
 import { ignoreBrokenStdio, isBrokenPipeError, writeStdioSafe } from '../../scripts/stdio-guard.cjs'
@@ -1258,7 +1260,7 @@ app.on('child-process-gone', (_event, details) => {
     `[gpu] child process gone: reason=${details.reason} exitCode=${details.exitCode}\n`
   )
   const reason = `child-process-gone:${details.reason}`
-  persistGpuSafeMode(reason)
+  // This process only. The next launch tries the GPU again.
   relaunchInGpuSafeMode(reason)
 })
 
@@ -1405,6 +1407,35 @@ ipcMain.handle('fs:readText', async (_event, filePath) => {
   return readFile(filePath, 'utf-8')
 })
 
+const MAX_BINARY_SLICE = 512 * 1024 * 1024
+
+ipcMain.handle('fs:readBinarySlice', async (_event, filePath, offset, length) => {
+  const start = Math.max(0, Math.trunc(Number(offset) || 0))
+  const size = Math.max(0, Math.trunc(Number(length) || 0))
+  if (!filePath || !size) return new ArrayBuffer(0)
+  if (size > MAX_BINARY_SLICE) {
+    throw new Error(
+      `Trajectory cache slice too large (${size} bytes). Read at most ${MAX_BINARY_SLICE} bytes per request.`
+    )
+  }
+  const candidates = sidecarReadCandidates(filePath)
+  const existing = candidates.find((p) => existsSync(p))
+  if (!existing) {
+    const tried = candidates.join(', ')
+    throw new Error(`Trajectory cache not found (tried ${tried})`)
+  }
+  const handle = await openFile(existing, 'r')
+  try {
+    const buf = Buffer.allocUnsafe(size)
+    const { bytesRead } = await handle.read(buf, 0, size, start)
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + bytesRead)
+  } finally {
+    await handle.close()
+  }
+})
+
+ipcMain.handle('system:memoryInfo', () => readSystemMemoryKbAsync())
+
 ipcMain.handle('clusters:load', async () => loadClusterProfiles())
 
 ipcMain.handle('clusters:save', async (_event, payload) => saveClusterProfiles(payload || { profiles: [] }))
@@ -1456,27 +1487,25 @@ ipcMain.handle('animation:ensureDir', async (_event, dirPath) => {
   if (!dirPath || typeof dirPath !== 'string') {
     throw new Error('animation:ensureDir requires a directory path')
   }
-  await mkdir(dirPath, { recursive: true })
-  await mkdir(join(dirPath, 'frames'), { recursive: true })
-  return dirPath
+  const dest = resolveWritableDir(dirPath, existsSync, path.dirname)
+  await mkdir(dest, { recursive: true })
+  await mkdir(join(dest, 'frames'), { recursive: true })
+  return dest
 })
 
 ipcMain.handle('animation:inspectOutputDir', async (_event, dirPath) => {
-  const base = String(dirPath ?? '').trim()
-  if (!base) {
+  const requested = String(dirPath ?? '').trim()
+  if (!requested) {
     return { exists: false, hasAnimationJson: false, frameCount: 0, hasVideo: false }
   }
+  const base =
+    sidecarFsCandidates(requested).find((p) => existsSync(p)) ||
+    resolveWritableDir(requested, existsSync, path.dirname)
   const exists = existsSync(base)
   const hasAnimationJson = existsSync(join(base, 'animation.json'))
-  let frameCount = 0
-  try {
-    const framesDir = join(base, 'frames')
-    if (existsSync(framesDir)) {
-      frameCount = readdirSync(framesDir).filter((f) => /^frame_\d+\.png$/i.test(f)).length
-    }
-  } catch {
-    frameCount = 0
-  }
+  const framesDir = join(base, 'frames')
+  // Do not readdir frames/ — OneDrive / WSL listings of thousands of PNGs can hang.
+  const frameCount = existsSync(join(framesDir, 'frame_000001.png')) ? 1 : 0
   const encodedFiles = ['animation.mp4', 'animation.webm', 'animation.mov', 'animation.gif'].filter(
     (name) => existsSync(join(base, name))
   )
@@ -1485,7 +1514,8 @@ ipcMain.handle('animation:inspectOutputDir', async (_event, dirPath) => {
     hasAnimationJson,
     frameCount,
     hasVideo: encodedFiles.length > 0,
-    encodedFiles
+    encodedFiles,
+    path: base
   }
 })
 

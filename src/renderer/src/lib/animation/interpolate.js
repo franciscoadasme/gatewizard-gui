@@ -5,6 +5,7 @@ import { interpolateCameraPose } from './cameraPose.js'
 import { mergeTrackOrder, sortViewsByTracks, viewsById, cloneSerializedView, viewSnapshotAtOrBeforeTime, deriveViewTracks } from './tracks.js'
 import { interpolateLabelLift } from '../viewer/labelStyle.js'
 import { lerpPatches } from '../viewer/workingCoords.js'
+import { interpolateTrajFrame } from './trajFrame.js'
 
 /**
  * @param {import('./schema.js').AnimationCameraPose} cam
@@ -463,6 +464,12 @@ function interpolateView(a, b, t) {
       0,
       Math.min(8, lerpNum(a.surfaceSubdivision ?? 0, b.surfaceSubdivision ?? 0, t))
     ),
+    trajSmooth: Math.max(
+      0,
+      Math.min(8, lerpNum(a.trajSmooth ?? 0, b.trajSmooth ?? 0, t))
+    ),
+    trajSmoothRestoreH: (t < 0.5 ? a.trajSmoothRestoreH : b.trajSmoothRestoreH) !== false,
+    selectionEachFrame: (t < 0.5 ? a.selectionEachFrame : b.selectionEachFrame) === true,
     opacity: lerpNum(
       typeof a.opacity === 'number' ? a.opacity : 1,
       typeof b.opacity === 'number' ? b.opacity : 1,
@@ -517,9 +524,24 @@ function interpolateViews(keyframes, time_s, from, to, localT, rawT, segmentDura
     )
     const baseOpacity = typeof base.opacity === 'number' ? base.opacity : 1
     const opacity = Math.max(0, Math.min(1, baseOpacity * fadeFactor))
+    const trajSmooth = Math.max(
+      0,
+      Math.min(
+        8,
+        lerpNum(fa?.trajSmooth ?? base.trajSmooth ?? 0, fb?.trajSmooth ?? fa?.trajSmooth ?? 0, localT)
+      )
+    )
+    const restoreSrc = localT < 0.5 ? (fa ?? stepped ?? base) : (fb ?? fa ?? stepped ?? base)
     out.push({
       ...base,
       ...fade,
+      trajSmooth,
+      trajSmoothRestoreH: restoreSrc.trajSmoothRestoreH !== false,
+      selectionEachFrame:
+        (stepped?.selectionEachFrame ??
+          fa?.selectionEachFrame ??
+          fb?.selectionEachFrame ??
+          base.selectionEachFrame) === true,
       opacity,
       visible: opacity > 0.001
     })
@@ -672,6 +694,8 @@ export function interpolateAtTime(keyframes, time_s, viewTracks = [], baseCoords
       ? interpolateScene(sceneFrom, sceneTo, localT)
       : sceneFrom
 
+  const trajFrame = interpolateTrajFrame(from, to, localT, keyframes)
+
   return {
     camera: interpolateCameraState(from.camera, to.camera, localT),
     views,
@@ -685,6 +709,7 @@ export function interpolateAtTime(keyframes, time_s, viewTracks = [], baseCoords
       rawT,
       segmentDuration
     ),
-    coordPatch: interpolateCoordPatch(from, to, localT, baseCoords)
+    coordPatch: interpolateCoordPatch(from, to, localT, baseCoords),
+    ...(trajFrame != null ? { trajFrame } : {})
   }
 }

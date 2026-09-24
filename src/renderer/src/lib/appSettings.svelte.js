@@ -1,5 +1,5 @@
 /**
- * App-level preferences (notifications, updates, scene-defaults remember flag, UI scale).
+ * App-level preferences (notifications, updates, scene-defaults remember flag, UI scale, trajectory RAM).
  * Theme stays in theme.svelte.js (`gw_theme`). Merge-with-defaults for forward compatibility.
  */
 
@@ -11,12 +11,21 @@ export const UI_ZOOM_STEP = 1.2 ** (1 / 3)
 export const UI_SCALE_MIN = 0.8
 export const UI_SCALE_MAX = 1.5
 
+export const TRAJ_LOAD_ALL_GIB_MIN = 0
+export const TRAJ_LOAD_ALL_GIB_MAX = 16
+export const TRAJ_LOAD_ALL_GIB_DEFAULT = 4
+export const TRAJ_STREAM_CACHE_MIB_MIN = 64
+export const TRAJ_STREAM_CACHE_MIB_MAX = 2048
+export const TRAJ_STREAM_CACHE_MIB_DEFAULT = 512
+
 /** @typedef {{
  *   jobNotificationsEnabled: boolean,
  *   updateCheckOnLaunch: boolean,
  *   rememberViewerDefaults: boolean,
  *   dismissedUpdateKey: string | null,
- *   uiScale: number
+ *   uiScale: number,
+ *   trajLoadAllGib: number,
+ *   trajStreamCacheMib: number
  * }} AppSettings */
 
 /** @type {AppSettings} */
@@ -25,7 +34,9 @@ export const DEFAULT_APP_SETTINGS = {
   updateCheckOnLaunch: true,
   rememberViewerDefaults: false,
   dismissedUpdateKey: null,
-  uiScale: 1.1
+  uiScale: 1.1,
+  trajLoadAllGib: TRAJ_LOAD_ALL_GIB_DEFAULT,
+  trajStreamCacheMib: TRAJ_STREAM_CACHE_MIB_DEFAULT
 }
 
 /**
@@ -36,6 +47,24 @@ export function clampUiScale(n) {
   const v = typeof n === 'number' ? n : Number(n)
   if (!Number.isFinite(v)) return DEFAULT_APP_SETTINGS.uiScale
   return Math.min(UI_SCALE_MAX, Math.max(UI_SCALE_MIN, v))
+}
+
+/**
+ * @param {unknown} n
+ */
+export function clampTrajLoadAllGib(n) {
+  const v = typeof n === 'number' ? n : Number(n)
+  if (!Number.isFinite(v)) return TRAJ_LOAD_ALL_GIB_DEFAULT
+  return Math.min(TRAJ_LOAD_ALL_GIB_MAX, Math.max(TRAJ_LOAD_ALL_GIB_MIN, v))
+}
+
+/**
+ * @param {unknown} n
+ */
+export function clampTrajStreamCacheMib(n) {
+  const v = typeof n === 'number' ? n : Number(n)
+  if (!Number.isFinite(v)) return TRAJ_STREAM_CACHE_MIB_DEFAULT
+  return Math.min(TRAJ_STREAM_CACHE_MIB_MAX, Math.max(TRAJ_STREAM_CACHE_MIB_MIN, v))
 }
 
 /**
@@ -65,7 +94,15 @@ function normalizeLoaded(raw) {
     uiScale:
       typeof o.uiScale === 'number'
         ? clampUiScale(o.uiScale)
-        : DEFAULT_APP_SETTINGS.uiScale
+        : DEFAULT_APP_SETTINGS.uiScale,
+    trajLoadAllGib:
+      typeof o.trajLoadAllGib === 'number'
+        ? clampTrajLoadAllGib(o.trajLoadAllGib)
+        : DEFAULT_APP_SETTINGS.trajLoadAllGib,
+    trajStreamCacheMib:
+      typeof o.trajStreamCacheMib === 'number'
+        ? clampTrajStreamCacheMib(o.trajStreamCacheMib)
+        : DEFAULT_APP_SETTINGS.trajStreamCacheMib
   }
 }
 
@@ -81,7 +118,9 @@ export function persistAppSettings() {
         updateCheckOnLaunch: appSettings.updateCheckOnLaunch,
         rememberViewerDefaults: appSettings.rememberViewerDefaults,
         dismissedUpdateKey: appSettings.dismissedUpdateKey,
-        uiScale: clampUiScale(appSettings.uiScale)
+        uiScale: clampUiScale(appSettings.uiScale),
+        trajLoadAllGib: clampTrajLoadAllGib(appSettings.trajLoadAllGib),
+        trajStreamCacheMib: clampTrajStreamCacheMib(appSettings.trajStreamCacheMib)
       })
     )
   } catch {
@@ -107,6 +146,12 @@ export function updateAppSettings(patch) {
   const next = { ...patch }
   if ('uiScale' in next) {
     next.uiScale = clampUiScale(next.uiScale)
+  }
+  if ('trajLoadAllGib' in next) {
+    next.trajLoadAllGib = clampTrajLoadAllGib(next.trajLoadAllGib)
+  }
+  if ('trajStreamCacheMib' in next) {
+    next.trajStreamCacheMib = clampTrajStreamCacheMib(next.trajStreamCacheMib)
   }
   Object.assign(appSettings, next)
   persistAppSettings()

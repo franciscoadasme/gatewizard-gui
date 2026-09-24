@@ -1,22 +1,24 @@
 <script>
-  import { T, useThrelte } from '@threlte/core'
+  import { T, useTask, useThrelte } from '@threlte/core'
   import {
     BackSide,
     Color,
     InstancedBufferAttribute,
     InstancedMesh,
-    Matrix4,
     MeshBasicMaterial,
     MeshStandardMaterial,
     MeshToonMaterial,
-    Quaternion,
-    SphereGeometry,
-    Vector3
+    SphereGeometry
   } from 'three'
   import { defaultColorScheme } from '../../../lib/colorSchemes.js'
   import { getToonGradientMap } from '../../../lib/viewer/goodsellMaterial.js'
   import { applyGlowMaterial } from '../../../lib/viewer/glowMaterial.js'
   import { untrack } from 'svelte'
+  import {
+    collectAtomIndices,
+    writeInstanceTranslationScale
+  } from '../../../lib/viewer/trajectoryFrames.js'
+  import { blendPlayXyz, trajPlayClock } from '../../../lib/viewer/trajPlayClock.js'
 
   /** @typedef {{ x: number, y: number, z: number, element: string, name: string }} Atom */
   /** @typedef {(atom: Atom) => import('three').Color} ColorScheme */
@@ -67,10 +69,14 @@
   }
 
   /**
-   * @type {{atoms: Atom[], getColor?: ColorScheme, quality?: number, atomScale?: number, metalness?: number, roughness?: number, emissiveIntensity?: number, renderOrder?: number, depthTest?: boolean, opacity?: number, outline?: boolean, goodsell?: boolean, outlinesEnabled?: boolean, outlineColor?: string, outlineWidth?: number, glowBulb?: boolean}}
+   * @type {{atoms: Atom[], xyz?: Float32Array | null, xyzEpoch?: number, trajSmooth?: number, trajSmoothRestoreH?: boolean, getColor?: ColorScheme, quality?: number, atomScale?: number, metalness?: number, roughness?: number, emissiveIntensity?: number, renderOrder?: number, depthTest?: boolean, opacity?: number, outline?: boolean, goodsell?: boolean, outlinesEnabled?: boolean, outlineColor?: string, outlineWidth?: number, glowBulb?: boolean}}
    */
   let {
     atoms = [],
+    xyz = null,
+    xyzEpoch = 0,
+    trajSmooth = 0,
+    trajSmoothRestoreH = true,
     getColor = defaultColorScheme,
     quality = 3,
     atomScale = 1.0,
@@ -95,6 +101,60 @@
 
   let meshRef = $state(/** @type {InstancedMesh | null} */ (null))
   let outlineMeshRef = $state(/** @type {InstancedMesh | null} */ (null))
+  /** @type {Atom[] | null} */
+  let radiusAtoms = null
+  let radiusScale = NaN
+  /** @type {Float32Array | null} */
+  let radiiCache = null
+  /** @type {Float32Array | null} */
+  let outlineRadiiCache = null
+
+  /**
+   * @param {Atom[]} arr
+   * @param {boolean} outline
+   */
+  function radiiFor(arr, outline) {
+    if (
+      arr === radiusAtoms &&
+      radiusScale === atomScale &&
+      radiiCache &&
+      (!outline || outlineRadiiCache)
+    ) {
+      return outline ? outlineRadiiCache : radiiCache
+    }
+    radiusAtoms = arr
+    radiusScale = atomScale
+    const n = arr.length
+    const r = new Float32Array(n)
+    const or = outline ? new Float32Array(n) : null
+    for (let i = 0; i < n; i++) {
+      const rad = vdwRadius(arr[i].element) * atomScale
+      r[i] = rad
+      if (or) or[i] = rad * (1 + outlineWidth / Math.max(rad, 0.5))
+    }
+    radiiCache = r
+    outlineRadiiCache = or
+    return outline ? or : r
+  }
+
+  /**
+   * @param {Float32Array} dest
+   * @param {Atom[]} arr
+   * @param {Float32Array | null | undefined} packed
+   * @param {Float32Array} radii
+   */
+  function writeVdwMatrices(dest, arr, packed, radii) {
+    const n = arr.length
+    for (let i = 0; i < n; i++) {
+      const atom = arr[i]
+      const base = typeof atom.index === 'number' ? atom.index * 3 : i * 3
+      if (packed && base + 2 < packed.length) {
+        writeInstanceTranslationScale(dest, i, packed[base], packed[base + 1], packed[base + 2], radii[i])
+      } else {
+        writeInstanceTranslationScale(dest, i, atom.x, atom.y, atom.z, radii[i])
+      }
+    }
+  }
 
   $effect(() => {
     const n = count
@@ -129,12 +189,9 @@
 
     const mesh = new InstancedMesh(geometry, material, n)
     mesh.renderOrder = renderOrder
+    // Unit-sphere geometry would cull the whole cloud when the origin leaves the view.
+    mesh.frustumCulled = false
     mesh.instanceColor = new InstancedBufferAttribute(new Float32Array(n * 3), 3)
-
-    const matrix = new Matrix4()
-    const quat = new Quaternion()
-    const scale = new Vector3()
-    const pos = new Vector3()
 
     const showOutlines = goodsell && outlinesEnabled && outlineWidth > 0
     /** @type {InstancedMesh | null} */
@@ -146,24 +203,24 @@
       })
       outlineMesh = new InstancedMesh(geometry.clone(), outlineMat, n)
       outlineMesh.renderOrder = renderOrder - 1
+      outlineMesh.frustumCulled = false
     }
 
-    atoms.forEach((atom, index) => {
-      pos.set(atom.x, atom.y, atom.z)
-      const r = vdwRadius(atom.element) * atomScale
-      const color = untrack(() => getColor(atom))
-      scale.set(r, r, r)
-      matrix.compose(pos, quat, scale)
-      mesh.setMatrixAt(index, matrix)
-      mesh.setColorAt(index, color)
-
-      if (outlineMesh) {
-        const outlineScale = 1 + outlineWidth / Math.max(r, 0.5)
-        scale.set(r * outlineScale, r * outlineScale, r * outlineScale)
-        matrix.compose(pos, quat, scale)
-        outlineMesh.setMatrixAt(index, matrix)
-        outlineMesh.setColorAt(index, new Color(outlineColor))
-      }
+    const atomList = untrack(() => atoms)
+    const packed = untrack(() => xyz)
+    const dest = mesh.instanceMatrix.array
+    if (dest instanceof Float32Array) {
+      writeVdwMatrices(dest, atomList, packed, radiiFor(atomList, false) ?? new Float32Array(atomList.length))
+    }
+    const outlineDest = outlineMesh?.instanceMatrix.array
+    const outlineRadii = outlineMesh ? radiiFor(atomList, true) : null
+    if (outlineMesh && outlineDest instanceof Float32Array && outlineRadii) {
+      writeVdwMatrices(outlineDest, atomList, packed, outlineRadii)
+    }
+    const outlineCol = outlineMesh ? new Color(outlineColor) : null
+    atomList.forEach((atom, index) => {
+      mesh.setColorAt(index, untrack(() => getColor(atom)))
+      if (outlineMesh && outlineCol) outlineMesh.setColorAt(index, outlineCol)
     })
     mesh.instanceMatrix.needsUpdate = true
     mesh.instanceColor.needsUpdate = true
@@ -181,6 +238,53 @@
       meshRef = null
       outlineMeshRef = null
     }
+  })
+
+  /** @type {Atom[] | null} */
+  let playIdxAtoms = null
+  /** @type {Int32Array | null} */
+  let playIdx = null
+
+  /** @param {Atom[]} arr */
+  function playIndices(arr) {
+    if (arr === playIdxAtoms) return playIdx
+    playIdxAtoms = arr
+    playIdx = collectAtomIndices(arr)
+    return playIdx
+  }
+
+  /**
+   * @param {Atom[]} arr
+   * @param {Float32Array | null | undefined} packed
+   */
+  function uploadVdw(arr, packed) {
+    const mesh = meshRef
+    if (!mesh || arr.length !== mesh.count) return
+    const dest = mesh.instanceMatrix.array
+    if (!(dest instanceof Float32Array)) return
+    writeVdwMatrices(dest, arr, packed, radiiFor(arr, false) ?? new Float32Array(arr.length))
+    const outlineMesh = outlineMeshRef
+    const outlineDest = outlineMesh?.instanceMatrix.array
+    if (outlineMesh && outlineDest instanceof Float32Array) {
+      const or = radiiFor(arr, true)
+      if (or) writeVdwMatrices(outlineDest, arr, packed, or)
+      outlineMesh.instanceMatrix.needsUpdate = true
+    }
+    mesh.instanceMatrix.needsUpdate = true
+    invalidate()
+  }
+
+  $effect(() => {
+    void xyzEpoch
+    void xyz
+    if (trajPlayClock.playing) return
+    uploadVdw(atoms, xyz)
+  })
+
+  useTask(() => {
+    if (!trajPlayClock.playing) return
+    const arr = untrack(() => atoms)
+    uploadVdw(arr, blendPlayXyz(trajSmooth, playIndices(arr), trajSmoothRestoreH !== false))
   })
 
   const _tmpHL = new Color()

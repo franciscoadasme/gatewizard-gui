@@ -1,8 +1,10 @@
 <script>
   import { onDestroy, untrack } from 'svelte'
-  import { T, useThrelte } from '@threlte/core'
+  import { T, useTask, useThrelte } from '@threlte/core'
   import { Color, DoubleSide, Mesh, MeshStandardMaterial } from 'three'
-  import { buildTubeGeometries } from '../../../lib/viewer/cartoon.js'
+  import { createTubeSkin, updateRibbonSkins } from '../../../lib/viewer/cartoon.js'
+  import { collectAtomIndices } from '../../../lib/viewer/trajectoryFrames.js'
+  import { blendPlayXyz, trajPlayClock } from '../../../lib/viewer/trajPlayClock.js'
   import { defaultColorScheme } from '../../../lib/colorSchemes.js'
   import {
     createGoodsellSurfaceMaterial,
@@ -32,11 +34,19 @@
    *   outlineColor?: string,
    *   outlineColor?: string,
    *   outlineWidth?: number,
-   *   opacity?: number
+   *   opacity?: number,
+   *   xyz?: Float32Array | null,
+   *   xyzEpoch?: number
+   *   trajSmooth?: number
+   *   trajSmoothRestoreH?: boolean
    * }}
    */
   let {
     atoms,
+    xyz = null,
+    xyzEpoch = 0,
+    trajSmooth = 0,
+    trajSmoothRestoreH = true,
     residues = [],
     getColor = defaultColorScheme,
     tubeRadius = 0.9,
@@ -94,8 +104,15 @@
     invalidate()
   })
 
+  /** @type {import('../../../lib/viewer/cartoon.js').RibbonSkin[]} */
+  let surfaceSkin = []
+  /** @type {import('../../../lib/viewer/cartoon.js').RibbonSkin[]} */
+  let outlineSkin = []
+
   $effect(() => {
     if (!atoms?.length || !residues?.length) {
+      surfaceSkin = []
+      outlineSkin = []
       meshes = []
       return
     }
@@ -103,43 +120,56 @@
     const surfaceMat = goodsell ? goodsellMaterial : material
     const showOutlines = goodsell && outlinesEnabled && outlineWidth > 0
     const outlineMat = showOutlines ? createSilhouetteOutlineMaterial(outlineColor) : null
+    const packed = untrack(() => xyz)
 
     /** @type {Mesh[]} */
     const nextMeshes = []
+    /** @type {import('../../../lib/viewer/cartoon.js').RibbonSkin[]} */
+    let nextSurface = []
+    /** @type {import('../../../lib/viewer/cartoon.js').RibbonSkin[]} */
+    let nextOutline = []
 
     try {
-      const geometries = buildTubeGeometries(atoms, residues, _effectiveGetColor, {
+      nextSurface = createTubeSkin(atoms, residues, _effectiveGetColor, {
         tubeRadius,
         ssColors,
         quality
       })
+      if (packed) updateRibbonSkins(nextSurface, packed, atoms)
 
       if (showOutlines && outlineMat) {
         const outlineColorForGeom = new Color(outlineColor)
         const outlineColorFn = () => outlineColorForGeom
-        const outlineGeometries = buildTubeGeometries(atoms, residues, outlineColorFn, {
+        nextOutline = createTubeSkin(atoms, residues, outlineColorFn, {
           tubeRadius: tubeRadius + outlineWidth,
           ssColors,
           quality
         })
-        for (const geom of outlineGeometries) {
-          const outlineMesh = new Mesh(geom, outlineMat)
+        if (packed) updateRibbonSkins(nextOutline, packed, atoms)
+        for (const skin of nextOutline) {
+          const outlineMesh = new Mesh(skin.geometry, outlineMat)
           outlineMesh.renderOrder = 0
+          outlineMesh.frustumCulled = false
           nextMeshes.push(outlineMesh)
         }
       }
 
-      for (const geom of geometries) {
-        const surfaceMesh = new Mesh(geom, surfaceMat)
+      for (const skin of nextSurface) {
+        const surfaceMesh = new Mesh(skin.geometry, surfaceMat)
         surfaceMesh.renderOrder = 1
+        surfaceMesh.frustumCulled = false
         nextMeshes.push(surfaceMesh)
       }
     } catch (err) {
       console.error('[Tube] geometry build failed:', err)
+      surfaceSkin = []
+      outlineSkin = []
       meshes = []
       return
     }
 
+    surfaceSkin = nextSurface
+    outlineSkin = nextOutline
     meshes = nextMeshes
     invalidate()
 
@@ -148,7 +178,48 @@
         m.geometry.dispose()
       }
       outlineMat?.dispose()
+      if (surfaceSkin === nextSurface) surfaceSkin = []
+      if (outlineSkin === nextOutline) outlineSkin = []
     }
+  })
+
+  /** @type {typeof atoms | null} */
+  let playIdxAtoms = null
+  /** @type {Int32Array | null} */
+  let playIdx = null
+
+  /** @param {typeof atoms} arr */
+  function playIndices(arr) {
+    if (arr === playIdxAtoms) return playIdx
+    playIdxAtoms = arr
+    playIdx = collectAtomIndices(arr)
+    return playIdx
+  }
+
+  /**
+   * @param {Float32Array | null | undefined} packed
+   * @param {typeof atoms} arr
+   */
+  function uploadRibbon(packed, arr) {
+    const surface = surfaceSkin
+    const outline = outlineSkin
+    if (!surface.length) return
+    updateRibbonSkins(surface, packed, arr)
+    if (outline.length) updateRibbonSkins(outline, packed, arr)
+    invalidate()
+  }
+
+  $effect(() => {
+    void xyzEpoch
+    void xyz
+    if (trajPlayClock.playing) return
+    uploadRibbon(xyz, atoms)
+  })
+
+  useTask(() => {
+    if (!trajPlayClock.playing) return
+    const arr = untrack(() => atoms)
+    uploadRibbon(blendPlayXyz(trajSmooth, playIndices(arr), trajSmoothRestoreH !== false), arr)
   })
 
   onDestroy(() => {

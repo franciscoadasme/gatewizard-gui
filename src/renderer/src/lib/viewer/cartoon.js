@@ -276,6 +276,27 @@ function buildRibbonGeometry(pts, nms, widths, thicknesses, colors, csSides = CS
  */
 
 /**
+ * Frozen ribbon topology. Positions are rewritten from packed Cα / O each frame.
+ * @typedef {{
+ *   geometry: import('three').BufferGeometry,
+ *   caIndex: Int32Array,
+ *   oIndex: Int32Array,
+ *   widths: Float32Array,
+ *   thicknesses: Float32Array,
+ *   smoothFactor: number,
+ *   csSides: number,
+ *   nRes: number,
+ *   nSm: number,
+ *   ca: Float32Array,
+ *   o: Float32Array,
+ *   hasO: Uint8Array,
+ *   nrm: Float32Array,
+ *   smP: Float32Array,
+ *   smN: Float32Array
+ * }} RibbonSkin
+ */
+
+/**
  * @typedef {{ tubeRadius?: number, ssColors?: Record<string,string>|null, quality?: number }} TubeOpts
  */
 
@@ -307,14 +328,26 @@ function hexMapToRgb(map) {
  * @returns {BufferGeometry[]}
  */
 export function buildCartoonGeometries(atoms, residues, colorFn, opts = {}) {
+  return createCartoonSkin(atoms, residues, colorFn, opts).map((s) => s.geometry)
+}
+
+/**
+ * Ribbon meshes plus the backbone tables needed to move them without remeshing.
+ * @param {Array} atoms
+ * @param {Array} residues
+ * @param {(atom: any) => import('three').Color} colorFn
+ * @param {CartoonOpts} [opts]
+ * @returns {RibbonSkin[]}
+ */
+export function createCartoonSkin(atoms, residues, colorFn, opts = {}) {
   /** @type {Map<number, any>} Map from atom.index (global MDAnalysis id) → atom */
   const atomByIndex = new Map(atoms.map((a) => [a.index, a]))
   const segments = splitContinuousSegments(atomByIndex, residues)
-  /** @type {BufferGeometry[]} */
+  /** @type {RibbonSkin[]} */
   const out = []
   for (const seg of segments) {
-    const geom = buildSegmentCartoon(atomByIndex, seg, colorFn, opts)
-    if (geom) out.push(geom)
+    const skin = buildSegmentCartoon(atomByIndex, seg, colorFn, opts)
+    if (skin) out.push(skin)
   }
   return out
 }
@@ -475,7 +508,9 @@ function buildSegmentCartoon(atomByIndex, segResidues, colorFn, opts = {}) {
     }
   }
 
-  return buildRibbonGeometry(pts, nms, widths, thicknesses, ptColors, csSides)
+  const geom = buildRibbonGeometry(pts, nms, widths, thicknesses, ptColors, csSides)
+  if (!geom) return null
+  return allocRibbonSkin(geom, segResidues, atomByIndex, widths, thicknesses, smoothFactor, csSides)
 }
 
 // ── Tube ─────────────────────────────────────────────────────────────────────
@@ -495,14 +530,25 @@ function lerpRgb(a, b, t) {
  * @returns {BufferGeometry[]}
  */
 export function buildTubeGeometries(atoms, residues, colorFn, opts = {}) {
+  return createTubeSkin(atoms, residues, colorFn, opts).map((s) => s.geometry)
+}
+
+/**
+ * @param {Array} atoms
+ * @param {Array} residues
+ * @param {(atom: any) => import('three').Color} colorFn
+ * @param {TubeOpts} [opts]
+ * @returns {RibbonSkin[]}
+ */
+export function createTubeSkin(atoms, residues, colorFn, opts = {}) {
   /** @type {Map<number, any>} Map from atom.index (global MDAnalysis id) → atom */
   const atomByIndex = new Map(atoms.map((a) => [a.index, a]))
   const segments = splitContinuousSegments(atomByIndex, residues)
-  /** @type {BufferGeometry[]} */
+  /** @type {RibbonSkin[]} */
   const out = []
   for (const seg of segments) {
-    const geom = buildSegmentTube(atomByIndex, seg, colorFn, opts)
-    if (geom) out.push(geom)
+    const skin = buildSegmentTube(atomByIndex, seg, colorFn, opts)
+    if (skin) out.push(skin)
   }
   return out
 }
@@ -618,5 +664,446 @@ function buildSegmentTube(atomByIndex, segResidues, colorFn, opts) {
     }
   }
 
-  return buildRibbonGeometry(pts, nms, radii, radii, smoothColors, csSides)
+  const geom = buildRibbonGeometry(pts, nms, radii, radii, smoothColors, csSides)
+  if (!geom) return null
+  return allocRibbonSkin(geom, segResidues, atomByIndex, radii, radii, smoothFactor, csSides)
+}
+
+// ── Play: move the ribbon without remeshing ───────────────────────────────
+
+/** @type {Map<number, { cos: Float32Array, sin: Float32Array }>} */
+const CS_TABLE = new Map()
+
+/** @param {number} S */
+function csTable(S) {
+  let t = CS_TABLE.get(S)
+  if (!t) {
+    const cos = new Float32Array(S)
+    const sin = new Float32Array(S)
+    for (let k = 0; k < S; k++) {
+      const a = (2 * Math.PI * k) / S
+      cos[k] = Math.cos(a)
+      sin[k] = Math.sin(a)
+    }
+    t = { cos, sin }
+    CS_TABLE.set(S, t)
+  }
+  return t
+}
+
+/**
+ * @param {import('three').BufferGeometry} geometry
+ * @param {Array<{ ca_index?: number, atom_indices?: number[] }>} segResidues
+ * @param {Map<number, { name?: string }>} atomByIndex
+ * @param {Float32Array} widths
+ * @param {Float32Array} thicknesses
+ * @param {number} smoothFactor
+ * @param {number} csSides
+ * @returns {RibbonSkin}
+ */
+function allocRibbonSkin(geometry, segResidues, atomByIndex, widths, thicknesses, smoothFactor, csSides) {
+  const nRes = segResidues.length
+  const nSm = widths.length
+  const caIndex = new Int32Array(nRes)
+  const oIndex = new Int32Array(nRes)
+  for (let i = 0; i < nRes; i++) {
+    const res = segResidues[i]
+    caIndex[i] = typeof res.ca_index === 'number' ? res.ca_index : -1
+    let oi = -1
+    if (res.atom_indices) {
+      for (const idx of res.atom_indices) {
+        const at = atomByIndex.get(idx)
+        if (at && at.name === 'O') {
+          oi = idx
+          break
+        }
+      }
+    }
+    oIndex[i] = oi
+  }
+  return {
+    geometry,
+    caIndex,
+    oIndex,
+    widths,
+    thicknesses,
+    smoothFactor,
+    csSides,
+    nRes,
+    nSm,
+    ca: new Float32Array(nRes * 3),
+    o: new Float32Array(nRes * 3),
+    hasO: new Uint8Array(nRes),
+    nrm: new Float32Array(nRes * 3),
+    smP: new Float32Array(nSm * 3),
+    smN: new Float32Array(nSm * 3)
+  }
+}
+
+/**
+ * @param {RibbonSkin} skin
+ * @param {Float32Array | null | undefined} xyz
+ * @param {Array<{ index?: number, x: number, y: number, z: number }> | null | undefined} atoms
+ */
+function fillBackbone(skin, xyz, atoms) {
+  /** @type {Map<number, { x: number, y: number, z: number }> | null} */
+  let byIndex = null
+  const needAtoms = !xyz
+  if (needAtoms && atoms?.length) {
+    byIndex = new Map()
+    for (const a of atoms) {
+      if (typeof a.index === 'number') byIndex.set(a.index, a)
+    }
+  }
+  for (let i = 0; i < skin.nRes; i++) {
+    const o = i * 3
+    const ci = skin.caIndex[i]
+    if (xyz && ci >= 0 && ci * 3 + 2 < xyz.length) {
+      skin.ca[o] = xyz[ci * 3]
+      skin.ca[o + 1] = xyz[ci * 3 + 1]
+      skin.ca[o + 2] = xyz[ci * 3 + 2]
+    } else {
+      const a = byIndex?.get(ci)
+      skin.ca[o] = a?.x ?? 0
+      skin.ca[o + 1] = a?.y ?? 0
+      skin.ca[o + 2] = a?.z ?? 0
+    }
+    const oi = skin.oIndex[i]
+    if (oi >= 0) {
+      skin.hasO[i] = 1
+      if (xyz && oi * 3 + 2 < xyz.length) {
+        skin.o[o] = xyz[oi * 3]
+        skin.o[o + 1] = xyz[oi * 3 + 1]
+        skin.o[o + 2] = xyz[oi * 3 + 2]
+      } else {
+        const a = byIndex?.get(oi)
+        skin.o[o] = a?.x ?? 0
+        skin.o[o + 1] = a?.y ?? 0
+        skin.o[o + 2] = a?.z ?? 0
+      }
+    } else {
+      skin.hasO[i] = 0
+    }
+  }
+}
+
+/**
+ * @param {Float32Array} ca
+ * @param {Float32Array} oxy
+ * @param {Uint8Array} hasO
+ * @param {Float32Array} nrm
+ * @param {number} n
+ */
+function computeRibbonNormalsPacked(ca, oxy, hasO, nrm, n) {
+  for (let i = 0; i < n; i++) {
+    const o = i * 3
+    let tx
+    let ty
+    let tz
+    if (i === 0) {
+      tx = ca[3] - ca[0]
+      ty = ca[4] - ca[1]
+      tz = ca[5] - ca[2]
+    } else if (i === n - 1) {
+      const a = (n - 1) * 3
+      const b = (n - 2) * 3
+      tx = ca[a] - ca[b]
+      ty = ca[a + 1] - ca[b + 1]
+      tz = ca[a + 2] - ca[b + 2]
+    } else {
+      const p = (i - 1) * 3
+      const q = (i + 1) * 3
+      tx = ca[q] - ca[p]
+      ty = ca[q + 1] - ca[p + 1]
+      tz = ca[q + 2] - ca[p + 2]
+    }
+    const tlen = Math.hypot(tx, ty, tz) || 1
+    tx /= tlen
+    ty /= tlen
+    tz /= tlen
+
+    let cx
+    let cy
+    let cz
+    if (hasO[i]) {
+      cx = oxy[o] - ca[o]
+      cy = oxy[o + 1] - ca[o + 1]
+      cz = oxy[o + 2] - ca[o + 2]
+    } else if (Math.abs(tx) < 0.9) {
+      cx = 1
+      cy = 0
+      cz = 0
+    } else {
+      cx = 0
+      cy = 1
+      cz = 0
+    }
+    const dt = cx * tx + cy * ty + cz * tz
+    cx -= dt * tx
+    cy -= dt * ty
+    cz -= dt * tz
+    if (cx * cx + cy * cy + cz * cz < 1e-12) {
+      if (Math.abs(tx) < 0.9) {
+        cx = 1
+        cy = 0
+        cz = 0
+      } else {
+        cx = 0
+        cy = 1
+        cz = 0
+      }
+      const dt2 = cx * tx + cy * ty + cz * tz
+      cx -= dt2 * tx
+      cy -= dt2 * ty
+      cz -= dt2 * tz
+    }
+    const nlen = Math.hypot(cx, cy, cz) || 1
+    nrm[o] = cx / nlen
+    nrm[o + 1] = cy / nlen
+    nrm[o + 2] = cz / nlen
+  }
+  for (let i = 1; i < n; i++) {
+    const o = i * 3
+    const p = (i - 1) * 3
+    if (nrm[o] * nrm[p] + nrm[o + 1] * nrm[p + 1] + nrm[o + 2] * nrm[p + 2] < 0) {
+      nrm[o] = -nrm[o]
+      nrm[o + 1] = -nrm[o + 1]
+      nrm[o + 2] = -nrm[o + 2]
+    }
+  }
+}
+
+/**
+ * @param {Float32Array} dest
+ * @param {number} di
+ * @param {Float32Array} a
+ * @param {number} ai
+ * @param {Float32Array} b
+ * @param {number} bi
+ * @param {Float32Array} c
+ * @param {number} ci
+ * @param {Float32Array} d
+ * @param {number} ei
+ * @param {number} t
+ */
+function catmullRomPacked(dest, di, a, ai, b, bi, c, ci, d, ei, t) {
+  const tt = t * t
+  const ttt = tt * t
+  dest[di] =
+    0.5 *
+    (2 * b[bi] +
+      (-a[ai] + c[ci]) * t +
+      (2 * a[ai] - 5 * b[bi] + 4 * c[ci] - d[ei]) * tt +
+      (-a[ai] + 3 * b[bi] - 3 * c[ci] + d[ei]) * ttt)
+  dest[di + 1] =
+    0.5 *
+    (2 * b[bi + 1] +
+      (-a[ai + 1] + c[ci + 1]) * t +
+      (2 * a[ai + 1] - 5 * b[bi + 1] + 4 * c[ci + 1] - d[ei + 1]) * tt +
+      (-a[ai + 1] + 3 * b[bi + 1] - 3 * c[ci + 1] + d[ei + 1]) * ttt)
+  dest[di + 2] =
+    0.5 *
+    (2 * b[bi + 2] +
+      (-a[ai + 2] + c[ci + 2]) * t +
+      (2 * a[ai + 2] - 5 * b[bi + 2] + 4 * c[ci + 2] - d[ei + 2]) * tt +
+      (-a[ai + 2] + 3 * b[bi + 2] - 3 * c[ci + 2] + d[ei + 2]) * ttt)
+}
+
+/**
+ * @param {Float32Array} dest
+ * @param {number} di
+ */
+function normalizePacked3(dest, di) {
+  const len = Math.hypot(dest[di], dest[di + 1], dest[di + 2]) || 1
+  dest[di] /= len
+  dest[di + 1] /= len
+  dest[di + 2] /= len
+}
+
+/**
+ * @param {Float32Array} coords
+ * @param {Float32Array} normals
+ * @param {number} n
+ * @param {Float32Array} outP
+ * @param {Float32Array} outN
+ * @param {number} factor
+ */
+function smoothCoordsAndNormalsPacked(coords, normals, n, outP, outN, factor) {
+  let w = 0
+  if (n < 3) {
+    for (let i = 0; i < n - 1; i++) {
+      const a = i * 3
+      const b = (i + 1) * 3
+      for (let ti = 0; ti < factor; ti++) {
+        const t = ti / factor
+        const o = w * 3
+        outP[o] = coords[a] + (coords[b] - coords[a]) * t
+        outP[o + 1] = coords[a + 1] + (coords[b + 1] - coords[a + 1]) * t
+        outP[o + 2] = coords[a + 2] + (coords[b + 2] - coords[a + 2]) * t
+        outN[o] = normals[a] + (normals[b] - normals[a]) * t
+        outN[o + 1] = normals[a + 1] + (normals[b + 1] - normals[a + 1]) * t
+        outN[o + 2] = normals[a + 2] + (normals[b + 2] - normals[a + 2]) * t
+        normalizePacked3(outN, o)
+        w += 1
+      }
+    }
+    const last = (n - 1) * 3
+    const o = w * 3
+    outP[o] = coords[last]
+    outP[o + 1] = coords[last + 1]
+    outP[o + 2] = coords[last + 2]
+    outN[o] = normals[last]
+    outN[o + 1] = normals[last + 1]
+    outN[o + 2] = normals[last + 2]
+    return
+  }
+  for (let i = 0; i < n - 1; i++) {
+    const i0 = Math.max(i - 1, 0) * 3
+    const i1 = i * 3
+    const i2 = Math.min(i + 1, n - 1) * 3
+    const i3 = Math.min(i + 2, n - 1) * 3
+    for (let ti = 0; ti < factor; ti++) {
+      const t = ti / factor
+      const o = w * 3
+      catmullRomPacked(outP, o, coords, i0, coords, i1, coords, i2, coords, i3, t)
+      catmullRomPacked(outN, o, normals, i0, normals, i1, normals, i2, normals, i3, t)
+      normalizePacked3(outN, o)
+      w += 1
+    }
+  }
+  const last = (n - 1) * 3
+  const o = w * 3
+  outP[o] = coords[last]
+  outP[o + 1] = coords[last + 1]
+  outP[o + 2] = coords[last + 2]
+  outN[o] = normals[last]
+  outN[o + 1] = normals[last + 1]
+  outN[o + 2] = normals[last + 2]
+}
+
+/**
+ * @param {Float32Array} pos
+ * @param {Float32Array | null} nrmOut
+ * @param {Float32Array} smP
+ * @param {Float32Array} smN
+ * @param {Float32Array} widths
+ * @param {Float32Array} thicknesses
+ * @param {number} nSm
+ * @param {number} S
+ */
+function writeRibbonPositions(pos, nrmOut, smP, smN, widths, thicknesses, nSm, S) {
+  const { cos: cosA, sin: sinA } = csTable(S)
+  for (let i = 0; i < nSm; i++) {
+    const p = i * 3
+    let tx
+    let ty
+    let tz
+    if (i === 0) {
+      tx = smP[3] - smP[0]
+      ty = smP[4] - smP[1]
+      tz = smP[5] - smP[2]
+    } else if (i === nSm - 1) {
+      const a = (nSm - 1) * 3
+      const b = (nSm - 2) * 3
+      tx = smP[a] - smP[b]
+      ty = smP[a + 1] - smP[b + 1]
+      tz = smP[a + 2] - smP[b + 2]
+    } else {
+      const a = (i - 1) * 3
+      const b = (i + 1) * 3
+      tx = smP[b] - smP[a]
+      ty = smP[b + 1] - smP[a + 1]
+      tz = smP[b + 2] - smP[a + 2]
+    }
+    const tlen = Math.hypot(tx, ty, tz) || 1
+    tx /= tlen
+    ty /= tlen
+    tz /= tlen
+    const nx = smN[p]
+    const ny = smN[p + 1]
+    const nz = smN[p + 2]
+    let bx = ty * nz - tz * ny
+    let by = tz * nx - tx * nz
+    let bz = tx * ny - ty * nx
+    const blenSq = bx * bx + by * by + bz * bz
+    if (blenSq < 1e-24) {
+      bx = 0
+      by = 1
+      bz = 0
+    } else {
+      const blen = Math.sqrt(blenSq)
+      bx /= blen
+      by /= blen
+      bz /= blen
+    }
+    const w = widths[i]
+    const th = thicknesses[i]
+    const px = smP[p]
+    const py = smP[p + 1]
+    const pz = smP[p + 2]
+    const base = i * S * 3
+    if (w < 0.001 && th < 0.001) {
+      for (let k = 0; k < S; k++) {
+        const off = base + k * 3
+        pos[off] = px
+        pos[off + 1] = py
+        pos[off + 2] = pz
+        if (nrmOut) {
+          nrmOut[off] = nx
+          nrmOut[off + 1] = ny
+          nrmOut[off + 2] = nz
+        }
+      }
+    } else {
+      for (let k = 0; k < S; k++) {
+        const off = base + k * 3
+        const c = cosA[k]
+        const s = sinA[k]
+        const rx = w * c * nx + th * s * bx
+        const ry = w * c * ny + th * s * by
+        const rz = w * c * nz + th * s * bz
+        pos[off] = px + rx
+        pos[off + 1] = py + ry
+        pos[off + 2] = pz + rz
+        if (nrmOut) {
+          const nlen = Math.hypot(rx, ry, rz) || 1
+          nrmOut[off] = rx / nlen
+          nrmOut[off + 1] = ry / nlen
+          nrmOut[off + 2] = rz / nlen
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Rewrite ribbon vertex positions from packed xyz (Cα / O only). Topology stays.
+ * @param {RibbonSkin[]} skins
+ * @param {Float32Array | null | undefined} xyz
+ * @param {Array<{ index?: number, x: number, y: number, z: number }> | null | undefined} [atoms]
+ */
+export function updateRibbonSkins(skins, xyz, atoms) {
+  if (!skins?.length) return
+  for (const skin of skins) {
+    fillBackbone(skin, xyz, atoms)
+    computeRibbonNormalsPacked(skin.ca, skin.o, skin.hasO, skin.nrm, skin.nRes)
+    smoothCoordsAndNormalsPacked(skin.ca, skin.nrm, skin.nRes, skin.smP, skin.smN, skin.smoothFactor)
+    const posAttr = skin.geometry.getAttribute('position')
+    if (!posAttr || !(posAttr.array instanceof Float32Array)) continue
+    writeRibbonPositions(
+      posAttr.array,
+      null,
+      skin.smP,
+      skin.smN,
+      skin.widths,
+      skin.thicknesses,
+      skin.nSm,
+      skin.csSides
+    )
+    posAttr.needsUpdate = true
+    // Face-averaged normals (same as create). Ellipse-offset normals draw a
+    // centerline thread; leaving frame-0 normals makes helices flicker under
+    // hemisphere / directional lights as the ribbon moves.
+    skin.geometry.computeVertexNormals()
+  }
 }

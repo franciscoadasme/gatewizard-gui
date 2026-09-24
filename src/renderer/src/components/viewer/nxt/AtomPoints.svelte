@@ -1,5 +1,5 @@
 <script>
-  import { T, useThrelte } from '@threlte/core'
+  import { T, useTask, useThrelte } from '@threlte/core'
   import {
     BufferAttribute,
     BufferGeometry,
@@ -9,6 +9,8 @@
   } from 'three'
   import { defaultColorScheme } from '../../../lib/colorSchemes.js'
   import { untrack } from 'svelte'
+  import { collectAtomIndices, writePointPositions } from '../../../lib/viewer/trajectoryFrames.js'
+  import { blendPlayXyz, trajPlayClock } from '../../../lib/viewer/trajPlayClock.js'
 
   /** @typedef {{ x: number, y: number, z: number, element: string, name: string, index?: number }} Atom */
   /** @typedef {(atom: Atom) => import('three').Color} ColorScheme */
@@ -24,10 +26,17 @@
    *   depthTest?: boolean
    *   opacity?: number
    *   highlightIndices?: Set<number>
+   *   xyzEpoch?: number
+   *   trajSmooth?: number
+   *   trajSmoothRestoreH?: boolean
    * }}
    */
   let {
     atoms = [],
+    xyz = null,
+    xyzEpoch = 0,
+    trajSmooth = 0,
+    trajSmoothRestoreH = true,
     getColor = defaultColorScheme,
     pointSize = 3,
     atomScale = 1.0,
@@ -40,22 +49,42 @@
   const { invalidate } = useThrelte()
 
   let pointsRef = $state(/** @type {Points | null} */ (null))
+  /** @type {Atom[] | null} */
+  let denseAtoms = null
+  let denseOrder = false
+
+  /**
+   * True when view atoms are index 0..n-1, so packed xyz is already in point order.
+   * Cached on the atom-array identity; play does not replace that array.
+   * @param {Atom[]} arr
+   */
+  function atomsAreIndexOrder(arr) {
+    if (arr === denseAtoms) return denseOrder
+    denseAtoms = arr
+    denseOrder = true
+    for (let i = 0; i < arr.length; i++) {
+      if (arr[i]?.index !== i) {
+        denseOrder = false
+        break
+      }
+    }
+    return denseOrder
+  }
 
   $effect(() => {
-    const arr = atoms
-    const n = arr.length
+    const n = atoms.length
     if (n < 1) {
       pointsRef = null
+      denseAtoms = null
       return
     }
 
+    const arr = untrack(() => atoms)
+    // xyz changes every play frame. Reading it here rebuilds the geometry and
+    // leaves the new color buffer at zero, so points go black while playing.
+    const packed = untrack(() => xyz)
     const positions = new Float32Array(n * 3)
-    for (let i = 0; i < n; i++) {
-      const atom = arr[i]
-      positions[i * 3] = atom.x
-      positions[i * 3 + 1] = atom.y
-      positions[i * 3 + 2] = atom.z
-    }
+    writePointPositions(positions, arr, packed, atomsAreIndexOrder(arr))
 
     const colors = new Float32Array(n * 3)
     const geometry = new BufferGeometry()
@@ -75,6 +104,7 @@
 
     const pts = new Points(geometry, material)
     pts.renderOrder = renderOrder
+    // Points are not culled, so the bounding sphere is never read.
     pts.frustumCulled = false
     pointsRef = pts
     invalidate()
@@ -86,8 +116,52 @@
     }
   })
 
+  /** @type {Atom[] | null} */
+  let playIdxAtoms = null
+  /** @type {Int32Array | null} */
+  let playIdx = null
+
+  /** @param {Atom[]} arr */
+  function playIndices(arr) {
+    if (arr === playIdxAtoms) return playIdx
+    playIdxAtoms = arr
+    playIdx = collectAtomIndices(arr)
+    return playIdx
+  }
+
+  /**
+   * @param {Atom[]} arr
+   * @param {Float32Array | null | undefined} packed
+   */
+  function uploadPoints(arr, packed) {
+    const pts = pointsRef
+    if (!pts) return
+    const posAttr = pts.geometry.getAttribute('position')
+    if (!posAttr || arr.length !== posAttr.count) return
+    const dest = posAttr.array
+    if (!(dest instanceof Float32Array)) return
+    writePointPositions(dest, arr, packed, atomsAreIndexOrder(arr))
+    posAttr.needsUpdate = true
+    invalidate()
+  }
+
   $effect(() => {
-    const pts = untrack(() => pointsRef)
+    void xyzEpoch
+    void xyz
+    if (trajPlayClock.playing) return
+    const arr = atoms
+    uploadPoints(arr, xyz)
+  })
+
+  useTask(() => {
+    if (!trajPlayClock.playing) return
+    const arr = untrack(() => atoms)
+    const packed = blendPlayXyz(trajSmooth, playIndices(arr), trajSmoothRestoreH !== false)
+    uploadPoints(arr, packed)
+  })
+
+  $effect(() => {
+    const pts = pointsRef
     if (!pts) return
     const arr = untrack(() => atoms)
     const hi = highlightIndices

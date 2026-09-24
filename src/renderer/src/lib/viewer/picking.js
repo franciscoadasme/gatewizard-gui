@@ -1,4 +1,5 @@
 import { Vector3 } from 'three'
+import { readAtomXyz } from './trajectoryFrames.js'
 
 /** Approximate van der Waals radii (Å) — matches VdwSpheres representation. */
 const VDW = {
@@ -177,7 +178,11 @@ export function worldToScreen(pos, camera, w, h) {
  * - Skips hidden / fully transparent views (e.g. toggled-off water).
  * - Cartoon / tube only hit backbone atoms (what the ribbon shows).
  * - Pick radius follows representation size (VdW / ball-stick / ribbon / points).
- * - Among hits, prefer closest-to-camera; near ties prefer atomistic reps.
+ * - Among hits, prefer closest-to-camera (view-space Z, not NDC). The viewer
+ *   far plane is huge, so NDC z collapses and a 0.002 epsilon treated the
+ *   front and back of a protein as the same depth — the first screen hit
+ *   (often the far residue) won.
+ * - Near ties prefer atomistic reps.
  *
  * Residue / chain expansion after the pick is handled by the caller (edit mode).
  *
@@ -185,7 +190,8 @@ export function worldToScreen(pos, camera, w, h) {
  *   visible?: boolean,
  *   opacity?: number,
  *   representation?: { type?: string } | string,
- *   atoms?: Array<{ x:number, y:number, z:number, element?:string, name?:string }>
+ *   xyz?: Float32Array | null,
+ *   atoms?: Array<{ x:number, y:number, z:number, element?:string, name?:string, index?: number }>
  * }>} views
  * @param {import('three').Camera} camera
  * @param {number} w
@@ -200,40 +206,51 @@ export function pickAtomFromViews(views, camera, w, h, cx, cy, minThreshold = 20
   let bestDepth = Infinity
   let bestPriority = Infinity
 
-  // Pixels per world-unit for the orthographic camera.
-  const worldW = (camera.right ?? 1) - (camera.left ?? -1)
+  if (typeof camera.updateMatrixWorld === 'function') {
+    camera.updateMatrixWorld(true)
+  }
+
+  const zoom = typeof camera.zoom === 'number' && camera.zoom > 0 ? camera.zoom : 1
+  const worldW = ((camera.right ?? 1) - (camera.left ?? -1)) / zoom
   const pxPerUnit = worldW > 0 ? w / worldW : 1
 
-  const _v = new Vector3()
-  /** Depth epsilon for “same plane” vs representation priority (NDC z). */
-  const DEPTH_EPS = 0.002
+  const _world = new Vector3()
+  const _view = new Vector3()
+  const _clip = new Vector3()
+  /** Same-plane tie-break in Å (view-space). */
+  const DEPTH_EPS = 0.35
 
   for (const view of views) {
     if (!isViewPickable(view)) continue
     const repr = viewRepresentationType(view)
     const priority = representationPickPriority(repr)
+    const xyz = view.xyz
 
     for (const atom of view.atoms) {
       if (!isAtomPickableInView(view, atom)) continue
 
-      _v.set(atom.x, atom.y, atom.z).project(camera)
-      // Skip atoms behind the camera
-      if (_v.z > 1) continue
-      const sx = (_v.x * 0.5 + 0.5) * w
-      const sy = (1 - (_v.y * 0.5 + 0.5)) * h
+      const p = readAtomXyz(atom, xyz)
+      _world.set(p.x, p.y, p.z)
+      _view.copy(_world).applyMatrix4(camera.matrixWorldInverse)
+      // Three.js cameras look down local -Z; behind the camera is +viewZ.
+      if (_view.z > 0) continue
+      const depth = -_view.z
+
+      _clip.copy(_world).project(camera)
+      if (_clip.z < -1 || _clip.z > 1) continue
+      const sx = (_clip.x * 0.5 + 0.5) * w
+      const sy = (1 - (_clip.y * 0.5 + 0.5)) * h
       const d2 = (sx - cx) ** 2 + (sy - cy) ** 2
 
       const pickR = pickRadiusPx(repr, atom, pxPerUnit, minThreshold)
       if (d2 > pickR * pickR) continue
 
-      const closer = best == null || _v.z < bestDepth - DEPTH_EPS
+      const closer = best == null || depth < bestDepth - DEPTH_EPS
       const sameDepthBetter =
-        best != null &&
-        Math.abs(_v.z - bestDepth) <= DEPTH_EPS &&
-        priority < bestPriority
+        best != null && Math.abs(depth - bestDepth) <= DEPTH_EPS && priority < bestPriority
       if (!closer && !sameDepthBetter) continue
 
-      bestDepth = _v.z
+      bestDepth = depth
       bestPriority = priority
       best = atom
     }

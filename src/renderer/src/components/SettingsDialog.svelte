@@ -3,7 +3,18 @@
   import Spinner from './ui/Spinner.svelte'
   import SceneDefaultsForm from './SceneDefaultsForm.svelte'
   import ClusterSettingsPanel from './ClusterSettingsPanel.svelte'
-  import { appSettings, applyUiScale, clampUiScale, updateAppSettings } from '../lib/appSettings.svelte.js'
+  import {
+    appSettings,
+    applyUiScale,
+    clampTrajLoadAllGib,
+    clampTrajStreamCacheMib,
+    clampUiScale,
+    TRAJ_LOAD_ALL_GIB_MAX,
+    TRAJ_LOAD_ALL_GIB_MIN,
+    TRAJ_STREAM_CACHE_MIB_MAX,
+    TRAJ_STREAM_CACHE_MIB_MIN,
+    updateAppSettings
+  } from '../lib/appSettings.svelte.js'
   import {
     clearPersistedViewerSettings,
     persistViewerSettings
@@ -16,7 +27,7 @@
    * @type {{
    *   open?: boolean,
    *   updatesPending?: boolean,
-   *   initialSection?: 'notifications' | 'appearance' | 'scene' | 'versions' | 'clusters' | 'about',
+   *   initialSection?: 'notifications' | 'appearance' | 'scene' | 'visualize' | 'versions' | 'clusters' | 'about',
    *   onUpdatesResult?: (result: any) => void,
    *   onClose?: () => void
    * }}
@@ -29,7 +40,7 @@
     onClose = () => {}
   } = $props()
 
-  /** @type {'notifications' | 'appearance' | 'scene' | 'versions' | 'clusters' | 'about'} */
+  /** @type {'notifications' | 'appearance' | 'scene' | 'visualize' | 'versions' | 'clusters' | 'about'} */
   let section = $state('notifications')
 
   const ABOUT_AUTHORS = [
@@ -184,6 +195,16 @@
     const uiScale = clampUiScale(Number(raw) / 100)
     updateAppSettings({ uiScale })
     void applyUiScale(uiScale)
+  }
+
+  /** @param {string | number} raw */
+  function onTrajLoadAllChange(raw) {
+    updateAppSettings({ trajLoadAllGib: clampTrajLoadAllGib(Number(raw)) })
+  }
+
+  /** @param {string | number} raw */
+  function onTrajStreamCacheChange(raw) {
+    updateAppSettings({ trajStreamCacheMib: clampTrajStreamCacheMib(Number(raw)) })
   }
 
   function onScenePersist() {
@@ -367,6 +388,7 @@
     { id: 'notifications', label: 'Notifications' },
     { id: 'appearance', label: 'Appearance' },
     { id: 'scene', label: 'Scene defaults' },
+    { id: 'visualize', label: 'Visualize' },
     { id: 'clusters', label: 'Clusters' },
     { id: 'versions', label: 'Versions & updates' },
     { id: 'about', label: 'About' }
@@ -392,7 +414,7 @@
           Settings
         </h2>
         <p class="mt-1 text-neutral-500 dark:text-neutral-500">
-          Notifications, appearance, scene defaults, HPC clusters, software versions, and about.
+          Notifications, appearance, scene defaults, Visualize memory, HPC clusters, software versions, and about.
         </p>
       </div>
 
@@ -536,6 +558,69 @@
                 persistOnChange={appSettings.rememberViewerDefaults}
                 onPersist={onScenePersist}
               />
+            </section>
+          {:else if section === 'visualize'}
+            <section class="space-y-5">
+              <div>
+                <h3 class="text-sm font-semibold text-neutral-800 dark:text-neutral-200">
+                  Trajectory memory
+                </h3>
+                <p class="mt-1 text-neutral-500 dark:text-neutral-400">
+                  How much of a movie to keep in RAM. Applies the next time you open a trajectory.
+                  0 GiB always streams from the disk cache.
+                </p>
+              </div>
+              <div class="space-y-2">
+                <div class="flex items-baseline justify-between gap-3">
+                  <h4 class="text-sm font-semibold text-neutral-800 dark:text-neutral-200">
+                    Load all frames into RAM up to
+                  </h4>
+                  <span class="tabular-nums text-neutral-600 dark:text-neutral-300"
+                    >{clampTrajLoadAllGib(appSettings.trajLoadAllGib) === 0
+                      ? 'Always stream'
+                      : `${clampTrajLoadAllGib(appSettings.trajLoadAllGib)} GiB`}</span
+                  >
+                </div>
+                <input
+                  type="range"
+                  min={TRAJ_LOAD_ALL_GIB_MIN}
+                  max={TRAJ_LOAD_ALL_GIB_MAX}
+                  step="0.5"
+                  class="w-full accent-blue-600"
+                  value={clampTrajLoadAllGib(appSettings.trajLoadAllGib)}
+                  oninput={(e) => onTrajLoadAllChange(e.currentTarget.value)}
+                />
+                <div class="flex justify-between text-[10px] text-neutral-500 dark:text-neutral-400">
+                  <span>Stream</span>
+                  <span>16 GiB</span>
+                </div>
+              </div>
+              <div class="space-y-2">
+                <div class="flex items-baseline justify-between gap-3">
+                  <h4 class="text-sm font-semibold text-neutral-800 dark:text-neutral-200">
+                    Streaming cache
+                  </h4>
+                  <span class="tabular-nums text-neutral-600 dark:text-neutral-300"
+                    >{clampTrajStreamCacheMib(appSettings.trajStreamCacheMib)} MiB</span
+                  >
+                </div>
+                <p class="text-neutral-500 dark:text-neutral-400">
+                  How many recent frames to keep when the movie is larger than the load-all limit.
+                </p>
+                <input
+                  type="range"
+                  min={TRAJ_STREAM_CACHE_MIB_MIN}
+                  max={TRAJ_STREAM_CACHE_MIB_MAX}
+                  step="64"
+                  class="w-full accent-blue-600"
+                  value={clampTrajStreamCacheMib(appSettings.trajStreamCacheMib)}
+                  oninput={(e) => onTrajStreamCacheChange(e.currentTarget.value)}
+                />
+                <div class="flex justify-between text-[10px] text-neutral-500 dark:text-neutral-400">
+                  <span>64 MiB</span>
+                  <span>2 GiB</span>
+                </div>
+              </div>
             </section>
           {:else if section === 'clusters'}
             <ClusterSettingsPanel />

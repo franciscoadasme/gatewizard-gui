@@ -23,6 +23,8 @@ test('normalizeViewpoint accepts a full session snapshot', () => {
         representation: { type: 'cartoon' },
         visible: true,
         colorScheme: { name: 'ss' },
+        trajSmooth: 3,
+        selectionEachFrame: true,
         material: { preset: 'Glowing', emissiveIntensity: 0.4 }
       }
     ],
@@ -68,6 +70,9 @@ test('normalizeViewpoint accepts a full session snapshot', () => {
   assert.equal(vp.camera.zoom, 1.5)
   assert.equal(vp.views.length, 1)
   assert.equal(vp.views[0].representation.type, 'cartoon')
+  assert.equal(vp.views[0].trajSmooth, 3)
+  assert.equal(vp.views[0].trajSmoothRestoreH, true)
+  assert.equal(vp.views[0].selectionEachFrame, true)
   assert.equal(vp.views[0].material?.preset, 'Glowing')
   assert.equal(vp.scene.customBackgroundHex, '#112233')
   assert.equal(vp.viewport.axesVisible, false)
@@ -86,6 +91,57 @@ test('normalizeViewpoint accepts a full session snapshot', () => {
   assert.equal(vp.measurements[0].offsetY, 12)
   assert.equal(vp.measurements[0].liftDir, 'up')
   assert.equal(vp.measurements[0].lineWidth, 2.5)
+})
+
+test('normalizeViewpoint defaults trajSmoothRestoreH on and keeps an explicit off', () => {
+  const omitted = normalizeViewpoint({
+    format: VIEWPOINT_FORMAT,
+    version: VIEWPOINT_VERSION,
+    name: 'omit',
+    structure: { path: '/tmp/a.pdb' },
+    camera: {
+      position: [0, 0, 10],
+      target: [0, 0, 0],
+      up: [0, 1, 0],
+      zoom: 1,
+      framing: { center: [0, 0, 0], extent: 40, framingZoom: 1 }
+    },
+    views: [
+      {
+        id: 'v1',
+        selection: 'all',
+        representation: { type: 'vdw' },
+        visible: true,
+        colorScheme: { name: 'cpk' }
+      }
+    ]
+  })
+  assert.equal(omitted.views[0].trajSmoothRestoreH, true)
+
+  const off = normalizeViewpoint({
+    format: VIEWPOINT_FORMAT,
+    version: VIEWPOINT_VERSION,
+    name: 'off',
+    structure: { path: '/tmp/a.pdb' },
+    camera: {
+      position: [0, 0, 10],
+      target: [0, 0, 0],
+      up: [0, 1, 0],
+      zoom: 1,
+      framing: { center: [0, 0, 0], extent: 40, framingZoom: 1 }
+    },
+    views: [
+      {
+        id: 'v1',
+        selection: 'all',
+        representation: { type: 'vdw' },
+        visible: true,
+        colorScheme: { name: 'cpk' },
+        trajSmoothRestoreH: false
+      }
+    ]
+  })
+  assert.equal(off.views[0].trajSmoothRestoreH, false)
 })
 
 test('saved named ion view with empty selection still resolves to ion', () => {

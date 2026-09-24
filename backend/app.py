@@ -30,9 +30,17 @@ if _conda_prefix:
 
 import numpy as np
 import MDAnalysis as mda
+from visualize_io import scratch_pdb
+from visualize_mutate import apply_mutation, list_rotamers
+from visualize_merge import merge_structures
+from visualize_superimpose import split_chain, superimpose_structures
+from rcsb_fetch import RcsbDownloadError, download_rcsb_entry
+from mmcif_pdb import StructureConvertError, mda_topology_format, pdb_from_mmcif
+from access_log import attach_poll_access_filter
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 
@@ -47,6 +55,9 @@ class SelectiveGZipMiddleware:
         exclude_path_suffixes: tuple[str, ...] = (
             "/pull-job-stream",
             "/submit-job-stream",
+            "/trajectory/xyz",
+            "/trajectory/align",
+            "/trajectory/cache/data",
         ),
     ) -> None:
         self.app = app
@@ -61,6 +72,19 @@ class SelectiveGZipMiddleware:
                 return
         await self.gzip_app(scope, receive, send)
 from pydantic import BaseModel, Field
+
+from visualize_trajectory import (
+    compute_traj_alignment,
+    ensure_traj_sidecar,
+    frame_xyz_binary,
+    frame_xyz_packed,
+    open_traj_session,
+    pack_align_result,
+    seek_logical_frame,
+    ss_assignment_source_path,
+    trajectory_info_payload,
+    wait_traj_sidecar,
+)
 
 from gatewizard.utils.protein_capping import (
     cap_protein,
@@ -630,9 +654,9 @@ def get_residues(
     resid_unique: dict[int, str] = {}
     resid_ambiguous: set[int] = set()
     if needs_secondary_structure:
-        pdb_for_ss = source_path
+        pdb_for_ss = ss_assignment_source_path(source_path)
         cleanup = False
-        if not pdb_for_ss or not os.path.isfile(pdb_for_ss):
+        if not pdb_for_ss:
             tmp = tempfile.NamedTemporaryFile("w", suffix=".pdb", delete=False)
             u.atoms.write(tmp.name)
             tmp.close()
@@ -821,6 +845,37 @@ def _load_structure_for_headgroup_detection(
     return load_structure(str(topology))[0]
 
 
+def _freeze_universe_current_frame(universe: mda.Universe) -> None:
+    """Replace a streaming DCD/XTC reader with a one-frame MemoryReader.
+
+    ``get-structure`` only needs frame 0. Pinning the full trajectory reader
+    keeps the file open (and on some formats can look like a full load).
+    """
+    try:
+        xyz = np.ascontiguousarray(universe.atoms.positions, dtype=np.float32)
+    except Exception:
+        return
+    n = int(universe.atoms.n_atoms)
+    if n <= 0 or xyz.size != n * 3:
+        return
+    box = None
+    try:
+        dim = getattr(universe.trajectory.ts, "dimensions", None)
+        if dim is not None:
+            arr = np.asarray(dim, dtype=np.float32).reshape(-1)
+            if arr.size >= 6 and float(arr[0]) > 0:
+                box = arr[:6].reshape(1, 6)
+    except Exception:
+        box = None
+    kwargs = {}
+    if box is not None:
+        kwargs["dimensions"] = box
+    try:
+        universe.load_new(xyz.reshape((1, n, 3)), format="memory", **kwargs)
+    except Exception:
+        logger.warning("Could not freeze trajectory to a single in-memory frame", exc_info=True)
+
+
 def load_structure(
     path: Path | str,
     topology: str | None = None,
@@ -847,6 +902,15 @@ def load_structure(
         if top_path is not None:
             top_mtime = float(top_path.stat().st_mtime)
 
+    # PRMTOP/PSF have no xyz. A DCD/XTC path plus topology loads *frame 0 only*
+    # (then frozen) so get-structure can return atoms without reading the movie.
+    coord_traj = path if path.suffix.lower() in _COORDINATE_TRAJECTORY_SUFFIXES else None
+    if coord_traj is not None and top_path is None:
+        raise ValueError(
+            f"{path.name} is a coordinate trajectory. Open it with a topology "
+            "(PSF/PRMTOP/PDB) instead of as a structure file."
+        )
+
     key = _file_cache_key(path, top_path)
     bond_source = "none"
     with FILE_CACHE_LOCK:
@@ -859,10 +923,19 @@ def load_structure(
             and entry.topology_mtime == top_mtime
         )
         if not cache_ok:
-            if top_path is not None and top_path != path:
+            if coord_traj is not None and top_path is not None:
+                u = mda.Universe(str(top_path), str(coord_traj))
+                _freeze_universe_current_frame(u)
+            elif top_path is not None and top_path != path:
                 u = mda.Universe(str(top_path), str(path))
             else:
-                u = mda.Universe(str(path))
+                # Converted mmCIF uses the extended reader so a new chain that
+                # restarts residue numbering is not shifted by +10000.
+                topo_fmt = mda_topology_format(path)
+                if topo_fmt:
+                    u = mda.Universe(str(path), topology_format=topo_fmt, format="PDB")
+                else:
+                    u = mda.Universe(str(path))
             already = _universe_has_bonds(u)
             # Companion topology bonds are trusted; sparse PDB CONECT is not.
             bonds_complete = bool(top_path) or (already and _bond_coverage_dense(u))
@@ -5390,31 +5463,30 @@ def _select_universe_atoms(u: mda.Universe, selection: str | None):
 
 @app.post("/get-structure")
 def get_structure(payload: StructureRequest) -> dict:
-    if len(payload.path) == 4:  # PDB ID
+    if len(payload.path) == 4 and payload.path.isalnum():  # PDB ID
         pdbid = payload.path.upper()
         try:
-            url = f"https://files.rcsb.org/download/{pdbid.lower()}.pdb"
-            resp = requests.get(url, timeout=15)
-            resp.raise_for_status()
-
             base = _resolve_structure_save_dir(payload.save_dir)
-            path = base / f"{pdbid.lower()}.pdb"
-            path.write_text(resp.text, encoding="utf-8")
-            payload.path = str(path)
-        except requests.HTTPError as ex:
-            raise HTTPException(
-                status_code=400, detail=f"Failed to fetch PDB: {pdbid}"
-            ) from ex
-        except requests.RequestException as ex:
-            raise HTTPException(
-                status_code=400, detail=f"Failed to fetch PDB {pdbid}: {ex}"
-            ) from ex
+            # Legacy .pdb when RCSB publishes it; mmCIF when it does not (5GOA).
+            saved = download_rcsb_entry(pdbid, base)
+            payload.path = str(saved)
+        except RcsbDownloadError as ex:
+            raise HTTPException(status_code=400, detail=str(ex)) from ex
         except OSError as ex:
             raise HTTPException(
-                status_code=500, detail=f"Failed to save PDB file: {ex}"
+                status_code=500, detail=f"Failed to save structure file: {ex}"
             ) from ex
     elif not os.path.isfile(payload.path):
         raise HTTPException(status_code=404, detail=f"File not found: {payload.path}")
+
+    source = Path(payload.path)
+    if source.suffix.lower() in {".cif", ".mmcif"}:
+        try:
+            payload.path = str(pdb_from_mmcif(source))
+        except StructureConvertError as ex:
+            raise HTTPException(
+                status_code=400, detail=f"Could not read mmCIF file: {ex}"
+            ) from ex
 
     try:
         sel_raw = (payload.selection or "").strip().lower()
@@ -5443,7 +5515,16 @@ def get_structure(payload: StructureRequest) -> dict:
     data = dict(path=payload.path)
     # Columnar payload is much faster to build for 80k–150k atom systems.
     data["atoms_format"] = "columnar"
-    data["atoms"] = get_atoms_columnar(atoms)
+    try:
+        data["atoms"] = get_atoms_columnar(atoms)
+    except mda.exceptions.NoDataError as ex:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This topology has no coordinates. Open it with a DCD/XTC trajectory "
+                "(or a PDB that includes atom positions)."
+            ),
+        ) from ex
     try:
         bond_idx = atoms.bonds.indices.tolist()
     except mda.exceptions.NoDataError:
@@ -5471,7 +5552,9 @@ def get_structure(payload: StructureRequest) -> dict:
         try:
             atom_indices = {int(i) for i in atoms.indices}
             all_residues = get_residues(
-                u, needs_secondary_structure=True, source_path=payload.path
+                u,
+                needs_secondary_structure=True,
+                source_path=ss_assignment_source_path(payload.path, topology_used),
             )
             data["residues"] = [
                 r
@@ -5485,16 +5568,201 @@ def get_structure(payload: StructureRequest) -> dict:
     return sanitize_value(data)
 
 
+class TrajectoryInfoRequest(BaseModel):
+    topology_path: str = Field(..., description="Absolute path to topology or PDB")
+    trajectory_paths: list[str] = Field(..., description="Absolute trajectory paths")
+    file_strides: dict[str, int] | None = Field(
+        None, description="Per-file stride keyed by basename"
+    )
+    cache_dir: str | None = Field(
+        None, description="Working directory for .gatewizard/traj_cache (optional)"
+    )
+
+
+class TrajectoryFrameRequest(TrajectoryInfoRequest):
+    frame: int = Field(0, ge=0, description="Logical frame after stride")
+    full: bool = Field(
+        False,
+        description="If true, return get-structure-shaped atoms/bonds/residues at this frame",
+    )
+    needs_bonds: bool = Field(False)
+    needs_secondary_structure: bool = Field(False)
+    count: int = Field(1, ge=1, le=64, description="Packed frames starting at ``frame``")
+
+
+class TrajectoryAlignRequest(TrajectoryInfoRequest):
+    selection: str = Field("protein and backbone", description="MDAnalysis fit selection")
+    reference_frame: int = Field(0, ge=0, description="Logical reference frame")
+    align: bool = Field(
+        True,
+        description="If true, Kabsch-fit and return affines for all atoms. "
+        "If false, raw RMSD versus the reference frame only.",
+    )
+
+
+@app.post("/trajectory/cache")
+def trajectory_cache(payload: TrajectoryInfoRequest) -> dict:
+    try:
+        session = open_traj_session(
+            payload.topology_path, payload.trajectory_paths, payload.file_strides
+        )
+        return sanitize_value(ensure_traj_sidecar(session, payload.cache_dir, start=True))
+    except FileNotFoundError as ex:
+        raise HTTPException(status_code=404, detail=str(ex)) from ex
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=f"Could not cache trajectory: {ex}") from ex
+
+
+@app.post("/trajectory/cache/data")
+def trajectory_cache_data(payload: TrajectoryInfoRequest) -> Response:
+    try:
+        session = open_traj_session(
+            payload.topology_path, payload.trajectory_paths, payload.file_strides
+        )
+        job = wait_traj_sidecar(session, payload.cache_dir)
+        data = job.path.read_bytes()
+        return Response(content=data, media_type="application/octet-stream")
+    except FileNotFoundError as ex:
+        raise HTTPException(status_code=404, detail=str(ex)) from ex
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=f"Could not read trajectory cache: {ex}") from ex
+
+
+@app.post("/trajectory/info")
+def trajectory_info(payload: TrajectoryInfoRequest) -> dict:
+    try:
+        session = open_traj_session(
+            payload.topology_path, payload.trajectory_paths, payload.file_strides
+        )
+        return sanitize_value(trajectory_info_payload(session))
+    except FileNotFoundError as ex:
+        raise HTTPException(status_code=404, detail=str(ex)) from ex
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=f"Could not open trajectory: {ex}") from ex
+
+
+@app.post("/trajectory/xyz")
+def trajectory_xyz(payload: TrajectoryFrameRequest) -> Response:
+    """Raw float32 xyz for playback (header + frames). Not gzipped."""
+    try:
+        session = open_traj_session(
+            payload.topology_path, payload.trajectory_paths, payload.file_strides
+        )
+        blob = frame_xyz_binary(session, payload.frame, payload.count)
+        return Response(content=blob, media_type="application/octet-stream")
+    except FileNotFoundError as ex:
+        raise HTTPException(status_code=404, detail=str(ex)) from ex
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=f"Could not read trajectory frame: {ex}") from ex
+
+
+@app.post("/trajectory/align")
+def trajectory_align(payload: TrajectoryAlignRequest) -> Response:
+    try:
+        session = open_traj_session(
+            payload.topology_path, payload.trajectory_paths, payload.file_strides
+        )
+        result = compute_traj_alignment(
+            session,
+            payload.selection,
+            payload.reference_frame,
+            payload.cache_dir,
+            payload.align,
+        )
+        return Response(content=pack_align_result(result), media_type="application/octet-stream")
+    except FileNotFoundError as ex:
+        raise HTTPException(status_code=404, detail=str(ex)) from ex
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=f"Could not align trajectory: {ex}") from ex
+
+
+@app.post("/trajectory/frame")
+def trajectory_frame(payload: TrajectoryFrameRequest) -> dict:
+    try:
+        session = open_traj_session(
+            payload.topology_path, payload.trajectory_paths, payload.file_strides
+        )
+        if not payload.full:
+            return sanitize_value(frame_xyz_packed(session, payload.frame, payload.count))
+
+        seek_logical_frame(session, payload.frame)
+        u = session.universe
+        if payload.needs_bonds:
+            _ensure_bonds_efficient(u, str(session.topology))
+        atoms = u.atoms
+        data = {
+            "path": str(session.trajectories[0]),
+            "topology_used": str(session.topology),
+            "atoms_format": "columnar",
+            "atoms": get_atoms_columnar(atoms),
+            "frame": int(payload.frame),
+            "logical_frame_count": session.logical_frame_count,
+        }
+        try:
+            data["bonds"] = atoms.bonds.indices.tolist()
+            data["bond_source"] = "topology"
+        except mda.exceptions.NoDataError:
+            data["bonds"] = []
+            data["bond_source"] = "none"
+        if payload.needs_secondary_structure:
+            try:
+                data["residues"] = get_residues(
+                    u, needs_secondary_structure=True, source_path=str(session.topology)
+                )
+            except Exception as exc:
+                logger.warning("trajectory/frame residue list failed: %s", exc)
+                data["residues"] = []
+        else:
+            try:
+                data["residues"] = get_residues(
+                    u, needs_secondary_structure=False, source_path=str(session.topology)
+                )
+            except Exception:
+                data["residues"] = []
+        return sanitize_value(data)
+    except FileNotFoundError as ex:
+        raise HTTPException(status_code=404, detail=str(ex)) from ex
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=f"Could not read frame: {ex}") from ex
+
+
 class DetectMoleculesRequest(BaseModel):
-    path: str = Field(..., description="Absolute path to a PDB/mmCIF file")
+    path: str = Field(..., description="Absolute path to a PDB/mmCIF file or coordinates")
+    topology: str | None = Field(
+        None, description="Companion topology (PSF/PRMTOP) when ``path`` is a trajectory"
+    )
 
 
 @app.post("/detect-molecules")
 def detect_molecules(payload: DetectMoleculesRequest) -> list[dict]:
-    u, _, _ = load_structure(payload.path)
+    try:
+        u, topology_used, _ = load_structure(payload.path, topology=payload.topology)
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=f"Could not open structure: {ex}") from ex
+    if not hasattr(u._topology, "resnames"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This file has no residue names. Open it with a topology "
+                "(PDB, PSF, or PRMTOP) — a DCD/XTC alone is not enough."
+            ),
+        )
 
     datalist = []
     idxs = []
+    ss_source = ss_assignment_source_path(payload.path, payload.topology, topology_used)
 
     # Biopolymer: one Protein *or* Peptide group (D-aa / formyl / ETA → peptide).
     polymer_atoms = u.select_atoms(NAMED_SELECTIONS["protein"])
@@ -5503,7 +5771,7 @@ def detect_molecules(payload: DetectMoleculesRequest) -> list[dict]:
         kind = classify_polymer_kind(resnames)
         polymer_indices = {int(i) for i in polymer_atoms.indices}
         all_residues = get_residues(
-            u, needs_secondary_structure=True, source_path=payload.path
+            u, needs_secondary_structure=True, source_path=ss_source
         )
         data = dict(
             selection=kind,
@@ -5901,6 +6169,116 @@ def structure_write_coords(payload: WriteCoordsRequest) -> dict:
         return {"path": payload.dest, "success": True, "count": int(len(idx))}
     except HTTPException:
         raise
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
+
+class ScratchPdbRequest(BaseModel):
+    path: str
+    topology: str | None = None
+
+
+@app.post("/structure/scratch-pdb")
+def structure_scratch_pdb(payload: ScratchPdbRequest) -> dict:
+    """Write frame 0 (or the PDB itself) to a temp file for mutator / align."""
+    try:
+        return {"path": scratch_pdb(payload.path, payload.topology)}
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
+
+class MutateRotamersRequest(BaseModel):
+    path: str
+    chain: str
+    resid: int
+    mutate_to: str
+
+
+@app.post("/mutate/rotamers")
+def mutate_rotamers(payload: MutateRotamersRequest) -> dict:
+    """List Dunbrack rotamers and side-chain coordinates. Writes nothing."""
+    try:
+        if not os.path.isfile(payload.path):
+            raise FileNotFoundError(f"Structure not found: {payload.path}")
+        return list_rotamers(payload.path, payload.chain, payload.resid, payload.mutate_to)
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
+
+class MutateApplyRequest(BaseModel):
+    path: str
+    chain: str
+    resid: int
+    mutate_to: str
+    rotamer_index: int
+
+
+@app.post("/mutate/apply")
+def mutate_apply(payload: MutateApplyRequest) -> dict:
+    """Place one rotamer and return a new PDB path."""
+    try:
+        if not os.path.isfile(payload.path):
+            raise FileNotFoundError(f"Structure not found: {payload.path}")
+        return apply_mutation(
+            payload.path,
+            payload.chain,
+            payload.resid,
+            payload.mutate_to,
+            payload.rotamer_index,
+        )
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
+
+class SplitChainRequest(BaseModel):
+    path: str
+    chain: str
+    topology: str | None = None
+
+
+@app.post("/structure/split-chain")
+def structure_split_chain(payload: SplitChainRequest) -> dict:
+    """Write one chain, including its ligands and water, to a new PDB."""
+    try:
+        return split_chain(payload.path, payload.chain, payload.topology)
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
+
+class SuperimposeRequest(BaseModel):
+    reference_path: str
+    reference_chain: str
+    mobile_path: str
+    mobile_chain: str
+    reference_topology: str | None = None
+    mobile_topology: str | None = None
+
+
+@app.post("/structure/superimpose")
+def structure_superimpose(payload: SuperimposeRequest) -> dict:
+    """Move the mobile structure onto the reference. Reference coordinates stay put."""
+    try:
+        return superimpose_structures(
+            payload.reference_path,
+            payload.reference_chain,
+            payload.mobile_path,
+            payload.mobile_chain,
+            payload.reference_topology,
+            payload.mobile_topology,
+        )
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
+
+class MergeStructuresRequest(BaseModel):
+    paths: list[str]
+
+
+@app.post("/structure/merge")
+def structure_merge(payload: MergeStructuresRequest) -> dict:
+    """Concatenate structures into one PDB. Repeated chain ids are rejected."""
+    try:
+        return merge_structures(payload.paths)
     except Exception as exc:
         raise HTTPException(400, str(exc))
 
@@ -6598,4 +6976,5 @@ def packmol_scan_jobs(payload: PackmolScanJobsRequest) -> dict:
 if __name__ == "__main__":
     import uvicorn
 
+    attach_poll_access_filter()
     uvicorn.run(app, host="127.0.0.1", port=8765, timeout_graceful_shutdown=1)

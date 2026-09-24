@@ -19,6 +19,19 @@
  * @property {boolean} [collapsed]
  * @property {boolean} [componentsCollapsed]
  * @property {string} [bond_source]
+ * @property {{
+ *   files: Array<{ path: string, stride: number }>,
+ *   logicalFrame: number,
+ *   logicalFrameCount: number,
+ *   rawFrameCounts: number[],
+ *   box?: [number, number, number] | null,
+ *   alignment?: {
+ *     mode: 'align' | 'rmsd',
+ *     apply: boolean,
+ *     selection: string,
+ *     referenceFrame: number
+ *   } | null
+ * } | null} [trajectory]
  */
 
 /**
@@ -44,8 +57,107 @@ export function createStructureEntry(partial) {
     visible: partial.visible !== false,
     collapsed: partial.collapsed === true,
     componentsCollapsed: partial.componentsCollapsed === true,
-    bond_source: partial.bond_source
+    bond_source: partial.bond_source,
+    trajectory: normalizeTrajectoryMeta(partial.trajectory)
   }
+}
+
+/**
+ * @param {unknown} raw
+ * @returns {[number, number, number] | null}
+ */
+function normalizeBoxLengths(raw) {
+  if (!Array.isArray(raw) || raw.length < 3) return null
+  const lx = Number(raw[0])
+  const ly = Number(raw[1])
+  const lz = Number(raw[2])
+  if (!(lx > 0) || !(ly > 0) || !(lz > 0)) return null
+  if (![lx, ly, lz].every((v) => Number.isFinite(v))) return null
+  return [lx, ly, lz]
+}
+
+/**
+ * @param {unknown} raw
+ * @returns {{
+ *   files: Array<{ path: string, stride: number }>,
+ *   logicalFrame: number,
+ *   logicalFrameCount: number,
+ *   rawFrameCounts: number[],
+ *   box: [number, number, number] | null,
+ *   alignment: {
+ *     mode: 'align' | 'rmsd',
+ *     apply: boolean,
+ *     selection: string,
+ *     referenceFrame: number
+ *   } | null
+ * } | null}
+ */
+export function normalizeTrajectoryMeta(raw) {
+  if (!raw || typeof raw !== 'object') return null
+  const o = /** @type {Record<string, unknown>} */ (raw)
+  const files = Array.isArray(o.files)
+    ? o.files
+        .filter((f) => f && typeof f === 'object' && typeof /** @type {any} */ (f).path === 'string')
+        .map((f) => {
+          const row = /** @type {Record<string, unknown>} */ (f)
+          return {
+            path: String(row.path),
+            stride: Math.max(1, Math.round(Number(row.stride) || 1))
+          }
+        })
+    : []
+  if (!files.length) return null
+  const rawCounts = Array.isArray(o.rawFrameCounts)
+    ? o.rawFrameCounts.map((n) => Math.max(0, Math.round(Number(n) || 0)))
+    : files.map(() => 0)
+  const logicalFrameCount = Math.max(0, Math.round(Number(o.logicalFrameCount) || 0))
+  const logicalFrame = Math.max(
+    0,
+    Math.min(
+      Math.max(0, logicalFrameCount - 1),
+      Math.round(Number(o.logicalFrame) || 0)
+    )
+  )
+  return {
+    files,
+    logicalFrame,
+    logicalFrameCount,
+    rawFrameCounts: rawCounts,
+    box: normalizeBoxLengths(o.box),
+    alignment: normalizeTrajAlignment(o.alignment)
+  }
+}
+
+/**
+ * @param {unknown} raw
+ * @returns {{
+ *   mode: 'align' | 'rmsd',
+ *   apply: boolean,
+ *   selection: string,
+ *   referenceFrame: number
+ * } | null}
+ */
+export function normalizeTrajAlignment(raw) {
+  if (!raw || typeof raw !== 'object') return null
+  const o = /** @type {Record<string, unknown>} */ (raw)
+  const mode = o.mode === 'align' || o.mode === 'rmsd' ? o.mode : null
+  if (!mode) return null
+  const selection = String(o.selection || '').trim() || 'protein and backbone'
+  const referenceFrame = Math.max(0, Math.round(Number(o.referenceFrame) || 0))
+  return {
+    mode,
+    apply: mode === 'align' && o.apply !== false,
+    selection,
+    referenceFrame
+  }
+}
+
+/**
+ * @param {StructureEntry['trajectory']} traj
+ */
+export function serializeTrajectoryMeta(traj) {
+  const n = normalizeTrajectoryMeta(traj)
+  return n || undefined
 }
 
 /**
@@ -56,6 +168,26 @@ export function isMaestroPath(path) {
   return lower.endsWith('.mae') || lower.endsWith('.maegz') || lower.endsWith('.mae.gz')
 }
 
+const COORD_TRAJ_EXT = /\.(dcd|xtc|trr|nc|mdcrd|crd|dtr|lammpstrj|h5md)$/i
+
+/** True for MD coordinate files (DCD/XTC/…). PRMTOP/PSF are not. */
+export function isCoordinateTrajectoryPath(path) {
+  return COORD_TRAJ_EXT.test(String(path || ''))
+}
+
+/**
+ * Path /get-structure should open. Prefer the coordinate file (DCD/XTC) so
+ * frame-0 xyz exist; Amber PRMTOP/PSF alone have no positions.
+ * @param {string | null | undefined} path
+ * @param {string | null | undefined} topology
+ */
+export function structureFetchPath(path, topology) {
+  const p = String(path || '')
+  const top = String(topology || '')
+  if (p) return p
+  return top
+}
+
 /**
  * @param {StructureEntry[]} structures
  * @param {string | null | undefined} structureId
@@ -63,6 +195,62 @@ export function isMaestroPath(path) {
 export function findStructure(structures, structureId) {
   if (!structureId) return structures[0] ?? null
   return structures.find((s) => s.id === structureId) ?? null
+}
+
+/**
+ * Display label for a duplicated structure. Repeats stay unique
+ * (`name copy`, then `name copy 2`, …).
+ * @param {string[]} labels
+ * @param {string} sourceLabel
+ */
+const EMPTY_HIGHLIGHT = new Set()
+
+/**
+ * Atom indices repeat on every split or duplicate, so a chain selection must
+ * only highlight the structure it belongs to.
+ * @param {string | null | undefined} viewStructureId
+ * @param {string | null | undefined} activeStructureId
+ * @param {Set<number> | null | undefined} indices
+ * @returns {Set<number>}
+ */
+export function highlightIndicesForStructure(viewStructureId, activeStructureId, indices) {
+  if (!activeStructureId || viewStructureId !== activeStructureId) return EMPTY_HIGHLIGHT
+  return indices || EMPTY_HIGHLIGHT
+}
+
+/**
+ * Structure the Select tools should edit. A representation selection wins when
+ * every selected row belongs to one structure; otherwise a single selected
+ * structure. Mixed selections return null so the caller keeps the active one.
+ * @param {{
+ *   selectedViewIds?: Iterable<string>,
+ *   viewStructureById?: Map<string, string>,
+ *   selectedStructureIds?: Set<string> | Iterable<string>
+ * }} panel
+ * @returns {string | null}
+ */
+export function editStructureIdFromPanel(panel) {
+  const owners = new Set()
+  const byView = panel?.viewStructureById
+  for (const id of panel?.selectedViewIds || []) {
+    const sid = byView?.get(id)
+    if (sid) owners.add(sid)
+  }
+  if (owners.size === 1) return [...owners][0]
+  if (owners.size > 1) return null
+  const structs = [...(panel?.selectedStructureIds || [])]
+  if (structs.length === 1) return structs[0]
+  return null
+}
+
+export function nextDuplicateLabel(labels, sourceLabel) {
+  const raw = String(sourceLabel || 'structure').trim() || 'structure'
+  const base = raw.replace(/ copy(?: \d+)?$/i, '') || raw
+  const taken = new Set((labels || []).map((label) => String(label)))
+  if (!taken.has(`${base} copy`)) return `${base} copy`
+  let n = 2
+  while (taken.has(`${base} copy ${n}`)) n += 1
+  return `${base} copy ${n}`
 }
 
 /**
@@ -77,6 +265,7 @@ export function serializeStructuresMeta(structures) {
     const sourcePath = String(s.sourcePath || s.path || '')
     const isMulti = kind === 'maestro_ct' || kind === 'pdb_model'
     const durablePath = isMulti && sourcePath ? sourcePath : String(s.path || sourcePath)
+    const trajectory = serializeTrajectoryMeta(s.trajectory)
     return {
       id: s.id,
       sourcePath: sourcePath || durablePath,
@@ -86,7 +275,8 @@ export function serializeStructuresMeta(structures) {
       label: s.label,
       path: durablePath,
       topology: s.topologyPath ?? null,
-      visible: s.visible !== false
+      visible: s.visible !== false,
+      ...(trajectory ? { trajectory } : {})
     }
   })
 }
@@ -160,7 +350,8 @@ export function normalizeStructuresMeta(raw) {
           label: typeof o.label === 'string' ? o.label : undefined,
           ctIndex: typeof o.ctIndex === 'number' ? o.ctIndex : null,
           modelIndex: typeof o.modelIndex === 'number' ? o.modelIndex : null,
-          visible: o.visible !== false
+          visible: o.visible !== false,
+          trajectory: normalizeTrajectoryMeta(o.trajectory)
         }
       })
   }
@@ -173,7 +364,8 @@ export function normalizeStructuresMeta(raw) {
         topology: typeof o.topology === 'string' ? o.topology : null,
         sourcePath: String(o.path),
         kind: 'file',
-        visible: true
+        visible: true,
+        trajectory: normalizeTrajectoryMeta(o.trajectory)
       }
     ]
   }

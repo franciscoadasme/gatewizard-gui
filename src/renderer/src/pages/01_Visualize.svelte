@@ -9,6 +9,7 @@
     Cartoon,
     AtomGlowLights,
     AtomPoints,
+    TrajPlayBridge,
     MeasureOverlay,
     Tube,
     VdwSpheres,
@@ -33,7 +34,12 @@
   import { PADDING_FIELD_STYLE, VIEWER_AXES, axisInputStyle } from '../lib/viewer/axisColors.js'
   import { measureDistance, measureAngle, measureDihedral } from '../lib/viewer/measure.js'
   import { splitViewIntoParts, splitViewModeLabel } from '../lib/viewer/splitView.js'
-  import { effectiveViewSelection } from '../lib/viewer/viewSelection.js'
+  import { effectiveViewSelection, resolveViewAtomSubset } from '../lib/viewer/viewSelection.js'
+  import {
+    evaluateSelectionIndices,
+    filterByIndexSet,
+    trySubsetBySelection
+  } from '../lib/viewer/dynamicSelection.js'
   import { Color } from 'three'
   import { tick, untrack } from 'svelte'
 
@@ -42,6 +48,13 @@
   const _outlineGetColor = () => OUTLINE_COLOR
   import {
     getStructure,
+    getTrajectoryInfo,
+    getTrajectoryFrame,
+    getTrajectoryXyzBuffer,
+    getTrajectoryCache,
+    getTrajectoryCacheData,
+    computeTrajectoryAlign,
+    countAnalysisSelection,
     detectMolecules,
     inspectStructure,
     importStructureEntries,
@@ -68,10 +81,20 @@
     packmolHydrateCavity,
     packmolRunCustom,
     packmolScanJobs,
-    ensureOutputFolder
+    structureScratchPdb,
+    mutateRotamers,
+    mutateApply,
+    structureSplitChain,
+    structureMerge,
+    structureSuperimpose
   } from '../lib/backendApi.js'
-  import { defaultHydrationFolderName, defaultAnimationFolderName } from '../lib/outputFolders.js'
+  import {
+    defaultHydrationFolderName,
+    defaultAnimationFolderName,
+    outputFolderPath
+  } from '../lib/outputFolders.js'
   import { createEmptyProject, normalizeProject, sortKeyframes, serializeAnimationProject } from '../lib/animation/schema.js'
+  import { easingForCapturedKeyframe, previousKeyframeAtTime } from '../lib/animation/keyframeEasing.js'
   import {
     applySceneSettings,
     captureViewerSnapshot,
@@ -81,6 +104,7 @@
   } from '../lib/animation/serialize.js'
   import { applyCameraPose, waitForMainViewerReady } from '../lib/animation/cameraPose.js'
   import { applyAnimationAtTime, startPlayback } from '../lib/animation/playback.js'
+  import { shouldApplyCoordPatch, shouldSeekTrajFrame } from '../lib/animation/timelinePlayhead.js'
   import {
     buildViewpoint,
     normalizeViewpoint,
@@ -94,7 +118,12 @@
     normalizeStructuresMeta,
     groupStructureMetasForLoad,
     componentKeyFromSelection,
-    componentLabel
+    componentLabel,
+    normalizeTrajectoryMeta,
+    structureFetchPath,
+    nextDuplicateLabel,
+    highlightIndicesForStructure,
+    editStructureIdFromPanel
   } from '../lib/visualizeStructures.js'
   import {
     claimedStructureIds,
@@ -110,10 +139,20 @@
     structureGroups
   } from '../lib/visualizeGroups.js'
   import StructureEntryPicker from '../components/StructureEntryPicker.svelte'
+  import TrajectoryOpenDialog from '../components/TrajectoryOpenDialog.svelte'
+  import TrajAlignPanel from '../components/TrajAlignPanel.svelte'
+  import MutateResiduePanel from '../components/MutateResiduePanel.svelte'
+  import SplitChainPanel from '../components/SplitChainPanel.svelte'
+  import SuperimposePanel from '../components/SuperimposePanel.svelte'
+  import { defaultSelectionForStructuralType } from '../lib/analysisSets.js'
   import ApplyRepresentationPicker from '../components/ApplyRepresentationPicker.svelte'
   import {
     deriveViewTracks,
     isTrackInAnimation,
+    persistViewVisibilityInKeyframes,
+    persistViewSelectionEachFrameInKeyframes,
+    persistViewTrajSmoothRestoreHInKeyframes,
+    restoreViewsAfterLeavingAnimate,
     propagateNewViewsToLaterKeyframes,
     registerViewTrack,
     removeViewTrackFromProject,
@@ -167,6 +206,46 @@
     positionsToCoordPatch,
     snapshotAtomCoords
   } from '../lib/viewer/workingCoords.js'
+  import {
+    applyBlendToViewAtoms,
+    applyRigidXyz,
+    atomWithPackedXyz,
+    labelsWithPackedXyz,
+    measurementsWithPackedXyz,
+    readAffine12,
+    applyXyzFloat32ToAtoms,
+    clampTrajSmooth,
+    buildHydrogenParentMap,
+    trajSmoothRestoreHEnabled,
+    collectAtomIndices,
+    concatSidecarSlices,
+    createTrajectoryFrameCache,
+    decodeAlignBinary,
+    fileStridesFromFiles,
+    gwxyzToAllFrames,
+    isTrajHotkeyBlocked,
+    loadAllFits,
+    parseBoxLengths,
+    pickDisplayFrame,
+    playTargetFrame,
+    TRAJ_PLAY_FPS,
+    TRAJ_PLAY_MAX_LAG,
+    TRAJ_PREFETCH_PLAY,
+    splitPackedFrames,
+    trajLoadAllBytesCap,
+    trajPlayReady,
+    unionAtomIndices,
+    xyzBinaryToFrames,
+    xyzColumnarToFloat32,
+    xyzPackedToFrames
+  } from '../lib/viewer/trajectoryFrames.js'
+  import {
+    blendPlayXyz,
+    requestTrajPlayFrame,
+    setTrajPlayClock,
+    trajPlayClock
+  } from '../lib/viewer/trajPlayClock.js'
+  import { appSettings } from '../lib/appSettings.svelte.js'
 
   /** @typedef {{ x: number, y: number, z: number, element: string, name: string }} Atom */
   /** @typedef {{ chain: string, resname: string, number: number, atom_indices: number[], ca_index?: number, sec?: string }} Residue */
@@ -201,6 +280,161 @@
    * @type {{ open: boolean, sourcePath: string, entries: Array<{ index: number, label: string, atomCount?: number, title?: string }>, resolve: ((indices: number[] | null) => void) | null }}
    */
   let entryPicker = $state({ open: false, sourcePath: '', entries: [], resolve: null })
+  let trajDialogOpen = $state(false)
+  let trajPlayhead = $state(0)
+  let trajXyzEpoch = $state(0)
+  let trajPlaying = $state(false)
+  /** @type {HTMLInputElement | null} */
+  let trajSliderEl = $state(null)
+  /** @type {HTMLElement | null} */
+  let trajFrameLabelEl = $state(null)
+  let trajScrubbing = $state(false)
+  let trajPlayTimer = 0
+  let trajPlayRaf = 0
+  let trajPlayOriginMs = 0
+  let trajPlayOriginFrame = 0
+  let trajDisplayFrame = 0
+  /** @type {Promise<void>} */
+  let trajSeekWaiter = Promise.resolve()
+  /** @type {ReturnType<typeof createTrajectoryFrameCache> | null} */
+  let trajCache = $state(null)
+  /** @type {Map<string, Float32Array>} */
+  const trajBlendPrev = new Map()
+  /** @type {{ key: string, playhead: number, xyz: Float32Array | null, scratch: Float32Array | null }} */
+  let trajBlendShared = { key: '', playhead: -1, xyz: null, scratch: null }
+  /** @type {{ key: string, indices: Int32Array | null }} */
+  let trajVisibleIndexCache = { key: '', indices: null }
+  /** @type {WeakMap<object, Int32Array>} */
+  const viewIndexCache = new WeakMap()
+
+  function resetTrajBlendCaches() {
+    trajBlendPrev.clear()
+    trajBlendShared = { key: '', playhead: -1, xyz: null, scratch: null }
+    trajVisibleIndexCache = { key: '', indices: null }
+  }
+
+  /** @param {number} frame */
+  function syncTrajSliderDom(frame) {
+    const n = trajStructure?.trajectory?.logicalFrameCount ?? 0
+    const snapped = Math.max(0, Math.round(frame))
+    if (trajSliderEl) {
+      trajSliderEl.max = String(Math.max(0, n - 1))
+      trajSliderEl.value = String(snapped)
+    }
+    if (trajFrameLabelEl) {
+      const digits = String(Math.max(n, 1)).length
+      trajFrameLabelEl.textContent = `${String(snapped + 1).padStart(digits, '0')}/${n}`
+    }
+  }
+  /** @type {Map<string, { epoch: number, playhead: number, level: number, restoreH: boolean, each: boolean, sel: string, sourceAtoms: unknown, ownerAtoms: unknown, result: { atoms: object[], bonds: unknown, residues: unknown, xyz: Float32Array | null } }>} */
+  const viewDrawCache = new Map()
+  /** @type {Map<string, Float32Array>} */
+  const trajAlignScratch = new Map()
+  /** Keep affines off $state so Float32Array.subarray stays intact. */
+  /** @type {Float32Array | null} */
+  let trajAlignAffines = null
+  const trajStructure = $derived(structures.find((s) => s.trajectory) ?? null)
+  let trajAlignOpen = $state(false)
+  let mutateOpen = $state(false)
+  let mutateChain = $state('')
+  let mutateResid = $state(1)
+  let mutateTo = $state('PHE')
+  let mutateRows = $state(/** @type {Array<{ index: number, prob: number, vdw: number, chi: number[], atoms: Array<{ name: string, element: string, x: number, y: number, z: number }>, best?: boolean }>} */ ([]))
+  let mutatePhi = $state(/** @type {number | null} */ (null))
+  let mutatePsi = $state(/** @type {number | null} */ (null))
+  let mutateSelected = $state(0)
+  let mutateBusy = $state(false)
+  let mutateError = $state('')
+  let mutPreviewAtoms = $state(/** @type {Array<{ index: number, name: string, element: string, x: number, y: number, z: number }>} */ ([]))
+  let mutPreviewBonds = $state(/** @type {number[][]} */ ([]))
+  const mutPreviewColor = cpkScheme()
+  let splitOpen = $state(false)
+  let splitChainId = $state('')
+  let splitBusy = $state(false)
+  let splitError = $state('')
+  let superOpen = $state(false)
+  let superRefId = $state('')
+  let superMobId = $state('')
+  let superRefChain = $state('')
+  let superMobChain = $state('')
+  let superBusy = $state(false)
+  let superError = $state('')
+  let superResult = $state('')
+  /** @type {{ id: string, chain: string } | null} */
+  let lastSplit = $state(null)
+  const PROTEIN_RESIDUES = new Set([
+    'ALA', 'ARG', 'ASN', 'ASP', 'CYS', 'GLN', 'GLU', 'GLY', 'HIS', 'ILE',
+    'LEU', 'LYS', 'MET', 'PHE', 'PRO', 'SER', 'THR', 'TRP', 'TYR', 'VAL'
+  ])
+  /** Residue name at the mutator's chain + number, so the panel can show what will change. */
+  const mutateCurrentResname = $derived.by(() => {
+    const chain = String(mutateChain || '').trim()
+    const resid = Number(mutateResid)
+    if (!chain || !Number.isFinite(resid) || !structure) return ''
+    const residues = structure.residues
+    if (Array.isArray(residues) && residues.length) {
+      let fallback = ''
+      for (const res of residues) {
+        if (String(res.chain || '').trim() !== chain || Number(res.number) !== resid) continue
+        const name = String(res.resname || '').toUpperCase()
+        if (PROTEIN_RESIDUES.has(name)) return name
+        if (!fallback) fallback = name
+      }
+      if (fallback) return fallback
+    }
+    const atoms = structure.atoms
+    if (!Array.isArray(atoms)) return ''
+    let fallback = ''
+    for (const atom of atoms) {
+      if (String(atom.chain_id || '').trim() !== chain || Number(atom.res_id) !== resid) continue
+      const name = String(atom.res_name || '').toUpperCase()
+      if (PROTEIN_RESIDUES.has(name)) return name
+      if (!fallback) fallback = name
+    }
+    return fallback
+  })
+  let trajAlignBusy = $state(false)
+  let trajAlignError = $state('')
+  let trajAlignAtomCount = $state(/** @type {number | null} */ (null))
+  let trajAlignRestoreToken = 0
+  let trajAlign = $state({
+    selection: defaultSelectionForStructuralType('rmsd').selection,
+    referenceFrame: 0,
+    /** @type {'none' | 'rmsd' | 'align'} */
+    mode: 'none',
+    apply: false,
+    rmsd: /** @type {number[] | null} */ (null),
+    nMobile: /** @type {number | null} */ (null)
+  })
+  /** @type {{
+   *   path: string,
+   *   host_path: string,
+   *   bytes: number,
+   *   header_bytes: number,
+   *   frames_ready: number,
+   *   frames_total: number,
+   *   atom_count: number,
+   *   complete: boolean,
+   *   error: string | null,
+   *   load_all: boolean
+   * } | null} */
+  let trajCacheInfo = $state(null)
+  let trajCachePoll = 0
+  let trajSidecarReady = $state(false)
+  let trajAdoptPending = $state(false)
+  let trajRamLoadLabel = $state('')
+  let trajCacheError = $state('')
+  const trajCanPlay = $derived(
+    trajPlayReady(trajCacheInfo, {
+      adoptPending: trajAdoptPending,
+      framesReady: trajSidecarReady
+    })
+  )
+  const trajRmsdNow = $derived.by(() => {
+    if (!trajAlign.rmsd?.length) return null
+    const i = Math.max(0, Math.min(trajAlign.rmsd.length - 1, Math.round(trajPlayhead)))
+    return trajAlign.rmsd[i]
+  })
 
   /** Apply-representation menu: which view is targeting other structures. */
   /** @type {{ viewId: string | null, open: boolean }} */
@@ -244,6 +478,17 @@
   let editingGroupName = $state('')
   /** @type {HTMLInputElement | null} */
   let editingGroupInputEl = $state(null)
+  /** Inline rename for a structure label. @type {string | null} */
+  let editingStructureId = $state(null)
+  let editingStructureName = $state('')
+  /** @type {HTMLInputElement | null} */
+  let editingStructureInputEl = $state(null)
+  /** Ignore the blur that fires while the field is being mounted and focused. */
+  let inlineRenameArmed = false
+  /** Structure id while a duplicate PDB is being written and loaded. */
+  let duplicatingStructureId = $state(null)
+  /** True while selected structures are being written into one PDB. */
+  let mergeBusy = $state(false)
   /** Progress while applying structure representations across targets. */
   let applyRepsBusy = $state(false)
   let applyRepsPhase = $state('')
@@ -397,6 +642,8 @@
   let animExportCancelRequested = false
   /** @type {(() => void) | null} */
   let animStopPlayback = null
+  /** Last applied animation coord-patch signature; skip atom clones when unchanged. */
+  let lastAnimCoordSig = /** @type {string | undefined} */ (undefined)
 
   // Gear panel open state
   /** @type {{ kind: 'meas'|'label', id: string } | null} */
@@ -473,6 +720,8 @@
   let selectedGroupIndices = $state(new Set())
   /** @type {{ name:string, element:string, index:number, res_name:string, res_id:number, chain_id:string } | null} */
   let selectedAtom = $state(null)
+  /** Atom index for DOF focus so the target follows trajectory xyz. */
+  let dofFocusAtomIndex = $state(/** @type {number | null} */ (null))
 
   /** Atoms that receive bulb lights when Glowing material filter is “highlighted”. */
   const glowHighlightIndices = $derived.by(() => {
@@ -775,17 +1024,52 @@
       visualizeStatus.openMemproDialog = false
       packmolDialogOpen = false
       visualizeStatus.openPackmolDialog = false
+      trajAlignOpen = false
+      mutateOpen = false
+      splitOpen = false
+      superOpen = false
+      mutPreviewAtoms = []
+      mutPreviewBonds = []
     }
   })
 
   // Close tool panels on Escape while open.
   $effect(() => {
-    if (!memproDialogOpen && !packmolDialogOpen) return
+    if (!memproDialogOpen && !packmolDialogOpen && !trajAlignOpen && !mutateOpen && !splitOpen && !superOpen) return
     /** @param {KeyboardEvent} e */
     const onKey = (e) => {
       if (e.key !== 'Escape') return
       if (packmolDialogOpen) closePackmolDialog()
       else if (memproDialogOpen) closeMemproDialog()
+      else if (trajAlignOpen) trajAlignOpen = false
+      else if (mutateOpen) closeMutateDialog()
+      else if (splitOpen) splitOpen = false
+      else if (superOpen) superOpen = false
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
+
+  $effect(() => {
+    if (!trajStructure?.trajectory) return
+    /** @param {KeyboardEvent} e */
+    const onKey = (e) => {
+      if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return
+      if (isTrajHotkeyBlocked(e.target)) return
+      if (e.key === ' ' || e.code === 'Space') {
+        e.preventDefault()
+        toggleTrajPlayback()
+        return
+      }
+      if (e.key === 'ArrowRight') {
+        e.preventDefault()
+        stepTrajFrame(1)
+        return
+      }
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault()
+        stepTrajFrame(-1)
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -836,7 +1120,7 @@
    */
   async function buildAutoViewsForStructure(entry) {
     if (!entry?.path) return []
-    const data = await detectMolecules(entry.path)
+    const data = await detectMolecules(entry.path, { topology: entry.topologyPath ?? null })
     /** @type {View[]} */
     const next = []
     const globalBonds = entry.bonds ?? []
@@ -892,6 +1176,8 @@
         surfaceInflate: 0.25,
         surfaceSource: 'atoms',
         surfaceSubdivision: 0,
+        trajSmooth: 0,
+        trajSmoothRestoreH: true,
         material: { ...DEFAULT_VIEW_MATERIAL },
         _prefetched: true
       })
@@ -925,9 +1211,10 @@
   }
 
   async function onFetchPDB() {
-    if (!isPdbIdValid) return
+    const id = pdbId.trim().toUpperCase()
+    if (id.length !== 4) return
     const before = structures.length
-    await appendStructure(pdbId, { topology: null })
+    await appendStructure(id, { topology: null })
     if (structures.length > before) {
       pdbId = ''
     }
@@ -957,6 +1244,819 @@
     const pdbDlg = await window.api.openPdbDialog(workingDir || undefined)
     if (pdbDlg.canceled || !pdbDlg.filePath) return
     await appendStructure(pdbDlg.filePath, { topology: topDlg.filePath })
+  }
+
+  function trajFileLabel(entry) {
+    const files = entry?.trajectory?.files ?? []
+    if (!files.length) return ''
+    return files
+      .map((f) => {
+        const name = String(f.path).split(/[/\\]/).pop() || f.path
+        return f.stride > 1 ? `${name} ×${f.stride}` : name
+      })
+      .join(' + ')
+  }
+
+  function maxTrajSmoothInUse() {
+    const sid = trajStructure?.id
+    let max = 0
+    for (const v of views) {
+      if (sid && v.structureId && v.structureId !== sid) continue
+      max = Math.max(max, clampTrajSmooth(v.trajSmooth))
+    }
+    return max
+  }
+
+  /**
+   * @param {import('../lib/visualizeStructures.js').StructureEntry | null | undefined} entry
+   * @param {{ mode: 'align' | 'rmsd', apply: boolean, selection: string, referenceFrame: number } | null} spec
+   */
+  function persistTrajAlignment(entry, spec) {
+    if (!entry?.trajectory) return
+    entry.trajectory.alignment = spec ?? null
+  }
+
+  /**
+   * Re-apply Align / RMSD saved on the trajectory after the sidecar is ready.
+   * @param {import('../lib/visualizeStructures.js').StructureEntry | null | undefined} entry
+   */
+  async function restoreTrajAlignment(entry) {
+    const spec = entry?.trajectory?.alignment
+    if (!spec || (spec.mode !== 'align' && spec.mode !== 'rmsd')) return
+    if (
+      trajAlign.mode === spec.mode &&
+      trajAlign.selection === spec.selection &&
+      trajAlign.referenceFrame === spec.referenceFrame &&
+      (spec.mode !== 'align' || (trajAlign.apply && trajAlignAffines))
+    ) {
+      return
+    }
+    const token = ++trajAlignRestoreToken
+    trajAlign = {
+      ...trajAlign,
+      selection: spec.selection,
+      referenceFrame: spec.referenceFrame
+    }
+    await computeTrajRmsdOrAlign(spec.mode)
+    if (token !== trajAlignRestoreToken) return
+  }
+
+  function disposeTrajCache() {
+    trajAlignRestoreToken += 1
+    stopTrajPlayback()
+    trajCache?.dispose()
+    trajCache = null
+    setTrajPlayClock({ playing: false, cache: null, playhead: 0, nAtoms: 0, box: null })
+    resetTrajBlendCaches()
+    viewDrawCache.clear()
+    trajAlignScratch.clear()
+    trajAlignAffines = null
+    trajAlign = {
+      ...trajAlign,
+      apply: false,
+      mode: 'none',
+      rmsd: null,
+      nMobile: null,
+      referenceFrame: 0
+    }
+    trajAlignError = ''
+    trajAlignAtomCount = null
+    trajCacheInfo = null
+    trajSidecarReady = false
+    trajAdoptPending = false
+    trajRamLoadLabel = ''
+    trajCacheError = ''
+    if (trajCachePoll) {
+      clearInterval(trajCachePoll)
+      trajCachePoll = 0
+    }
+    trajPlayhead = 0
+    trajDisplayFrame = 0
+    trajXyzEpoch += 1
+  }
+
+  function bindTrajCache(entry) {
+    const traj = entry?.trajectory
+    if (!traj?.files?.length) {
+      disposeTrajCache()
+      return
+    }
+    const strides = fileStridesFromFiles(traj.files)
+    const topology = entry.topologyPath || traj.files[0].path
+    const paths = traj.files.map((f) => f.path)
+    const nAtoms = entry.atoms?.length ?? 0
+    trajCache?.dispose()
+    /**
+     * @param {number} start
+     * @param {number} count
+     */
+    async function fetchXyzRange(start, count) {
+      try {
+        const info = trajCacheInfo
+        if (info && (info.complete || start < info.frames_ready) && nAtoms > 0) {
+          try {
+            const frameBytes = nAtoms * 12
+            const header = info.header_bytes || 16
+            const ready = info.complete ? info.frames_total : info.frames_ready
+            const countFit = Math.max(0, Math.min(count, ready - start))
+            if (countFit > 0) {
+              const raw = await concatSidecarSlices(
+                readSidecarSlice,
+                info.path || info.host_path,
+                header + start * frameBytes,
+                countFit * frameBytes
+              )
+              const frames = splitPackedFrames(raw, nAtoms, countFit)
+              if (frames.length) {
+                trajCacheError = ''
+                return frames
+              }
+            }
+          } catch {
+            /* HTTP fallback */
+          }
+        }
+        try {
+          const buf = await getTrajectoryXyzBuffer({
+            topology_path: topology,
+            trajectory_paths: paths,
+            file_strides: strides,
+            frame: start,
+            count
+          })
+          const frames = xyzBinaryToFrames(buf)
+          if (frames.length) {
+            trajCacheError = ''
+            return frames
+          }
+        } catch {
+          /* JSON packed fallback */
+        }
+        const payload = await getTrajectoryFrame({
+          topology_path: topology,
+          trajectory_paths: paths,
+          file_strides: strides,
+          frame: start,
+          count
+        })
+        trajCacheError = ''
+        return xyzPackedToFrames(payload)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err || 'Trajectory cache read failed')
+        trajCacheError = msg
+        if (trajPlaying) stopTrajPlayback()
+        throw err instanceof Error ? err : new Error(msg)
+      }
+    }
+    trajCache = createTrajectoryFrameCache({
+      nAtoms,
+      logicalFrameCount: traj.logicalFrameCount,
+      box: parseBoxLengths(traj.box),
+      maxBytes: appSettings.trajStreamCacheMib * 1024 * 1024,
+      fetchFrame: async (frame) => {
+        const frames = await fetchXyzRange(frame, 1)
+        return frames[0] ?? new Float32Array(0)
+      },
+      fetchFrames: fetchXyzRange
+    })
+    trajCache.setHydrogenParents(buildHydrogenParentMap(entry.atoms, entry.bonds))
+    trajPlayhead = traj.logicalFrame ?? 0
+    trajDisplayFrame = Math.round(trajPlayhead)
+    void startTrajSidecar(entry)
+  }
+
+  /**
+   * @param {import('../lib/visualizeStructures.js').StructureEntry} entry
+   */
+  function trajCachePayload(entry) {
+    const traj = entry.trajectory
+    return {
+      topology_path: entry.topologyPath || traj?.files[0]?.path,
+      trajectory_paths: (traj?.files || []).map((f) => f.path),
+      file_strides: fileStridesFromFiles(traj?.files),
+      cache_dir: workingDir || null
+    }
+  }
+
+  /**
+   * @param {string} filePath
+   * @param {number} offset
+   * @param {number} length
+   */
+  async function readSidecarSlice(filePath, offset, length) {
+    const api = /** @type {{ readBinarySlice?: Function } | undefined} */ (window.api)
+    if (!api?.readBinarySlice) throw new Error('no slice reader')
+    const info = trajCacheInfo
+    const candidates = [filePath, info?.path, info?.host_path].filter(
+      (p, i, all) => typeof p === 'string' && p && all.indexOf(p) === i
+    )
+    let lastErr = /** @type {unknown} */ (null)
+    for (const p of candidates) {
+      try {
+        return await api.readBinarySlice(p, offset, length)
+      } catch (err) {
+        lastErr = err
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error('Could not read trajectory cache')
+  }
+
+  /**
+   * @param {import('../lib/visualizeStructures.js').StructureEntry} entry
+   * @param {NonNullable<typeof trajCacheInfo>} info
+   */
+  function warmTrajPlayPath() {
+    if (!trajCache || !trajStructure) return
+    setTrajPlayClock({
+      playing: false,
+      playhead: trajPlayhead,
+      cache: trajCache,
+      box: parseBoxLengths(trajStructure.trajectory?.box),
+      nAtoms: trajStructure.atoms?.length ?? 0
+    })
+    blendPlayXyz(0)
+    requestTrajPlayFrame()
+  }
+
+  async function adoptTrajSidecar(entry, info) {
+    if (!trajCache) return
+    trajAdoptPending = true
+    trajRamLoadLabel = ''
+    try {
+      const nAtoms = info.atom_count
+      const nFrames = info.frames_total
+      const ramCap = trajLoadAllBytesCap(
+        typeof navigator !== 'undefined' ? navigator.deviceMemory : undefined,
+        appSettings.trajLoadAllGib
+      )
+      if (info.load_all && info.complete && loadAllFits(nAtoms, nFrames, ramCap)) {
+        try {
+          let buf = null
+          try {
+            buf = await concatSidecarSlices(
+              readSidecarSlice,
+              info.path || info.host_path,
+              0,
+              info.header_bytes + info.bytes,
+              undefined,
+              {
+                onProgress: (chunk, total) => {
+                  trajRamLoadLabel = `${chunk}/${total}`
+                }
+              }
+            )
+          } catch {
+            buf = await getTrajectoryCacheData(trajCachePayload(entry))
+          }
+          if (buf && buf.byteLength) {
+            const all = gwxyzToAllFrames(buf, nAtoms, nFrames)
+            if (all.length >= nAtoms * 3) {
+              trajCache.setPreload(all)
+              syncTrajAlignXform()
+              trajSidecarReady = true
+              trajXyzEpoch += 1
+              warmTrajPlayPath()
+              void restoreTrajAlignment(entry)
+              return
+            }
+          }
+        } catch {
+          /* stream instead */
+        }
+      }
+      trajSidecarReady = info.frames_ready > 0
+      trajXyzEpoch += 1
+      if (info.complete) {
+        warmTrajPlayPath()
+        void restoreTrajAlignment(entry)
+      }
+    } finally {
+      trajAdoptPending = false
+      trajRamLoadLabel = ''
+    }
+  }
+
+  /**
+   * @param {import('../lib/visualizeStructures.js').StructureEntry} entry
+   */
+  async function startTrajSidecar(entry) {
+    if (trajCachePoll) {
+      clearInterval(trajCachePoll)
+      trajCachePoll = 0
+    }
+    trajSidecarReady = false
+    trajAdoptPending = false
+    trajRamLoadLabel = ''
+    trajCacheError = ''
+    try {
+      const info = await getTrajectoryCache(trajCachePayload(entry))
+      trajCacheInfo = info
+      if (info.error) {
+        trajCacheError = info.error
+        return
+      }
+      if (info.complete) {
+        trajAdoptPending = true
+        await adoptTrajSidecar(entry, info)
+        return
+      }
+      trajCachePoll = setInterval(async () => {
+        try {
+          const next = await getTrajectoryCache(trajCachePayload(entry))
+          trajCacheInfo = next
+          if (next.error) {
+            trajCacheError = next.error
+            clearInterval(trajCachePoll)
+            trajCachePoll = 0
+            if (trajPlaying) stopTrajPlayback()
+            return
+          }
+          if (next.complete) {
+            trajAdoptPending = true
+            clearInterval(trajCachePoll)
+            trajCachePoll = 0
+            await adoptTrajSidecar(entry, next)
+          } else if (next.frames_ready > 0) {
+            trajSidecarReady = true
+          }
+        } catch {
+          /* keep polling */
+        }
+      }, 400)
+    } catch {
+      trajCacheInfo = null
+    }
+  }
+
+  /**
+   * @param {number} playhead
+   * @param {{ playing?: boolean, persist?: boolean, holdCache?: boolean }} [opts]
+   */
+  async function seekTrajFrame(playhead, opts = {}) {
+    const entry = trajStructure
+    if (!entry?.trajectory || !trajCache) return
+    const n = entry.trajectory.logicalFrameCount
+    if (n <= 0) return
+    const f = Math.max(0, Math.min(n - 1, Number(playhead) || 0))
+    const logical = Math.max(0, Math.min(n - 1, Math.round(f)))
+    if (!shouldSeekTrajFrame(logical, trajDisplayFrame)) {
+      trajPlayhead = f
+      if (opts.persist !== false && entry.trajectory) {
+        entry.trajectory.logicalFrame = logical
+      }
+      return
+    }
+    const jumped = !opts.holdCache && Math.abs(f - trajPlayhead) > 8
+    if (jumped) {
+      trajCache.invalidate()
+      resetTrajBlendCaches()
+    }
+    trajPlayhead = f
+    if (opts.persist !== false && entry.trajectory) {
+      entry.trajectory.logicalFrame = logical
+    }
+    const radius = opts.playing
+      ? Math.max(TRAJ_PREFETCH_PLAY, 1 + maxTrajSmoothInUse())
+      : Math.max(3, 1 + maxTrajSmoothInUse())
+    if (!trajCache.has(logical)) {
+      await trajCache.get(logical)
+    }
+    void trajCache.prefetch(f, radius, { sequential: opts.playing === true })
+    trajDisplayFrame = logical
+    setTrajPlayClock({
+      playing: trajPlaying,
+      playhead: f,
+      cache: trajCache,
+      box: parseBoxLengths(entry.trajectory?.box),
+      nAtoms: entry.atoms?.length ?? 0
+    })
+    syncTrajSliderDom(logical)
+    trajXyzEpoch += 1
+  }
+
+  function rebaseTrajClock(frame) {
+    trajPlayOriginFrame = Math.max(0, Math.round(Number(frame) || 0))
+    trajPlayOriginMs = performance.now()
+  }
+
+  /**
+   * @param {number} f
+   * @param {{ persist?: boolean }} [opts]
+   */
+  function applyTrajPlayhead(f, opts = {}) {
+    const entry = trajStructure
+    if (!entry?.trajectory) return
+    const n = entry.trajectory.logicalFrameCount
+    const frame = Math.max(0, Math.min(n - 1, Number(f) || 0))
+    trajDisplayFrame = Math.round(frame)
+    if (opts.persist !== false) {
+      entry.trajectory.logicalFrame = trajDisplayFrame
+    }
+    setTrajPlayClock({
+      playing: trajPlaying,
+      playhead: frame,
+      cache: trajCache,
+      box: parseBoxLengths(entry.trajectory?.box),
+      nAtoms: entry.atoms?.length ?? 0
+    })
+    if (trajPlaying) {
+      syncTrajSliderDom(trajDisplayFrame)
+      requestTrajPlayFrame()
+      return
+    }
+    trajPlayhead = frame
+    syncTrajSliderDom(trajDisplayFrame)
+  }
+
+  $effect(() => {
+    void trajPlayhead
+    void trajStructure?.trajectory?.logicalFrameCount
+    if (!trajPlaying) syncTrajSliderDom(Math.round(trajPlayhead))
+  })
+
+  $effect(() => {
+    const cache = trajCache
+    const entry = trajStructure
+    if (!cache || !entry) return
+    void entry.atoms
+    void entry.bonds
+    cache.setHydrogenParents(buildHydrogenParentMap(entry.atoms, entry.bonds))
+  })
+
+  /** @param {number} now */
+  function runTrajPlayTick(now) {
+    if (!trajPlaying) return
+    const entry = trajStructure
+    if (!entry?.trajectory || !trajCache) {
+      stopTrajPlayback()
+      return
+    }
+    const n = entry.trajectory.logicalFrameCount
+    const target = playTargetFrame(now - trajPlayOriginMs, trajPlayOriginFrame, TRAJ_PLAY_FPS, n)
+    if (target >= n - 1 && trajCache.has(n - 1)) {
+      applyTrajPlayhead(n - 1)
+      stopTrajPlayback()
+      return
+    }
+    const pick = pickDisplayFrame(target, n, (frame) => trajCache.has(frame), trajDisplayFrame)
+    if (pick.missing) {
+      void trajCache.get(pick.frame)
+    } else if (!pick.hold || pick.frame !== Math.round(trajPlayhead)) {
+      applyTrajPlayhead(pick.frame, { persist: false })
+    }
+    if (target - pick.frame > TRAJ_PLAY_MAX_LAG && trajCache.has(Math.round(target))) {
+      const snap = Math.round(target)
+      rebaseTrajClock(snap)
+      applyTrajPlayhead(snap, { persist: false })
+    }
+    void trajCache.prefetch(Math.round(target), TRAJ_PREFETCH_PLAY, { sequential: true })
+    trajPlayRaf = requestAnimationFrame(runTrajPlayTick)
+  }
+
+  function stopTrajPlayback() {
+    trajPlaying = false
+    setTrajPlayClock({ playing: false, playhead: trajDisplayFrame })
+    trajPlayhead = trajDisplayFrame
+    trajXyzEpoch += 1
+    syncTrajSliderDom(trajDisplayFrame)
+    if (trajPlayRaf) {
+      cancelAnimationFrame(trajPlayRaf)
+      trajPlayRaf = 0
+    }
+    if (trajPlayTimer) {
+      clearInterval(trajPlayTimer)
+      trajPlayTimer = 0
+    }
+  }
+
+  function toggleTrajPlayback() {
+    if (!trajStructure?.trajectory) return
+    if (trajPlaying) {
+      stopTrajPlayback()
+      return
+    }
+    if (!trajCanPlay) {
+      const info = trajCacheInfo
+      alert(
+        info?.error
+          ? `The trajectory cache failed: ${info.error}`
+          : trajAdoptPending
+            ? `Loading frames into RAM${trajRamLoadLabel ? ` (${trajRamLoadLabel})` : ''}… Play starts when that finishes.`
+            : info && !info.complete
+              ? `Indexing is still running (${info.frames_ready}/${info.frames_total} frames). Play starts when the cache is finished.`
+              : 'The trajectory cache is not ready yet. Wait until indexing finishes, then press Play.'
+      )
+      return
+    }
+    const n = trajStructure.trajectory.logicalFrameCount
+    if (n <= 1) return
+    const hasSurface = views.some(
+      (v) =>
+        v.visible !== false &&
+        (v.opacity ?? 1) > 0.001 &&
+        v.representation?.type === 'surface'
+    )
+    if (hasSurface) {
+      const ok = confirm(
+        'A Surface representation will stay on the last built frame while playing. Remeshing it every frame is too slow. Hide Surface, or pause / export an image later to rebuild it at the current coordinates.\n\nPlay anyway?'
+      )
+      if (!ok) return
+    }
+    if (Math.round(trajPlayhead) >= n - 1) applyTrajPlayhead(0)
+    trajPlaying = true
+    setTrajPlayClock({
+      playing: true,
+      playhead: trajPlayhead,
+      cache: trajCache,
+      box: parseBoxLengths(trajStructure.trajectory?.box),
+      nAtoms: trajStructure.atoms?.length ?? 0
+    })
+    rebaseTrajClock(trajPlayhead)
+    void trajCache?.prefetch(Math.round(trajPlayhead), TRAJ_PREFETCH_PLAY, { sequential: true })
+    trajPlayRaf = requestAnimationFrame(runTrajPlayTick)
+  }
+
+  /** @param {number} delta */
+  function stepTrajFrame(delta) {
+    const entry = trajStructure
+    if (!entry?.trajectory) return
+    const n = entry.trajectory.logicalFrameCount
+    const next = Math.max(0, Math.min(n - 1, Math.round(trajPlayhead) + delta))
+    if (trajPlaying) rebaseTrajClock(next)
+    void seekTrajFrame(next)
+  }
+
+  function openTrajAlignPanel() {
+    toolsMenuOpen = false
+    memproDialogOpen = false
+    packmolDialogOpen = false
+    trajAlignOpen = true
+    void refreshTrajAlignCount()
+  }
+
+  let trajAlignCountTimer = 0
+  function scheduleTrajAlignCount() {
+    if (trajAlignCountTimer) clearTimeout(trajAlignCountTimer)
+    trajAlignCountTimer = setTimeout(() => {
+      trajAlignCountTimer = 0
+      void refreshTrajAlignCount()
+    }, 350)
+  }
+
+  async function refreshTrajAlignCount() {
+    const entry = trajStructure
+    if (!entry?.trajectory || !trajAlign.selection.trim()) {
+      trajAlignAtomCount = null
+      return
+    }
+    try {
+      const r = await countAnalysisSelection({
+        topologyPath: entry.topologyPath || entry.path,
+        trajectoryPaths: entry.trajectory.files.map((f) => f.path),
+        selection: trajAlign.selection
+      })
+      trajAlignAtomCount = r.count
+    } catch {
+      trajAlignAtomCount = null
+    }
+  }
+
+  /**
+   * @param {'rmsd' | 'align'} mode
+   */
+  async function computeTrajRmsdOrAlign(mode) {
+    const entry = trajStructure
+    if (!entry?.trajectory) return
+    trajAlignBusy = true
+    trajAlignError = ''
+    try {
+      const strides = fileStridesFromFiles(entry.trajectory.files)
+      const topology = entry.topologyPath || entry.trajectory.files[0].path
+      const doAlign = mode === 'align'
+      const blob = await computeTrajectoryAlign({
+        topology_path: topology,
+        trajectory_paths: entry.trajectory.files.map((f) => f.path),
+        file_strides: strides,
+        selection: trajAlign.selection,
+        reference_frame: trajAlign.referenceFrame,
+        cache_dir: workingDir || null,
+        align: doAlign
+      })
+      const result = decodeAlignBinary(blob)
+      trajAlignAffines = doAlign ? result.affines : null
+      trajAlign = {
+        ...trajAlign,
+        rmsd: result.rmsd,
+        nMobile: result.n_mobile,
+        apply: doAlign,
+        mode
+      }
+      trajAlignScratch.clear()
+      resetTrajBlendCaches()
+      persistTrajAlignment(entry, {
+        mode,
+        apply: doAlign,
+        selection: trajAlign.selection,
+        referenceFrame: trajAlign.referenceFrame
+      })
+      syncTrajAlignXform()
+      trajXyzEpoch += 1
+      logEvent(
+        'info',
+        'view',
+        doAlign ? 'Trajectory aligned' : 'RMSD calculated',
+        `${result.n_mobile} atoms · ${result.n_frames} frames`
+      )
+    } catch (ex) {
+      trajAlignError = ex instanceof Error ? ex.message : String(ex)
+    } finally {
+      trajAlignBusy = false
+    }
+  }
+
+  function clearTrajAlignment() {
+    trajAlignAffines = null
+    trajAlign = { ...trajAlign, apply: false, mode: 'none', rmsd: null, nMobile: null }
+    trajAlignScratch.clear()
+    resetTrajBlendCaches()
+    persistTrajAlignment(trajStructure, null)
+    syncTrajAlignXform()
+    trajAlignError = ''
+    trajXyzEpoch += 1
+  }
+
+  /**
+   * Alignment is the live trajectory: each frame is transformed before blend/smooth.
+   */
+  function syncTrajAlignXform() {
+    if (!trajCache) return
+    if (!trajAlign.apply || !trajAlignAffines) {
+      trajCache.setFrameXform(null)
+      return
+    }
+    const affines = trajAlignAffines
+    trajCache.setFrameXform((frame, xyz) => {
+      const aff = readAffine12(affines, frame)
+      return aff ? applyRigidXyz(xyz, aff) : xyz
+    })
+  }
+
+  /**
+   * @param {{ topologyPath: string, files: Array<{ path: string, stride: number }> }} payload
+   */
+  async function onOpenTrajectoryConfirm(payload) {
+    trajDialogOpen = false
+    await openTrajectory(payload.topologyPath, payload.files)
+  }
+
+  /**
+   * @param {string} topologyPathIn
+   * @param {Array<{ path: string, stride: number }>} files
+   * @param {{ logicalFrame?: number, id?: string, label?: string, alignment?: object | null, box?: [number, number, number] | null }} [opts]
+   */
+  async function loadTrajectoryEntry(topologyPathIn, files, opts = {}) {
+    const trajectory_paths = files.map((f) => f.path)
+    const file_strides = fileStridesFromFiles(files)
+    const info = await getTrajectoryInfo({
+      topology_path: topologyPathIn,
+      trajectory_paths,
+      file_strides
+    })
+    if (!info.logical_frame_count) {
+      throw new Error('Trajectory has no frames after stride')
+    }
+
+    let raw
+    try {
+      raw = await getStructure({
+        path: structureFetchPath(trajectory_paths[0], topologyPathIn),
+        topology: topologyPathIn,
+        needs_bonds: true,
+        needs_secondary_structure: true,
+        save_dir: workingDir || null
+      })
+    } catch {
+      raw = null
+    }
+    if (!raw?.atoms?.length) {
+      raw = await getTrajectoryFrame({
+        topology_path: topologyPathIn,
+        trajectory_paths,
+        file_strides,
+        frame: 0,
+        full: true,
+        needs_bonds: true,
+        needs_secondary_structure: true
+      })
+    }
+    if (!raw?.atoms?.length) {
+      throw new Error('Could not load atoms for this topology / trajectory pair')
+    }
+
+    const frame0 = await getTrajectoryFrame({
+      topology_path: topologyPathIn,
+      trajectory_paths,
+      file_strides,
+      frame: 0
+    })
+    applyXyzFloat32ToAtoms(raw.atoms, xyzColumnarToFloat32(frame0))
+
+    const logicalFrame = Math.max(
+      0,
+      Math.min(info.logical_frame_count - 1, Math.round(opts.logicalFrame ?? 0))
+    )
+    const trajectory = normalizeTrajectoryMeta({
+      files: info.files.map((f) => ({
+        path: f.path,
+        stride: f.stride
+      })),
+      logicalFrame,
+      logicalFrameCount: info.logical_frame_count,
+      rawFrameCounts: info.files.map((f) => f.n_frames),
+      box: info.box ?? opts.box,
+      alignment: opts.alignment
+    })
+
+    return createStructureEntry({
+      id: opts.id,
+      sourcePath: topologyPathIn,
+      kind: 'file',
+      label: opts.label || String(topologyPathIn).split(/[/\\]/).pop() || 'trajectory',
+      path: raw.path || trajectory_paths[0],
+      topologyPath: raw.topology_used || topologyPathIn,
+      atoms: raw.atoms,
+      bonds: raw.bonds || [],
+      residues: raw.residues,
+      bond_source: raw.bond_source,
+      trajectory
+    })
+  }
+
+  /**
+   * @param {string} topologyPathIn
+   * @param {Array<{ path: string, stride: number }>} files
+   * @param {{ logicalFrame?: number, id?: string, label?: string, resetCamera?: boolean, addDefaultView?: boolean }} [opts]
+   */
+  async function openTrajectory(topologyPathIn, files, opts = {}) {
+    const started = Date.now()
+    const firstStructure = structures.length === 0
+    try {
+      loadingPDB = true
+      loadingElapsedSec = 0
+      loadingPhase = 'Reading trajectory…'
+      loadBondStatus = ''
+      if (loadingElapsedTimer) clearInterval(loadingElapsedTimer)
+      loadingElapsedTimer = setInterval(() => {
+        loadingElapsedSec = Math.floor((Date.now() - started) / 1000)
+      }, 250)
+
+      loadingPhase = 'Checking frames…'
+      const entry = await loadTrajectoryEntry(topologyPathIn, files, opts)
+
+      // v1: one playhead — replace a previous traj-backed structure.
+      const withoutOldTraj = structures.filter((s) => !s.trajectory)
+      const removed = structures.filter((s) => s.trajectory)
+      if (removed.length) {
+        const removedIds = new Set(removed.map((s) => s.id))
+        views = views.filter((v) => !removedIds.has(v.structureId))
+      }
+      structures = [...withoutOldTraj, entry]
+      syncStructureHiddenFromEntries([entry])
+      activeStructureId = entry.id
+      baseAtomCoords = new Map()
+      coordsDirty = false
+      coordsGeneration += 1
+      coordUndoStack.clear()
+      previewPositions = null
+      animCoordOverlay = null
+      bindTrajCache(entry)
+      const logicalFrame = entry.trajectory?.logicalFrame ?? 0
+      if (logicalFrame > 0) {
+        await seekTrajFrame(logicalFrame)
+      } else {
+        trajXyzEpoch += 1
+      }
+
+      logEvent('info', 'view', `Opened trajectory ${entry.label}`, trajFileLabel(entry))
+      if (opts.addDefaultView !== false && !views.some((v) => v.structureId === entry.id)) {
+        addView('all', { type: 'points' }, { structureId: entry.id })
+      }
+      if ((opts.resetCamera ?? firstStructure) || !camera) {
+        reframeCameraOnAtoms(collectVisibleViewAtoms(views))
+      }
+      requestSidePanelExpand('visualize')
+      return entry
+    } catch (ex) {
+      alert(ex instanceof Error ? ex.message : String(ex))
+      return null
+    } finally {
+      if (loadingElapsedTimer) {
+        clearInterval(loadingElapsedTimer)
+        loadingElapsedTimer = 0
+      }
+      loadingPDB = false
+      loadingPhase = ''
+    }
   }
 
   // ── Multi-structure workspace helpers ─────────────────────────────────────
@@ -1110,6 +2210,8 @@
       surfaceInflate: 0.25,
       surfaceSource: 'atoms',
       surfaceSubdivision: 0,
+      trajSmooth: 0,
+      trajSmoothRestoreH: true,
       material: { ...DEFAULT_VIEW_MATERIAL }
     }
   }
@@ -1275,7 +2377,7 @@
    * Fetch a structure and APPEND it to the workspace (never clobbers existing
    * structures). Becomes the active structure. Adds a default points view.
    * @param {string} path
-   * @param {{ topology?: string | null, sourcePath?: string, kind?: import('../lib/visualizeStructures.js').StructureEntry['kind'], ctIndex?: number | null, modelIndex?: number | null, label?: string | null, resetCamera?: boolean }} [opts]
+   * @param {{ topology?: string | null, sourcePath?: string, kind?: import('../lib/visualizeStructures.js').StructureEntry['kind'], ctIndex?: number | null, modelIndex?: number | null, label?: string | null, resetCamera?: boolean, needsSecondaryStructure?: boolean }} [opts]
    * @returns {Promise<import('../lib/visualizeStructures.js').StructureEntry | null>}
    */
   async function appendStructure(path, opts = {}) {
@@ -1300,7 +2402,7 @@
         path,
         topology: top,
         needs_bonds: true,
-        needs_secondary_structure: false,
+        needs_secondary_structure: opts.needsSecondaryStructure === true,
         save_dir: workingDir || null
       })
       loadingPhase = 'Building atom list…'
@@ -1380,6 +2482,13 @@
       else animCoordOverlayByStructure.delete(activeStructureId)
     }
     activeStructureId = id
+    if (editMode) {
+      selectedGroupIndices = new Set()
+      selectedAtom = null
+      editHoverGroupIndices = new Set()
+      editHoveredAtom = null
+      editTooltip = null
+    }
     // Restore target coord state (lazy — empty until a transform/animation needs it).
     baseAtomCoords = baseAtomCoordsByStructure.get(id) ?? new Map()
     animCoordOverlay = animCoordOverlayByStructure.get(id) ?? null
@@ -1462,6 +2571,119 @@
       clearPanelSelection()
     }
     logEvent('detail', 'view', `Removed structure`, entry.label)
+  }
+
+  /**
+   * Temp PDB of the coordinates currently shown for this structure.
+   * @param {import('../lib/visualizeStructures.js').StructureEntry} entry
+   */
+  async function writeDisplayedPdb(entry) {
+    const scratch = await structureScratchPdb({
+      path: entry.path,
+      topology: entry.topologyPath || null
+    })
+    /** @type {number[]} */
+    const indices = []
+    /** @type {number[]} */
+    const xyz = []
+    for (const atom of entry.atoms || []) {
+      if (typeof atom.index !== 'number') continue
+      indices.push(atom.index)
+      xyz.push(Number(atom.x), Number(atom.y), Number(atom.z))
+    }
+    if (indices.length) {
+      await structureWriteCoords({
+        source: scratch.path,
+        dest: scratch.path,
+        indices,
+        xyz,
+        topology: null
+      })
+    }
+    return scratch.path
+  }
+
+  /**
+   * Copy a loaded structure into a new workspace entry with its own PDB.
+   * Coordinates are the ones on screen (the displayed trajectory frame, or unsaved edits).
+   * The copy is not a second player of the same movie, so it can be renamed, aligned, and saved alone.
+   * @param {string} id
+   */
+  async function duplicateStructure(id) {
+    const entry = findStructure(structures, id)
+    if (!entry?.path || !entry.atoms?.length || duplicatingStructureId) return
+    duplicatingStructureId = id
+    try {
+      const scratch = await writeDisplayedPdb(entry)
+      const label = nextDuplicateLabel(
+        structures.map((item) => item.label),
+        entry.label
+      )
+      const added = await appendStructure(scratch.path, {
+        label,
+        sourcePath: scratch.path,
+        kind: 'file',
+        resetCamera: false,
+        needsSecondaryStructure: true
+      })
+      if (added) logEvent('info', 'view', `Duplicated ${entry.label}`, added.label)
+    } catch (ex) {
+      alert(ex instanceof Error ? ex.message : String(ex))
+    } finally {
+      duplicatingStructureId = null
+    }
+  }
+
+  /**
+   * Concatenate the structures selected in the panel, in list order.
+   * Originals stay loaded. A chain letter may be shared when the residues differ
+   * (protein in one file, ions in another). A repeated protein, nucleic acid,
+   * ion, or ligand on that chain is refused.
+   */
+  async function mergeSelectedStructures() {
+    const chosen = structures.filter((entry) => selectedStructureIds.has(entry.id))
+    if (chosen.length < 2) {
+      alert('Select at least two structures (Ctrl+click), then Merge.')
+      return
+    }
+    if (mergeBusy) return
+    mergeBusy = true
+    try {
+      /** @type {string[]} */
+      const paths = []
+      for (const entry of chosen) {
+        paths.push(await writeDisplayedPdb(entry))
+      }
+      const result = await structureMerge({ paths })
+      const chainLabel = (result.chains || []).filter(Boolean).join('+')
+      const base = chainLabel ? `merged ${chainLabel}` : 'merged'
+      const taken = new Set(structures.map((entry) => entry.label))
+      let label = base
+      let n = 2
+      while (taken.has(label)) {
+        label = `${base} ${n}`
+        n += 1
+      }
+      const added = await appendStructure(result.path, {
+        label,
+        sourcePath: result.path,
+        kind: 'file',
+        resetCamera: false,
+        needsSecondaryStructure: true
+      })
+      if (added) {
+        logEvent(
+          'info',
+          'view',
+          `Merged ${chosen.map((entry) => entry.label).join(', ')}`,
+          added.label
+        )
+      }
+    } catch (ex) {
+      alert(ex instanceof Error ? ex.message : String(ex))
+    } finally {
+      mergeBusy = false
+    }
   }
 
   /** Rename a structure entry's display label. */
@@ -1655,7 +2877,22 @@
       selectedStructureIds = new Set()
       selectionAnchorViewId = id
       selectionAnchorStructureId = null
+      const owner = views.find((view) => view.id === id)?.structureId
+      if (owner) setActiveStructure(owner)
     }
+  }
+
+  /**
+   * Point Select / rename at the representation group or structure chosen in
+   * the panel, when that choice is a single structure.
+   */
+  function adoptEditStructureFromPanel() {
+    const id = editStructureIdFromPanel({
+      selectedViewIds,
+      viewStructureById: viewToStructureId,
+      selectedStructureIds
+    })
+    if (id) setActiveStructure(id)
   }
 
   function onCreateGroupFromSelection() {
@@ -1696,28 +2933,67 @@
     visibilityGroups = visibilityGroups.map((g) => (g.id === groupId ? { ...g, name: next } : g))
   }
 
-  /** @param {string} groupId @param {string} currentName */
-  function beginGroupRename(groupId, currentName) {
-    editingGroupId = groupId
-    editingGroupName = currentName || ''
+  /** @param {() => HTMLInputElement | null} getInput */
+  function focusInlineRename(getInput) {
+    inlineRenameArmed = false
     tick().then(() => {
-      editingGroupInputEl?.focus()
-      editingGroupInputEl?.select()
+      const el = getInput()
+      el?.focus()
+      el?.select()
+      requestAnimationFrame(() => {
+        inlineRenameArmed = true
+      })
     })
   }
 
+  /** @param {string} groupId @param {string} currentName */
+  function beginGroupRename(groupId, currentName) {
+    editingStructureId = null
+    editingStructureName = ''
+    editingGroupId = groupId
+    editingGroupName = currentName || ''
+    focusInlineRename(() => editingGroupInputEl)
+  }
+
   function commitGroupRename() {
-    if (!editingGroupId) return
+    if (!inlineRenameArmed || !editingGroupId) return
     const id = editingGroupId
     const name = editingGroupName
+    inlineRenameArmed = false
     editingGroupId = null
     editingGroupName = ''
     onRenameGroup(id, name)
   }
 
   function cancelGroupRename() {
+    inlineRenameArmed = false
     editingGroupId = null
     editingGroupName = ''
+  }
+
+  /** @param {string} structureId @param {string} currentLabel */
+  function beginStructureRename(structureId, currentLabel) {
+    editingGroupId = null
+    editingGroupName = ''
+    editingStructureId = structureId
+    editingStructureName = currentLabel || ''
+    focusInlineRename(() => editingStructureInputEl)
+  }
+
+  function commitStructureRename() {
+    if (!inlineRenameArmed || !editingStructureId) return
+    const id = editingStructureId
+    const name = editingStructureName
+    inlineRenameArmed = false
+    editingStructureId = null
+    editingStructureName = ''
+    renameStructure(id, name)
+  }
+
+  function cancelStructureRename() {
+    inlineRenameArmed = false
+    editingStructureId = null
+    editingStructureName = ''
   }
 
   /** @param {string} groupId */
@@ -1727,12 +3003,52 @@
     )
   }
 
+  /** @param {Record<string, unknown> & { visible?: boolean, opacity?: number }} view */
+  function applyLiveViewVisibility(view, visible) {
+    view.visible = visible
+    if (!animateMode) return
+    if (visible) {
+      if (typeof view.opacity === 'number' && view.opacity <= 0.001) view.opacity = 1
+    } else {
+      view.opacity = 0
+    }
+  }
+
+  /** @param {string[]} viewIds @param {boolean} visible */
+  function persistAnimatedViewVisibility(viewIds, visible) {
+    if (!animateMode || !animProject.keyframes.length) return
+    let changed = false
+    for (const id of viewIds) {
+      if (persistViewVisibilityInKeyframes(animProject.keyframes, id, visible, animPlayhead)) {
+        changed = true
+      }
+    }
+    if (changed) animProject = { ...animProject }
+  }
+
+  /** @param {string} viewId @param {boolean} enabled */
+  function persistAnimatedSelectionEachFrame(viewId, enabled) {
+    if (!animateMode || !animProject.keyframes.length) return
+    if (persistViewSelectionEachFrameInKeyframes(animProject.keyframes, viewId, enabled, animPlayhead)) {
+      animProject = { ...animProject }
+    }
+  }
+
+  /** @param {string} viewId @param {boolean} enabled */
+  function persistAnimatedTrajSmoothRestoreH(viewId, enabled) {
+    if (!animateMode || !animProject.keyframes.length) return
+    if (persistViewTrajSmoothRestoreHInKeyframes(animProject.keyframes, viewId, enabled, animPlayhead)) {
+      animProject = { ...animProject }
+    }
+  }
+
   /** @param {string[]} viewIds @param {boolean} visible */
   function setViewsVisible(viewIds, visible) {
     const set = new Set(viewIds)
     for (const v of panelViews) {
-      if (set.has(v.id)) v.visible = visible
+      if (set.has(v.id)) applyLiveViewVisibility(v, visible)
     }
+    persistAnimatedViewVisibility(viewIds, visible)
   }
 
   /** @param {string[]} structureIds @param {boolean} visible */
@@ -1768,7 +3084,12 @@
     const show = !workspaceAnyVisible
     structureHiddenIds = show ? new Set() : new Set(structures.map((s) => s.id))
     for (const s of structures) s.visible = show
-    for (const v of panelViews) v.visible = show
+    const viewIds = []
+    for (const v of panelViews) {
+      applyLiveViewVisibility(v, show)
+      viewIds.push(v.id)
+    }
+    persistAnimatedViewVisibility(viewIds, show)
   }
 
   /** Snapshot groups for save (prune dangling ids). */
@@ -1811,6 +3132,7 @@
       `Added representation: ${selection}`,
       `Representation: ${representation.type}`
     )
+    const subset = resolveViewAtomSubset(owner, selection, representation?.type)
     views = [
       ...views,
       {
@@ -1821,9 +3143,9 @@
         baseSelection: selection,
         representation,
         path: owner?.path,
-        atoms: owner?.atoms,
-        bonds: owner?.bonds,
-        residues: owner?.residues,
+        atoms: subset.atoms,
+        bonds: subset.bonds,
+        residues: subset.residues,
         visible: true,
         colorScheme: {
           name: 'cpk',
@@ -1846,6 +3168,8 @@
         surfaceInflate: 0.25,
         surfaceSource: 'atoms',
         surfaceSubdivision: 0,
+        trajSmooth: 0,
+        trajSmoothRestoreH: true,
         material: { ...DEFAULT_VIEW_MATERIAL }
       }
     ]
@@ -2047,6 +3371,21 @@
     for (const meta of singles) {
       const path = meta.path || meta.sourcePath
       if (!path) continue
+      if (meta.trajectory?.files?.length) {
+        const top = meta.topology || meta.path || path
+        const entry = await loadTrajectoryEntry(top, meta.trajectory.files, {
+          logicalFrame: meta.trajectory.logicalFrame,
+          id: meta.id,
+          label: meta.label,
+          alignment: meta.trajectory.alignment,
+          box: meta.trajectory.box
+        })
+        if (meta.visible === false) entry.visible = false
+        loaded.push(entry)
+        if (addDefaultViews) defaultViews.push(makeDefaultPointsView(entry))
+        tickProgress(entry.label)
+        continue
+      }
       // Prefer existing file path; if cache PDB is gone but sourcePath is a real file, use that.
       let openPath = path
       try {
@@ -2127,6 +3466,15 @@
     coordUndoStack.clear()
     previewPositions = null
     animCoordOverlay = null
+    const traj = ordered.find((s) => s.trajectory)
+    if (traj) {
+      bindTrajCache(traj)
+      const frame = traj.trajectory?.logicalFrame ?? 0
+      if (frame > 0) await seekTrajFrame(frame)
+      else trajXyzEpoch += 1
+    } else {
+      disposeTrajCache()
+    }
     if (addDefaultViews) views = defaultViews
     if (resetCamera) {
       reframeCameraOnAtoms(ordered.flatMap((e) => e.atoms || []))
@@ -2237,8 +3585,13 @@
         .map((a) => a.index)
     if (level === 'chain')
       return structure.atoms.filter((a) => a.chain_id === atom.chain_id).map((a) => a.index)
-    // molecule — find the view that contains this atom
-    const v = views.find((v) => v.atoms?.some((a) => a.index === atom.index))
+    // molecule — the representation of this structure that contains the atom
+    const v = views.find(
+      (view) =>
+        view.structureId === activeStructureId &&
+        !view._isSelHighlight &&
+        view.atoms?.some((a) => a.index === atom.index)
+    )
     return v?.atoms?.map((a) => a.index) ?? []
   }
 
@@ -2253,7 +3606,9 @@
   }
 
   function onEditModeCenterView() {
-    const atoms = structure?.atoms.filter((a) => editHoverGroupIndices.has(a.index))
+    const atoms = atomsAtCurrentTraj(
+      structure?.atoms.filter((a) => editHoverGroupIndices.has(a.index))
+    )
     if (!atoms?.length) return
     centerCameraOnAtoms(atoms)
     // Also shift rotation pivot to centroid
@@ -2574,9 +3929,14 @@
   function duplicateView(id) {
     const src = views.find((v) => v.id === id)
     if (!src || src._isSelHighlight) return
+    const dupId = crypto.randomUUID()
+    // In-memory clone only. The new card must not /get-structure (or treat the
+    // copy as a missing selection) — that hitch is what killed Traj smooth after
+    // Duplicate while playing.
+    skipNextAtomsFetch.add(dupId)
     const dup = {
       ...src,
-      id: crypto.randomUUID(),
+      id: dupId,
       representation: { ...src.representation },
       colorScheme: { ...src.colorScheme },
       material: src.material ? { ...src.material } : { ...DEFAULT_VIEW_MATERIAL },
@@ -2584,7 +3944,10 @@
       atoms: src.atoms,
       bonds: src.bonds,
       residues: src.residues,
-      visible: true
+      visible: true,
+      _prefetched: true,
+      _bondOrderFetchDone: true,
+      _residueFetchDone: true
     }
     const idx = views.findIndex((v) => v.id === id)
     const next = [...views]
@@ -2677,6 +4040,7 @@
     visibilityGroups = []
     clearPanelSelection()
     viewAtomsCache.clear()
+    disposeTrajCache()
     views = []
     measurements = []
     measurePicks = []
@@ -3012,8 +4376,9 @@
       const newStructure = await getStructure({
         path: result.path,
         topology: topologyPath || null,
-        // Bonds per-view via ViewItem when needed (ball-stick); keep edit reload light.
-        needs_bonds: false,
+        // The written PDB has no CONECT. Guess bonds now so ball-and-stick and
+        // licorice of a later residue selection are not left disconnected.
+        needs_bonds: true,
         needs_secondary_structure: false,
         save_dir: workingDir || null
       })
@@ -3077,7 +4442,9 @@
       // block the edit on detect-molecules — its legacy atom payload is heavy
       // and was a common "Failed to fetch" source after chain delete.
       try {
-        const detected = await detectMolecules(result.path)
+        const detected = await detectMolecules(result.path, {
+          topology: structure?.topologyPath ?? null
+        })
         const coveredSels = new Set(
           views.filter((v) => v.structureId === editedId).map((v) => v.baseSelection).filter(Boolean)
         )
@@ -3131,6 +4498,8 @@
                 surfaceInflate: 0.25,
                 surfaceSource: 'atoms',
                 surfaceSubdivision: 0,
+                trajSmooth: 0,
+                trajSmoothRestoreH: true,
                 material: { ...DEFAULT_VIEW_MATERIAL },
                 _prefetched: true
               })
@@ -3379,11 +4748,263 @@
    */
   const viewAtomsCache = new Map()
 
+  /**
+   * @param {Array<{ index?: number }> | null | undefined} atoms
+   * @returns {Int32Array | null}
+   */
+  function cachedViewIndices(atoms) {
+    if (!atoms?.length) return null
+    let hit = viewIndexCache.get(atoms)
+    if (!hit) {
+      hit = collectAtomIndices(atoms)
+      if (hit) viewIndexCache.set(atoms, hit)
+    }
+    return hit
+  }
+
+  /**
+   * Atom indices used by visible views of this structure. Null means blend all.
+   * @param {import('../lib/visualizeStructures.js').StructureEntry} owner
+   */
+  function visibleTrajIndices(owner) {
+    const nAll = owner.atoms?.length ?? 0
+    if (nAll < 1) return null
+    let key = `${owner.id}:`
+    const parts = []
+    for (const v of views) {
+      if (v.visible === false || (v.opacity ?? 1) <= 0.001) continue
+      if ((v.structureId ?? owner.id) !== owner.id) continue
+      const atoms = v.atoms
+      if (!atoms?.length) continue
+      if (atoms.length >= nAll * 0.85) return null
+      key += `${v.id}:${atoms.length}|`
+      parts.push(cachedViewIndices(atoms))
+    }
+    if (!parts.length) return null
+    if (trajVisibleIndexCache.key === key) return trajVisibleIndexCache.indices
+    const indices = unionAtomIndices(parts)
+    const tooMany = !indices || indices.length >= nAll * 0.85
+    trajVisibleIndexCache = { key, indices: tooMany ? null : indices }
+    return trajVisibleIndexCache.indices
+  }
+
+  /** Packed xyz for instance reprs (no per-atom object clone). */
+  /** @param {import('../lib/backendApi.js').View} view */
+  function trajXyzForView(view) {
+    const owner = findStructure(structures, view.structureId) ?? structure
+    if (!owner?.trajectory || !trajCache) return null
+    void trajPlayhead
+    void trajXyzEpoch
+    void trajAlign.apply
+    void trajAlign.mode
+    const level = clampTrajSmooth(view.trajSmooth)
+    const restoreH = trajSmoothRestoreHEnabled(view.trajSmoothRestoreH)
+    const key = `${owner.id}:${level}:${restoreH ? 1 : 0}:${trajAlign.apply ? 1 : 0}`
+    if (
+      trajBlendShared.key === key &&
+      trajBlendShared.playhead === trajPlayhead &&
+      trajBlendShared.xyz
+    ) {
+      trajBlendPrev.set(view.id, trajBlendShared.xyz)
+      return trajBlendShared.xyz
+    }
+    const nFloats = (owner.atoms?.length ?? 0) * 3
+    const scratch =
+      trajBlendShared.scratch && trajBlendShared.scratch.length === nFloats
+        ? trajBlendShared.scratch
+        : nFloats > 0
+          ? new Float32Array(nFloats)
+          : null
+    const blended = trajCache.blend(trajPlayhead, level, {
+      prev: trajBlendShared.xyz,
+      box: parseBoxLengths(owner.trajectory?.box),
+      out: scratch,
+      indices: visibleTrajIndices(owner),
+      restoreH
+    })
+    if (!blended) return null
+    trajBlendShared = {
+      key,
+      playhead: trajPlayhead,
+      xyz: blended,
+      scratch
+    }
+    trajBlendPrev.set(view.id, blended)
+    return blended
+  }
+
+  /** Packed xyz at Traj smooth 0 — labels / measurements / picks follow the movie. */
+  function currentTrajXyz() {
+    void trajPlayhead
+    void trajXyzEpoch
+    void trajAlign.apply
+    if (!trajCache || !trajStructure?.trajectory) return null
+    return trajCache.blend(trajPlayhead, 0, {
+      box: parseBoxLengths(trajStructure.trajectory?.box)
+    })
+  }
+
+  const liveAtomLabels = $derived.by(() => {
+    if (!atomLabels.length) return atomLabels
+    return labelsWithPackedXyz(atomLabels, currentTrajXyz())
+  })
+  const liveMeasurements = $derived.by(() => {
+    if (!measurements.length) return measurements
+    return measurementsWithPackedXyz(measurements, currentTrajXyz())
+  })
+  const liveMeasurePicks = $derived.by(() => {
+    const picks = measurePicks || []
+    if (!picks.length) return picks
+    return picks.map((a) => atomWithPackedXyz(a, currentTrajXyz()))
+  })
+
+  /**
+   * @param {Array<{ index?: number, x: number, y: number, z: number }> | null | undefined} atoms
+   */
+  function atomsAtCurrentTraj(atoms) {
+    const xyz = currentTrajXyz()
+    if (!xyz || !atoms?.length) return atoms ?? []
+    return atoms.map((a) => atomWithPackedXyz(a, xyz))
+  }
+
+  $effect(() => {
+    void activeStructureId
+    dofFocusAtomIndex = null
+  })
+
+  $effect(() => {
+    if (animateMode) return
+    const idx = dofFocusAtomIndex
+    if (idx == null || !viewerSettings.dof?.enabled || !viewerSettings.dof.focusTarget) return
+    void trajPlayhead
+    void trajXyzEpoch
+    void trajAlign.apply
+    const xyz = currentTrajXyz()
+    if (!xyz) return
+    const t = viewerSettings.dof.focusTarget
+    const live = atomWithPackedXyz({ index: idx, x: t.x, y: t.y, z: t.z }, xyz)
+    if (t.x === live.x && t.y === live.y && t.z === live.z) return
+    viewerSettings.dof = {
+      ...viewerSettings.dof,
+      focusTarget: { x: live.x, y: live.y, z: live.z }
+    }
+  })
+
+  /**
+   * Atoms / bonds / residues / packed xyz for one representation this frame.
+   * When ``selectionEachFrame`` is on, the MDAnalysis string is re-evaluated on
+   * the full structure (so a byres clip can gain/lose lipids as they move).
+   * @param {import('../lib/backendApi.js').View} view
+   */
+  function viewDraw(view) {
+    void trajPlayhead
+    void trajXyzEpoch
+    void trajAlign.apply
+    const owner = findStructure(structures, view.structureId) ?? structure
+    const sel = effectiveViewSelection(view)
+    const each = view.selectionEachFrame === true
+    const level = clampTrajSmooth(view.trajSmooth)
+    const restoreH = trajSmoothRestoreHEnabled(view.trajSmoothRestoreH)
+    const cacheKey = String(view.id || '')
+    const hit = viewDrawCache.get(cacheKey)
+    if (
+      hit &&
+      hit.epoch === trajXyzEpoch &&
+      hit.playhead === trajPlayhead &&
+      hit.level === level &&
+      hit.restoreH === restoreH &&
+      hit.each === each &&
+      hit.sel === sel &&
+      hit.sourceAtoms === view.atoms &&
+      hit.ownerAtoms === owner?.atoms
+    ) {
+      return hit.result
+    }
+
+    const xyz = trajXyzForView(view)
+    let atoms = view.atoms
+    let bonds = view.bonds
+    let residues = view.residues ?? []
+    if (each && owner?.atoms?.length) {
+      const idx = evaluateSelectionIndices(owner.atoms, sel, xyz)
+      if (idx) {
+        const filtered = filterByIndexSet(
+          owner.atoms,
+          owner.bonds ?? view.bonds,
+          owner.residues ?? view.residues,
+          idx
+        )
+        atoms = filtered.atoms
+        bonds = filtered.bonds
+        residues = filtered.residues
+      }
+    }
+
+    let liveAtoms = atoms
+    const repr = view.representation?.type
+    const usesPackedXyz =
+      repr === 'points' ||
+      repr === 'vdw' ||
+      repr === 'ball-stick' ||
+      repr === 'licorice' ||
+      repr === 'cartoon' ||
+      repr === 'tube' ||
+      repr === 'surface'
+    if (xyz && atoms?.length && !usesPackedXyz) {
+      const reuseKey = `draw:${cacheKey}`
+      const prev = viewAtomsCache.get(reuseKey)
+      const reuse = prev && prev.sourceAtoms === atoms ? prev.result : undefined
+      liveAtoms = applyBlendToViewAtoms(atoms, xyz, reuse)
+      viewAtomsCache.set(reuseKey, {
+        working: owner?.atoms,
+        overlay: xyz,
+        sourceAtoms: atoms,
+        gen: trajXyzEpoch,
+        result: liveAtoms
+      })
+    }
+
+    const result = { atoms: liveAtoms, bonds, residues, xyz }
+    if (cacheKey) {
+      viewDrawCache.set(cacheKey, {
+        epoch: trajXyzEpoch,
+        playhead: trajPlayhead,
+        level,
+        restoreH,
+        each,
+        sel,
+        sourceAtoms: view.atoms,
+        ownerAtoms: owner?.atoms,
+        result
+      })
+    }
+    return result
+  }
+
   /** @param {import('../lib/backendApi.js').View} view */
   function viewAtoms(view) {
+    if (view?.selectionEachFrame) return viewDraw(view).atoms
     if (!view?.atoms?.length) return view?.atoms
     const owner = findStructure(structures, view.structureId) ?? structure
     const sid = owner?.id ?? view.structureId ?? activeStructureId
+    if (owner?.trajectory && trajCache) {
+      const blended = trajXyzForView(view)
+      if (blended) {
+        const xyz = blended
+        const cacheKey = `traj:${view.id}`
+        const hit = viewAtomsCache.get(cacheKey)
+        const reuse = hit && hit.sourceAtoms === view.atoms ? hit.result : undefined
+        const result = applyBlendToViewAtoms(view.atoms, xyz, reuse)
+        viewAtomsCache.set(cacheKey, {
+          working: owner.atoms,
+          overlay: xyz,
+          sourceAtoms: view.atoms,
+          gen: trajXyzEpoch,
+          result
+        })
+        return result
+      }
+    }
     const structOverlay =
       sid && animCoordOverlayByStructure.has(sid)
         ? animCoordOverlayByStructure.get(sid)
@@ -3642,9 +5263,18 @@
 
   /** Views with overlay XYZ applied — used for picking while previewing / scrubbing. */
   function viewsForPicking() {
+    const editStructureOnly = editMode && !measureMode && activeStructureId
     return views
-      .filter((v) => v.visible !== false && isOwnerStructureVisible(v))
-      .map((v) => ({ ...v, atoms: viewAtoms(v) }))
+      .filter(
+        (v) =>
+          v.visible !== false &&
+          isOwnerStructureVisible(v) &&
+          (!editStructureOnly || v.structureId === activeStructureId)
+      )
+      .map((v) => {
+        const draw = viewDraw(v)
+        return { ...v, atoms: draw.atoms, bonds: draw.bonds, residues: draw.residues, xyz: draw.xyz }
+      })
   }
 
   /**
@@ -3696,14 +5326,16 @@
     if (!editMode || selectedGroupIndices.size === 0 || !structure) return null
     const atoms = structure.atoms.filter((a) => selectedGroupIndices.has(a.index))
     if (!atoms.length) return null
+    const xyz = currentTrajXyz()
     let cx = 0,
       cy = 0,
       cz = 0
     for (const a of atoms) {
       const pos = previewPositions?.[a.index]
-      cx += pos ? pos[0] : a.x
-      cy += pos ? pos[1] : a.y
-      cz += pos ? pos[2] : a.z
+      const live = atomWithPackedXyz(a, xyz)
+      cx += pos ? pos[0] : live.x
+      cy += pos ? pos[1] : live.y
+      cz += pos ? pos[2] : live.z
     }
     const n = atoms.length
     return { x: cx / n, y: cy / n, z: cz / n }
@@ -3883,18 +5515,20 @@
    */
   function focusDofOnAtom(atom) {
     if (!atom) return
+    const live = atomWithPackedXyz(atom, currentTrajXyz())
+    dofFocusAtomIndex = typeof atom.index === 'number' ? atom.index : null
     const cam = mainViewerCamera.current
     const dist = cam
       ? Math.max(
           0.5,
-          Math.hypot(cam.position.x - atom.x, cam.position.y - atom.y, cam.position.z - atom.z)
+          Math.hypot(cam.position.x - live.x, cam.position.y - live.y, cam.position.z - live.z)
         )
       : (viewerSettings.dof?.focusDistance ?? 80)
     viewerSettings.dof = {
       ...(viewerSettings.dof ?? { enabled: false, focusDistance: 80, focusRange: 20, bokehScale: 2.5, focusTarget: null }),
       enabled: true,
       focusDistance: dist,
-      focusTarget: { x: atom.x, y: atom.y, z: atom.z }
+      focusTarget: { x: live.x, y: live.y, z: live.z }
     }
     mainViewerInvalidate.fn()
     logEvent('detail', 'view', 'DOF focus', atom.name ?? 'atom')
@@ -3914,8 +5548,10 @@
       color: '#67e8f9',
       icon: '<path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0m0 1a7 7 0 1 1 0 14A7 7 0 0 1 8 1m0 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8m0 1a3 3 0 1 1 0 6 3 3 0 0 1 0-6m0 2a1 1 0 1 0 0 2 1 1 0 0 0 0-2"/>',
       action: () => {
-        const atoms = structure?.atoms.filter((a) =>
-          hasEditSel ? ctxGroupIndices.has(a.index) : a.index === atom.index
+        const atoms = atomsAtCurrentTraj(
+          structure?.atoms.filter((a) =>
+            hasEditSel ? ctxGroupIndices.has(a.index) : a.index === atom.index
+          )
         )
         if (atoms?.length) {
           centerCameraOnAtoms(atoms)
@@ -4097,7 +5733,10 @@
 
     // Only add when at least one visible view is cartoon or tube
     const hasCartoonOrTube = views.some(
-      (v) => v.visible && (v.representation.type === 'cartoon' || v.representation.type === 'tube')
+      (v) =>
+        v.visible &&
+        v.structureId === activeStructureId &&
+        (v.representation.type === 'cartoon' || v.representation.type === 'tube')
     )
     if (!hasCartoonOrTube) return
 
@@ -4113,6 +5752,7 @@
     views.push({
       id,
       _isSelHighlight: true,
+      structureId: activeStructureId,
       selection: '',
       baseSelection: null,
       representation: { type: 'ball-stick' },
@@ -4306,7 +5946,7 @@
     for (const view of views) {
       if (view._isSelHighlight) continue
       const owner = ownerStructure(view)
-      const ownerPath = owner?.path || view.path
+      const ownerPath = structureFetchPath(owner?.path || view.path, owner?.topologyPath)
       if (!ownerPath) continue
       const selection = effectiveViewSelection(view)
       const repr = view.representation?.type
@@ -4321,6 +5961,18 @@
         view._prefetched = true
         continue
       }
+      const local = owner?.atoms?.length
+        ? trySubsetBySelection(owner.atoms, owner.bonds, owner.residues, selection)
+        : { ok: false, fallback: true }
+      if (local.ok) {
+        view.atoms = local.atoms
+        view.bonds = local.bonds
+        view.residues = local.residues
+        view._prefetched = true
+        changed = true
+        continue
+      }
+      if (!local.fallback) continue
       try {
         const struc = await getStructure({
           path: ownerPath,
@@ -4374,6 +6026,9 @@
         // and discard unsaved atom moves (capture stores them again on the next keyframe).
         previewPositions = null
         _dragStartPositions = null
+        const { apply, signature } = shouldApplyCoordPatch(lastAnimCoordSig, patch ?? null)
+        if (!apply) return
+        lastAnimCoordSig = signature
         if (animProject.keyframes.length > 0 && structure?.atoms?.length && baseAtomCoords.size) {
           const atoms = atomsFromBaseAndPatch(structure.atoms, baseAtomCoords, patch ?? null)
           patchActiveStructure({ atoms })
@@ -4387,12 +6042,20 @@
             animCoordOverlayByStructure.set(activeStructureId, animCoordOverlay)
           }
         }
+      },
+      setTrajFrame: (frame) => {
+        trajSeekWaiter = seekTrajFrame(frame, {
+          playing: animPlaying || trajPlaying || animExporting,
+          persist: !animExporting,
+          holdCache: animExporting
+        })
       }
     }, animProject.viewTracks ?? [])
   }
 
   async function applyAnimFrameLive(time_s) {
     applyAnimFrame(time_s)
+    await trajSeekWaiter
     await tick()
   }
 
@@ -4410,14 +6073,12 @@
       stopAnimPlayback()
       animateMode = false
       animCoordOverlay = null
-      // Keep user/keyframe base opacity; only clear fully faded (hidden) views.
-      views = views.map((v) => {
-        if (typeof v.opacity !== 'number') return v
-        if (v.opacity > 0.001) return v
-        const next = { ...v }
-        next.opacity = 1
-        return next
-      })
+      // Keep the same view objects. Cloning faded rows remounts ViewItem
+      // effects and storms /get-structure (yellow spinners that never clear).
+      // Do not force faded/hidden rows visible — that unhides representations
+      // the user hid before or during the animation.
+      restoreViewsAfterLeavingAnimate(views, animProject.keyframes, animPlayhead)
+      lastAnimCoordSig = undefined
       coordsGeneration += 1
       return
     }
@@ -4476,6 +6137,13 @@
       const existing = animProject.keyframes.find((k) => Math.abs(k.time_s - time_s) < 0.05)
       ensureBaseAtomCoords(activeStructureId)
       const coordPatch = diffFromBase(baseAtomCoords, structure?.atoms ?? [])
+      const prevKf = previousKeyframeAtTime(animProject.keyframes, time_s, existing?.id ?? null)
+      const capturedEasing = easingForCapturedKeyframe({
+        hasTrajectory: !!trajStructure,
+        hasPrevious: !!prevKf,
+        prevCamera: prevKf?.camera ?? null,
+        nextCamera: snap.camera
+      })
       const keyframe = existing
         ? {
             ...existing,
@@ -4485,7 +6153,13 @@
             viewport: snap.viewport,
             labels: snap.labels,
             measurements: snap.measurements,
-            ...(coordPatch ? { coordPatch } : { coordPatch: undefined })
+            ...(coordPatch ? { coordPatch } : { coordPatch: undefined }),
+            ...(trajStructure
+              ? { trajFrame: trajPlayhead }
+              : {}),
+            ...(capturedEasing
+              ? { easing: capturedEasing, easingBezier: undefined }
+              : {})
           }
         : {
             id: crypto.randomUUID(),
@@ -4497,7 +6171,11 @@
             viewport: snap.viewport,
             labels: snap.labels,
             measurements: snap.measurements,
-            ...(coordPatch ? { coordPatch } : {})
+            ...(coordPatch ? { coordPatch } : {}),
+            ...(trajStructure ? { trajFrame: trajPlayhead } : {}),
+            ...(capturedEasing
+              ? { easing: capturedEasing, easingBezier: undefined }
+              : {})
           }
       if (!coordPatch) delete keyframe.coordPatch
       const persistIds = persistViews.map((x) => String(x.id))
@@ -4537,6 +6215,14 @@
       ...animProject,
       keyframes: animProject.keyframes.filter((k) => k.id !== id)
     }
+  }
+
+  function onAnimClearKeyframes() {
+    if (!animProject.keyframes.length) return
+    stopAnimPlayback()
+    lastAnimCoordSig = undefined
+    animProject = { ...animProject, keyframes: [] }
+    logEvent('info', 'view', 'Cleared animation keyframes', 'Duration and FPS stayed. Capture to start over.')
   }
 
   /** @param {string} id @param {string} name */
@@ -4619,7 +6305,7 @@
   function onAnimScrub(time_s) {
     stopAnimPlayback()
     animPlayhead = Math.max(0, Math.min(animProject.duration_s, time_s))
-    if (animProject.keyframes.length) void applyAnimFrameLive(animPlayhead)
+    if (animProject.keyframes.length) applyAnimFrame(animPlayhead)
   }
 
   function toggleAnimPlayPause() {
@@ -4641,7 +6327,7 @@
       setPlaying: (v) => {
         animPlaying = v
       },
-      onFrame: applyAnimFrameLive,
+      onFrame: applyAnimFrame,
       onDone: () => {
         animStopPlayback = null
       }
@@ -4654,19 +6340,18 @@
     if (animProject.keyframes.length) applyAnimFrame(0)
   }
 
-  async function resolveAnimationOutputBase() {
+  function resolveAnimationOutputBase() {
     const folder =
       animProject.outputFolder?.trim() || defaultAnimationFolderName(filePath || '') || 'animation'
-    let base
     if (workingDir) {
-      const { output_dir } = await ensureOutputFolder(workingDir, folder)
-      base = output_dir
-    } else {
-      const parent = parentOfFile(filePath || '')
-      if (!parent) throw new Error('No output location: set a working directory or load a structure file')
-      base = `${parent.replace(/[/\\]+$/, '')}/${folder}`
+      const joined = outputFolderPath(workingDir, folder)
+      if (joined) return joined
     }
-    return base
+    const parent = parentOfFile(filePath || '')
+    if (!parent) {
+      throw new Error('No output location: set a working directory or load a structure file')
+    }
+    return `${parent.replace(/[/\\]+$/, '')}/${folder}`
   }
 
   async function confirmAnimationOutputOverwrite(base) {
@@ -4687,12 +6372,12 @@
   }
 
   async function prepareAnimationOutputDir() {
-    const base = await resolveAnimationOutputBase()
-    if (!(await confirmAnimationOutputOverwrite(base))) {
+    const requested = resolveAnimationOutputBase()
+    if (!(await confirmAnimationOutputOverwrite(requested))) {
       throw new Error('Export cancelled — output folder not overwritten')
     }
-    await window.api.animationEnsureDir(base)
-    return base
+    const created = await window.api.animationEnsureDir(requested)
+    return typeof created === 'string' && created.trim() ? created : requested
   }
 
   async function onAnimSaveProject() {
@@ -4805,19 +6490,34 @@
   async function onAnimExportVideo() {
     if (!animProject.keyframes.length) return
     if (!confirmProceedWithoutWorkingDir('animation')) return
+    let requested
+    try {
+      requested = resolveAnimationOutputBase()
+    } catch (ex) {
+      alert(ex instanceof Error ? ex.message : String(ex))
+      return
+    }
+    if (!(await confirmAnimationOutputOverwrite(requested))) return
+    const fps = animProject.fps > 0 ? animProject.fps : 30
+    const duration = Number(animProject.duration_s)
+    const frameCount = Math.max(
+      1,
+      Math.ceil((Number.isFinite(duration) ? duration : 0) * fps) || 1
+    )
     animExportCancelRequested = false
     animExporting = true
-    animExportPhase = 'Preparing export…'
+    animExportPhase = 'Creating output folder…'
     animExportFrame = 0
+    animExportTotal = frameCount
     const savedPlayhead = animPlayhead
     stopAnimPlayback()
     try {
-      const base = await prepareAnimationOutputDir()
+      await tick()
+      throwIfAnimExportCancelled()
+      const created = await window.api.animationEnsureDir(requested)
+      const base = typeof created === 'string' && created.trim() ? created : requested
       throwIfAnimExportCancelled()
       const framesDir = `${base}/frames`
-      const fps = animProject.fps
-      const frameCount = Math.max(1, Math.ceil(animProject.duration_s * fps))
-      animExportTotal = frameCount
       const exportFrame = animProject.exportFrame ?? {
         aspectPreset: '16:9',
         width: 1920,
@@ -4830,6 +6530,7 @@
       const encodedFileName = animationOutputFileName(exportFormat)
       const encodedOutputPath = encodedFileName ? `${base}/${encodedFileName}` : ''
       const canvas = viewerEl?.querySelector('canvas')
+      if (!canvas) throw new Error('Viewer canvas is not ready — wait for the structure to appear, then export again.')
       for (let i = 0; i < frameCount; i++) {
         throwIfAnimExportCancelled()
         const t = Math.min(animProject.duration_s, i / fps)
@@ -4838,7 +6539,11 @@
         animExportPhase = `Rendering frame ${i + 1} of ${frameCount}…`
         await tick()
         throwIfAnimExportCancelled()
-        await renderFrame(() => applyAnimFrame(t))
+        applyAnimFrame(t)
+        await trajSeekWaiter
+        throwIfAnimExportCancelled()
+        await renderFrame(() => mainViewerInvalidate.fn())
+        await tick()
         throwIfAnimExportCancelled()
         const sourceRect = computeSafeAreaForCanvas(
           /** @type {HTMLCanvasElement} */ (canvas),
@@ -4852,8 +6557,8 @@
           displayW: canvasWidth,
           displayH: canvasHeight,
           camera: mainViewerCamera.current,
-          measurements,
-          atomLabels
+          measurements: liveMeasurements,
+          atomLabels: liveAtomLabels
         })
         throwIfAnimExportCancelled()
         await window.api.writeBinary(`${framesDir}/${frameFileName(i)}`, png)
@@ -5190,6 +6895,406 @@
       editBusy = false
     }
   }
+
+  /**
+   * Chain ids on a loaded structure. Protein chains are the standard amino acids.
+   * @param {import('../lib/visualizeStructures.js').StructureEntry | null | undefined} entry
+   * @param {boolean} proteinOnly
+   */
+  function chainIdsOf(entry, proteinOnly) {
+    /** @type {string[]} */
+    const ids = []
+    const seen = new Set()
+    for (const atom of entry?.atoms || []) {
+      if (proteinOnly && !PROTEIN_RESIDUES.has(String(atom.res_name || '').toUpperCase())) continue
+      const id = String(atom.chain_id ?? '').trim()
+      if (!id || seen.has(id)) continue
+      seen.add(id)
+      ids.push(id)
+    }
+    return ids
+  }
+
+  /** @param {import('../lib/visualizeStructures.js').StructureEntry | null | undefined} entry */
+  function defaultProteinChain(entry) {
+    return chainIdsOf(entry, true)[0] || chainIdsOf(entry, false)[0] || ''
+  }
+
+  /**
+   * PDB the mutator and superposition tools can read.
+   * A clean PDB is used as-is. A trajectory or unsaved edit is written to a temp PDB
+   * (frame 0 for a movie).
+   * @param {import('../lib/visualizeStructures.js').StructureEntry} entry
+   */
+  async function materializeEntryPdb(entry) {
+    if (!entry?.path) throw new Error('No structure is loaded')
+    const dirty = entry.id === activeStructureId && coordsDirty
+    const traj = !!entry.trajectory
+    const isPdb = /\.(pdb|ent)$/i.test(String(entry.path))
+    if (isPdb && !dirty && !traj) return entry.path
+    const scratch = await structureScratchPdb({
+      path: entry.path,
+      topology: entry.topologyPath || null
+    })
+    if (!dirty) return scratch.path
+    /** @type {number[]} */
+    const indices = []
+    /** @type {number[]} */
+    const xyz = []
+    for (const atom of entry.atoms || []) {
+      if (typeof atom.index !== 'number') continue
+      indices.push(atom.index)
+      xyz.push(atom.x, atom.y, atom.z)
+    }
+    if (!indices.length) return scratch.path
+    await structureWriteCoords({
+      source: scratch.path,
+      dest: scratch.path,
+      indices,
+      xyz,
+      topology: null
+    })
+    return scratch.path
+  }
+
+  function clearMutPreview() {
+    mutPreviewAtoms = []
+    mutPreviewBonds = []
+  }
+
+  /** @param {{ atoms?: Array<{ name: string, element: string, x: number, y: number, z: number }> } | null | undefined} rotamer */
+  function setMutPreview(rotamer) {
+    const atoms = (rotamer?.atoms || []).map((atom, index) => ({
+      index,
+      name: atom.name,
+      element: atom.element,
+      x: atom.x,
+      y: atom.y,
+      z: atom.z
+    }))
+    /** @type {number[][]} */
+    const bonds = []
+    for (let i = 0; i < atoms.length; i++) {
+      for (let j = i + 1; j < atoms.length; j++) {
+        const dx = atoms[i].x - atoms[j].x
+        const dy = atoms[i].y - atoms[j].y
+        const dz = atoms[i].z - atoms[j].z
+        const dist2 = dx * dx + dy * dy + dz * dz
+        const cut = atoms[i].element === 'S' && atoms[j].element === 'S' ? 2.15 : 1.95
+        if (dist2 > 0.16 && dist2 < cut * cut) bonds.push([i, j])
+      }
+    }
+    mutPreviewAtoms = atoms
+    mutPreviewBonds = bonds
+  }
+
+  function closeMutateDialog() {
+    mutateOpen = false
+    clearMutPreview()
+  }
+
+  /** @type {string | null} */
+  let mutateFocusViewId = null
+  /** @type {ReturnType<typeof setTimeout> | 0} */
+  let mutateFocusTimer = 0
+
+  /** Atoms of the residue currently chosen in the mutator. */
+  function mutateResidueAtoms() {
+    const chain = String(mutateChain || '').trim()
+    const resid = Number(mutateResid)
+    if (!structure?.atoms?.length || !chain || !Number.isFinite(resid)) return []
+    return structure.atoms.filter(
+      (atom) => String(atom.chain_id || '').trim() === chain && Number(atom.res_id) === resid
+    )
+  }
+
+  /**
+   * One ball-and-stick of the chosen residue, reused when the resid changes.
+   * @param {string} selection
+   */
+  function ensureMutateBallStick(selection) {
+    const owner = structure
+    if (!owner) return
+    const existing = views.find(
+      (view) => view.id === mutateFocusViewId && view.structureId === activeStructureId
+    )
+    const subset = resolveViewAtomSubset(owner, selection)
+    if (existing) {
+      existing.selection = selection
+      existing.baseSelection = selection
+      existing.representation = { type: 'ball-stick' }
+      existing.componentKey = 'polymer'
+      existing.visible = true
+      existing.atoms = subset.atoms
+      existing.bonds = subset.bonds
+      existing.residues = subset.residues
+      existing._bondOrderFetchDone = false
+      views = [...views]
+      return
+    }
+    addView(selection, { type: 'ball-stick' }, {
+      structureId: activeStructureId,
+      componentKey: 'polymer'
+    })
+    mutateFocusViewId = views[views.length - 1]?.id ?? null
+  }
+
+  /** Center and zoom on the residue, and show it as ball-and-stick. */
+  function focusMutateResidue() {
+    const atoms = mutateResidueAtoms()
+    if (!atoms.length) return
+    const chain = String(mutateChain || '').trim()
+    const resid = Number(mutateResid)
+    ensureMutateBallStick(`chainID ${chain} and resid ${resid}`)
+    const next = getCameraForAtoms(atoms)
+    if (!next) return
+    camera = {
+      ...next,
+      framingZoom: 3,
+      framingGeneration: (camera?.framingGeneration ?? 0) + 1,
+      poseResetGeneration: camera?.poseResetGeneration ?? 0
+    }
+    syncControlsTarget(atoms)
+  }
+
+  function scheduleMutateResidueFocus() {
+    if (mutateFocusTimer) clearTimeout(mutateFocusTimer)
+    mutateFocusTimer = setTimeout(() => {
+      mutateFocusTimer = 0
+      focusMutateResidue()
+    }, 200)
+  }
+
+  function openMutateDialog() {
+    toolsMenuOpen = false
+    const atom = selectedAtom
+    if (atom?.chain_id) mutateChain = String(atom.chain_id).trim()
+    else mutateChain = defaultProteinChain(structure)
+    if (atom && Number.isFinite(atom.res_id)) mutateResid = atom.res_id
+    mutateRows = []
+    mutateError = ''
+    mutatePhi = null
+    mutatePsi = null
+    clearMutPreview()
+    mutateOpen = true
+    focusMutateResidue()
+  }
+
+  function openSplitDialog() {
+    toolsMenuOpen = false
+    splitChainId = defaultProteinChain(structure)
+    splitError = ''
+    splitOpen = true
+  }
+
+  function openSuperimposeDialog() {
+    toolsMenuOpen = false
+    const ids = structures.map((entry) => entry.id)
+    superRefId = activeStructureId || ids[0] || ''
+    const splitId = lastSplit && ids.includes(lastSplit.id) ? lastSplit.id : ''
+    superMobId = splitId && splitId !== superRefId ? splitId : ids.find((id) => id !== superRefId) || ''
+    superRefChain = defaultProteinChain(structures.find((entry) => entry.id === superRefId))
+    superMobChain =
+      lastSplit && lastSplit.id === superMobId
+        ? lastSplit.chain
+        : defaultProteinChain(structures.find((entry) => entry.id === superMobId))
+    superError = ''
+    superResult = ''
+    superOpen = true
+  }
+
+  /** @param {string} id */
+  function onSuperRefChange(id) {
+    superRefId = id
+    const chains = chainIdsOf(structures.find((entry) => entry.id === id), true)
+    const all = chains.length ? chains : chainIdsOf(structures.find((entry) => entry.id === id), false)
+    if (!all.includes(superRefChain)) superRefChain = all[0] || ''
+  }
+
+  /** @param {string} id */
+  function onSuperMobChange(id) {
+    superMobId = id
+    const prefer = lastSplit && lastSplit.id === id ? lastSplit.chain : ''
+    const chains = chainIdsOf(structures.find((entry) => entry.id === id), true)
+    const all = chains.length ? chains : chainIdsOf(structures.find((entry) => entry.id === id), false)
+    superMobChain = prefer && all.includes(prefer) ? prefer : all.includes(superMobChain) ? superMobChain : all[0] || ''
+  }
+
+  async function onMutateList() {
+    if (!structure) return
+    mutateBusy = true
+    mutateError = ''
+    try {
+      const path = await materializeEntryPdb(structure)
+      const listed = await mutateRotamers({
+        path,
+        chain: mutateChain,
+        resid: Number(mutateResid),
+        mutateTo
+      })
+      mutateRows = listed.rotamers || []
+      mutatePhi = listed.phi ?? null
+      mutatePsi = listed.psi ?? null
+      mutateSelected = mutateRows[0]?.index ?? 0
+      setMutPreview(mutateRows[0] || null)
+      focusMutateResidue()
+    } catch (ex) {
+      mutateRows = []
+      clearMutPreview()
+      mutateError = ex instanceof Error ? ex.message : String(ex)
+    } finally {
+      mutateBusy = false
+    }
+  }
+
+  /** @param {number} index */
+  function onMutateSelect(index) {
+    mutateSelected = index
+    setMutPreview(mutateRows.find((row) => row.index === index) || null)
+  }
+
+  async function onMutateApply() {
+    if (!structure) return
+    const row = mutateRows.find((item) => item.index === mutateSelected) || mutateRows[0]
+    if (!row) return
+    mutateBusy = true
+    mutateError = ''
+    try {
+      const path = await materializeEntryPdb(structure)
+      const result = await mutateApply({
+        path,
+        chain: mutateChain,
+        resid: Number(mutateResid),
+        mutateTo,
+        rotamerIndex: row.index
+      })
+      closeMutateDialog()
+      await applyEditResult(result)
+    } catch (ex) {
+      mutateError = ex instanceof Error ? ex.message : String(ex)
+    } finally {
+      mutateBusy = false
+    }
+  }
+
+  async function onSplitChain() {
+    if (!structure || !splitChainId) return
+    splitBusy = true
+    splitError = ''
+    try {
+      const path = await materializeEntryPdb(structure)
+      const result = await structureSplitChain({
+        path,
+        chain: splitChainId,
+        topology: structure.trajectory ? structure.topologyPath : null
+      })
+      const label = `${structure.label || 'structure'} chain ${splitChainId}`
+      const added = await appendStructure(result.path, {
+        label,
+        resetCamera: false,
+        needsSecondaryStructure: true
+      })
+      if (added) lastSplit = { id: added.id, chain: splitChainId }
+      splitOpen = false
+    } catch (ex) {
+      splitError = ex instanceof Error ? ex.message : String(ex)
+    } finally {
+      splitBusy = false
+    }
+  }
+
+  /**
+   * Replace one workspace structure's coordinates without clearing the others.
+   * @param {string} entryId
+   * @param {string} newPath
+   */
+  async function reloadStructureInPlace(entryId, newPath) {
+    const entry = structures.find((item) => item.id === entryId)
+    if (!entry) return
+    loadingPDB = true
+    try {
+      const raw = await getStructure({
+        path: newPath,
+        topology: entry.topologyPath || null,
+        needs_bonds: false,
+        needs_secondary_structure: false,
+        save_dir: workingDir || null
+      })
+      structures = structures.map((item) =>
+        item.id === entryId
+          ? {
+              ...item,
+              path: raw.path,
+              atoms: raw.atoms,
+              bonds: raw.bonds,
+              residues: raw.residues,
+              bond_source: raw.bond_source
+            }
+          : item
+      )
+      const snap = snapshotAtomCoords(raw.atoms)
+      baseAtomCoordsByStructure.set(entryId, snap)
+      if (entryId === activeStructureId) {
+        baseAtomCoords = snap
+        coordsDirty = false
+        coordsGeneration += 1
+        coordUndoStack.clear()
+        previewPositions = null
+      }
+      for (const view of views) {
+        if (view.structureId !== entryId) continue
+        view.path = raw.path
+        view.atoms = []
+        view.bonds = []
+        view.residues = []
+        view._prefetched = false
+      }
+      views = [...views]
+    } finally {
+      loadingPDB = false
+    }
+  }
+
+  async function onSuperimpose() {
+    const reference = structures.find((entry) => entry.id === superRefId)
+    const mobile = structures.find((entry) => entry.id === superMobId)
+    if (!reference || !mobile) return
+    if (reference.id === mobile.id) {
+      superError = 'Reference and mobile must be two loaded structures. Split a chain first if both are in one file.'
+      return
+    }
+    superBusy = true
+    superError = ''
+    try {
+      const referencePath = await materializeEntryPdb(reference)
+      const mobilePath = await materializeEntryPdb(mobile)
+      const result = await structureSuperimpose({
+        referencePath,
+        referenceChain: superRefChain,
+        mobilePath,
+        mobileChain: superMobChain,
+        referenceTopology: reference.trajectory ? reference.topologyPath : null,
+        mobileTopology: mobile.trajectory ? mobile.topologyPath : null
+      })
+      await reloadStructureInPlace(mobile.id, result.path)
+      const rmsd = Number(result.rmsd)
+      superResult = `${result.n_anchors} anchors, RMSD ${Number.isFinite(rmsd) ? rmsd.toFixed(2) : '—'} Å. The reference did not move.`
+    } catch (ex) {
+      superError = ex instanceof Error ? ex.message : String(ex)
+    } finally {
+      superBusy = false
+    }
+  }
+
+  const activeChainIds = $derived(chainIdsOf(structure, false))
+  const superimposeChoices = $derived(
+    structures.map((entry) => ({
+      id: entry.id,
+      label: entry.label || 'structure',
+      chains: chainIdsOf(entry, false),
+      proteinChains: chainIdsOf(entry, true)
+    }))
+  )
 </script>
 
 <div class="flex min-w-0 flex-1 flex-col">
@@ -5207,14 +7312,20 @@
           onAtomContextMenu={handleCanvasContextMenu}
           onAtomHover={handleCanvasHover}
         >
+          <TrajPlayBridge />
           <CameraRig framing={camera} />
           {#each views.filter((v) => v.visible !== false && (v.opacity ?? 1) > 0.001) as view (view.id)}
+            {@const draw = viewDraw(view)}
             <T.Group visible={isOwnerStructureVisible(view)}>
             {#key `${view.representation.type}-${coordsGeneration}`}
             {#if view.representation.type === 'ball-stick'}
               <BallStick
-                atoms={viewAtoms(view)}
-                bonds={view.bonds}
+                atoms={draw.atoms}
+                xyz={draw.xyz}
+                xyzEpoch={trajPlayhead + trajXyzEpoch}
+                trajSmooth={clampTrajSmooth(view.trajSmooth)}
+                trajSmoothRestoreH={trajSmoothRestoreHEnabled(view.trajSmoothRestoreH)}
+                bonds={draw.bonds}
                 getColor={view.colorScheme.resolver}
                 quality={view.quality ?? 3}
                 atomScale={view.atomScale ?? 1.0}
@@ -5227,7 +7338,7 @@
                 outlinesEnabled={view.material?.outlinesEnabled ?? GOODSELL_MATERIAL_DEFAULTS.outlinesEnabled}
                 outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
                 outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
-                highlightIndices={editHoverGroupIndices}
+                highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, editHoverGroupIndices)}
                 opacity={view.opacity ?? 1}
                 showMultipleBonds={view.showMultipleBonds !== false}
                 bondColorMode={view.bondColorMode === 'atoms' ? 'atoms' : 'uniform'}
@@ -5235,8 +7346,12 @@
               />
             {:else if view.representation.type === 'licorice'}
               <Licorice
-                atoms={viewAtoms(view)}
-                bonds={view.bonds}
+                atoms={draw.atoms}
+                xyz={draw.xyz}
+                xyzEpoch={trajPlayhead + trajXyzEpoch}
+                trajSmooth={clampTrajSmooth(view.trajSmooth)}
+                trajSmoothRestoreH={trajSmoothRestoreHEnabled(view.trajSmoothRestoreH)}
+                bonds={draw.bonds}
                 getColor={view.colorScheme.resolver}
                 quality={view.quality ?? 3}
                 bondScale={view.bondScale ?? 1.0}
@@ -5249,14 +7364,18 @@
                 outlinesEnabled={view.material?.outlinesEnabled ?? GOODSELL_MATERIAL_DEFAULTS.outlinesEnabled}
                 outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
                 outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
-                highlightIndices={editHoverGroupIndices}
+                highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, editHoverGroupIndices)}
                 opacity={view.opacity ?? 1}
                 showMultipleBonds={view.showMultipleBonds !== false}
               />
             {:else if view.representation.type === 'cartoon'}
               <Cartoon
-                atoms={viewAtoms(view)}
-                residues={view.residues ?? []}
+                atoms={draw.atoms}
+                xyz={draw.xyz}
+                xyzEpoch={trajPlayhead + trajXyzEpoch}
+                trajSmooth={clampTrajSmooth(view.trajSmooth)}
+                trajSmoothRestoreH={trajSmoothRestoreHEnabled(view.trajSmoothRestoreH)}
+                residues={draw.residues ?? []}
                 getColor={view.colorScheme.resolver}
                 helixWidth={view.helixWidth ?? 1.0}
                 sheetWidth={view.sheetWidth ?? 0.875}
@@ -5270,13 +7389,17 @@
                 outlinesEnabled={view.material?.outlinesEnabled ?? GOODSELL_MATERIAL_DEFAULTS.outlinesEnabled}
                 outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
                 outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
-                highlightIndices={editHoverGroupIndices}
+                highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, editHoverGroupIndices)}
                 opacity={view.opacity ?? 1}
               />
             {:else if view.representation.type === 'tube'}
               <Tube
-                atoms={viewAtoms(view)}
-                residues={view.residues ?? []}
+                atoms={draw.atoms}
+                xyz={draw.xyz}
+                xyzEpoch={trajPlayhead + trajXyzEpoch}
+                trajSmooth={clampTrajSmooth(view.trajSmooth)}
+                trajSmoothRestoreH={trajSmoothRestoreHEnabled(view.trajSmoothRestoreH)}
+                residues={draw.residues ?? []}
                 getColor={view.colorScheme.resolver}
                 tubeRadius={view.tubeRadius ?? 0.9}
                 ssColors={view.ssColors}
@@ -5288,12 +7411,16 @@
                 outlinesEnabled={view.material?.outlinesEnabled ?? GOODSELL_MATERIAL_DEFAULTS.outlinesEnabled}
                 outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
                 outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
-                highlightIndices={editHoverGroupIndices}
+                highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, editHoverGroupIndices)}
                 opacity={view.opacity ?? 1}
               />
             {:else if view.representation.type === 'vdw'}
               <VdwSpheres
-                atoms={viewAtoms(view)}
+                atoms={draw.atoms}
+                xyz={draw.xyz}
+                xyzEpoch={trajPlayhead + trajXyzEpoch}
+                trajSmooth={clampTrajSmooth(view.trajSmooth)}
+                trajSmoothRestoreH={trajSmoothRestoreHEnabled(view.trajSmoothRestoreH)}
                 getColor={view.colorScheme.resolver}
                 quality={view.quality ?? 3}
                 atomScale={view.atomScale ?? 1.0}
@@ -5305,13 +7432,15 @@
                 outlinesEnabled={view.material?.outlinesEnabled ?? GOODSELL_MATERIAL_DEFAULTS.outlinesEnabled}
                 outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
                 outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
-                highlightIndices={editHoverGroupIndices}
+                highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, editHoverGroupIndices)}
                 opacity={view.opacity ?? 1}
               />
             {:else if view.representation.type === 'surface'}
               <OrganicSurface
-                atoms={viewAtoms(view)}
-                residues={view.residues ?? []}
+                atoms={draw.atoms}
+                xyzEpoch={trajPlayhead + trajXyzEpoch}
+                deferRemesh={!view.selectionEachFrame && (trajScrubbing || trajPlaying) && !animExporting}
+                residues={draw.residues ?? []}
                 getColor={view.colorScheme.resolver}
                 quality={view.quality ?? 3}
                 surfaceInflate={view.surfaceInflate ?? 0.25}
@@ -5325,38 +7454,53 @@
                 outlinesEnabled={view.material?.outlinesEnabled ?? GOODSELL_MATERIAL_DEFAULTS.outlinesEnabled}
                 outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
                 outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
-                highlightIndices={editHoverGroupIndices}
+                highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, editHoverGroupIndices)}
                 opacity={view.opacity ?? 1}
               />
             {:else if view.representation.type === 'points'}
               <AtomPoints
-                atoms={viewAtoms(view)}
+                atoms={draw.atoms}
+                xyz={draw.xyz}
+                xyzEpoch={trajPlayhead + trajXyzEpoch}
+                trajSmooth={clampTrajSmooth(view.trajSmooth)}
+                trajSmoothRestoreH={trajSmoothRestoreHEnabled(view.trajSmoothRestoreH)}
                 getColor={view.colorScheme.resolver}
                 pointSize={view.pointSize ?? 3}
                 atomScale={view.atomScale ?? 1.0}
-                highlightIndices={editHoverGroupIndices}
+                highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, editHoverGroupIndices)}
                 opacity={view.opacity ?? 1}
               />
             {/if}
             {/key}
             {#if isGlowingMaterial(view.material) && resolveGlowingMaterial(view.material).glowEmitLight !== false && (view.opacity ?? 1) > 0.001}
               <AtomGlowLights
-                atoms={viewAtoms(view)}
+                atoms={draw.atoms}
                 getColor={view.colorScheme.resolver}
                 intensity={(resolveGlowingMaterial(view.material).glowLightIntensity ?? GLOWING_MATERIAL_DEFAULTS.glowLightIntensity) * Math.min(1, view.opacity ?? 1)}
                 distance={resolveGlowingMaterial(view.material).glowLightDistance ?? GLOWING_MATERIAL_DEFAULTS.glowLightDistance}
                 decay={resolveGlowingMaterial(view.material).glowLightDecay ?? GLOWING_MATERIAL_DEFAULTS.glowLightDecay}
                 maxLights={resolveGlowingMaterial(view.material).glowMaxLights ?? GLOWING_MATERIAL_DEFAULTS.glowMaxLights}
                 atomFilter={resolveGlowingMaterial(view.material).glowAtomFilter ?? GLOWING_MATERIAL_DEFAULTS.glowAtomFilter}
-                highlightIndices={glowHighlightIndices}
+                highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, glowHighlightIndices)}
               />
             {/if}
             </T.Group>
           {/each}
+          {#if mutPreviewAtoms.length}
+            <BallStick
+              atoms={mutPreviewAtoms}
+              bonds={mutPreviewBonds}
+              getColor={mutPreviewColor}
+              quality={4}
+              atomScale={0.72}
+              bondScale={0.85}
+              opacity={1}
+            />
+          {/if}
           <!-- Edit mode selected outline: scale adapted to the current representation -->
           {#if editSelectedAtoms.length > 0}
             {@const _selIdxSet = new Set(editSelectedAtoms.map((a) => a.index))}
-            {#each views.filter((v) => v.visible && !v._isSelHighlight && isOwnerStructureVisible(v)) as _sv}
+            {#each views.filter((v) => v.visible && !v._isSelHighlight && isOwnerStructureVisible(v) && v.structureId === activeStructureId) as _sv}
               {@const _svAtoms = viewAtoms(_sv).filter((a) => _selIdxSet.has(a.index))}
               {#if _svAtoms.length > 0}
                 {#if _sv.representation.type === 'vdw'}
@@ -5534,9 +7678,9 @@
           {/if}
         {/if}
         <MeasureOverlay
-          {measurements}
-          picks={measurePicks}
-          {atomLabels}
+          measurements={liveMeasurements}
+          picks={liveMeasurePicks}
+          atomLabels={liveAtomLabels}
           width={canvasWidth}
           height={canvasHeight}
         />
@@ -5672,7 +7816,7 @@
             class="size-28 max-h-[28vmin] max-w-[28vmin] select-none opacity-[0.14] sm:size-36 md:size-40 dark:opacity-[0.16]"
           />
           <p class="max-w-sm text-center text-sm text-neutral-500 dark:text-neutral-500">
-            Use Open ▾ to load a structure, animation, or saved view
+            Use Open ▾ to load a structure, trajectory, animation, or saved view
           </p>
         </div>
       {/if}
@@ -5766,6 +7910,7 @@
                 focusDofOnAtom(a)
                 return
               }
+              if (viewerSettings.dof?.enabled) dofFocusAtomIndex = null
               viewerSettings.dof = {
                 ...(viewerSettings.dof ?? {
                   enabled: false,
@@ -5916,7 +8061,7 @@
             {/if}
           {/snippet}
 
-          {#snippet groupNameEditNested(g)}
+          {#snippet groupNameEditNested(g, structureId)}
             {#if editingGroupId === g.id}
               <input
                 bind:this={editingGroupInputEl}
@@ -5936,16 +8081,16 @@
                 onblur={() => commitGroupRename()}
               />
             {:else}
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <div
+              <button
+                type="button"
                 class="min-w-0 flex-1 cursor-text truncate text-left text-[10px] font-semibold text-neutral-600 dark:text-neutral-300"
-                title="Double-click to rename"
+                title="Use this structure. Double-click to rename the group."
+                onclick={() => setActiveStructure(structureId)}
                 ondblclick={(e) => {
                   e.preventDefault()
-                  e.stopPropagation()
                   beginGroupRename(g.id, g.name)
                 }}
-              >{g.name}</div>
+              >{g.name}</button>
             {/if}
           {/snippet}
 
@@ -5987,7 +8132,15 @@
                   <div class="relative">
                     <ViewItem
                       bind:view={views[index]}
+                      hasTrajectory={!!st.trajectory}
                       {animateMode}
+                      onVisibilityChange={(visible) => persistAnimatedViewVisibility([view.id], visible)}
+                      onSelectionEachFrameChange={(enabled) =>
+                        persistAnimatedSelectionEachFrame(view.id, enabled)
+                      }
+                      onTrajSmoothRestoreHChange={(enabled) =>
+                        persistAnimatedTrajSmoothRestoreH(view.id, enabled)
+                      }
                       selected={selectedViewIds.has(view.id)}
                       onRowSelect={(e) => onViewRowSelect(view.id, e)}
                       onContextOpen={() => ensureViewInSelection(view.id)}
@@ -5998,11 +8151,13 @@
                         overlayFadeEditor = { kind: 'view', id: view.id }
                       }}
                       sourceBonds={st.bonds ?? null}
+                      sourceAtoms={st.atoms ?? null}
+                      sourceResidues={st.residues ?? null}
                       topology={st.topologyPath}
                       onremove={() => removeView(view.id)}
                       onduplicate={() => duplicateView(view.id)}
                       onsplitby={(mode) => splitViewBy(view.id, mode)}
-                      oncenter={() => centerCameraOnAtoms(view.atoms)}
+                      oncenter={() => centerCameraOnAtoms(viewDraw(view).atoms)}
                     />
                     {#if structures.length > 1}
                       <div class="flex justify-end px-2 pb-1">
@@ -6049,21 +8204,46 @@
                   title={collapsed ? 'Expand' : 'Collapse'}
                   onclick={() => toggleStructureCollapse(st.id)}
                 >{collapsed ? '▸' : '▾'}</button>
-                <button
-                  type="button"
-                  class="min-w-0 flex-1 truncate text-left text-xs font-semibold {activeStructureId === st.id
-                    ? 'text-yellow-600 dark:text-yellow-400'
-                    : 'text-neutral-800 dark:text-neutral-100'}"
-                  title={st.label}
-                  onclick={(e) => {
-                    if (e.ctrlKey || e.metaKey || e.shiftKey) {
+                {#if editingStructureId === st.id}
+                  <input
+                    bind:this={editingStructureInputEl}
+                    type="text"
+                    class="min-w-0 flex-1 rounded border border-yellow-500/70 bg-white px-1 py-0.5 text-xs font-semibold text-neutral-900 outline-none dark:bg-neutral-950 dark:text-neutral-100"
+                    bind:value={editingStructureName}
+                    onclick={(e) => e.stopPropagation()}
+                    onkeydown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        commitStructureRename()
+                      } else if (e.key === 'Escape') {
+                        e.preventDefault()
+                        cancelStructureRename()
+                      }
+                    }}
+                    onblur={() => commitStructureRename()}
+                  />
+                {:else}
+                  <button
+                    type="button"
+                    class="min-w-0 flex-1 truncate text-left text-xs font-semibold {activeStructureId === st.id
+                      ? 'text-yellow-600 dark:text-yellow-400'
+                      : 'text-neutral-800 dark:text-neutral-100'}"
+                    title={st.label}
+                    ondblclick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      beginStructureRename(st.id, st.label)
+                    }}
+                    onclick={(e) => {
+                      if (e.ctrlKey || e.metaKey || e.shiftKey) {
+                        onStructureRowSelect(st.id, e)
+                        return
+                      }
+                      setActiveStructure(st.id)
                       onStructureRowSelect(st.id, e)
-                      return
-                    }
-                    setActiveStructure(st.id)
-                    onStructureRowSelect(st.id, e)
-                  }}
-                >{st.label}</button>
+                    }}
+                  >{st.label}</button>
+                {/if}
                 <button
                   type="button"
                   class="px-1 text-xs text-neutral-500 hover:text-neutral-200"
@@ -6081,11 +8261,22 @@
                 {/if}
                 <button
                   type="button"
+                  class="px-1 text-xs text-neutral-500 hover:text-neutral-200 disabled:opacity-40"
+                  title="Duplicate structure"
+                  disabled={!!duplicatingStructureId}
+                  onclick={(e) => {
+                    e.stopPropagation()
+                    duplicateStructure(st.id)
+                  }}
+                >⧉</button>
+                <button
+                  type="button"
                   class="px-1 text-xs text-neutral-500 hover:text-neutral-200"
-                  title="Rename"
-                  onclick={() => {
-                    const next = prompt('Rename structure', st.label)
-                    if (next != null) renameStructure(st.id, next)
+                  title="Rename structure"
+                  onmousedown={(e) => e.preventDefault()}
+                  onclick={(e) => {
+                    e.stopPropagation()
+                    beginStructureRename(st.id, st.label)
                   }}
                 >✎</button>
                 <button
@@ -6105,9 +8296,22 @@
                         type="button"
                         class="text-xs text-neutral-500"
                         title={g.collapsed ? 'Expand group' : 'Collapse group'}
-                        onclick={() => toggleGroupCollapsed(g.id)}
+                        onclick={() => {
+                          setActiveStructure(st.id)
+                          toggleGroupCollapsed(g.id)
+                        }}
                       >{g.collapsed ? '▸' : '▾'}</button>
-                      {@render groupNameEditNested(g)}
+                      {@render groupNameEditNested(g, st.id)}
+                      <button
+                        type="button"
+                        class="flex size-6 items-center justify-center rounded text-xs text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                        title="Rename group"
+                        onmousedown={(e) => e.preventDefault()}
+                        onclick={(e) => {
+                          e.stopPropagation()
+                          beginGroupRename(g.id, g.name)
+                        }}
+                      >✎</button>
                       <button
                         type="button"
                         class="flex size-6 items-center justify-center rounded text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
@@ -6178,6 +8382,16 @@
                   onclick={() => toggleGroupCollapsed(sg.id)}
                 >{sg.collapsed ? '▸' : '▾'}</button>
                 {@render groupNameEdit(sg)}
+                <button
+                  type="button"
+                  class="flex size-6 items-center justify-center rounded text-xs text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                  title="Rename group"
+                  onmousedown={(e) => e.preventDefault()}
+                  onclick={(e) => {
+                    e.stopPropagation()
+                    beginGroupRename(sg.id, sg.name)
+                  }}
+                >✎</button>
                 <span class="shrink-0 text-[9px] tabular-nums text-neutral-500"
                   >{memberStructs.length}</span
                 >
@@ -6250,6 +8464,31 @@
                 tabindex="-1"
                 onpointerdown={(e) => e.stopPropagation()}
               >
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="block w-full px-3 py-1.5 text-left text-neutral-800 hover:bg-neutral-100 disabled:opacity-40 dark:text-neutral-100 dark:hover:bg-neutral-800"
+                  title="Copy this structure into its own PDB"
+                  disabled={!!duplicatingStructureId}
+                  onclick={() => {
+                    const id = structureCtxMenu?.id
+                    structureCtxMenu = null
+                    if (id) duplicateStructure(id)
+                  }}
+                >Duplicate structure</button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="block w-full px-3 py-1.5 text-left text-neutral-800 hover:bg-neutral-100 disabled:opacity-40 dark:text-neutral-100 dark:hover:bg-neutral-800"
+                  title={selectedStructureIds.size < 2
+                    ? 'Ctrl+click at least two structures, then merge them'
+                    : `Merge ${selectedStructureIds.size} structures into one PDB. Originals stay loaded.`}
+                  disabled={selectedStructureIds.size < 2 || mergeBusy}
+                  onclick={() => {
+                    structureCtxMenu = null
+                    mergeSelectedStructures()
+                  }}
+                >Merge structures</button>
                 <button
                   type="button"
                   role="menuitem"
@@ -6573,7 +8812,7 @@
                         class="min-w-0 flex-1 truncate font-mono text-[11px] leading-tight"
                         style="color:{m.color ?? '#facc15'};opacity:{m.visible !== false
                           ? 1
-                          : 0.35}">{measurementLabel(m)}</span
+                          : 0.35}">{measurementLabel(liveMeasurements[i] ?? m)}</span
                       >
                       <button
                         onclick={() => {
@@ -7199,6 +9438,7 @@
             }}
             playing={animPlaying}
             exporting={animExporting}
+            keyframeCount={animProject.keyframes.length}
             expanded={animExpanded}
             onToggleExpanded={() => (animExpanded = !animExpanded)}
             onOutputFolderChange={(v) => {
@@ -7218,6 +9458,7 @@
               animProject = { ...animProject, exportFrame: frame }
             }}
             onCaptureKeyframe={onAnimCaptureKeyframe}
+            onClearKeyframes={onAnimClearKeyframes}
             onSaveProject={onAnimSaveProject}
             onLoadProject={onAnimLoadProject}
             onExportVideo={onAnimExportVideo}
@@ -7236,6 +9477,12 @@
   </div>
   <!-- end inner row -->
 
+<TrajectoryOpenDialog
+  open={trajDialogOpen}
+  defaultPath={workingDir || ''}
+  onConfirm={onOpenTrajectoryConfirm}
+  onCancel={() => (trajDialogOpen = false)}
+/>
 <StructureEntryPicker
   open={entryPicker.open}
   sourcePath={entryPicker.sourcePath}
@@ -7280,6 +9527,7 @@
       onRenameKeyframe={onAnimRenameKeyframe}
       onDuplicateKeyframe={onAnimDuplicateKeyframe}
       onDeleteKeyframe={onAnimDeleteKeyframe}
+      onClearKeyframes={onAnimClearKeyframes}
       onEasingChange={onAnimEasingChange}
       onCaptureKeyframe={onAnimCaptureKeyframe}
       onClose={toggleAnimateMode}
@@ -7338,7 +9586,7 @@
           toolsMenuOpen = false
           openMenuOpen = !openMenuOpen
         }}
-        title="Open structure, animation, or saved view"
+        title="Open structure, trajectory, animation, or saved view"
       >
         <!-- Lucide folder-open (stroke) -->
         <svg
@@ -7391,6 +9639,17 @@
             title="Open topology (.prmtop/.psf) then a coordinate PDB"
           >
             With topology…
+          </button>
+          <button
+            type="button"
+            class="viz-toolbar-menu-item"
+            onclick={() => {
+              openMenuOpen = false
+              trajDialogOpen = true
+            }}
+            title="Open a topology plus one or more trajectories (stride per file)"
+          >
+            Trajectory…
           </button>
           <div class="viz-toolbar-menu-sep"></div>
           <button
@@ -7447,6 +9706,95 @@
       {/if}
     {/if}
 
+    {#if trajStructure?.trajectory}
+      {@const tf = trajStructure.trajectory}
+      {@const trajDigits = String(tf.logicalFrameCount).length}
+      <div
+        class="flex h-[22px] shrink-0 items-center gap-1.5 border-l border-neutral-200 pl-2 dark:border-neutral-800"
+        title={trajFileLabel(trajStructure)}
+      >
+        <button
+          type="button"
+          class="flex size-[22px] shrink-0 items-center justify-center rounded border border-neutral-300 bg-neutral-100 text-neutral-700 hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800"
+          onclick={toggleTrajPlayback}
+          disabled={!trajPlaying && !trajCanPlay}
+          title={
+            trajPlaying
+              ? 'Pause trajectory'
+              : !trajCanPlay
+                ? trajCacheInfo?.error
+                  ? `Trajectory cache failed: ${trajCacheInfo.error}`
+                  : trajAdoptPending
+                    ? `Loading frames into RAM${trajRamLoadLabel ? ` (${trajRamLoadLabel})` : ''}… play starts when ready`
+                    : trajCacheInfo && !trajCacheInfo.complete
+                      ? `Indexing ${trajCacheInfo.frames_ready}/${trajCacheInfo.frames_total}… play starts when the cache is ready`
+                      : 'Waiting for the trajectory cache…'
+                : 'Play trajectory'
+          }
+        >
+          {#if trajPlaying}
+            <span class="block h-2 w-2 bg-current"></span>
+          {:else}
+            <svg viewBox="0 0 10 10" class="size-2.5 fill-current" aria-hidden="true"
+              ><path d="M2 1l7 4-7 4z" /></svg
+            >
+          {/if}
+        </button>
+        <input
+          bind:this={trajSliderEl}
+          type="range"
+          class="h-1 w-36 shrink-0 accent-yellow-500"
+          min="0"
+          max={Math.max(0, tf.logicalFrameCount - 1)}
+          step="1"
+          onpointerdown={() => (trajScrubbing = true)}
+          onpointerup={() => (trajScrubbing = false)}
+          onpointercancel={() => (trajScrubbing = false)}
+          oninput={(e) => {
+            const v = Number(e.currentTarget.value)
+            if (trajPlaying) rebaseTrajClock(v)
+            void seekTrajFrame(v)
+          }}
+        />
+        <span
+          bind:this={trajFrameLabelEl}
+          class="shrink-0 text-right font-mono tabular-nums text-neutral-500 dark:text-neutral-400"
+          style={`width: ${trajDigits * 2 + 1}ch`}
+        >
+          {String(Math.round(trajPlayhead) + 1).padStart(trajDigits, '0')}/{tf.logicalFrameCount}
+        </span>
+        {#if trajCacheInfo && !trajCacheInfo.complete}
+          <span class="shrink-0 text-[10px] text-neutral-500 dark:text-neutral-400">
+            Indexing {trajCacheInfo.frames_ready}/{trajCacheInfo.frames_total}…
+          </span>
+        {:else if trajAdoptPending}
+          <span class="shrink-0 text-[10px] text-neutral-500 dark:text-neutral-400">
+            Loading frames into RAM{trajRamLoadLabel ? ` ${trajRamLoadLabel}` : ''}…
+          </span>
+        {:else if trajCacheError}
+          <span
+            class="max-w-56 shrink-0 truncate text-[10px] text-red-600 dark:text-red-400"
+            title={trajCacheError}>Cache error — play stopped</span
+          >
+        {:else if trajCache?.preloaded}
+          <span class="shrink-0 text-[10px] text-neutral-500 dark:text-neutral-400">All frames in RAM</span>
+        {:else if trajSidecarReady}
+          <span class="shrink-0 text-[10px] text-neutral-500 dark:text-neutral-400">Streaming from cache</span>
+        {/if}
+        {#if trajRmsdNow != null}
+          <button
+            type="button"
+            class="shrink-0 font-mono text-[10px] text-yellow-700 hover:underline dark:text-yellow-400"
+            title="Open Align / RMSD"
+            onclick={openTrajAlignPanel}
+          >
+            {trajAlign.mode === 'align' ? 'Aligned' : 'RMSD'}
+            {trajRmsdNow.toFixed(2)} Å
+          </button>
+        {/if}
+      </div>
+    {/if}
+
     <!-- PDB download -->
     <form
       class="flex h-[22px] shrink-0 items-center gap-0.5"
@@ -7459,6 +9807,7 @@
         type="text"
         placeholder="1CRN"
         maxlength="4"
+        title="4-character PDB ID"
         class="h-[22px] w-14 rounded border border-neutral-300 bg-neutral-100 px-1.5 py-0 font-mono text-[11px] text-neutral-800 uppercase outline-none focus:border-neutral-500 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
         bind:value={pdbId}
         oninput={(e) => {
@@ -7472,7 +9821,8 @@
         type="submit"
         class="flex h-[22px] items-center whitespace-nowrap rounded border border-neutral-300 bg-neutral-100 px-1.5 py-0 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-500 dark:hover:bg-neutral-800"
         disabled={!isPdbIdValid || loadingPDB}
-        title="Download PDB from RCSB">↓ PDB</button
+        title="Download this PDB ID from RCSB. Uses the PDB file, or mmCIF when RCSB does not publish one (for example 5GOA)."
+        >↓ PDB</button
       >
     </form>
 
@@ -7501,7 +9851,9 @@
           selectMenuOpen = !selectMenuOpen
         }}
         disabled={!filePath}
-        title="Interactive selection mode"
+        title={structure?.label
+          ? `Interactive selection on ${structure.label} only`
+          : 'Interactive selection mode'}
       >
         {editMode ? `Select · ${EDIT_LEVEL_LABEL[editSelectionLevel]}` : 'Select'}
         <svg viewBox="0 0 10 6" class="size-2 fill-current opacity-60" aria-hidden="true"
@@ -7528,6 +9880,7 @@
                 if (editMode && editSelectionLevel === key) {
                   editMode = false
                 } else {
+                  adoptEditStructureFromPanel()
                   editSelectionLevel = key
                   editMode = true
                 }
@@ -7546,12 +9899,18 @@
               {label}
             </button>
           {/each}
+          <p class="px-3 py-1 text-[10px] leading-snug text-neutral-500">
+            {structure?.label
+              ? `Only ${structure.label}. Other copies with the same chain stay unselected.`
+              : 'Only the active structure.'}
+          </p>
           <div class="viz-toolbar-menu-sep"></div>
           <button
             type="button"
             class="viz-toolbar-menu-item"
             onclick={() => {
               selectMenuOpen = false
+              adoptEditStructureFromPanel()
               customSelInput = ''
               customSelError = ''
               dlgCustomSel?.showModal()
@@ -7704,12 +10063,60 @@
           >
           <button
             type="button"
+            class="viz-toolbar-menu-item {trajAlignOpen ? 'viz-toolbar-menu-item-on' : ''}"
+            disabled={!trajStructure?.trajectory}
+            onclick={openTrajAlignPanel}
+            title="Calculate RMSD or align the loaded trajectory"
+          >
+            Align / RMSD…
+          </button>
+          <button
+            type="button"
             class="viz-toolbar-menu-item {animateMode ? 'viz-toolbar-menu-item-on' : ''}"
             disabled={!structure || animExporting}
             onclick={toggleAnimateMode}
             title="Keyframe animation: capture views and export video"
           >
             {animateMode ? 'Animate (on)' : 'Animate'}
+          </button>
+          <button
+            type="button"
+            class="viz-toolbar-menu-item {mutateOpen ? 'viz-toolbar-menu-item-on' : ''}"
+            disabled={!structure}
+            onclick={openMutateDialog}
+            title="Preview Dunbrack rotamers and replace one side chain"
+          >
+            Mutate residue…
+          </button>
+          <button
+            type="button"
+            class="viz-toolbar-menu-item {splitOpen ? 'viz-toolbar-menu-item-on' : ''}"
+            disabled={!structure}
+            onclick={openSplitDialog}
+            title="Copy one chain into a new structure"
+          >
+            Split chain…
+          </button>
+          <button
+            type="button"
+            class="viz-toolbar-menu-item {superOpen ? 'viz-toolbar-menu-item-on' : ''}"
+            disabled={structures.length < 2}
+            onclick={openSuperimposeDialog}
+            title="Superimpose one loaded structure onto another"
+          >
+            Superimpose…
+          </button>
+          <button
+            type="button"
+            class="viz-toolbar-menu-item"
+            disabled={structures.length < 2 || mergeBusy}
+            onclick={() => {
+              toolsMenuOpen = false
+              mergeSelectedStructures()
+            }}
+            title="Merge the structures selected in the panel into one PDB. Originals stay loaded. The same chain letter is kept when the residues are different kinds, such as protein and ions."
+          >
+            Merge structures
           </button>
         </div>
       {/if}
@@ -8291,6 +10698,113 @@
     >
   </div>
 </dialog>
+
+{#if mutateOpen}
+  <MutateResiduePanel
+    chains={activeChainIds}
+    chain={mutateChain}
+    resid={mutateResid}
+    currentResname={mutateCurrentResname}
+    mutateTo={mutateTo}
+    rotamers={mutateRows}
+    selectedIndex={mutateSelected}
+    phi={mutatePhi}
+    psi={mutatePsi}
+    busy={mutateBusy}
+    error={mutateError}
+    trajectory={!!structure?.trajectory}
+    onChain={(value) => {
+      mutateChain = value
+      mutateRows = []
+      clearMutPreview()
+      scheduleMutateResidueFocus()
+    }}
+    onResid={(value) => {
+      mutateResid = value
+      mutateRows = []
+      clearMutPreview()
+      scheduleMutateResidueFocus()
+    }}
+    onMutateTo={(value) => {
+      mutateTo = value
+      mutateRows = []
+      clearMutPreview()
+    }}
+    onList={() => void onMutateList()}
+    onSelect={onMutateSelect}
+    onApply={() => void onMutateApply()}
+    onClose={closeMutateDialog}
+  />
+{/if}
+
+{#if splitOpen}
+  <SplitChainPanel
+    chains={activeChainIds}
+    chain={splitChainId}
+    busy={splitBusy}
+    error={splitError}
+    trajectory={!!structure?.trajectory}
+    onChain={(value) => (splitChainId = value)}
+    onSplit={() => void onSplitChain()}
+    onClose={() => (splitOpen = false)}
+  />
+{/if}
+
+{#if superOpen}
+  <SuperimposePanel
+    structures={superimposeChoices}
+    referenceId={superRefId}
+    mobileId={superMobId}
+    referenceChain={superRefChain}
+    mobileChain={superMobChain}
+    busy={superBusy}
+    error={superError}
+    result={superResult}
+    onReference={onSuperRefChange}
+    onMobile={onSuperMobChange}
+    onReferenceChain={(value) => (superRefChain = value)}
+    onMobileChain={(value) => (superMobChain = value)}
+    onApply={() => void onSuperimpose()}
+    onClose={() => (superOpen = false)}
+  />
+{/if}
+
+{#if trajAlignOpen}
+  <TrajAlignPanel
+    selection={trajAlign.selection}
+    referenceFrame={trajAlign.referenceFrame}
+    currentFrame={Math.round(trajPlayhead)}
+    frameCount={trajStructure?.trajectory?.logicalFrameCount ?? 0}
+    mode={trajAlign.mode}
+    rmsd={trajAlign.rmsd}
+    nMobile={trajAlign.nMobile}
+    atomCount={trajAlignAtomCount}
+    busy={trajAlignBusy}
+    error={trajAlignError}
+    onClose={() => (trajAlignOpen = false)}
+    onComputeRmsd={() => void computeTrajRmsdOrAlign('rmsd')}
+    onAlign={() => void computeTrajRmsdOrAlign('align')}
+    onClear={clearTrajAlignment}
+    onSelectionChange={(sel) => {
+      trajAlign = { ...trajAlign, selection: sel }
+      scheduleTrajAlignCount()
+    }}
+    onReferenceChange={(frame) => {
+      const n = trajStructure?.trajectory?.logicalFrameCount ?? 1
+      trajAlign = {
+        ...trajAlign,
+        referenceFrame: Math.max(0, Math.min(n - 1, Math.round(Number(frame) || 0)))
+      }
+    }}
+    onSeekFrame={(frame) => {
+      if (trajPlaying) rebaseTrajClock(frame)
+      void seekTrajFrame(frame)
+    }}
+    onUseCurrentFrame={() => {
+      trajAlign = { ...trajAlign, referenceFrame: Math.round(trajPlayhead) }
+    }}
+  />
+{/if}
 
 <!-- MemPro orientation panel (non-modal — viewer stays interactive) -->
 {#if memproDialogOpen}

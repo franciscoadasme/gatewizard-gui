@@ -98,3 +98,75 @@ test('pickAtomFromViews skips cartoon sidechains and hidden water', async () => 
   const mixed = pickAtomFromViews([proteinCartoon, ligandVdw], cam, w, h, cx, cy, 30)
   assert.equal(mixed?.index, 50)
 })
+
+test('pickAtomFromViews prefers the front face with the viewer far plane', async () => {
+  const { OrthographicCamera } = await import('three')
+  const cam = new OrthographicCamera(-40, 40, 40, -40, 0.05, 500000)
+  cam.up.set(0, 0, 1)
+  cam.position.set(0, -80, 0)
+  cam.lookAt(0, 0, 0)
+  cam.updateMatrixWorld(true)
+
+  const w = 200
+  const h = 200
+  const cx = 100
+  const cy = 100
+
+  const back = { x: 0, y: 10, z: 0, element: 'C', name: 'CA', index: 2, res_id: 20 }
+  const front = { x: 0, y: -10, z: 0, element: 'C', name: 'CA', index: 1, res_id: 1 }
+  const view = {
+    visible: true,
+    representation: { type: 'vdw' },
+    atoms: [back, front]
+  }
+
+  const hit = pickAtomFromViews([view], cam, w, h, cx, cy, 40)
+  assert.equal(hit?.index, 1)
+  assert.equal(hit?.res_id, 1)
+
+  const reversed = pickAtomFromViews(
+    [{ ...view, atoms: [front, back] }],
+    cam,
+    w,
+    h,
+    cx,
+    cy,
+    40
+  )
+  assert.equal(reversed?.index, 1)
+})
+
+test('pickAtomFromViews reads packed trajectory xyz', async () => {
+  const { OrthographicCamera } = await import('three')
+  const cam = new OrthographicCamera(-40, 40, 40, -40, 0.05, 500000)
+  cam.up.set(0, 0, 1)
+  cam.position.set(0, -80, 0)
+  cam.lookAt(0, 0, 0)
+  cam.updateMatrixWorld(true)
+
+  const atoms = [
+    { x: 0, y: -10, z: 0, element: 'C', name: 'CA', index: 0 },
+    { x: 0, y: 10, z: 0, element: 'C', name: 'CA', index: 1 }
+  ]
+  const xyz = new Float32Array([0, 10, 0, 0, -10, 0])
+  const stale = pickAtomFromViews(
+    [{ visible: true, representation: { type: 'vdw' }, atoms }],
+    cam,
+    200,
+    200,
+    100,
+    100,
+    40
+  )
+  assert.equal(stale?.index, 0)
+  const live = pickAtomFromViews(
+    [{ visible: true, representation: { type: 'vdw' }, atoms, xyz }],
+    cam,
+    200,
+    200,
+    100,
+    100,
+    40
+  )
+  assert.equal(live?.index, 1)
+})

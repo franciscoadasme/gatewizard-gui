@@ -33,6 +33,8 @@
     stickEndpoints
   } from '../../../lib/viewer/licoricePipe.js'
   import { untrack } from 'svelte'
+  import { collectAtomIndices, readAtomXyz } from '../../../lib/viewer/trajectoryFrames.js'
+  import { blendPlayXyz, trajPlayClock } from '../../../lib/viewer/trajPlayClock.js'
 
   /** @typedef {{ x: number, y: number, z: number, element: string, name: string, index?: number }} Atom */
   /** @typedef {(atom: Atom) => import('three').Color} ColorScheme */
@@ -82,11 +84,18 @@
    *   glowBulb?: boolean,
    *   opacity?: number,
    *   showMultipleBonds?: boolean,
-   *   highlightIndices?: Set<number>
+   *   highlightIndices?: Set<number>,
+   *   xyzEpoch?: number
+   *   trajSmooth?: number
+   *   trajSmoothRestoreH?: boolean
    * }}
    */
   let {
     atoms = [],
+    xyz = null,
+    xyzEpoch = 0,
+    trajSmooth = 0,
+    trajSmoothRestoreH = true,
     bonds = [],
     getColor = defaultColorScheme,
     quality = 3,
@@ -227,6 +236,25 @@
 
   const count = $derived(atoms.length)
   const { camera, invalidate } = useThrelte()
+
+  /** @type {Float32Array | null | undefined} */
+  let playXyz = null
+  /** @type {Atom[] | null} */
+  let playIdxAtoms = null
+  /** @type {Int32Array | null} */
+  let playIdx = null
+
+  function coords() {
+    return playXyz ?? xyz
+  }
+
+  /** @param {Atom[]} arr */
+  function playIndices(arr) {
+    if (arr === playIdxAtoms) return playIdx
+    playIdxAtoms = arr
+    playIdx = collectAtomIndices(arr)
+    return playIdx
+  }
   const _tmpColor = new Color()
   const _tmpEnd = new Color()
   const _elbowMat = new Matrix4()
@@ -319,7 +347,8 @@
     const m = new Map()
     for (const atom of arr) {
       if (atom.index == null) continue
-      m.set(atom.index, [atom.x, atom.y, atom.z])
+      const p = readAtomXyz(atom, coords())
+      m.set(atom.index, [p.x, p.y, p.z])
     }
     return m
   }
@@ -593,8 +622,10 @@
       const aj = atom_by_index.get(j) ?? (arr[j]?.index === j ? arr[j] : undefined)
       if (!ai || !aj) continue
 
-      pa.set(ai.x, ai.y, ai.z)
-      pb.set(aj.x, aj.y, aj.z)
+      const pi = readAtomXyz(ai, coords())
+      const pj = readAtomXyz(aj, coords())
+      pa.set(pi.x, pi.y, pi.z)
+      pb.set(pj.x, pj.y, pj.z)
       dir.copy(pb).sub(pa)
       if (dir.lengthSq() < 1e-12) continue
       dir.normalize()
@@ -668,10 +699,12 @@
         if (order >= 2 && nIdx != null) {
           const nb = atom_by_index.get(nIdx)
           if (nb) {
-            dir.set(nb.x - atom.x, nb.y - atom.y, nb.z - atom.z)
+            const pa0 = readAtomXyz(atom, coords())
+            const pb0 = readAtomXyz(nb, coords())
+            dir.set(pb0.x - pa0.x, pb0.y - pa0.y, pb0.z - pa0.z)
             if (dir.lengthSq() > 1e-12) {
               dir.normalize()
-              _bondMid.set(atom.x, atom.y, atom.z)
+              _bondMid.set(pa0.x, pa0.y, pa0.z)
               setMultiBondOffsetAxis(dir, _bondMid, camera.current?.position, offsetAxis)
             }
           }
@@ -682,7 +715,8 @@
           if (cWritten >= capMesh.instanceMatrix.count) break
           const off = order <= 1 ? 0 : (slot - (slots - 1) / 2) * spacing
           const capR = bondRadius * radiusScale
-          jointPos.set(atom.x, atom.y, atom.z)
+          const capAt = readAtomXyz(atom, coords())
+          jointPos.set(capAt.x, capAt.y, capAt.z)
           if (Math.abs(off) > 1e-8) jointPos.addScaledVector(offsetAxis, off)
           jointScale.set(capR, capR, capR)
           jointMatrix.compose(jointPos, jointQuat, jointScale)
@@ -714,7 +748,8 @@
         if (bWritten >= branchMesh.instanceMatrix.count) break
         const atom = atom_by_index.get(idx)
         if (!atom) continue
-        jointPos.set(atom.x, atom.y, atom.z)
+        const brAt = readAtomXyz(atom, coords())
+        jointPos.set(brAt.x, brAt.y, brAt.z)
         jointScale.set(branchR, branchR, branchR)
         jointMatrix.compose(jointPos, jointQuat, jointScale)
         branchMesh.setMatrixAt(bWritten, jointMatrix)
@@ -925,17 +960,34 @@
     }
   })
 
-  $effect(() => {
-    void atoms
-    void bonds
-    void showMultipleBonds
-    const meshes = untrack(() => currentMeshes())
+  /**
+   * @param {Atom[]} arr
+   */
+  function uploadLicorice(arr) {
+    const meshes = currentMeshes()
     if (!meshes.bondMesh) return
-    // If topology outgrew capacity, the build effect will recreate; skip here.
     const need = expandBondInstances().length
     if (need > meshes.bondMesh.instanceMatrix.count) return
-    updateMatrices(meshes, atoms, false)
+    updateMatrices(meshes, arr, false)
     invalidate()
+  }
+
+  $effect(() => {
+    void atoms
+    void xyzEpoch
+    void xyz
+    void bonds
+    void showMultipleBonds
+    if (trajPlayClock.playing) return
+    playXyz = xyz
+    uploadLicorice(atoms)
+  })
+
+  useTask(() => {
+    if (!trajPlayClock.playing) return
+    const arr = untrack(() => atoms)
+    playXyz = blendPlayXyz(trajSmooth, playIndices(arr), trajSmoothRestoreH !== false)
+    uploadLicorice(arr)
   })
 
   $effect(() => {

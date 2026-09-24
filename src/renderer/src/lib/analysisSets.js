@@ -228,6 +228,16 @@ export function defaultSelectionForStructuralType(type) {
   }
 }
 
+/** Same RMSD selections as Analysis, for Visualize trajectory alignment. */
+export const TRAJ_RMSD_SELECTION_PRESETS = [
+  { value: 'protein and backbone', label: 'Backbone' },
+  { value: 'protein and name CA', label: 'Cα' },
+  { value: 'protein', label: 'Protein' },
+  { value: 'nucleic', label: 'Nucleic' },
+  { value: 'name CA', label: 'All CA' },
+  { value: 'all', label: 'All atoms' }
+]
+
 /**
  * Resolve flat selection fields for a structural type from the per-type map,
  * falling back to sibling bilayer type, then defaults.

@@ -42,3 +42,4 @@ test('normalizeProject keeps coordPatch and uses current version', () => {
   assert.equal(project.version, ANIMATION_VERSION)
   assert.deepEqual(project.keyframes[0].coordPatch?.indices, [3])
 })
+

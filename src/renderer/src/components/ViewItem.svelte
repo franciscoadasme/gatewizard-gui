@@ -38,12 +38,20 @@
   import { SPLIT_VIEW_MODES } from '../lib/viewer/splitView.js'
   import {
     NAMED_SELECTION_KEYWORDS,
+    bondRepresentationNeedsFetch,
+    bondsAreEqual,
+    bondsHaveMultiOrder,
+    bondsLookSparse,
+    localSelectionStillNeedsBonds,
     namedSelectionFromView,
+    shouldDeferFullSystemSelection,
     structureFetchSelection
   } from '../lib/viewer/viewSelection.js'
+  import { trySubsetBySelection } from '../lib/viewer/dynamicSelection.js'
   import { GLOW_LIGHTS_PERF_WARN } from '../lib/viewer/viewerDiagnostics.js'
   import { viewerBusy } from '../lib/viewer/viewerBusy.svelte.js'
   import { getStructure } from '../lib/backendApi'
+  import { structureFetchPath } from '../lib/visualizeStructures.js'
   import { onDestroy, tick, untrack } from 'svelte'
   import Button from './ui/Button.svelte'
   import ColorInput from './ui/ColorInput.svelte'
@@ -94,7 +102,13 @@ Polar (heavy atoms + polar H only; hides C–H etc.):
 
 Distance:
   around 5.0 protein    (within 5 Å of protein)
-  byres (around 5 resname LIG)   (whole residues)`
+  byres (around 5 resname LIG)   (whole residues)
+
+Coordinate clip (use Update each frame on a trajectory):
+  byres ((resname PC OL) and prop y < 0)
+  protein or byres (lipid and prop y < 0)
+  Parentheses matter: (same residue as resname PC) and prop y < 0
+  still slices lipids. Wrap the prop test inside byres.`
 
   /** @typedef {{ x: number, y: number, z: number, element: string, name: string, index?: number, res_name?: string, chain_id?: string }} Atom */
   /** @typedef {{ chain: string, resname: string, number: number, atom_indices: number[], ca_index?: number, sec?: string }} Residue */
@@ -118,7 +132,10 @@ Distance:
    *   opacity?: number,
    *   surfaceInflate?: number,
    *   surfaceSource?: 'atoms' | 'backbone',
-   *   surfaceSubdivision?: number
+   *   surfaceSubdivision?: number,
+   *   trajSmooth?: number,
+   *   trajSmoothRestoreH?: boolean,
+   *   selectionEachFrame?: boolean
    * }} View
    */
 
@@ -130,26 +147,38 @@ Distance:
    *   onsplitby?: (mode: import('../lib/viewer/splitView.js').SplitViewMode) => void,
    *   oncenter?: () => void,
    *   animateMode?: boolean,
+   *   onVisibilityChange?: (visible: boolean) => void,
+   *   onSelectionEachFrameChange?: (enabled: boolean) => void,
+   *   onTrajSmoothRestoreHChange?: (enabled: boolean) => void,
    *   onFadeEdit?: () => void,
    *   sourceBonds?: [number, number][] | null,
+   *   sourceAtoms?: Atom[] | null,
+   *   sourceResidues?: Residue[] | null,
    *   topology?: string | null,
    *   selected?: boolean,
    *   onRowSelect?: (e: MouseEvent) => void,
    *   onContextOpen?: (e: MouseEvent) => void,
    *   onCreateGroup?: () => void,
    *   onShowSelection?: () => void,
-   *   onHideSelection?: () => void
+   *   onHideSelection?: () => void,
+   *   hasTrajectory?: boolean
    * }}
    */
   let {
     view = $bindable(),
+    hasTrajectory = false,
     onremove,
     onduplicate,
     onsplitby,
     oncenter,
     animateMode = false,
+    onVisibilityChange,
+    onSelectionEachFrameChange,
+    onTrajSmoothRestoreHChange,
     onFadeEdit,
     sourceBonds = null,
+    sourceAtoms = null,
+    sourceResidues = null,
     topology = null,
     selected = false,
     onRowSelect,
@@ -244,31 +273,43 @@ Distance:
   // ── Reactivity ────────────────────────────────────────────────────────────
 
   let _selectionEffectReady = false
+  let _lastSelection = view.selection
   $effect(() => {
     const sel = view.selection
     if (sel === '' || view._isSelHighlight) {
       _selectionEffectReady = true
+      _lastSelection = sel
       return
     }
     // First run (mount / panel remount) must not refetch — atoms are already
     // on the view. Collapse/expand used to destroy these rows and spin surfaces.
     if (!_selectionEffectReady) {
       _selectionEffectReady = true
+      _lastSelection = sel
       return
     }
+    if (sel === _lastSelection) return
+    _lastSelection = sel
     // New selection → allow one densify / bond-order pass again.
     view._bondOrderFetchDone = false
-    const tid = setTimeout(scheduleStructureUpdate, 500)
+    const tid = setTimeout(() => {
+      if (applyLocalSelection(sel) !== 'none') return
+      scheduleStructureUpdate()
+    }, 500)
     return () => clearTimeout(tid)
   })
 
   let _pathInitialized = false
+  let _lastPath = view.path
   $effect(() => {
     const p = view.path
     if (!_pathInitialized) {
       _pathInitialized = true
+      _lastPath = p
       return
     }
+    if (p === _lastPath) return
+    _lastPath = p
     if (view._isSelHighlight) return
     if (skipNextPathFetch.has(view.id)) {
       skipNextPathFetch.delete(view.id)
@@ -292,9 +333,43 @@ Distance:
         if (!view._prefetched && !view.atoms?.length) scheduleStructureUpdate()
         return
       }
+      if (sel === 'other' && !String(view.selection || '').trim()) return
+      const nextSel = structureFetchSelection(sel, view)
+      if (applyLocalSelection(nextSel) !== 'none') return
       scheduleStructureUpdate()
     })
   })
+
+  /**
+   * @param {Atom[] | null | undefined} current
+   * @param {Atom[] | null | undefined} next
+   */
+  function sameViewAtoms(current, next) {
+    if (current === next) return true
+    if (!current || !next || current.length !== next.length) return false
+    for (let i = 0; i < current.length; i++) {
+      if (current[i]?.index !== next[i]?.index) return false
+    }
+    return true
+  }
+
+  /**
+   * @param {Array<{ atom_indices?: number[] }> | null | undefined} current
+   * @param {Array<{ atom_indices?: number[] }> | null | undefined} next
+   */
+  function sameViewResidues(current, next) {
+    if (current === next) return true
+    if (!current || !next || current.length !== next.length) return false
+    for (let i = 0; i < current.length; i++) {
+      const left = current[i]?.atom_indices || []
+      const right = next[i]?.atom_indices || []
+      if (left.length !== right.length) return false
+      for (let k = 0; k < left.length; k++) {
+        if (left[k] !== right[k]) return false
+      }
+    }
+    return true
+  }
 
   /** @param {Atom[] | undefined | null} atoms */
   function filterSourceBonds(atoms) {
@@ -303,19 +378,9 @@ Distance:
     return sourceBonds.filter(([i, j]) => idx.has(i) && idx.has(j))
   }
 
-  /** @param {Atom[] | undefined | null} atoms @param {[number,number][] | undefined | null} bonds */
-  function bondsLookSparse(atoms, bonds) {
-    const n = atoms?.length || 0
-    if (!n) return true
-    return (bonds?.length || 0) < n / 2
-  }
-
-  /** @param {unknown} bonds */
-  function bondsHaveMultiOrder(bonds) {
-    if (!Array.isArray(bonds)) return false
-    return bonds.some(
-      (b) => Array.isArray(b) && b.length > 2 && Number.isFinite(Number(b[2])) && Number(b[2]) >= 2
-    )
+  /** @param {Atom[] | undefined | null} atoms @param {unknown[] | undefined | null} bonds */
+  function viewBondsLookSparse(atoms, bonds) {
+    return bondsLookSparse(atoms?.length || 0, bonds?.length || 0)
   }
 
   /** @param {string | undefined} type */
@@ -325,13 +390,13 @@ Distance:
 
   /** Prefer bonds already loaded with the full structure (e.g. from prmtop). */
   function tryApplySourceBonds() {
-    if (!bondsLookSparse(view.atoms, view.bonds)) {
+    if (!viewBondsLookSparse(view.atoms, view.bonds)) {
       if (bondsHaveMultiOrder(view.bonds)) return true
       // Dense CONECT pairs without orders: copy Maestro/source triples if available.
       if (bondsHaveMultiOrder(sourceBonds)) {
         const filtered = filterSourceBonds(view.atoms)
         if (filtered?.length) {
-          view.bonds = filtered
+          if (!bondsAreEqual(view.bonds, filtered)) view.bonds = filtered
           return true
         }
       }
@@ -339,8 +404,8 @@ Distance:
       return false
     }
     const filtered = filterSourceBonds(view.atoms)
-    if (filtered && !bondsLookSparse(view.atoms, filtered)) {
-      view.bonds = filtered
+    if (filtered && !viewBondsLookSparse(view.atoms, filtered)) {
+      if (!bondsAreEqual(view.bonds, filtered)) view.bonds = filtered
       return bondsHaveMultiOrder(filtered) || !sourceBonds?.length
     }
     return false
@@ -351,29 +416,41 @@ Distance:
     // Track repr / bonds / counts — not the atoms array identity. In-memory coordinate
     // commits replace view.atoms with the same indices; refetching would wipe those edits.
     void sourceBonds
+    void sourceAtoms
+    void sourceResidues
     void view.bonds
     void view._prefetched
     void view.surfaceSource
     const atomCount = view.atoms?.length ?? 0
     const residueCount = view.residues?.length ?? 0
+    void atomCount
     if (skipNextAtomsFetch.has(view.id)) {
       skipNextAtomsFetch.delete(view.id)
       // Drop any in-flight /get-structure so a late disk response cannot
       // overwrite in-memory working coordinates after a transform commit.
       structureFetchGen += 1
+      loadingStructure = false
       return
     }
     const needsFetch = untrack(() => {
-      if ((repr === 'cartoon' || repr === 'tube') && residueCount === 0) return true
-      if (repr === 'surface' && view.surfaceSource === 'backbone' && residueCount === 0) return true
+      const residuesKnown = Boolean(sourceResidues?.length || residueCount > 0)
+      if ((repr === 'cartoon' || repr === 'tube') && residueCount === 0) {
+        return !residuesKnown && !view._residueFetchDone
+      }
+      if (repr === 'surface' && view.surfaceSource === 'backbone' && residueCount === 0) {
+        return !residuesKnown
+      }
       if (representationNeedsBonds(repr)) {
-        // After one densify for this selection, stop — small fragments stay
-        // "sparse" by the bonds/atoms ratio and would otherwise loop forever.
-        if (view._bondOrderFetchDone) return false
-        if (atomCount > 0 && bondsHaveMultiOrder(view.bonds)) return false
-        if (atomCount > 0 && tryApplySourceBonds() && bondsHaveMultiOrder(view.bonds)) return false
-        if (tryApplySourceBonds() && bondsHaveMultiOrder(view.bonds)) return false
-        return atomCount === 0 || bondsLookSparse(view.atoms, view.bonds) || !bondsHaveMultiOrder(view.bonds)
+        // Copy parent bond orders once. A residue with only single bonds (Thr, Ile)
+        // is not missing data just because the rest of the protein has aromatic bonds.
+        // Rewriting view.bonds on every check loops until Svelte aborts.
+        tryApplySourceBonds()
+        return bondRepresentationNeedsFetch({
+          atoms: view.atoms,
+          bonds: view.bonds,
+          sourceBonds,
+          bondOrderFetchDone: view._bondOrderFetchDone
+        })
       }
       return false
     })
@@ -424,8 +501,109 @@ Distance:
 
   // ── API ──────────────────────────────────────────────────────────────────
 
+  /**
+   * Subset from the already-loaded structure. Avoids /get-structure on a DCD
+   * (which re-serializes the whole trajectory system and spins forever).
+   * @param {string} sel
+   * @returns {'applied' | 'invalid' | 'none'}
+   */
+  /** Only a playing trajectory is refused when ``all`` is huge. A PDB entry is not. */
+  function trajectoryOwner() {
+    return hasTrajectory ? { trajectory: true } : null
+  }
+
+  /** Write empty atom lists once. A new [] every effect pass exceeds Svelte's update depth. */
+  function clearViewAtomsOnce() {
+    if (!view.atoms?.length && !view.bonds?.length && !view.residues?.length) return
+    view.atoms = []
+    view.bonds = []
+    view.residues = []
+  }
+
+  function applyLocalSelection(sel) {
+    if (view._isSelHighlight) return 'none'
+    const pool = sourceAtoms
+    if (!pool?.length) return 'none'
+    const result = trySubsetBySelection(
+      pool,
+      sourceBonds ?? view.bonds,
+      sourceResidues ?? view.residues,
+      sel
+    )
+    if (result.ok) {
+      const query = String(sel || '').trim() || 'all'
+      if (
+        shouldDeferFullSystemSelection(
+          pool.length,
+          query,
+          trajectoryOwner(),
+          view.representation?.type
+        )
+      ) {
+        // Assigning a fresh [] on every pass re-triggers this effect until Svelte aborts.
+        clearViewAtomsOnce()
+        invalidSelection = false
+        loadingStructure = false
+        return 'applied'
+      }
+      const repr = view.representation?.type
+      const needsSS =
+        repr === 'cartoon' ||
+        repr === 'tube' ||
+        (repr === 'surface' && view.surfaceSource === 'backbone')
+      if (needsSS && !result.residues?.length && !sourceResidues?.length) return 'none'
+      if (!sameViewAtoms(view.atoms, result.atoms)) view.atoms = result.atoms
+      if (!bondsAreEqual(view.bonds, result.bonds)) view.bonds = result.bonds
+      if (!sameViewResidues(view.residues, result.residues)) view.residues = result.residues
+      invalidSelection = result.atoms.length === 0
+      loadingStructure = false
+      return 'applied'
+    }
+    if (result.invalid) {
+      invalidSelection = true
+      loadingStructure = false
+      return 'invalid'
+    }
+    return 'none'
+  }
+
   function updateStructure() {
     if (view._isSelHighlight) return
+    const fetchSel = structureFetchSelection(namedSelection, view)
+    const local = applyLocalSelection(fetchSel)
+    const wantsBondsEarly = representationNeedsBonds(view.representation.type)
+    const bondsMissing = localSelectionStillNeedsBonds({
+      needsBonds: wantsBondsEarly,
+      atoms: view.atoms,
+      bonds: view.bonds,
+      bondOrderFetchDone: view._bondOrderFetchDone
+    })
+    if (local === 'invalid') return
+    if (local === 'applied' && !bondsMissing) return
+    const needsResidues =
+      (view.representation.type === 'cartoon' ||
+        view.representation.type === 'tube' ||
+        colorSchemeName === 'ss' ||
+        (view.representation.type === 'surface' && view.surfaceSource === 'backbone')) &&
+      !(view.residues?.length) &&
+      !view._residueFetchDone
+    // Atoms for "all" are already on the view after a split/append. Cartoon and tube
+    // still need the residue list (Cα + secondary structure), which that load skips.
+    if ((fetchSel === 'all' || !fetchSel) && view.atoms?.length && !needsResidues && !bondsMissing) {
+      loadingStructure = false
+      return
+    }
+    if (
+      shouldDeferFullSystemSelection(
+        sourceAtoms?.length ?? view.atoms?.length ?? 0,
+        fetchSel,
+        trajectoryOwner(),
+        view.representation?.type
+      )
+    ) {
+      loadingStructure = false
+      return
+    }
     const needsSS =
       view.representation.type === 'cartoon' ||
       view.representation.type === 'tube' ||
@@ -439,7 +617,7 @@ Distance:
     const fetchGen = ++structureFetchGen
     loadingStructure = true
     getStructure({
-      path: view.path,
+      path: structureFetchPath(view.path, topology),
       topology: topology || null,
       selection: structureFetchSelection(namedSelection, view),
       needs_bonds: wantsBonds && !canReuseBonds,
@@ -450,17 +628,19 @@ Distance:
         if (structure.atoms?.length) view.atoms = structure.atoms
         if (structure.bonds?.length) {
           view.bonds = structure.bonds
-        } else if (wantsBonds || bondsLookSparse(view.atoms, view.bonds)) {
+        } else if (wantsBonds || viewBondsLookSparse(view.atoms, view.bonds)) {
           const filtered = filterSourceBonds(view.atoms)
           if (filtered?.length) view.bonds = filtered
         }
         if (structure.residues?.length) view.residues = structure.residues
+        if (needsSS) view._residueFetchDone = true
         if (wantsBonds) view._bondOrderFetchDone = true
         invalidSelection = false
         loadingStructure = false
       })
       .catch(() => {
         if (fetchGen !== structureFetchGen) return
+        if (needsSS) view._residueFetchDone = true
         if (wantsBonds) view._bondOrderFetchDone = true
         invalidSelection = true
         loadingStructure = false
@@ -471,12 +651,18 @@ Distance:
   function scheduleStructureUpdate() {
     const wantsBonds = representationNeedsBonds(view.representation.type)
     const needsBondsNow =
-      wantsBonds && bondsLookSparse(view.atoms, view.bonds) && !tryApplySourceBonds()
+      wantsBonds && viewBondsLookSparse(view.atoms, view.bonds) && !tryApplySourceBonds()
     // Prefetched dense CONECT without orders still needs a sidecar merge pass.
     const needsBondOrders =
       wantsBonds && !view._bondOrderFetchDone && !bondsHaveMultiOrder(view.bonds)
-    if (view._prefetched && !needsBondsNow && !needsBondOrders) return
-    if (needsBondsNow || needsBondOrders) view._prefetched = false
+    const needsResidues =
+      (view.representation.type === 'cartoon' ||
+        view.representation.type === 'tube' ||
+        (view.representation.type === 'surface' && view.surfaceSource === 'backbone')) &&
+      !(view.residues?.length) &&
+      !view._residueFetchDone
+    if (view._prefetched && !needsBondsNow && !needsBondOrders && !needsResidues) return
+    if (needsBondsNow || needsBondOrders || needsResidues) view._prefetched = false
     updateStructure()
   }
 
@@ -721,6 +907,7 @@ Distance:
               if (animateMode) {
                 if (nextVisible) delete view.opacity
                 else view.opacity = 0
+                onVisibilityChange?.(nextVisible)
               }
             }}
           />
@@ -1050,6 +1237,12 @@ Distance:
             <p class="font-medium text-neutral-800 dark:text-neutral-300">Selection</p>
             <span class="text-neutral-500">{view.atoms?.length ?? 0} atoms</span>
           </div>
+          {#if hasTrajectory && !(view.atoms?.length) && (namedSelection === 'all' || !String(view.selection || view.baseSelection || '').trim())}
+            <p class="text-[10px] leading-snug text-neutral-500 dark:text-neutral-400">
+              Type a subset (for example <span class="font-mono">protein and resid 1</span>).
+              Showing every atom of a solvated trajectory can crash the viewer.
+            </p>
+          {/if}
           <Select size="sm" className="w-full capitalize" bind:value={namedSelection}>
             {#each NAMED_SELECTIONS as sel (sel)}
               <option value={sel} class="capitalize">{sel}</option>
@@ -1085,6 +1278,25 @@ Distance:
                 onclick={openHelpDialog}>?</button
               >
             </div>
+          {/if}
+          {#if hasTrajectory}
+            <label class="flex items-start gap-2 pt-0.5 text-[11px] text-neutral-600 dark:text-neutral-400">
+              <input
+                type="checkbox"
+                class="mt-0.5"
+                checked={view.selectionEachFrame === true}
+                onchange={() => {
+                  view.selectionEachFrame = view.selectionEachFrame !== true
+                  onSelectionEachFrameChange?.(view.selectionEachFrame === true)
+                }}
+              />
+              <span>
+                <span class="font-medium text-neutral-700 dark:text-neutral-300">Update each frame</span>
+                — re-apply this selection as the trajectory plays (needed for
+                <span class="font-mono">byres</span> /
+                <span class="font-mono">prop y &lt; 0</span> clips).
+              </span>
+            </label>
           {/if}
           <div class="space-y-1">
             <p class="text-neutral-600 dark:text-neutral-400">Split into multiple representations</p>
@@ -1182,6 +1394,48 @@ Distance:
           </section>
         {/if}
 
+        {#if hasTrajectory}
+          <section class="space-y-2">
+            <p class="font-medium text-neutral-800 dark:text-neutral-300">Traj smooth</p>
+            <div class="flex items-center gap-2">
+              <span class="w-10 shrink-0 text-neutral-600 dark:text-neutral-400">Level</span>
+              <RangeInput
+                value={typeof view.trajSmooth === 'number' ? view.trajSmooth : 0}
+                min={0}
+                max={8}
+                step={1}
+                decimals={0}
+                oninput={(v) => {
+                  view.trajSmooth = Math.max(0, Math.min(8, Math.round(v)))
+                }}
+              />
+            </div>
+            <div class="flex justify-between text-[10px] text-neutral-500 dark:text-neutral-500">
+              <span>Raw frames</span>
+              <span>Blend</span>
+            </div>
+            <p class="text-[10px] leading-snug text-neutral-500 dark:text-neutral-400">
+              0 snaps to the current frame. Higher levels blend neighboring frames for this
+              representation only.
+            </p>
+            <label class="flex items-start gap-2 pt-0.5 text-[11px] text-neutral-600 dark:text-neutral-400">
+              <input
+                type="checkbox"
+                class="mt-0.5"
+                checked={view.trajSmoothRestoreH !== false}
+                onchange={() => {
+                  view.trajSmoothRestoreH = view.trajSmoothRestoreH === false
+                  onTrajSmoothRestoreHChange?.(view.trajSmoothRestoreH !== false)
+                }}
+              />
+              <span>
+                <span class="font-medium text-neutral-700 dark:text-neutral-300">Restore hydrogens</span>
+                — off keeps a VMD-style XYZ average (hydrogens collapse into the chain).
+              </span>
+            </label>
+          </section>
+        {/if}
+
         <!-- Organic surface options -->
         {#if view.representation.type === 'surface'}
           <section class="space-y-2">
@@ -1202,7 +1456,8 @@ Distance:
             </Select>
             <p class="text-[10px] leading-snug text-neutral-500 dark:text-neutral-400">
               Atoms = van der Waals skin. Backbone = Cα path with helix/sheet/coil radii (needs
-              protein residues).
+              protein residues). Play keeps this mesh on the last built frame; pause or export
+              an image to rebuild it at the current coordinates.
             </p>
           </section>
           <section class="space-y-2">

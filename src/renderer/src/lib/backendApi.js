@@ -519,6 +519,203 @@ export async function getStructure(payload) {
 }
 
 /**
+ * Trajectory metadata after per-file stride (no coordinates copied).
+ * @param {{ topology_path: string, trajectory_paths: string[], file_strides?: Record<string, number> | null }} payload
+ * @returns {Promise<{
+ *   topology: string,
+ *   atom_count: number,
+ *   logical_frame_count: number,
+ *   raw_frame_count: number,
+ *   dt_ps: number | null,
+ *   box: [number, number, number] | null,
+ *   files: Array<{ path: string, name: string, n_frames: number, stride: number, n_logical: number }>
+ * }>}
+ */
+export function getTrajectoryInfo(payload) {
+  return backendJson('/trajectory/info', payload)
+}
+
+/**
+ * One logical frame. Default payload is xyz-only (`x[]`,`y[]`,`z[]`).
+ * Pass `full: true` for a get-structure-shaped first frame (topology-only PSF/PRMTOP).
+ * @param {{
+ *   topology_path: string,
+ *   trajectory_paths: string[],
+ *   file_strides?: Record<string, number> | null,
+ *   frame?: number,
+ *   full?: boolean,
+ *   needs_bonds?: boolean,
+ *   needs_secondary_structure?: boolean,
+ *   count?: number
+ * }} payload
+ */
+export async function getTrajectoryFrame(payload) {
+  const data = await backendJson('/trajectory/frame', {
+    frame: 0,
+    full: false,
+    needs_bonds: false,
+    needs_secondary_structure: false,
+    count: 1,
+    ...payload
+  })
+  if (payload.full) return normalizeStructurePayload(data)
+  return data
+}
+
+/**
+ * Packed float32 xyz (binary header + frames) for playback.
+ * @param {{
+ *   topology_path: string,
+ *   trajectory_paths: string[],
+ *   file_strides?: Record<string, number> | null,
+ *   frame?: number,
+ *   count?: number
+ * }} payload
+ * @returns {Promise<ArrayBuffer>}
+ */
+export async function getTrajectoryXyzBuffer(payload) {
+  const url = `${BACKEND_BASE_URL}/trajectory/xyz`
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(
+      keysToSnakeCase({
+        topology_path: payload.topology_path,
+        trajectory_paths: payload.trajectory_paths,
+        file_strides: payload.file_strides ?? null,
+        frame: payload.frame ?? 0,
+        count: payload.count ?? 1
+      })
+    )
+  })
+  if (!response.ok) {
+    let data = {}
+    try {
+      data = await response.json()
+    } catch {
+      data = {}
+    }
+    throwFromFastApiBody(data, response)
+  }
+  return response.arrayBuffer()
+}
+
+/**
+ * Kabsch-fit every logical frame to a reference selection (Analysis RMSD options).
+ * @param {{
+ *   topology_path: string,
+ *   trajectory_paths: string[],
+ *   file_strides?: Record<string, number> | null,
+ *   selection?: string,
+ *   reference_frame?: number
+ * }} payload
+ * @returns {Promise<{
+ *   selection: string,
+ *   reference_frame: number,
+ *   n_mobile: number,
+ *   n_frames: number,
+ *   rmsd: number[],
+ *   affines: number[],
+ *   x_label: string,
+ *   y_label: string,
+ *   series_name: string
+ * }>}
+ */
+/**
+ * Start or poll the packed .gwxyz sidecar.
+ * @param {{
+ *   topology_path: string,
+ *   trajectory_paths: string[],
+ *   file_strides?: Record<string, number> | null,
+ *   cache_dir?: string | null
+ * }} payload
+ * @returns {Promise<{
+ *   path: string,
+ *   host_path: string,
+ *   bytes: number,
+ *   header_bytes: number,
+ *   frames_ready: number,
+ *   frames_total: number,
+ *   atom_count: number,
+ *   complete: boolean,
+ *   error: string | null,
+ *   load_all: boolean,
+ *   load_all_bytes_cap: number
+ * }>}
+ */
+export function getTrajectoryCache(payload) {
+  return backendJson('/trajectory/cache', payload)
+}
+
+/**
+ * Download a completed GWXY sidecar (HTTP fallback when Electron cannot see the file).
+ * @param {{
+ *   topology_path: string,
+ *   trajectory_paths: string[],
+ *   file_strides?: Record<string, number> | null,
+ *   cache_dir?: string | null
+ * }} payload
+ * @returns {Promise<ArrayBuffer>}
+ */
+export async function getTrajectoryCacheData(payload) {
+  const url = `${BACKEND_BASE_URL}/trajectory/cache/data`
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(keysToSnakeCase(payload))
+  })
+  if (!response.ok) {
+    let data = {}
+    try {
+      data = await response.json()
+    } catch {
+      data = {}
+    }
+    throwFromFastApiBody(data, response)
+  }
+  return response.arrayBuffer()
+}
+
+/**
+ * Kabsch-fit every logical frame (packed GWAL binary).
+ * @param {{
+ *   topology_path: string,
+ *   trajectory_paths: string[],
+ *   file_strides?: Record<string, number> | null,
+ *   selection?: string,
+ *   reference_frame?: number,
+ *   cache_dir?: string | null,
+ *   align?: boolean
+ * }} payload
+ * @returns {Promise<ArrayBuffer>}
+ */
+export async function computeTrajectoryAlign(payload) {
+  const url = `${BACKEND_BASE_URL}/trajectory/align`
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(
+      keysToSnakeCase({
+        selection: 'protein and backbone',
+        reference_frame: 0,
+        align: true,
+        ...payload
+      })
+    )
+  })
+  if (!response.ok) {
+    let data = {}
+    try {
+      data = await response.json()
+    } catch {
+      data = {}
+    }
+    throwFromFastApiBody(data, response)
+  }
+  return response.arrayBuffer()
+}
+
+/**
  * List entries in a Maestro / multi-MODEL PDB / single structure file.
  * @param {string} path
  * @returns {Promise<{ kind: string, sourcePath: string, entries: Array<{ index: number, label: string, kind?: string, atomCount?: number, title?: string }> }>}
@@ -1169,10 +1366,14 @@ function formatBytesApprox(n) {
 
 /**
  * @param {string} filePath
+ * @param {{ topology?: string | null }} [opts]
  * @returns {Promise<{ selection: string, atoms: { x: number, y: number, z: number, element: string, name: string }[], residues?: Array<{ chain: string, resname: string, number: number, atom_indices: number[], ca_index?: number, sec?: string }> }[]>}
  */
-export async function detectMolecules(filePath) {
-  return backendJson('/detect-molecules', { path: filePath })
+export async function detectMolecules(filePath, opts = {}) {
+  return backendJson('/detect-molecules', {
+    path: filePath,
+    topology: opts.topology ?? null
+  })
 }
 
 // Helper functions for the backend API.
@@ -1447,6 +1648,86 @@ export function packmolRunCustom(payload) {
  */
 export function packmolScanJobs(payload) {
   return backendJson('/packmol/scan-jobs', payload)
+}
+
+/**
+ * Write the current frame (frame 0 of a trajectory) to a temporary PDB.
+ * @param {{ path: string, topology?: string | null }} payload
+ * @returns {Promise<{ path: string }>}
+ */
+export function structureScratchPdb(payload) {
+  return backendJson('/structure/scratch-pdb', {
+    path: payload.path,
+    topology: payload.topology ?? null
+  })
+}
+
+/**
+ * List Dunbrack rotamers for one residue. Does not write a file.
+ * @param {{ path: string, chain: string, resid: number, mutateTo: string }} payload
+ */
+export function mutateRotamers(payload) {
+  return backendJson('/mutate/rotamers', {
+    path: payload.path,
+    chain: payload.chain,
+    resid: payload.resid,
+    mutateTo: payload.mutateTo
+  })
+}
+
+/**
+ * Place one listed rotamer and return a new PDB.
+ * @param {{ path: string, chain: string, resid: number, mutateTo: string, rotamerIndex: number }} payload
+ * @returns {Promise<{ path: string, n_atoms: number, rotamer_index: number }>}
+ */
+export function mutateApply(payload) {
+  return backendJson('/mutate/apply', {
+    path: payload.path,
+    chain: payload.chain,
+    resid: payload.resid,
+    mutateTo: payload.mutateTo,
+    rotamerIndex: payload.rotamerIndex
+  })
+}
+
+/**
+ * Write one chain, including ligands and water on that chain, to a new PDB.
+ * @param {{ path: string, chain: string, topology?: string | null }} payload
+ * @returns {Promise<{ path: string, n_atoms: number, chain: string }>}
+ */
+export function structureSplitChain(payload) {
+  return backendJson('/structure/split-chain', {
+    path: payload.path,
+    chain: payload.chain,
+    topology: payload.topology ?? null
+  })
+}
+
+/**
+ * Superimpose the mobile structure onto the reference. The reference is not moved.
+ * @param {{ referencePath: string, referenceChain: string, mobilePath: string, mobileChain: string, referenceTopology?: string | null, mobileTopology?: string | null }} payload
+ * @returns {Promise<{ path: string, n_atoms: number, n_anchors: number, rmsd: number }>}
+ */
+/**
+ * Concatenate structures into one PDB. Chain ids must already be unique.
+ * @param {{ paths: string[] }} payload
+ * @returns {Promise<{ path: string, n_atoms: number, chains: string[] }>}
+ */
+export function structureMerge(payload) {
+  return backendJson('/structure/merge', {
+    paths: payload.paths
+  })
+}
+
+export function structureSuperimpose(payload) {
+  return backendJson('/structure/superimpose', {
+    referencePath: payload.referencePath,
+    referenceChain: payload.referenceChain,
+    mobilePath: payload.mobilePath,
+    mobileChain: payload.mobileChain,
+    referenceTopology: payload.referenceTopology ?? null,
+    mobileTopology: payload.mobileTopology ?? null
+  })
 }
 
 /**

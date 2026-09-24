@@ -1,7 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  persistViewVisibilityInKeyframes,
+  persistViewSelectionEachFrameInKeyframes,
+  persistViewTrajSmoothRestoreHInKeyframes,
   repairForwardViewInheritance,
+  restoreViewsAfterLeavingAnimate,
   propagateNewViewsToLaterKeyframes,
   viewSnapshotAtOrBeforeTime
 } from './tracks.js'
@@ -94,4 +98,77 @@ test('propagateNewViewsToLaterKeyframes adds a brand-new track without touching 
     false,
     'newly introduced track must be propagated into later keyframes'
   )
+})
+
+test('persistViewVisibilityInKeyframes writes from the playhead snapshot forward', () => {
+  const keyframes = [
+    keyframe('kf0', 0, [view('ion', true), view('water', true)]),
+    keyframe('kf1', 2, [view('ion', true), view('water', true)])
+  ]
+  assert.equal(persistViewVisibilityInKeyframes(keyframes, 'ion', false, 0), true)
+  assert.equal(keyframes[0].views.find((v) => v.id === 'ion')?.visible, false)
+  assert.equal(keyframes[1].views.find((v) => v.id === 'ion')?.visible, false)
+  assert.equal(keyframes[0].views.find((v) => v.id === 'water')?.visible, true)
+
+  const later = [
+    keyframe('kf0', 0, [view('ion', false)]),
+    keyframe('kf1', 2, [view('ion', false)])
+  ]
+  persistViewVisibilityInKeyframes(later, 'ion', true, 2)
+  assert.equal(later[0].views[0].visible, false)
+  assert.equal(later[1].views[0].visible, true)
+})
+
+test('persistViewSelectionEachFrameInKeyframes writes from the playhead snapshot forward', () => {
+  const keyframes = [
+    keyframe('kf0', 0, [view('lipid', true), view('protein', true)]),
+    keyframe('kf1', 2, [view('lipid', true), view('protein', true)])
+  ]
+  assert.equal(persistViewSelectionEachFrameInKeyframes(keyframes, 'lipid', true, 0), true)
+  assert.equal(keyframes[0].views.find((v) => v.id === 'lipid')?.selectionEachFrame, true)
+  assert.equal(keyframes[1].views.find((v) => v.id === 'lipid')?.selectionEachFrame, true)
+  assert.equal(keyframes[0].views.find((v) => v.id === 'protein')?.selectionEachFrame, undefined)
+
+  persistViewSelectionEachFrameInKeyframes(keyframes, 'lipid', false, 2)
+  assert.equal(keyframes[0].views.find((v) => v.id === 'lipid')?.selectionEachFrame, true)
+  assert.equal(keyframes[1].views.find((v) => v.id === 'lipid')?.selectionEachFrame, false)
+})
+
+test('persistViewTrajSmoothRestoreHInKeyframes writes from the playhead snapshot forward', () => {
+  const keyframes = [
+    keyframe('kf0', 0, [view('lipid', true), view('protein', true)]),
+    keyframe('kf1', 2, [view('lipid', true), view('protein', true)])
+  ]
+  assert.equal(persistViewTrajSmoothRestoreHInKeyframes(keyframes, 'lipid', false, 0), true)
+  assert.equal(keyframes[0].views.find((v) => v.id === 'lipid')?.trajSmoothRestoreH, false)
+  assert.equal(keyframes[1].views.find((v) => v.id === 'lipid')?.trajSmoothRestoreH, false)
+  assert.equal(keyframes[0].views.find((v) => v.id === 'protein')?.trajSmoothRestoreH, undefined)
+
+  persistViewTrajSmoothRestoreHInKeyframes(keyframes, 'lipid', true, 2)
+  assert.equal(keyframes[0].views.find((v) => v.id === 'lipid')?.trajSmoothRestoreH, false)
+  assert.equal(keyframes[1].views.find((v) => v.id === 'lipid')?.trajSmoothRestoreH, true)
+})
+
+test('restoreViewsAfterLeavingAnimate does not unhide faded or authored-hidden rows', () => {
+  const views = [
+    { id: 'shown', visible: true, opacity: 0.8 },
+    { id: 'fadedInLater', visible: false, opacity: 0 },
+    { id: 'hiddenBefore', visible: false, opacity: 0 }
+  ]
+  const keyframes = [
+    keyframe('kf0', 0, [
+      { ...view('shown', true), opacity: 0.4 },
+      { ...view('fadedInLater', true), opacity: 1 },
+      { ...view('hiddenBefore', false), opacity: 1 }
+    ])
+  ]
+
+  restoreViewsAfterLeavingAnimate(views, keyframes, 0)
+
+  assert.equal(views[0].visible, true)
+  assert.equal(views[0].opacity, 0.4)
+  assert.equal(views[1].visible, false)
+  assert.equal(views[1].opacity, 1)
+  assert.equal(views[2].visible, false)
+  assert.equal(views[2].opacity, 1)
 })
