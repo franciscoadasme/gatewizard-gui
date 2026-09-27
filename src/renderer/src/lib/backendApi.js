@@ -767,8 +767,8 @@ export async function detectDisulfideBonds(filePath, maxDisulfideDistance, opts 
 }
 
 /**
- * @param {{ path: string, outputPath: string, protonationStates: object, targetPh: number, disulfideBonds: [[ [string, number], [string, number] ]], removeProteinHydrogens?: boolean, workingDir?: string|null, outputFolderName?: string|null }} props
- * @returns {Promise<{ output: string, output_path?: string, job_dir?: string, working_path?: string, protein_hydrogens_removed?: number }>}
+ * @param {{ path: string, outputPath: string, protonationStates: object, targetPh: number, disulfideBonds: [[ [string, number], [string, number] ]], removeProteinHydrogens?: boolean, preserveResidueNumbers?: boolean, completeMissingAtoms?: boolean, addHydrogens?: boolean, capMappingPath?: string|null, originalPdb?: string|null, workingDir?: string|null, outputFolderName?: string|null }} props
+ * @returns {Promise<{ output: string, output_path?: string, job_dir?: string, working_path?: string, protein_hydrogens_removed?: number, residue_numbers_preserved?: boolean, remum_path?: string|null, cap_assignments?: Record<string, number>, missing_atoms_added?: number }>}
  */
 export async function preparePDB(props) {
   return backendJson('/prepare-pdb', props)
@@ -1704,11 +1704,6 @@ export function structureSplitChain(payload) {
 }
 
 /**
- * Superimpose the mobile structure onto the reference. The reference is not moved.
- * @param {{ referencePath: string, referenceChain: string, mobilePath: string, mobileChain: string, referenceTopology?: string | null, mobileTopology?: string | null }} payload
- * @returns {Promise<{ path: string, n_atoms: number, n_anchors: number, rmsd: number }>}
- */
-/**
  * Concatenate structures into one PDB. Chain ids must already be unique.
  * @param {{ paths: string[] }} payload
  * @returns {Promise<{ path: string, n_atoms: number, chains: string[] }>}
@@ -1719,12 +1714,28 @@ export function structureMerge(payload) {
   })
 }
 
+/**
+ * Superimpose the mobile structure onto the reference. The reference is not moved.
+ * @param {{
+ *   referencePath: string,
+ *   mobilePath: string,
+ *   referenceChain?: string,
+ *   mobileChain?: string,
+ *   pairs?: Array<{ referenceChain: string, mobileChain: string }>,
+ *   selection?: string,
+ *   referenceTopology?: string | null,
+ *   mobileTopology?: string | null
+ * }} payload
+ * @returns {Promise<{ path: string, n_atoms: number, n_anchors: number, rmsd: number, selection?: string, pairs?: Array<{ reference_chain: string, mobile_chain: string, n_anchors: number, rmsd?: number }> }>}
+ */
 export function structureSuperimpose(payload) {
   return backendJson('/structure/superimpose', {
     referencePath: payload.referencePath,
-    referenceChain: payload.referenceChain,
+    referenceChain: payload.referenceChain || '',
     mobilePath: payload.mobilePath,
-    mobileChain: payload.mobileChain,
+    mobileChain: payload.mobileChain || '',
+    pairs: payload.pairs ?? null,
+    selection: payload.selection || '',
     referenceTopology: payload.referenceTopology ?? null,
     mobileTopology: payload.mobileTopology ?? null
   })

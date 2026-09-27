@@ -4,6 +4,23 @@
   const enabled = platform === 'linux' || platform === 'win32'
   const border = platform === 'win32' ? 4 : 6
 
+  let maximized = $state(
+    typeof document !== 'undefined' &&
+      document.documentElement.classList.contains('window-maximized')
+  )
+
+  $effect(() => {
+    if (!enabled) return
+    const root = document.documentElement
+    const sync = () => {
+      maximized = root.classList.contains('window-maximized')
+    }
+    sync()
+    const observer = new MutationObserver(sync)
+    observer.observe(root, { attributes: true, attributeFilter: ['class'] })
+    return () => observer.disconnect()
+  })
+
   /** @type {Record<string, string>} */
   const cursorByEdge = {
     n: 'ns-resize',
@@ -42,7 +59,7 @@
   }
 </script>
 
-{#if enabled}
+{#if enabled && !maximized}
   <div class="window-resize-handles pointer-events-none fixed inset-0 z-40" aria-hidden="true">
     <button
       type="button"

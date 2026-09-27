@@ -21,6 +21,7 @@
   } from '../lib/viewerSettings.svelte.js'
   import { setPreferredTheme, themeState } from '../lib/theme.svelte.js'
   import { getDependencyVersions, listEngineExecutables } from '../lib/backendApi'
+  import { showAppError } from '../lib/appDialog.svelte.js'
   import pkg from '../../../../package.json'
 
   /**
@@ -50,6 +51,25 @@
     'Janin Riedelsberger',
     'Mauricio Bedoya',
   ]
+
+  const windowImageShortcut =
+    window.electron?.process?.platform === 'darwin' ? '⌘⇧S' : 'Ctrl+Shift+S'
+
+  async function onSaveWindowImage() {
+    if (!window.api?.captureWindowImage) {
+      showAppError('Window capture is not available in this build.', 'Save window image')
+      return
+    }
+    close()
+    await new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve))
+    })
+    try {
+      await window.api.captureWindowImage()
+    } catch (err) {
+      showAppError(err instanceof Error ? err.message : String(err), 'Save window image')
+    }
+  }
 
   /** @param {string} url */
   async function openAboutLink(url) {
@@ -524,6 +544,18 @@
                   <span>80%</span>
                   <span>150%</span>
                 </div>
+              </div>
+              <div class="space-y-2">
+                <h4 class="text-sm font-semibold text-neutral-800 dark:text-neutral-200">
+                  Save window image
+                </h4>
+                <p class="text-neutral-500 dark:text-neutral-400">
+                  PNG of the app client only — no host window shadow. Shortcut
+                  <kbd class="font-mono text-[10px]">{windowImageShortcut}</kbd>.
+                </p>
+                <Button size="sm" variant="outline" onclick={onSaveWindowImage}
+                  >Save window image…</Button
+                >
               </div>
             </section>
           {:else if section === 'scene'}

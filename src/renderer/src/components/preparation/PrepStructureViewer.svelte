@@ -146,7 +146,7 @@
   {:else if structure && framing}
     <div class="relative min-h-0 flex-1">
       <Canvas registerAsMain={false}>
-        <CameraRig {framing} />
+        <CameraRig {framing} registerAsMain={false} />
         <Tube
           atoms={structure.atoms}
           residues={structure.residues ?? []}
@@ -197,8 +197,8 @@
     </div>
     <p class="shrink-0 border-t border-neutral-200 px-2 py-1.5 text-[10px] leading-snug text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
       Tube = protein. Click / Ctrl+click table rows for ball-and-stick (CPK). Cyan ghosts = H
-      added by state change, magenta = H that would be removed. Approximate preview. Final
-      hydrogens come from Builder (packmol-memgen).
+      added by state change, magenta = H that would be removed. Approximate preview. Prepare
+      completes missing protein heavy atoms (Amber templates) and hydrogens (pdb4amber --reduce).
     </p>
   {/if}
 </div>

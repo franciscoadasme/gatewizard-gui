@@ -114,8 +114,14 @@ from gatewizard.core.mempro import MemProError
 from gatewizard.core.preparation import (
     PreparationError,
     PreparationManager,
+    complete_missing_heavy_atoms,
     count_protein_hydrogens,
+    resolve_reduce_executable,
     strip_protein_hydrogens,
+)
+from gatewizard.utils.residue_restore import (
+    discover_cap_mapping_path,
+    discover_original_pdb,
 )
 from gatewizard.core.builder import Builder
 
@@ -2723,6 +2729,35 @@ class PreparePDBRequest(BaseModel):
             "(e.g. Schrödinger) breaking later tleap parametrization."
         ),
     )
+    preserve_residue_numbers: bool = Field(
+        True,
+        description=(
+            "After pdb4amber, restore the input residue numbers and chain IDs. "
+            "Uncheck for sequential Amber numbering (tleap / MD). New ACE/NME "
+            "caps use N-terminus − 1 (0 if the chain starts at 1) and "
+            "C-terminus + 1."
+        ),
+    )
+    cap_mapping_path: str | None = Field(
+        None,
+        description="Optional *_gatewizard_residue_mapping.txt from a prior cap step",
+    )
+    original_pdb: str | None = Field(
+        None,
+        description="Optional pre-cap PDB so loop gaps (200 then 205) can be restored",
+    )
+    complete_missing_atoms: bool = Field(
+        True,
+        description=(
+            "Fill missing protein heavy atoms from Amber residue templates (tleap) "
+            "before protonation. Does not build missing loop residues. Ligands, "
+            "water, and ions are left unchanged."
+        ),
+    )
+    add_hydrogens: bool = Field(
+        True,
+        description="Run pdb4amber --reduce so Amber hydrogens are added after PropKa names.",
+    )
     working_dir: str | None = Field(
         None, description="Project working directory from the GUI top bar"
     )
@@ -2812,15 +2847,23 @@ def prepare_pdb(payload: PreparePDBRequest) -> dict:
     manager = PreparationManager()
     fd, tmp_path = tempfile.mkstemp(suffix=".pdb")
     os.close(fd)
+    fd_complete, tmp_complete = tempfile.mkstemp(suffix=".pdb")
+    os.close(fd_complete)
 
     try:
+        protonation_input = path
+        complete_info: dict = {}
+        if payload.complete_missing_atoms:
+            complete_info = complete_missing_heavy_atoms(path, tmp_complete)
+            protonation_input = tmp_complete
+
         custom_states = {
             get_residue_id(info): info["current_state"]
             for info in payload.protonation_states
             if info["current_state"] != info["initial_state"]
         }
         manager.apply_protonation_states(
-            path,
+            protonation_input,
             tmp_path,
             payload.target_ph,
             custom_states,
@@ -2832,19 +2875,74 @@ def prepare_pdb(payload: PreparePDBRequest) -> dict:
 
         manager.apply_disulfide_bonds(tmp_path, tmp_path, payload.disulfide_bonds)
 
+        reduce_available = resolve_reduce_executable() is not None
         removed_h = 0
+        kept_tleap_hydrogens = False
         if payload.remove_protein_hydrogens:
-            strip_result = strip_protein_hydrogens(tmp_path, tmp_path)
-            removed_h = int(strip_result.get("removed", 0))
+            if payload.add_hydrogens and not reduce_available:
+                # Do not strip tleap hydrogens if Amber reduce cannot put them back.
+                kept_tleap_hydrogens = True
+            else:
+                strip_result = strip_protein_hydrogens(tmp_path, tmp_path)
+                removed_h = int(strip_result.get("removed", 0))
 
+        cap_map = payload.cap_mapping_path
+        if not cap_map:
+            found_map = discover_cap_mapping_path(path)
+            cap_map = str(found_map) if found_map else None
+        orig_pdb = payload.original_pdb
+        if not orig_pdb:
+            found_orig = discover_original_pdb(path)
+            orig_pdb = str(found_orig) if found_orig else path
+
+        pdb4amber_options = {"reduce": True} if payload.add_hydrogens else None
         result = manager.run_pdb4amber_with_cap_fix(
             input_pdb=tmp_path,
             output_pdb=str(output_path),
             fix_caps="capped" in path,
+            pdb4amber_options=pdb4amber_options,
+            preserve_residue_numbers=payload.preserve_residue_numbers,
+            cap_mapping_path=cap_map,
+            original_pdb=orig_pdb,
         )
         note = ""
-        if payload.remove_protein_hydrogens:
-            note = f"\nRemoved {removed_h} protein hydrogen atom(s) before pdb4amber."
+        if complete_info:
+            added = int(complete_info.get("atoms_added") or 0)
+            note += (
+                f"\nCompleted missing protein atoms via tleap "
+                f"({complete_info.get('protein_atoms_in')} → "
+                f"{complete_info.get('protein_atoms_out')}, +{added} atoms). "
+                "Missing loop residues were not built."
+            )
+        if payload.remove_protein_hydrogens and not kept_tleap_hydrogens:
+            note += f"\nRemoved {removed_h} protein hydrogen atom(s) before pdb4amber."
+        removed_conect = int(result.get("conect_records_removed") or 0)
+        if removed_conect:
+            note += (
+                f"\nDropped {removed_conect} stale CONECT/LINK record(s) "
+                "(serials no longer match after atom completion)."
+            )
+        if result.get("reduce_skipped"):
+            note += (
+                "\nAmber reduce was not found; pdb4amber ran without --reduce."
+            )
+            if payload.complete_missing_atoms or kept_tleap_hydrogens:
+                note += " Protein hydrogens kept from tleap residue templates."
+            else:
+                note += (
+                    " Enable complete missing atoms (tleap adds template hydrogens) "
+                    "or install AmberTools reduce."
+                )
+        elif payload.add_hydrogens:
+            note += "\npdb4amber --reduce added Amber hydrogens."
+        if result.get("residue_numbers_preserved"):
+            note += "\nResidue numbers and chains restored from the input."
+            caps = result.get("cap_assignments") or {}
+            if caps:
+                assigned = ", ".join(
+                    f"{name}={resid}" for name, resid in caps.items()
+                )
+                note += f" New caps: {assigned}."
         amber_warn_names = amber_unsupported_peptide_names_in_pdb(str(output_path))
         amber_note = ""
         if amber_warn_names:
@@ -2861,6 +2959,13 @@ def prepare_pdb(payload: PreparePDBRequest) -> dict:
             working_path=path,
             protein_hydrogens_removed=removed_h,
             amber_peptide_warnings=amber_warn_names,
+            residue_numbers_preserved=bool(result.get("residue_numbers_preserved")),
+            remum_path=result.get("remum_path"),
+            cap_assignments=result.get("cap_assignments") or {},
+            missing_atoms_added=int(complete_info.get("atoms_added") or 0),
+            reduce_used=bool(result.get("reduce_used")),
+            reduce_skipped=bool(result.get("reduce_skipped")),
+            conect_records_removed=int(result.get("conect_records_removed") or 0),
         )
     except (PreparationError, FileNotFoundError, OSError, ValueError) as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
@@ -2870,10 +2975,11 @@ def prepare_pdb(payload: PreparePDBRequest) -> dict:
         tb_str = "".join(traceback.format_exception(type(ex), ex, ex.__traceback__))
         raise HTTPException(status_code=400, detail=str(ex) + "\n" + tb_str) from ex
     finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        for tmp in (tmp_path, tmp_complete):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 class ProgramConfig(BaseModel):
@@ -6245,26 +6351,52 @@ def structure_split_chain(payload: SplitChainRequest) -> dict:
         raise HTTPException(400, str(exc))
 
 
+class SuperimposePair(BaseModel):
+    reference_chain: str = ""
+    mobile_chain: str = ""
+    referenceChain: str = ""
+    mobileChain: str = ""
+
+
 class SuperimposeRequest(BaseModel):
-    reference_path: str
-    reference_chain: str
-    mobile_path: str
-    mobile_chain: str
+    reference_path: str = ""
+    referencePath: str = ""
+    reference_chain: str = ""
+    referenceChain: str = ""
+    mobile_path: str = ""
+    mobilePath: str = ""
+    mobile_chain: str = ""
+    mobileChain: str = ""
     reference_topology: str | None = None
+    referenceTopology: str | None = None
     mobile_topology: str | None = None
+    mobileTopology: str | None = None
+    pairs: list[SuperimposePair] | None = None
+    selection: str | None = None
 
 
 @app.post("/structure/superimpose")
 def structure_superimpose(payload: SuperimposeRequest) -> dict:
     """Move the mobile structure onto the reference. Reference coordinates stay put."""
     try:
+        pairs = None
+        if payload.pairs:
+            pairs = [
+                {
+                    "reference_chain": item.reference_chain or item.referenceChain,
+                    "mobile_chain": item.mobile_chain or item.mobileChain,
+                }
+                for item in payload.pairs
+            ]
         return superimpose_structures(
-            payload.reference_path,
-            payload.reference_chain,
-            payload.mobile_path,
-            payload.mobile_chain,
-            payload.reference_topology,
-            payload.mobile_topology,
+            payload.reference_path or payload.referencePath,
+            payload.reference_chain or payload.referenceChain,
+            payload.mobile_path or payload.mobilePath,
+            payload.mobile_chain or payload.mobileChain,
+            payload.reference_topology or payload.referenceTopology,
+            payload.mobile_topology or payload.mobileTopology,
+            pairs,
+            payload.selection,
         )
     except Exception as exc:
         raise HTTPException(400, str(exc))

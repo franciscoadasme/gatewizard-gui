@@ -252,7 +252,10 @@ export function pickAtomFromViews(views, camera, w, h, cx, cy, minThreshold = 20
 
       bestDepth = depth
       bestPriority = priority
-      best = atom
+      best =
+        typeof view.structureId === 'string'
+          ? { ...atom, structureId: view.structureId }
+          : atom
     }
   }
 

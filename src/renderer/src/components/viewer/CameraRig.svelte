@@ -30,17 +30,16 @@
    *     framingGeneration: number
    *     poseResetGeneration?: number
    *   }
+   *   registerAsMain?: boolean
    * }}
    */
-  let { framing } = $props()
+  let { framing, registerAsMain = true } = $props()
 
   const { camera, invalidate, size, scene, renderer } = useThrelte()
-  mainViewerInvalidate.fn = invalidate
-  mainViewerScene.current = scene ?? null
-  mainViewerRenderer.current = renderer ?? null
 
   useTask(
     () => {
+      if (!registerAsMain) return
       mainViewerCamera.current = camera.current
       mainViewerScene.current = scene ?? null
       mainViewerRenderer.current = renderer ?? null
@@ -49,6 +48,7 @@
   )
 
   onDestroy(() => {
+    if (!registerAsMain) return
     mainViewerCamera.current = null
     mainViewerScene.current = null
     mainViewerRenderer.current = null
@@ -102,12 +102,20 @@
   let lastFramingGeneration = 0
   let lastPoseResetGeneration = 0
 
-  mainViewerFramingAnchor.fn = (cx, cy, cz, ext) => {
-    lastCx = cx
-    lastCy = cy
-    lastCz = cz
-    lastExtent = ext
-  }
+  $effect(() => {
+    if (!registerAsMain) {
+      return
+    }
+    mainViewerInvalidate.fn = invalidate
+    mainViewerScene.current = scene ?? null
+    mainViewerRenderer.current = renderer ?? null
+    mainViewerFramingAnchor.fn = (cx, cy, cz, ext) => {
+      lastCx = cx
+      lastCy = cy
+      lastCz = cz
+      lastExtent = ext
+    }
+  })
 
   /**
    * @param {OrthographicCamera} cam

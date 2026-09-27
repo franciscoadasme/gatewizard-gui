@@ -253,6 +253,32 @@ function stepMainZoom(deltaSteps) {
 }
 
 /**
+ * Capture the renderer client (no OS/WSLg host shadow) and prompt to save PNG.
+ * @param {import('electron').BrowserWindow} win
+ * @returns {Promise<{ canceled: boolean, filePath?: string }>}
+ */
+async function saveWindowClientPng(win) {
+  if (!win || win.isDestroyed()) return { canceled: true }
+  const image = await win.webContents.capturePage()
+  const png = image.toPNG()
+  const result = await dialog.showSaveDialog(win, {
+    title: 'Save window image',
+    filters: [
+      { name: 'PNG image', extensions: ['png'] },
+      { name: 'All files', extensions: ['*'] }
+    ],
+    defaultPath: resolveDialogDefaultPath('gatewizard-window.png'),
+    properties: ['showOverwriteConfirmation', 'createDirectory']
+  })
+  if (result.canceled || !result.filePath) return { canceled: true }
+  let filePath = result.filePath
+  if (!filePath.toLowerCase().endsWith('.png')) filePath = `${filePath}.png`
+  await mkdir(path.dirname(filePath), { recursive: true })
+  await writeFile(filePath, png)
+  return { canceled: false, filePath }
+}
+
+/**
  * Own zoom shortcuts so Ctrl+= works (Electron's zoomIn role is only Ctrl+Shift+=).
  * @param {BrowserWindow} win
  */
@@ -263,6 +289,11 @@ function attachUiZoomShortcuts(win) {
     if (input.alt) return
 
     const code = input.code
+    if (input.shift && (code === 'KeyS' || input.key === 's' || input.key === 'S')) {
+      event.preventDefault()
+      void saveWindowClientPng(win)
+      return
+    }
     const isZoomIn =
       code === 'Equal' || code === 'NumpadAdd' || input.key === '+' || input.key === '='
     const isZoomOut = code === 'Minus' || code === 'NumpadSubtract' || input.key === '-'
@@ -311,6 +342,22 @@ function getWorkAreaWindowState(win) {
   return state
 }
 
+/** Re-fit a work-area-maximized window after minimize/restore or a screen change. */
+function refitWorkAreaIfMaximized(win) {
+  const state = getWorkAreaWindowState(win)
+  if (win.isDestroyed() || !state.maximized || state.applyingBounds) return
+  state.applyingBounds = true
+  try {
+    applyWorkAreaMaximize(win)
+  } finally {
+    state.applyingBounds = false
+  }
+  if (!win.isDestroyed()) {
+    win.webContents.send('window:bounds-changed')
+    sendWindowChromeStyle(win)
+  }
+}
+
 function setupWorkAreaFramelessWindow(win) {
   if (!usesWorkAreaMaximize()) return
 
@@ -352,18 +399,16 @@ function setupWorkAreaFramelessWindow(win) {
     }
   })
 
-  if (process.platform === 'win32') {
-    screen.on('display-metrics-changed', () => {
-      const state = getWorkAreaWindowState(win)
-      if (win.isDestroyed() || !state.maximized) return
-      state.applyingBounds = true
-      try {
-        applyWorkAreaMaximize(win)
-      } finally {
-        state.applyingBounds = false
-      }
-    })
+  // Event-driven only (no timer). WSL often never fires this; restore/maximize still refits.
+  if (process.platform === 'win32' || process.platform === 'linux') {
+    screen.on('display-metrics-changed', () => refitWorkAreaIfMaximized(win))
   }
+
+  win.on('restore', () => refitWorkAreaIfMaximized(win))
+  win.on('show', () => {
+    if (win.isMinimized()) return
+    refitWorkAreaIfMaximized(win)
+  })
 }
 
 /**
@@ -1706,6 +1751,12 @@ ipcMain.handle('zoom:setDefault', (_event, factor) => {
 ipcMain.handle('window:isFocused', () => {
   if (!mainWindow || mainWindow.isDestroyed()) return false
   return mainWindow.isFocused() && !mainWindow.isMinimized()
+})
+
+ipcMain.handle('window:capturePage', async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (!win || win.isDestroyed()) return { canceled: true }
+  return saveWindowClientPng(win)
 })
 
 ipcMain.handle('notifications:showJobFinished', (_event, payload) => {

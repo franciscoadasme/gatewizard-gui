@@ -12,6 +12,7 @@ import { viewerSettings } from '../viewerSettings.svelte.js'
 import { captureCameraPose } from './cameraPose.js'
 import { defaultFadeSettings, normalizeFadeSettings } from './fade.js'
 import { effectiveViewSelection } from '../viewer/viewSelection.js'
+import { atomsForOverlayRecord } from './overlayAtoms.js'
 
 /** @param {Record<string, unknown> | null | undefined} material */
 export function cloneMaterial(material) {
@@ -68,7 +69,7 @@ export function rebuildColorScheme(colorScheme, view) {
 }
 
 /**
- * @param {{ id: string, atom: { index?: number }, text: string, size?: number, color?: string, background?: string, backgroundOpacity?: number, padding?: number, radius?: number, offsetY?: number, liftDir?: string, visible?: boolean }} label
+ * @param {{ id: string, atom: { index?: number, structureId?: string }, text: string, structureId?: string, size?: number, color?: string, background?: string, backgroundOpacity?: number, padding?: number, radius?: number, offsetY?: number, liftDir?: string, visible?: boolean }} label
  * @returns {import('./schema.js').SerializedAtomLabel | null}
  */
 export function serializeAtomLabel(label) {
@@ -82,9 +83,16 @@ export function serializeAtomLabel(label) {
     label.liftDir === 'right'
       ? label.liftDir
       : 'up'
+  const structureId =
+    typeof label.structureId === 'string'
+      ? label.structureId
+      : typeof label.atom?.structureId === 'string'
+        ? label.atom.structureId
+        : undefined
   return {
     id: label.id,
     atomIndex,
+    ...(structureId ? { structureId } : {}),
     text: label.text,
     size: label.size ?? 12,
     color: label.color ?? '#ffffff',
@@ -117,10 +125,17 @@ export function serializeMeasurement(measurement) {
     measurement.liftDir === 'right'
       ? measurement.liftDir
       : 'up'
+  const structureId =
+    typeof measurement.structureId === 'string'
+      ? measurement.structureId
+      : typeof measurement.atoms?.[0]?.structureId === 'string'
+        ? measurement.atoms[0].structureId
+        : undefined
   return {
     id: measurement.id,
     type: measurement.type,
     atomIndices,
+    ...(structureId ? { structureId } : {}),
     color: measurement.color ?? '#facc15',
     size: measurement.size ?? 15,
     lineWidth: measurement.lineWidth ?? 3,
@@ -138,16 +153,20 @@ export function serializeMeasurement(measurement) {
 
 /**
  * @param {import('./schema.js').SerializedAtomLabel} data
- * @param {Array<{ index: number, x: number, y: number, z: number, element?: string, name?: string }>} atoms
+ * @param {import('./overlayAtoms.js').OverlayAtomSource | Array<{ index: number, x: number, y: number, z: number, element?: string, name?: string }>} atoms
  */
 export function deserializeAtomLabel(data, atoms) {
-  const atom = atoms?.find((a) => a.index === data.atomIndex)
-  if (!atom) return null
+  const resolved = atomsForOverlayRecord(data, atoms)
+  const found = resolved.atoms?.find((a) => a.index === data.atomIndex)
+  if (!found) return null
+  const sid = resolved.structureId || data.structureId
+  const atom = sid ? { ...found, structureId: sid } : found
   const fade = normalizeFadeSettings(data)
   const opacity = typeof data.opacity === 'number' ? data.opacity : undefined
   return {
     id: data.id,
     atom,
+    ...(sid ? { structureId: sid } : {}),
     text: data.text,
     size: data.size ?? 12,
     color: data.color ?? '#ffffff',
@@ -178,15 +197,18 @@ export function deserializeAtomLabel(data, atoms) {
  * @param {Array<{ index: number, x: number, y: number, z: number, element?: string, name?: string }>} atoms
  */
 export function deserializeMeasurement(data, atoms) {
-  const resolved = data.atomIndices.map((i) => atoms?.find((a) => a.index === i))
+  const owner = atomsForOverlayRecord(data, atoms)
+  const resolved = data.atomIndices.map((i) => owner.atoms?.find((a) => a.index === i))
   if (resolved.some((a) => !a)) return null
+  const sid = owner.structureId || data.structureId
   const fade = normalizeFadeSettings(data)
   const opacity = typeof data.opacity === 'number' ? data.opacity : undefined
   return {
     id: data.id,
     type: data.type,
+    ...(sid ? { structureId: sid } : {}),
     atoms: /** @type {Array<{ index: number, x: number, y: number, z: number, element?: string, name?: string }>} */ (
-      resolved
+      sid ? resolved.map((a) => ({ ...a, structureId: sid })) : resolved
     ),
     color: data.color ?? '#facc15',
     size: data.size ?? 15,
@@ -219,7 +241,7 @@ export function liveOverlayFadeDefaults() {
 
 /**
  * @param {import('./schema.js').SerializedAtomLabel[]} labels
- * @param {Array<{ index: number, x: number, y: number, z: number, element?: string, name?: string }>} atoms
+ * @param {import('./overlayAtoms.js').OverlayAtomSource | Array<{ index: number, x: number, y: number, z: number, element?: string, name?: string }>} atoms
  */
 export function deserializeAtomLabels(labels, atoms) {
   return labels.map((l) => deserializeAtomLabel(l, atoms)).filter(Boolean)
@@ -227,7 +249,7 @@ export function deserializeAtomLabels(labels, atoms) {
 
 /**
  * @param {import('./schema.js').SerializedMeasurement[]} measurements
- * @param {Array<{ index: number, x: number, y: number, z: number, element?: string, name?: string }>} atoms
+ * @param {import('./overlayAtoms.js').OverlayAtomSource | Array<{ index: number, x: number, y: number, z: number, element?: string, name?: string }>} atoms
  */
 export function deserializeMeasurements(measurements, atoms) {
   return measurements.map((m) => deserializeMeasurement(m, atoms)).filter(Boolean)

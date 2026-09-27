@@ -117,7 +117,11 @@ export function drawMeasureOverlayOnContext(ctx, opts) {
 
   const map = (sx, sy) =>
     mapOverlayPoint(sx, sy, displayW, displayH, canvasW, canvasH, sourceRect, outW, outH)
-  const scale = Math.max(outW / sourceRect.width, outH / sourceRect.height)
+  // Lift/font sizes are CSS pixels. sourceRect is in buffer pixels, so multiply
+  // by canvas/display after the crop scale (Save Image upsizes the renderer).
+  const cropScale = Math.max(outW / sourceRect.width, outH / sourceRect.height)
+  const cssToBuffer = displayW > 0 ? canvasW / displayW : 1
+  const scale = cropScale * cssToBuffer
 
   for (const m of measurements) {
     if (m.visible === false) continue

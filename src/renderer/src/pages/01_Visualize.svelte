@@ -104,6 +104,7 @@
     deserializeMeasurements,
     deserializeView
   } from '../lib/animation/serialize.js'
+  import { remapSavedStructureId } from '../lib/animation/overlayAtoms.js'
   import { applyCameraPose, waitForMainViewerReady } from '../lib/animation/cameraPose.js'
   import { applyAnimationAtTime, startPlayback } from '../lib/animation/playback.js'
   import { shouldApplyCoordPatch, shouldSeekTrajFrame } from '../lib/animation/timelinePlayhead.js'
@@ -163,7 +164,6 @@
     syncProjectViewTracks
   } from '../lib/animation/tracks.js'
   import {
-    captureCanvasPng,
     computeSafeAreaForCanvas,
     exportFormatMeta,
     frameFileName,
@@ -219,8 +219,6 @@
     applyBlendToViewAtoms,
     applyRigidXyz,
     atomWithPackedXyz,
-    labelsWithPackedXyz,
-    measurementsWithPackedXyz,
     readAffine12,
     applyXyzFloat32ToAtoms,
     clampTrajSmooth,
@@ -371,8 +369,9 @@
   let superOpen = $state(false)
   let superRefId = $state('')
   let superMobId = $state('')
-  let superRefChain = $state('')
-  let superMobChain = $state('')
+  /** @type {Array<{ referenceChain: string, mobileChain: string }>} */
+  let superPairs = $state([])
+  let superSelection = $state('')
   let superBusy = $state(false)
   let superError = $state('')
   let superResult = $state('')
@@ -3751,6 +3750,9 @@
           id: crypto.randomUUID(),
           type: measureMode,
           atoms: next.slice(0, need),
+          ...(typeof next[0]?.structureId === 'string'
+            ? { structureId: next[0].structureId }
+            : {}),
           color: measColor,
           size: measSize,
           lineWidth: measLineWidth,
@@ -3796,6 +3798,7 @@
       {
         id: crypto.randomUUID(),
         atom,
+        ...(typeof atom.structureId === 'string' ? { structureId: atom.structureId } : {}),
         text,
         size: labelSize,
         color: labelColor,
@@ -4158,29 +4161,40 @@
 
     // Views mount under the opaque restore cover so glow lights / meshes can
     // finish building before the user ever sees the canvas.
+    const savedMetas = viewpoint.structures ?? []
     views = viewpoint.views.map((v) => {
-      const owner = findStructure(structures, v.structureId) ?? structure
+      const sid = remapSavedStructureId(v.structureId, structures, savedMetas) || v.structureId
+      const owner = findStructure(structures, sid) ?? structure
       const ctx = {
         path: owner?.path ?? null,
         atoms: owner?.atoms,
         bonds: owner?.bonds,
         residues: owner?.residues
       }
-      return /** @type {View} */ (deserializeView(v, ctx))
+      return /** @type {View} */ (
+        deserializeView(sid && sid !== v.structureId ? { ...v, structureId: sid } : v, ctx)
+      )
     })
     restoreVisibilityGroups(viewpoint.visibilityGroups)
     sceneRestoringPhase = 'Loading atom selections…'
     await refreshAnimationViewAtoms()
 
-    const atoms = /** @type {Array<{ index: number, x: number, y: number, z: number, element?: string, name?: string }>} */ (
-      structure?.atoms ?? []
-    )
-    atomLabels = /** @type {typeof atomLabels} */ (
-      deserializeAtomLabels(viewpoint.labels ?? [], atoms)
-    )
-    measurements = /** @type {typeof measurements} */ (
-      deserializeMeasurements(viewpoint.measurements ?? [], atoms)
-    )
+    const overlayAtoms = {
+      fallbackAtoms: /** @type {Array<{ index: number, x: number, y: number, z: number, element?: string, name?: string }>} */ (
+        structure?.atoms ?? []
+      ),
+      structures
+    }
+    const labels = (viewpoint.labels ?? []).map((l) => {
+      const sid = remapSavedStructureId(l.structureId, structures, savedMetas)
+      return sid && sid !== l.structureId ? { ...l, structureId: sid } : l
+    })
+    const meas = (viewpoint.measurements ?? []).map((m) => {
+      const sid = remapSavedStructureId(m.structureId, structures, savedMetas)
+      return sid && sid !== m.structureId ? { ...m, structureId: sid } : m
+    })
+    atomLabels = /** @type {typeof atomLabels} */ (deserializeAtomLabels(labels, overlayAtoms))
+    measurements = /** @type {typeof measurements} */ (deserializeMeasurements(meas, overlayAtoms))
     measurePicks = []
     measureMode = null
 
@@ -4406,10 +4420,15 @@
         opts.width,
         opts.height
       )
-      const png = await captureCanvasPng(/** @type {HTMLCanvasElement} */ (canvas), {
+      const png = await captureCanvasWithOverlayPng(/** @type {HTMLCanvasElement} */ (canvas), {
         sourceRect,
         outputWidth: outW,
-        outputHeight: outH
+        outputHeight: outH,
+        displayW: canvasWidth || cssW,
+        displayH: canvasHeight || cssH,
+        camera: cam,
+        measurements: liveMeasurements,
+        atomLabels: liveAtomLabels
       })
       await window.api.writeBinary(r.filePath, png)
     } catch (ex) {
@@ -4920,11 +4939,28 @@
 
   const liveAtomLabels = $derived.by(() => {
     if (!atomLabels.length) return atomLabels
-    return labelsWithPackedXyz(atomLabels, currentTrajXyz())
+    const xyz = currentTrajXyz()
+    const trajId = trajStructure?.id
+    if (!xyz || !trajId) return atomLabels
+    return atomLabels.map((l) => {
+      const sid = l.structureId || l.atom?.structureId
+      if (sid && sid !== trajId) return l
+      return { ...l, atom: atomWithPackedXyz(l.atom, xyz) }
+    })
   })
   const liveMeasurements = $derived.by(() => {
     if (!measurements.length) return measurements
-    return measurementsWithPackedXyz(measurements, currentTrajXyz())
+    const xyz = currentTrajXyz()
+    const trajId = trajStructure?.id
+    if (!xyz || !trajId) return measurements
+    return measurements.map((m) => {
+      const sid = m.structureId || m.atoms?.[0]?.structureId
+      if (sid && sid !== trajId) return m
+      return {
+        ...m,
+        atoms: (m.atoms || []).map((a) => atomWithPackedXyz(a, xyz))
+      }
+    })
   })
   const liveMeasurePicks = $derived.by(() => {
     const picks = measurePicks || []
@@ -7007,6 +7043,29 @@
     return chainIdsOf(entry, true)[0] || chainIdsOf(entry, false)[0] || ''
   }
 
+  /** @param {import('../lib/visualizeStructures.js').StructureEntry | null | undefined} entry */
+  function proteinChainIdsOf(entry) {
+    const protein = chainIdsOf(entry, true)
+    return protein.length ? protein : chainIdsOf(entry, false)
+  }
+
+  /**
+   * Same-letter pairs (A→A, B→B). If none share an id, one fallback pair.
+   * @param {import('../lib/visualizeStructures.js').StructureEntry | null | undefined} reference
+   * @param {import('../lib/visualizeStructures.js').StructureEntry | null | undefined} mobile
+   */
+  function matchingSuperimposePairs(reference, mobile) {
+    const refIds = proteinChainIdsOf(reference)
+    const mobSet = new Set(proteinChainIdsOf(mobile))
+    const pairs = refIds
+      .filter((id) => mobSet.has(id))
+      .map((id) => ({ referenceChain: id, mobileChain: id }))
+    if (pairs.length) return pairs
+    const ref = refIds[0] || ''
+    const mob = proteinChainIdsOf(mobile)[0] || ''
+    return ref && mob ? [{ referenceChain: ref, mobileChain: mob }] : []
+  }
+
   /**
    * PDB the mutator and superposition tools can read.
    * A clean PDB is used as-is. A trajectory or unsaved edit is written to a temp PDB
@@ -7180,11 +7239,18 @@
     superRefId = activeStructureId || ids[0] || ''
     const splitId = lastSplit && ids.includes(lastSplit.id) ? lastSplit.id : ''
     superMobId = splitId && splitId !== superRefId ? splitId : ids.find((id) => id !== superRefId) || ''
-    superRefChain = defaultProteinChain(structures.find((entry) => entry.id === superRefId))
-    superMobChain =
-      lastSplit && lastSplit.id === superMobId
-        ? lastSplit.chain
-        : defaultProteinChain(structures.find((entry) => entry.id === superMobId))
+    const reference = structures.find((entry) => entry.id === superRefId)
+    const mobile = structures.find((entry) => entry.id === superMobId)
+    superSelection = ''
+    superPairs = matchingSuperimposePairs(reference, mobile)
+    if (
+      lastSplit &&
+      lastSplit.id === superMobId &&
+      superPairs.length === 1 &&
+      proteinChainIdsOf(mobile).includes(lastSplit.chain)
+    ) {
+      superPairs = [{ referenceChain: superPairs[0].referenceChain, mobileChain: lastSplit.chain }]
+    }
     superError = ''
     superResult = ''
     superOpen = true
@@ -7193,18 +7259,27 @@
   /** @param {string} id */
   function onSuperRefChange(id) {
     superRefId = id
-    const chains = chainIdsOf(structures.find((entry) => entry.id === id), true)
-    const all = chains.length ? chains : chainIdsOf(structures.find((entry) => entry.id === id), false)
-    if (!all.includes(superRefChain)) superRefChain = all[0] || ''
+    superPairs = matchingSuperimposePairs(
+      structures.find((entry) => entry.id === id),
+      structures.find((entry) => entry.id === superMobId)
+    )
   }
 
   /** @param {string} id */
   function onSuperMobChange(id) {
     superMobId = id
-    const prefer = lastSplit && lastSplit.id === id ? lastSplit.chain : ''
-    const chains = chainIdsOf(structures.find((entry) => entry.id === id), true)
-    const all = chains.length ? chains : chainIdsOf(structures.find((entry) => entry.id === id), false)
-    superMobChain = prefer && all.includes(prefer) ? prefer : all.includes(superMobChain) ? superMobChain : all[0] || ''
+    superPairs = matchingSuperimposePairs(
+      structures.find((entry) => entry.id === superRefId),
+      structures.find((entry) => entry.id === id)
+    )
+    if (
+      lastSplit &&
+      lastSplit.id === id &&
+      superPairs.length === 1 &&
+      proteinChainIdsOf(structures.find((entry) => entry.id === id)).includes(lastSplit.chain)
+    ) {
+      superPairs = [{ referenceChain: superPairs[0].referenceChain, mobileChain: lastSplit.chain }]
+    }
   }
 
   async function onMutateList() {
@@ -7350,6 +7425,10 @@
       superError = 'Reference and mobile must be two loaded structures. Split a chain first if both are in one file.'
       return
     }
+    if (!superPairs.length || superPairs.some((pair) => !pair.referenceChain || !pair.mobileChain)) {
+      superError = 'Add at least one complete chain pair.'
+      return
+    }
     superBusy = true
     superError = ''
     try {
@@ -7357,15 +7436,25 @@
       const mobilePath = await materializeEntryPdb(mobile)
       const result = await structureSuperimpose({
         referencePath,
-        referenceChain: superRefChain,
         mobilePath,
-        mobileChain: superMobChain,
+        pairs: superPairs,
+        selection: superSelection,
         referenceTopology: reference.trajectory ? reference.topologyPath : null,
         mobileTopology: mobile.trajectory ? mobile.topologyPath : null
       })
       await reloadStructureInPlace(mobile.id, result.path)
       const rmsd = Number(result.rmsd)
-      superResult = `${result.n_anchors} anchors, RMSD ${Number.isFinite(rmsd) ? rmsd.toFixed(2) : '—'} Å. The reference did not move.`
+      const rmsdText = Number.isFinite(rmsd) ? `${rmsd.toFixed(2)} Å` : '—'
+      const pairBits = (result.pairs || [])
+        .map((row) => {
+          const pairRmsd = Number(row.rmsd)
+          const pairText = Number.isFinite(pairRmsd) ? `${pairRmsd.toFixed(2)} Å` : '—'
+          return `${row.reference_chain}→${row.mobile_chain} ${pairText} (${row.n_anchors})`
+        })
+        .join('; ')
+      superResult = pairBits
+        ? `RMSD ${rmsdText} from ${result.n_anchors} anchors. ${pairBits}. The reference did not move.`
+        : `RMSD ${rmsdText} from ${result.n_anchors} anchors. The reference did not move.`
     } catch (ex) {
       superError = ex instanceof Error ? ex.message : String(ex)
     } finally {
@@ -10859,15 +10948,21 @@
     structures={superimposeChoices}
     referenceId={superRefId}
     mobileId={superMobId}
-    referenceChain={superRefChain}
-    mobileChain={superMobChain}
+    pairs={superPairs}
+    selection={superSelection}
     busy={superBusy}
     error={superError}
     result={superResult}
     onReference={onSuperRefChange}
     onMobile={onSuperMobChange}
-    onReferenceChain={(value) => (superRefChain = value)}
-    onMobileChain={(value) => (superMobChain = value)}
+    onPairs={(value) => (superPairs = value)}
+    onSelection={(value) => (superSelection = value)}
+    onPairMatchingIds={() => {
+      superPairs = matchingSuperimposePairs(
+        structures.find((entry) => entry.id === superRefId),
+        structures.find((entry) => entry.id === superMobId)
+      )
+    }}
     onApply={() => void onSuperimpose()}
     onClose={() => (superOpen = false)}
   />

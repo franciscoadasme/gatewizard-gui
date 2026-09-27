@@ -145,23 +145,39 @@ foreach ($s in [System.Windows.Forms.Screen]::AllScreens) {
 }
 
 /**
+ * @param {WinLayout | null} layout
+ * @param {string} reason
+ */
+function storeWinLayout(layout, reason) {
+  if (!layout) {
+    writeStdioSafe(process.stderr, `[display] wsl layout ${reason} failed\n`)
+    return
+  }
+  cachedWinLayout = layout
+  writeStdioSafe(
+    process.stderr,
+    `[display] wsl layout ${reason} monitors=${layout.monitors.length} ` +
+      `origin=(${layout.originX},${layout.originY}) ` +
+      `anchor=(${layout.anchorX},${layout.anchorY})\n`
+  )
+}
+
+/**
  * Capture Windows monitor layout before Electron steals focus.
  */
 export function captureLaunchAnchorEarly() {
   if (cachedWinLayout !== undefined) return
   if (process.platform === 'linux' && isRunningUnderWsl()) {
-    cachedWinLayout = probeWindowsLayout()
-    if (cachedWinLayout) {
-      writeStdioSafe(
-        process.stderr,
-        `[display] wsl layout monitors=${cachedWinLayout.monitors.length} ` +
-          `origin=(${cachedWinLayout.originX},${cachedWinLayout.originY}) ` +
-          `anchor=(${cachedWinLayout.anchorX},${cachedWinLayout.anchorY})\n`
-      )
-    } else {
-      writeStdioSafe(process.stderr, '[display] wsl layout probe failed\n')
-    }
+    storeWinLayout(probeWindowsLayout(), 'launch')
   }
+}
+
+/**
+ * Re-read Windows work areas (taskbar moved). Used on maximize / restore only — no polling.
+ */
+export function refreshWindowsLayout() {
+  if (process.platform !== 'linux' || !isRunningUnderWsl()) return
+  storeWinLayout(probeWindowsLayout(), 'refresh')
 }
 
 /**
@@ -300,11 +316,18 @@ export function getWorkAreaMaximizeBounds(win) {
       const cx = b.x + b.width / 2 + layout.originX
       const cy = b.y + b.height / 2 + layout.originY
       const mon = monitorFromPoint(layout, cx, cy)
-      const taskbarReserve = 48
+      const insetLeft = mon.workX - mon.x
+      const insetTop = mon.workY - mon.y
+      const insetRight = mon.x + mon.width - (mon.workX + mon.workWidth)
+      const insetBottom = mon.y + mon.height - (mon.workY + mon.workHeight)
+      const workAreaLooksFull =
+        insetLeft < 4 && insetTop < 4 && insetRight < 4 && insetBottom < 4
+      // Guess a bottom taskbar only when Windows reports no inset on any edge
+      // (WSLg / auto-hide). A left/right bar already has full workHeight.
       let workH = mon.workHeight
       let workY = mon.workY
-      if (mon.workHeight >= mon.height - 4) {
-        workH = Math.max(MIN_WINDOW_HEIGHT, mon.height - taskbarReserve)
+      if (workAreaLooksFull) {
+        workH = Math.max(MIN_WINDOW_HEIGHT, mon.height - 48)
       }
       return {
         x: Math.round(mon.workX - layout.originX),
@@ -336,10 +359,13 @@ export function getWorkAreaMaximizeBounds(win) {
   const underWsl = process.platform === 'linux' && isRunningUnderWsl()
 
   if (underWsl) {
-    const maxBottom = bounds.y + bounds.height - taskbarReserve
-    const workBottom = y + height
-    if (workBottom > maxBottom) {
-      height = Math.max(MIN_WINDOW_HEIGHT, height - (workBottom - maxBottom))
+    const sideTaskbar = !nearZero(gapLeft) || !nearZero(gapRight)
+    if (!sideTaskbar) {
+      const maxBottom = bounds.y + bounds.height - taskbarReserve
+      const workBottom = y + height
+      if (workBottom > maxBottom) {
+        height = Math.max(MIN_WINDOW_HEIGHT, height - (workBottom - maxBottom))
+      }
     }
   } else if (process.platform === 'win32' || fullBleed) {
     if (nearZero(gapBottom)) {
@@ -364,6 +390,7 @@ export function getWorkAreaMaximizeBounds(win) {
  * @param {import('electron').BrowserWindow} win
  */
 export function applyWorkAreaMaximize(win) {
+  refreshWindowsLayout()
   const bounds = getWorkAreaMaximizeBounds(win)
   win.setBounds(bounds)
   win.setMaximumSize(bounds.width, bounds.height)

@@ -33,6 +33,8 @@
   let capProtein = $state(false)
   /** Strip protein H before pdb4amber (keeps ligand / hetero H). Default on. */
   let removeProteinHydrogens = $state(true)
+  /** Restore input residue numbers after pdb4amber. Default on. */
+  let preserveResidueNumbers = $state(true)
   let maxDisulfideDistance = $state(2.5)
   let targetPh = $state(7.0)
   let workingFile = $state('')
@@ -401,6 +403,7 @@
         targetPh,
         disulfideBonds,
         removeProteinHydrogens,
+        preserveResidueNumbers,
         ...buildOutputOptions()
       })
       preparationOutput = data.output.trim()
@@ -422,6 +425,7 @@
     // clear form fields
     capProtein = false
     removeProteinHydrogens = true
+    preserveResidueNumbers = true
     maxDisulfideDistance = 2.5
     targetPh = 7.0
     workingFile = ''
@@ -618,6 +622,16 @@
           title="Removes hydrogens from protein residues only before pdb4amber. Ligands and other heteroatoms keep their hydrogens. Recommended when the structure came from Schrödinger or similar tools — foreign H names often break tleap after Builder."
         >
           Remove protein hydrogens
+        </label>
+      </div>
+      <div class="flex items-center gap-1">
+        <Checkbox name="preserve-resids" bind:checked={preserveResidueNumbers} />
+        <label
+          for="preserve-resids"
+          class="sidebar-label"
+          title="PropKa and AmberTools still add hydrogens and missing atoms. Residue numbers and chain IDs stay as in the input (gaps such as 200 then 205 are kept). Uncheck for sequential Amber numbering used by tleap / MD. If you cap and the chain starts at 1, ACE is written as residue 0."
+        >
+          Keep original residue numbers and chains
         </label>
       </div>
       <Button className="w-full" onclick={onPreparePDB} disabled={!canRunPreparationSteps || preparingPDB}

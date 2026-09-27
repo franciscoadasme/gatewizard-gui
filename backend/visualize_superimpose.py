@@ -1,8 +1,9 @@
-"""Split one chain out of a structure, and superimpose one chain onto another.
+"""Split one chain out of a structure, and superimpose one or more chain pairs.
 
-Alignment is Biotite ``superimpose_homologs`` (BLOSUM62, Cα anchors, outlier
-rejection). The rigid transform is applied to every atom of the mobile
-structure. The reference is not written.
+Each pair is aligned with Biotite ``superimpose_homologs`` (BLOSUM62, Cα
+anchors, outlier rejection) only to collect correspondences. One Kabsch fit
+on all those Cα atoms is applied to every atom of the mobile structure. The
+reference is not written.
 """
 
 from __future__ import annotations
@@ -140,33 +141,62 @@ def _positive_anchor_count(fixed: struc.AtomArray, mobile: struc.AtomArray) -> i
     return count
 
 
-def superimpose_structures(
-    reference_path: str,
-    reference_chain: str,
-    mobile_path: str,
-    mobile_chain: str,
-    reference_topology: str | None = None,
-    mobile_topology: str | None = None,
-) -> dict:
-    """Fit *mobile* onto *reference* and write a new PDB of the mobile structure.
+def _apply_fit_selection(atomgroup, selection: str | None):
+    text = (selection or "").strip()
+    if not text or text.lower() == "all":
+        return atomgroup
+    try:
+        subset = atomgroup.select_atoms(text)
+    except Exception as exc:
+        raise ValueError(f"Invalid fit selection ({text!r}): {exc}") from exc
+    if len(subset) == 0:
+        raise ValueError(f"Fit selection {text!r} matched no atoms on that chain")
+    return subset
 
-    Raises if fewer than 3 sequence anchors match. The reference file is not
-    modified.
-    """
-    reference = open_universe(reference_path, reference_topology)
-    mobile = open_universe(mobile_path, mobile_topology)
-    fixed_chain = _select_chain(reference, reference_chain)
-    moving_chain = _select_chain(mobile, mobile_chain)
-    fixed = _protein_array(fixed_chain)
-    moving = _protein_array(moving_chain)
+
+def _pair_item_chains(item) -> tuple[str, str]:
+    if not isinstance(item, dict):
+        raise ValueError("Each pair must have reference_chain and mobile_chain")
+    ref = item.get("reference_chain") or item.get("referenceChain")
+    mob = item.get("mobile_chain") or item.get("mobileChain")
+    if not isinstance(ref, str) or not isinstance(mob, str):
+        raise ValueError("Each pair must have reference_chain and mobile_chain")
+    ref = ref.strip()
+    mob = mob.strip()
+    if not ref or not mob:
+        raise ValueError("Each pair must have reference_chain and mobile_chain")
+    return ref, mob
+
+
+def _normalize_pairs(pairs, reference_chain: str, mobile_chain: str) -> list[tuple[str, str]]:
+    if pairs:
+        normalized = [_pair_item_chains(item) for item in pairs]
+    else:
+        ref = (reference_chain or "").strip()
+        mob = (mobile_chain or "").strip()
+        if not ref or not mob:
+            raise ValueError("At least one chain pair is required")
+        normalized = [(ref, mob)]
+    refs = [item[0] for item in normalized]
+    mobs = [item[1] for item in normalized]
+    if len(set(refs)) != len(refs):
+        raise ValueError("Each reference chain can be used in only one pair")
+    if len(set(mobs)) != len(mobs):
+        raise ValueError("Each mobile chain can be used in only one pair")
+    return normalized
+
+
+def _pair_anchor_coords(fixed: struc.AtomArray, moving: struc.AtomArray, label: str):
+    """Cα correspondences for one chain pair (alignment + homolog outlier filter)."""
     anchors = _positive_anchor_count(fixed, moving)
     if anchors < _MIN_ANCHORS:
         raise ValueError(
             "Sequence homology is too low to superimpose "
+            f"{label} "
             f"({anchors} positive-scoring anchor{'s' if anchors != 1 else ''}; need at least 3). "
             "Coordinates were not moved."
         )
-    fitted, transform, fixed_idx, mobile_idx = struc.superimpose_homologs(
+    _fitted, _transform, fixed_idx, mobile_idx = struc.superimpose_homologs(
         fixed,
         moving,
         substitution_matrix="BLOSUM62",
@@ -177,14 +207,77 @@ def superimpose_structures(
     if n_anchors < _MIN_ANCHORS:
         raise ValueError(
             "Sequence homology is too low to superimpose "
+            f"{label} "
+            f"({n_anchors} anchors after outlier rejection). Coordinates were not moved."
+        )
+    return fixed.coord[fixed_idx], moving.coord[mobile_idx], n_anchors
+
+
+def superimpose_structures(
+    reference_path: str,
+    reference_chain: str = "",
+    mobile_path: str = "",
+    mobile_chain: str = "",
+    reference_topology: str | None = None,
+    mobile_topology: str | None = None,
+    pairs=None,
+    selection: str | None = None,
+) -> dict:
+    """Fit *mobile* onto *reference* and write a new PDB of the mobile structure.
+
+    *pairs* is a list of ``{reference_chain, mobile_chain}``. If omitted, the
+    single reference/mobile chain arguments are used. Optional *selection* is an
+    MDAnalysis string applied on each paired chain before the Cα match (empty =
+    all protein on that chain). One rigid transform is computed from all pair
+    Cα anchors together.
+
+    Raises if fewer than 3 sequence anchors match on any pair. The reference
+    file is not modified.
+    """
+    chain_pairs = _normalize_pairs(pairs, reference_chain, mobile_chain)
+    reference = open_universe(reference_path, reference_topology)
+    mobile = open_universe(mobile_path, mobile_topology)
+    fixed_blocks = []
+    mobile_blocks = []
+    pair_rows = []
+    for ref_chain, mob_chain in chain_pairs:
+        label = f"{ref_chain}→{mob_chain}"
+        fixed = _protein_array(_apply_fit_selection(_select_chain(reference, ref_chain), selection))
+        moving = _protein_array(_apply_fit_selection(_select_chain(mobile, mob_chain), selection))
+        fixed_xyz, mobile_xyz, n_pair = _pair_anchor_coords(fixed, moving, label)
+        fixed_blocks.append(np.asarray(fixed_xyz, dtype=np.float64))
+        mobile_blocks.append(np.asarray(mobile_xyz, dtype=np.float64))
+        pair_rows.append(
+            {
+                "reference_chain": ref_chain,
+                "mobile_chain": mob_chain,
+                "n_anchors": n_pair,
+            }
+        )
+    fixed_xyz = np.vstack(fixed_blocks)
+    mobile_xyz = np.vstack(mobile_blocks)
+    fitted, transform = struc.superimpose(fixed_xyz, mobile_xyz)
+    n_anchors = int(fixed_xyz.shape[0])
+    if n_anchors < _MIN_ANCHORS:
+        raise ValueError(
+            "Sequence homology is too low to superimpose "
             f"({n_anchors} anchors after outlier rejection). Coordinates were not moved."
         )
     mobile.atoms.positions = np.asarray(transform.apply(mobile.atoms.positions), dtype=np.float64)
-    rmsd = float(struc.rmsd(fixed.coord[fixed_idx], fitted.coord[mobile_idx]))
+    rmsd = float(struc.rmsd(fixed_xyz, fitted))
+    offset = 0
+    pair_anchors = []
+    for block, _mobile_block, row in zip(fixed_blocks, mobile_blocks, pair_rows):
+        n = int(block.shape[0])
+        pair_rmsd = float(struc.rmsd(block, fitted[offset : offset + n]))
+        offset += n
+        pair_anchors.append({**row, "rmsd": pair_rmsd})
     out = _write_pdb(mobile.atoms)
     return {
         "path": out,
         "n_atoms": int(len(mobile.atoms)),
         "n_anchors": n_anchors,
         "rmsd": rmsd,
+        "selection": (selection or "").strip(),
+        "pairs": pair_anchors,
     }

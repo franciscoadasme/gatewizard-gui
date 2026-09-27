@@ -47,6 +47,7 @@ const api = {
   listSshIdentityFiles: () => ipcRenderer.invoke('ssh:listIdentityFiles'),
 
   isWindowFocused: () => ipcRenderer.invoke('window:isFocused'),
+  captureWindowImage: () => ipcRenderer.invoke('window:capturePage'),
   getSystemMemoryInfo: () => ipcRenderer.invoke('system:memoryInfo'),
   showJobNotification: (payload) => ipcRenderer.invoke('notifications:showJobFinished', payload),
   onJobNotificationFallback: (callback) => {
