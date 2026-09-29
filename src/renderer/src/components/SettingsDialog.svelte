@@ -28,7 +28,7 @@
    * @type {{
    *   open?: boolean,
    *   updatesPending?: boolean,
-   *   initialSection?: 'notifications' | 'appearance' | 'scene' | 'visualize' | 'versions' | 'clusters' | 'about',
+   *   initialSection?: 'notifications' | 'appearance' | 'shortcuts' | 'scene' | 'visualize' | 'versions' | 'clusters' | 'about',
    *   onUpdatesResult?: (result: any) => void,
    *   onClose?: () => void
    * }}
@@ -41,7 +41,7 @@
     onClose = () => {}
   } = $props()
 
-  /** @type {'notifications' | 'appearance' | 'scene' | 'visualize' | 'versions' | 'clusters' | 'about'} */
+  /** @type {'notifications' | 'appearance' | 'shortcuts' | 'scene' | 'visualize' | 'versions' | 'clusters' | 'about'} */
   let section = $state('notifications')
 
   const ABOUT_AUTHORS = [
@@ -52,8 +52,40 @@
     'Mauricio Bedoya',
   ]
 
-  const windowImageShortcut =
-    window.electron?.process?.platform === 'darwin' ? '⌘⇧S' : 'Ctrl+Shift+S'
+  const isMac = window.electron?.process?.platform === 'darwin'
+  const mod = isMac ? '⌘' : 'Ctrl'
+  const windowImageShortcut = isMac ? '⌘⇧S' : 'Ctrl+Shift+S'
+
+  /** @type {Array<{ group: string, rows: Array<{ keys: string, text: string }> }>} */
+  const shortcutGroups = [
+    {
+      group: 'App',
+      rows: [
+        { keys: `${mod}+=`, text: 'Zoom the interface in' },
+        { keys: `${mod}+-`, text: 'Zoom the interface out' },
+        { keys: `${mod}+0`, text: 'Reset zoom to the Settings UI scale' },
+        { keys: windowImageShortcut, text: 'Save a PNG of the app window (no host shadow)' }
+      ]
+    },
+    {
+      group: 'Visualize',
+      rows: [
+        { keys: `${mod}+scroll`, text: 'Zoom the camera in smaller steps' },
+        { keys: 'Space', text: 'Play or pause a trajectory' },
+        { keys: '← / →', text: 'Step one trajectory frame' },
+        { keys: 'Esc', text: 'Close a tool panel or cancel a measurement' },
+        { keys: `${mod}+click`, text: 'Add to a structure or residue selection' },
+        { keys: `${mod}+Z`, text: 'Undo the last gizmo move (transform overlay)' }
+      ]
+    },
+    {
+      group: 'Animation',
+      rows: [
+        { keys: 'Delete', text: 'Remove the keyframe under the playhead' },
+        { keys: 'Backspace', text: 'Same as Delete on the timeline' }
+      ]
+    }
+  ]
 
   async function onSaveWindowImage() {
     if (!window.api?.captureWindowImage) {
@@ -407,6 +439,7 @@
   const navItems = [
     { id: 'notifications', label: 'Notifications' },
     { id: 'appearance', label: 'Appearance' },
+    { id: 'shortcuts', label: 'Shortcuts' },
     { id: 'scene', label: 'Scene defaults' },
     { id: 'visualize', label: 'Visualize' },
     { id: 'clusters', label: 'Clusters' },
@@ -557,6 +590,36 @@
                   >Save window image…</Button
                 >
               </div>
+            </section>
+          {:else if section === 'shortcuts'}
+            <section class="space-y-5">
+              <div>
+                <h3 class="text-sm font-semibold text-neutral-800 dark:text-neutral-200">
+                  Shortcuts
+                </h3>
+                <p class="mt-1 text-neutral-500 dark:text-neutral-400">
+                  Keys that are wired in the app today. They do nothing while you are typing in a
+                  field.
+                </p>
+              </div>
+              {#each shortcutGroups as group}
+                <div class="space-y-2">
+                  <h4 class="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                    {group.group}
+                  </h4>
+                  <ul class="divide-y divide-neutral-200 dark:divide-neutral-800">
+                    {#each group.rows as row}
+                      <li class="flex items-start justify-between gap-4 py-1.5">
+                        <span class="text-neutral-700 dark:text-neutral-300">{row.text}</span>
+                        <kbd
+                          class="shrink-0 rounded border border-neutral-300 bg-neutral-100 px-1.5 py-0.5 font-mono text-[10px] text-neutral-800 dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-200"
+                          >{row.keys}</kbd
+                        >
+                      </li>
+                    {/each}
+                  </ul>
+                </div>
+              {/each}
             </section>
           {:else if section === 'scene'}
             <section class="space-y-4">
