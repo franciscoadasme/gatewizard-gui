@@ -2,6 +2,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   applyPatchToAtoms,
+  applyPreviewOverlayToAtoms,
+  applyPreviewOverlayToPackedXyz,
   atomsFromBaseAndPatch,
   coordPatchToMap,
   createCoordUndoStack,
@@ -107,4 +109,23 @@ test('atomsFromBaseAndPatch discards unsaved moves then applies keyframe patch',
   const toBaseOnly = atomsFromBaseAndPatch(dirty, base, null)
   assert.equal(toBaseOnly[0].x, 0)
   assert.equal(toBaseOnly[1].x, 1)
+})
+
+test('applyPreviewOverlayToAtoms writes sparse preview coords', () => {
+  const atoms = [
+    { index: 0, x: 0, y: 0, z: 0 },
+    { index: 2, x: 2, y: 0, z: 0 }
+  ]
+  const preview = []
+  preview[2] = [9, 8, 7]
+  const out = applyPreviewOverlayToAtoms(atoms, preview)
+  assert.equal(out[0].x, 0)
+  assert.equal(out[1].x, 9)
+  assert.equal(out[1].y, 8)
+  const xyz = new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2])
+  const packed = applyPreviewOverlayToPackedXyz(xyz, preview)
+  assert.equal(packed[6], 9)
+  assert.equal(packed[7], 8)
+  assert.equal(packed[8], 7)
+  assert.equal(xyz[6], 2)
 })

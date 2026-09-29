@@ -69,13 +69,14 @@ def _count_pdb_models(path: Path) -> int:
 
 
 def _entry_label(source: Path, kind: str, index: int, title: str | None = None) -> str:
+    """Label as ``entry · sourceFile`` so titles/CTs sort before the shared filename."""
     base = source.name
     if title and title.strip():
-        return f"{base} · {title.strip()}"
+        return f"{title.strip()} · {base}"
     if kind == "maestro_ct":
-        return f"{base} · CT {index + 1}"
+        return f"CT {index + 1} · {base}"
     if kind == "pdb_model":
-        return f"{base} · model {index + 1}"
+        return f"model {index + 1} · {base}"
     return base
 
 

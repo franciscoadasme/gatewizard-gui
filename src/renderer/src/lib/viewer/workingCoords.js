@@ -303,6 +303,50 @@ export function densePositionsToPreview(dense, atoms) {
 }
 
 /**
+ * Overlay sparse previewPositions onto atom objects (index → [x,y,z]).
+ * @param {Array<{ index?: number, x: number, y: number, z: number }>} atoms
+ * @param {Array<number[] | undefined> | null | undefined} preview
+ */
+export function applyPreviewOverlayToAtoms(atoms, preview) {
+  if (!preview || !atoms?.length) return atoms
+  let any = false
+  const out = new Array(atoms.length)
+  for (let i = 0; i < atoms.length; i++) {
+    const a = atoms[i]
+    const pos = typeof a.index === 'number' ? preview[a.index] : undefined
+    if (!pos || pos.length < 3) {
+      out[i] = a
+      continue
+    }
+    any = true
+    out[i] = { ...a, x: pos[0], y: pos[1], z: pos[2] }
+  }
+  return any ? out : atoms
+}
+
+/**
+ * Overlay sparse previewPositions onto packed xyz (atom.index × 3).
+ * @param {Float32Array | null | undefined} xyz
+ * @param {Array<number[] | undefined> | null | undefined} preview
+ */
+export function applyPreviewOverlayToPackedXyz(xyz, preview) {
+  if (!xyz || !preview) return xyz
+  let copy = null
+  const n = preview.length
+  for (let i = 0; i < n; i++) {
+    const pos = preview[i]
+    if (!pos || pos.length < 3) continue
+    const o = i * 3
+    if (o + 2 >= xyz.length) continue
+    if (!copy) copy = new Float32Array(xyz)
+    copy[o] = pos[0]
+    copy[o + 1] = pos[1]
+    copy[o + 2] = pos[2]
+  }
+  return copy ?? xyz
+}
+
+/**
  * Simple undo stack of inverse CoordPatches.
  */
 export function createCoordUndoStack(max = 32) {

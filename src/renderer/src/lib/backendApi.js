@@ -1565,17 +1565,40 @@ export function transformApply(payload) {
 
 /**
  * Start a MemPro orientation job asynchronously.
- * @param {object} payload
- * @returns {Promise<{ job_id: string, start_time: string }>}
+ * @param {{
+ *   path: string,
+ *   workingDir?: string,
+ *   nIters?: number,
+ *   gridSize?: number,
+ *   dualMembrane?: boolean,
+ *   peripheral?: boolean,
+ *   useWeights?: boolean,
+ *   flip?: boolean,
+ *   membraneThickness?: number|null,
+ *   sourceLabel?: string|null,
+ *   structureId?: string|null
+ * }} payload
+ * @returns {Promise<{ job_id: string, start_time: string, source_path?: string, source_label?: string, structure_id?: string|null }>}
  */
 export function memproRun(payload) {
   return backendJson('/mempro/run', payload)
 }
 
 /**
- * Scan a working directory for a persisted MemPro job state file.
+ * Scan a working directory for persisted MemPro job state files.
  * @param {string} workingDir
- * @returns {Promise<{ found: boolean, job_id?: string, status?: string, start_time?: string, results?: object[]|null, error?: string|null, pid?: number|null }>}
+ * @returns {Promise<{
+ *   found: boolean,
+ *   jobs?: object[],
+ *   job_id?: string,
+ *   status?: string,
+ *   start_time?: string,
+ *   results?: object[]|null,
+ *   error?: string|null,
+ *   source_path?: string,
+ *   source_label?: string,
+ *   structure_id?: string|null
+ * }>}
  */
 export function memproScan(workingDir) {
   return backendJson(`/mempro/scan?working_dir=${encodeURIComponent(workingDir)}`)
@@ -1584,15 +1607,22 @@ export function memproScan(workingDir) {
 /**
  * Poll the status of a MemPro job.
  * @param {string} jobId
- * @returns {Promise<{ status: string, results: object[]|null, error: string|null }>}
+ * @param {string|null} [workingDir]
+ * @returns {Promise<{ status: string, results: object[]|null, error: string|null, source_path?: string, source_label?: string }>}
  */
-export function memproStatus(jobId) {
-  return backendJson(`/mempro/status/${jobId}`)
+export function memproStatus(jobId, workingDir = null) {
+  const q = workingDir ? `?working_dir=${encodeURIComponent(workingDir)}` : ''
+  return backendJson(`/mempro/status/${encodeURIComponent(jobId)}${q}`)
 }
 
 /**
- * Apply a MemPro orientation to the loaded structure (keeps ligands/water/etc.).
- * @param {{ pdb_path: string, source_path?: string|null }} payload
+ * Apply a MemPro orientation to a loaded structure (keeps ligands/water/etc.).
+ * @param {{
+ *   pdbPath: string,
+ *   sourcePath?: string|null,
+ *   sourceLabel?: string|null,
+ *   targetLabel?: string|null
+ * }} payload
  * @returns {Promise<{ path: string, atoms: object[], bonds: number[][] }>}
  */
 export function memproApply(payload) {

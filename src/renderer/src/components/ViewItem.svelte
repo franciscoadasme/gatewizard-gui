@@ -144,6 +144,7 @@ Coordinate clip (use Update each frame on a trajectory):
    *   view: View,
    *   onremove: () => void,
    *   onduplicate?: () => void,
+   *   onrecalculatebonds?: () => void,
    *   onsplitby?: (mode: import('../lib/viewer/splitView.js').SplitViewMode) => void,
    *   oncenter?: () => void,
    *   animateMode?: boolean,
@@ -169,6 +170,7 @@ Coordinate clip (use Update each frame on a trajectory):
     hasTrajectory = false,
     onremove,
     onduplicate,
+    onrecalculatebonds,
     onsplitby,
     oncenter,
     animateMode = false,
@@ -1129,6 +1131,20 @@ Coordinate clip (use Update each frame on a trajectory):
         >
           Duplicate representation
         </button>
+        {#if onrecalculatebonds}
+          <button
+            type="button"
+            role="menuitem"
+            class="block w-full px-3 py-1.5 text-left text-neutral-800 hover:bg-neutral-100 dark:text-neutral-100 dark:hover:bg-neutral-800"
+            title="Re-guess covalent bonds for this structure and refresh ball-and-stick / licorice"
+            onclick={() => {
+              rowCtxMenu = null
+              onrecalculatebonds()
+            }}
+          >
+            Recalculate bonds
+          </button>
+        {/if}
         <div
           class="group/split relative"
           role="none"

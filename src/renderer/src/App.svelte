@@ -319,9 +319,8 @@
 
   function armRamPoll() {
     clearRamPoll()
-    if (currentId === 'visualize') return
     void pollSystemRam()
-    ramPollId = setInterval(() => void pollSystemRam(), 2000)
+    ramPollId = setInterval(() => void pollSystemRam(), 5000)
   }
 
   async function pollSystemRam() {
@@ -390,7 +389,7 @@
 
   // ── Settings / updates ──
   let showSettings = $state(false)
-  /** @type {'notifications' | 'appearance' | 'scene' | 'visualize' | 'versions' | 'clusters' | 'about'} */
+  /** @type {'notifications' | 'appearance' | 'shortcuts' | 'scene' | 'visualize' | 'versions' | 'clusters' | 'about'} */
   let settingsSection = $state('notifications')
   let updatesPending = $state(false)
   let showUpdateAvailableDialog = $state(false)
@@ -579,23 +578,26 @@
       const elapsedStr = visualizeStatus.memproStartedAt
         ? elapsed(visualizeStatus.memproStartedAt)
         : ''
+      const mpSrc = visualizeStatus.memproSourceLabel
+        ? ` · ${visualizeStatus.memproSourceLabel}`
+        : ''
       chips.push({
         id: 'mempro',
         type: 'mempro',
         label: 'MemPro',
         detail: mpRunning
-          ? `running${elapsedStr ? ` · ${elapsedStr}` : ''}`
+          ? `running${mpSrc}${elapsedStr ? ` · ${elapsedStr}` : ''}`
           : mpDone
-            ? 'done — click to view'
-            : 'error',
+            ? `done${mpSrc} — click to view`
+            : `error${mpSrc}`,
         fullDetail: mpRunning
-          ? `MemPro orientation running${elapsedStr ? ` · elapsed ${elapsedStr}` : ''}…`
+          ? `MemPro orientation running${mpSrc}${elapsedStr ? ` · elapsed ${elapsedStr}` : ''}…`
           : mpDone
-            ? 'MemPro orientation complete — click to view results'
-            : `MemPro orientation failed`,
+            ? `MemPro orientation complete${mpSrc} — click to view results`
+            : `MemPro orientation failed${mpSrc}`,
         status: mpError ? 'error' : mpRunning ? 'running' : 'done',
         dismissible: !mpRunning,
-        clickable: mpDone
+        clickable: mpDone || mpError
       })
     }
 

@@ -276,6 +276,7 @@ export function serializeStructuresMeta(structures) {
       path: durablePath,
       topology: s.topologyPath ?? null,
       visible: s.visible !== false,
+      collapsed: s.collapsed === true,
       ...(trajectory ? { trajectory } : {})
     }
   })
@@ -328,7 +329,7 @@ export function groupStructureMetasForLoad(metas) {
 /**
  * Normalize viewpoint/animation `structures` or legacy singular `structure`.
  * @param {unknown} raw
- * @returns {Array<{ id?: string, path: string, topology?: string | null, sourcePath?: string, kind?: string, label?: string, ctIndex?: number | null, modelIndex?: number | null, visible?: boolean }>}
+ * @returns {Array<{ id?: string, path: string, topology?: string | null, sourcePath?: string, kind?: string, label?: string, ctIndex?: number | null, modelIndex?: number | null, visible?: boolean, collapsed?: boolean }>}
  */
 export function normalizeStructuresMeta(raw) {
   if (Array.isArray(raw) && raw.length) {
@@ -351,6 +352,7 @@ export function normalizeStructuresMeta(raw) {
           ctIndex: typeof o.ctIndex === 'number' ? o.ctIndex : null,
           modelIndex: typeof o.modelIndex === 'number' ? o.modelIndex : null,
           visible: o.visible !== false,
+          collapsed: o.collapsed === true,
           trajectory: normalizeTrajectoryMeta(o.trajectory)
         }
       })
@@ -365,6 +367,7 @@ export function normalizeStructuresMeta(raw) {
         sourcePath: String(o.path),
         kind: 'file',
         visible: true,
+        collapsed: o.collapsed === true,
         trajectory: normalizeTrajectoryMeta(o.trajectory)
       }
     ]

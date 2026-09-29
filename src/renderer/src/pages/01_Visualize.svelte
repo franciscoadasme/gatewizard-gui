@@ -185,6 +185,8 @@
   import { fadeSummary } from '../lib/animation/fade.js'
   import DetectIcon from '../components/icons/Detect.svelte'
   import Plus from '../components/icons/Plus.svelte'
+  import CopyIcon from '../components/icons/Copy.svelte'
+  import Link2Icon from '../components/icons/Link2.svelte'
   import ResizableSidePanel from '../components/ResizableSidePanel.svelte'
   import ResetIcon from '../components/icons/Reset.svelte'
   import Sun from '../components/icons/Sun.svelte'
@@ -205,6 +207,8 @@
   import { clearLabelScreenOffset } from '../lib/viewer/labelStyle.js'
   import {
     applyPatchToAtoms,
+    applyPreviewOverlayToAtoms,
+    applyPreviewOverlayToPackedXyz,
     atomsFromBaseAndPatch,
     coordPatchToPreviewArray,
     createCoordUndoStack,
@@ -284,9 +288,22 @@
   /**
    * Multi-entry picker modal state. `resolve` is fulfilled with the selected
    * entry indices (or null on cancel) by the picker callbacks.
-   * @type {{ open: boolean, sourcePath: string, entries: Array<{ index: number, label: string, atomCount?: number, title?: string }>, resolve: ((indices: number[] | null) => void) | null }}
+   * `loading` shows an immediate “reading file” state before inspect finishes.
+   * @type {{
+   *   open: boolean,
+   *   sourcePath: string,
+   *   entries: Array<{ index: number, label: string, atomCount?: number, title?: string }>,
+   *   loading: boolean,
+   *   resolve: ((indices: number[] | null) => void) | null
+   * }}
    */
-  let entryPicker = $state({ open: false, sourcePath: '', entries: [], resolve: null })
+  let entryPicker = $state({
+    open: false,
+    sourcePath: '',
+    entries: [],
+    loading: false,
+    resolve: null
+  })
   let trajDialogOpen = $state(false)
   let figureDialogOpen = $state(false)
   let figureDefaultWidth = $state(1280)
@@ -848,6 +865,8 @@
   let coordsDirty = $state(false)
   /** Bump to force representation geometry rebuild after in-memory XYZ commits. */
   let coordsGeneration = $state(0)
+  /** Bump when transform Preview overlay changes so GPU styles re-upload. */
+  let previewGen = $state(0)
   const coordUndoStack = createCoordUndoStack(32)
   let tfPreviewBusy = $state(false)
   // Shared selection (rotate / translate tabs)
@@ -876,6 +895,17 @@
   let memproUseWeights = $state(false)
   let memproFlip = $state(false)
   let memproMembrane = $state('')
+  /** @type {object[]} persisted + in-session MemPro jobs (newest first) */
+  let memproJobs = $state([])
+  /** Which completed/running job is shown in the panel */
+  let memproSelectedJobId = $state(/** @type {string|null} */ (null))
+  /** Structure id to apply the selected orientation onto */
+  let memproApplyTargetId = $state(/** @type {string|null} */ (null))
+  let memproSourcePath = $state(/** @type {string|null} */ (null))
+  let memproSourceLabel = $state(/** @type {string|null} */ (null))
+  let memproSourceStructureId = $state(/** @type {string|null} */ (null))
+  /** When true, show the setup form even if older jobs exist */
+  let memproShowNewRunForm = $state(false)
   // Packmol hydration
   let packmolTab = $state('hydrate')
   /** @type {{ available: boolean, version?: string|null, resolved_path?: string|null }|null} */
@@ -987,33 +1017,11 @@
     return () => clearTimeout(_tfAlignSecTimer)
   })
 
-  // ── MemPro: recover persisted job when workingDir is set ──────────────────
+  // ── MemPro: recover persisted jobs when workingDir is set ──────────────────
   $effect(() => {
     const wd = workingDir
     if (!wd) return
-    memproScan(wd)
-      .then((r) => {
-        if (!r.found) return
-        memproJobId = r.job_id
-        memproJobStatus = r.status
-        if (r.status === 'done') memproResults = r.results ?? []
-        if (r.status === 'error') memproError = r.error
-        visualizeStatus.memproJobId = r.job_id
-        visualizeStatus.memproStatus = r.status
-        visualizeStatus.memproStartedAt = r.start_time ?? null
-        if (r.status === 'done')
-          logEvent(
-            'info',
-            'view',
-            'MemPro done (recovered)',
-            `${(r.results ?? []).length} orientation(s)`
-          )
-        else if (r.status === 'running')
-          logEvent('info', 'view', 'MemPro running (recovered)', r.job_id)
-        else if (r.status === 'error')
-          logEvent('info', 'view', 'MemPro error (recovered)', r.error ?? '')
-      })
-      .catch(() => {})
+    refreshMemproJobs().catch(() => {})
   })
 
   // ── MemPro: open panel when status bar chip triggers it ───────────────────
@@ -1092,37 +1100,45 @@
 
   // ── MemPro job polling ───────────────────────────────────────────────────
   $effect(() => {
-    if (!memproJobId || memproJobStatus !== 'running') return
+    const runningIds = memproJobs
+      .filter((j) => j?.status === 'running' && j?.job_id)
+      .map((j) => String(j.job_id))
+    if (memproJobId && memproJobStatus === 'running' && !runningIds.includes(memproJobId)) {
+      runningIds.push(memproJobId)
+    }
+    if (!runningIds.length) return
     const interval = setInterval(async () => {
-      try {
-        let r
-        if (workingDir) {
-          r = await memproScan(workingDir)
-          if (!r.found) return
-        } else {
-          r = await memproStatus(memproJobId)
-        }
-        if (r.status !== memproJobStatus) {
-          memproJobStatus = r.status
-          visualizeStatus.memproStatus = r.status
+      let changed = false
+      for (const id of runningIds) {
+        try {
+          const r = await memproStatus(id, workingDir || null)
+          const idx = memproJobs.findIndex((j) => j.job_id === id)
+          if (idx >= 0) {
+            memproJobs[idx] = { ...memproJobs[idx], ...r, job_id: id }
+            changed = true
+          } else {
+            memproJobs = [{ ...r, job_id: id }, ...memproJobs]
+            changed = true
+          }
+          if (id === memproSelectedJobId || id === memproJobId) {
+            applyMemproJobToPanel({ ...r, job_id: id }, { quiet: r.status === 'running' })
+          }
           if (r.status === 'done') {
-            memproResults = r.results ?? []
             logEvent(
               'info',
               'view',
               'MemPro orientation complete',
-              `${memproResults.length} result(s)`
+              `${memproJobSourceLabel({ ...r, job_id: id })} · ${(r.results ?? []).length} result(s)`
             )
-            clearInterval(interval)
           } else if (r.status === 'error') {
-            memproError = r.error
             logEvent('info', 'view', 'MemPro failed', r.error ?? '')
-            clearInterval(interval)
           }
+        } catch {
+          /* ignore transient poll errors */
         }
-      } catch {
-        /* ignore */
       }
+      if (changed) memproJobs = [...memproJobs]
+      syncMemproStatusChip()
     }, 5000)
     return () => clearInterval(interval)
   })
@@ -2099,14 +2115,37 @@
    */
   function showEntryPicker(sourcePath, entries) {
     return new Promise((resolve) => {
-      entryPicker = { open: true, sourcePath, entries, resolve }
+      entryPicker = { open: true, sourcePath, entries, loading: false, resolve }
     })
+  }
+
+  /** Open the picker immediately while inspectStructure runs (Maestro can take seconds). */
+  function beginEntryPickerScan(sourcePath) {
+    entryPicker = {
+      open: true,
+      sourcePath,
+      entries: [],
+      loading: true,
+      resolve: null
+    }
+  }
+
+  function closeEntryPicker() {
+    entryPicker = {
+      open: false,
+      sourcePath: '',
+      entries: [],
+      loading: false,
+      resolve: null
+    }
   }
 
   function resolveEntryPicker(indices) {
     const resolve = entryPicker.resolve
-    entryPicker = { open: false, sourcePath: '', entries: [], resolve: null }
-    resolve?.(indices)
+    const wasLoading = entryPicker.loading
+    closeEntryPicker()
+    // Cancel during scan: no promise yet — openOnePath watches entryPicker.open.
+    if (!wasLoading) resolve?.(indices)
   }
 
   /**
@@ -2122,7 +2161,14 @@
 
   /** @param {string} path */
   async function openOnePath(path) {
-    // Inspect for multi-entry (Maestro CT or multi-MODEL PDB).
+    // Maestro inspect can take several seconds — show the picker in a loading
+    // state immediately so the UI does not look frozen before the CT list appears.
+    const maestro = isMaestroPath(path)
+    if (maestro) {
+      beginEntryPickerScan(path)
+      await tick()
+    }
+
     /** @type {Awaited<ReturnType<typeof inspectStructure>> | null} */
     let info = null
     try {
@@ -2130,6 +2176,12 @@
     } catch {
       info = null
     }
+
+    // User cancelled the scan dialog while inspect was running.
+    if (maestro && (!entryPicker.open || entryPicker.sourcePath !== path)) {
+      return
+    }
+
     const entries = info?.entries ?? []
     const isMulti = entries.length > 1 || (isMaestroPath(path) && entries.length >= 1)
     if (info && isMulti) {
@@ -2148,7 +2200,7 @@
       }, 250)
       await tick()
       try {
-        loadingPhase = 'Materializing entries…'
+        loadingPhase = 'Extracting structures…'
         const imported = await importStructureEntries(path, indices)
         const chosen = entries.filter((e) => indices.includes(e.index))
         await batchAppendImported(path, imported, chosen)
@@ -2163,6 +2215,8 @@
       }
       return
     }
+
+    if (maestro) closeEntryPicker()
     // Single structure file.
     await appendStructure(path, { topology: null })
   }
@@ -2347,14 +2401,19 @@
       views = [...views, ...newViews]
       syncStructureHiddenFromEntries(newEntries)
 
-      // Collapse all but the first workspace structure after a multi-entry import.
-      const keepOpen = structures[0]?.id
+      // Collapse every structure after a multi-entry import (lighter Representations panel).
       const nextCollapsed = new Set(collapsedStructureIds)
-      for (const s of structures) {
-        if (s.id !== keepOpen) nextCollapsed.add(s.id)
-        else nextCollapsed.delete(s.id)
-      }
+      for (const s of structures) nextCollapsed.add(s.id)
       collapsedStructureIds = nextCollapsed
+
+      // One outer group per source file so a later Maestro/multi-MODEL open stays distinct.
+      const groupName =
+        String(sourcePath).split(/[/\\]/).pop() ||
+        (kind === 'maestro_ct' ? 'Maestro' : 'Models')
+      visibilityGroups = createVisibilityGroup(visibilityGroups, {
+        name: groupName,
+        structureIds: newEntries.map((e) => e.id)
+      })
 
       activeStructureId = newEntries[0].id
       baseAtomCoords = new Map()
@@ -2738,11 +2797,12 @@
     return structureHiddenIds.has(id)
   }
 
-  /** Meta for viewpoint/animation save: honor the eye-toggle Set. */
+  /** Meta for viewpoint/animation save: honor the eye-toggle and collapse Sets. */
   function structuresMetaForSave() {
     return serializeStructuresMeta(structures).map((s) => ({
       ...s,
-      visible: !structureHiddenIds.has(s.id)
+      visible: !structureHiddenIds.has(s.id),
+      collapsed: collapsedStructureIds.has(s.id)
     }))
   }
 
@@ -2755,6 +2815,17 @@
       else next.delete(e.id)
     }
     structureHiddenIds = next
+  }
+
+  /** Seed panel-collapse Set from StructureEntry.collapsed (e.g. restored meta). */
+  function syncStructureCollapsedFromEntries(entries) {
+    if (!entries?.length) return
+    const next = new Set(collapsedStructureIds)
+    for (const e of entries) {
+      if (e.collapsed === true) next.add(e.id)
+      else next.delete(e.id)
+    }
+    collapsedStructureIds = next
   }
 
   const panelViews = $derived(views.filter((v) => !v._isSelHighlight))
@@ -2781,6 +2852,10 @@
   const workspaceAnyVisible = $derived(
     structures.some((s) => !structureHiddenIds.has(s.id)) ||
       panelViews.some((v) => v.visible !== false)
+  )
+  /** True when at least one structure row is expanded (master toggle → Collapse all). */
+  const workspaceAnyExpanded = $derived(
+    structures.some((s) => !collapsedStructureIds.has(s.id))
   )
   const applyMenuSourceView = $derived(
     applyMenu.viewId ? views.find((v) => v.id === applyMenu.viewId) : null
@@ -2826,6 +2901,34 @@
   function hidePanelSelection() {
     if (selectedStructureIds.size) setStructuresVisible([...selectedStructureIds], false)
     if (selectedViewIds.size) setViewsVisible([...selectedViewIds], false)
+  }
+
+  /** Collapse selected structure rows in the Representations panel. */
+  function collapsePanelSelection() {
+    if (!selectedStructureIds.size) return
+    const next = new Set(collapsedStructureIds)
+    for (const id of selectedStructureIds) next.add(id)
+    collapsedStructureIds = next
+    logEvent(
+      'detail',
+      'view',
+      'Collapse selected structures',
+      `${selectedStructureIds.size}`
+    )
+  }
+
+  /** Expand selected structure rows in the Representations panel. */
+  function expandPanelSelection() {
+    if (!selectedStructureIds.size) return
+    const next = new Set(collapsedStructureIds)
+    for (const id of selectedStructureIds) next.delete(id)
+    collapsedStructureIds = next
+    logEvent(
+      'detail',
+      'view',
+      'Expand selected structures',
+      `${selectedStructureIds.size}`
+    )
   }
 
   async function layoutStructureCtxMenu() {
@@ -3107,6 +3210,20 @@
     persistAnimatedViewVisibility(viewIds, show)
   }
 
+  /** Collapse or expand every structure row in the Representations panel. */
+  function toggleWorkspaceCollapsed() {
+    const collapse = workspaceAnyExpanded
+    collapsedStructureIds = collapse
+      ? new Set(structures.map((s) => s.id))
+      : new Set()
+    logEvent(
+      'detail',
+      'view',
+      collapse ? 'Collapse all structures' : 'Expand all structures',
+      `${structures.length}`
+    )
+  }
+
   /** Snapshot groups for save (prune dangling ids). */
   function visibilityGroupsForSave() {
     return serializeVisibilityGroups(
@@ -3267,7 +3384,7 @@
    * Re-materializes Maestro / multi-MODEL entries from the durable ``sourcePath``
    * (not ephemeral structure_cache PDBs). Preserves meta ``id`` values so saved
    * views / visibility groups keep matching ``structureId``s.
-   * @param {Array<{ id?: string, path: string, topology?: string | null, sourcePath?: string, kind?: string, label?: string, ctIndex?: number | null, modelIndex?: number | null, visible?: boolean }>} metas
+   * @param {Array<{ id?: string, path: string, topology?: string | null, sourcePath?: string, kind?: string, label?: string, ctIndex?: number | null, modelIndex?: number | null, visible?: boolean, collapsed?: boolean }>} metas
    * @param {{
    *   addDefaultViews?: boolean,
    *   resetCamera?: boolean,
@@ -3353,14 +3470,15 @@
           kind,
           ctIndex: kind === 'maestro_ct' ? idx : null,
           modelIndex: kind === 'pdb_model' ? idx : null,
-          label: meta.label || st.label || `${String(sourcePath).split(/[/\\]/).pop() || 'entry'} · ${idx}`,
+          label: meta.label || st.label || `${idx} · ${String(sourcePath).split(/[/\\]/).pop() || 'entry'}`,
           path: raw.path,
           topologyPath: raw.topology_used || top || null,
           atoms: raw.atoms,
           bonds: raw.bonds || [],
           residues: raw.residues,
           bond_source: raw.bond_source,
-          visible: meta.visible !== false
+          visible: meta.visible !== false,
+          collapsed: meta.collapsed === true
         })
         loaded.push(entry)
         if (addDefaultViews) defaultViews.push(makeDefaultPointsView(entry))
@@ -3396,6 +3514,7 @@
           box: meta.trajectory.box
         })
         if (meta.visible === false) entry.visible = false
+        if (meta.collapsed === true) entry.collapsed = true
         loaded.push(entry)
         if (addDefaultViews) defaultViews.push(makeDefaultPointsView(entry))
         tickProgress(entry.label)
@@ -3424,7 +3543,8 @@
           bonds: raw.bonds || [],
           residues: raw.residues,
           bond_source: raw.bond_source,
-          visible: meta.visible !== false
+          visible: meta.visible !== false,
+          collapsed: meta.collapsed === true
         })
         loaded.push(entry)
         if (addDefaultViews) defaultViews.push(makeDefaultPointsView(entry))
@@ -3450,7 +3570,8 @@
           bonds: raw.bonds || [],
           residues: raw.residues,
           bond_source: raw.bond_source,
-          visible: meta.visible !== false
+          visible: meta.visible !== false,
+          collapsed: meta.collapsed === true
         })
         loaded.push(entry)
         if (addDefaultViews) defaultViews.push(makeDefaultPointsView(entry))
@@ -3474,6 +3595,7 @@
 
     structures = ordered
     syncStructureHiddenFromEntries(ordered)
+    syncStructureCollapsedFromEntries(ordered)
     activeStructureId = ordered[0].id
     baseAtomCoords = new Map()
     coordsDirty = false
@@ -4440,6 +4562,139 @@
     }
   }
 
+  /**
+   * After MemPro / superimpose (same atom indices, new xyz), keep labels and
+   * measurements and refresh their atom coordinates. Drop overlays whose atom
+   * index no longer exists on that structure.
+   * @param {string} structureId
+   * @param {Array<{ index?: number, x?: number, y?: number, z?: number }> | null | undefined} newAtoms
+   */
+  function rematchOverlaysAfterMove(structureId, newAtoms) {
+    /** @type {Map<number, object>} */
+    const byIndex = new Map()
+    for (const a of newAtoms || []) {
+      if (typeof a?.index === 'number') byIndex.set(a.index, a)
+    }
+    /** @param {object | null | undefined} atom */
+    const stamp = (atom) => {
+      if (typeof atom?.index !== 'number') return null
+      const next = byIndex.get(atom.index)
+      if (!next) return null
+      return { ...next, structureId }
+    }
+    /** @param {string | undefined | null} sid */
+    const owns = (sid) => {
+      if (sid) return sid === structureId
+      return structureId === activeStructureId
+    }
+    atomLabels = atomLabels
+      .map((l) => {
+        if (!owns(l.structureId || l.atom?.structureId)) return l
+        const atom = stamp(l.atom)
+        if (!atom) return null
+        return { ...l, atom, structureId }
+      })
+      .filter(Boolean)
+    measurements = measurements
+      .map((m) => {
+        if (!owns(m.structureId || m.atoms?.[0]?.structureId)) return m
+        const atoms = (m.atoms || []).map(stamp)
+        if (!atoms.length || atoms.some((a) => !a)) return null
+        return { ...m, atoms, structureId }
+      })
+      .filter(Boolean)
+    measurePicks = measurePicks
+      .map((a) => {
+        if (!owns(a.structureId)) return a
+        return stamp(a)
+      })
+      .filter(Boolean)
+  }
+
+  /**
+   * Re-guess covalent bonds for one loaded structure and push them into its
+   * ball-and-stick / licorice views. Use when bonds vanished after MemPro,
+   * superimpose, or a sparse CONECT load.
+   * @param {string} structureId
+   */
+  async function recalculateBondsForStructure(structureId) {
+    const entry = findStructure(structures, structureId)
+    if (!entry?.path) return
+    try {
+      loadingPDB = true
+      const raw = await getStructure({
+        path: entry.path,
+        topology: entry.topologyPath || null,
+        needs_bonds: true,
+        needs_secondary_structure: false,
+        save_dir: workingDir || null
+      })
+      const bonds = Array.isArray(raw.bonds) ? raw.bonds : []
+      // Keep in-memory coordinates (transform / MemPro may already match path).
+      // Only replace atoms when the file count matches — index-stable bond map.
+      const keepAtoms =
+        entry.atoms?.length &&
+        raw.atoms?.length === entry.atoms.length
+          ? entry.atoms
+          : raw.atoms || entry.atoms
+      structures = structures.map((s) =>
+        s.id === structureId
+          ? {
+              ...s,
+              atoms: keepAtoms,
+              bonds,
+              residues: raw.residues?.length ? raw.residues : s.residues,
+              bond_source: raw.bond_source
+            }
+          : s
+      )
+      for (const v of views) {
+        if (v.structureId !== structureId) continue
+        v._bondOrderFetchDone = false
+        const sel = String(v.baseSelection || v.selection || 'all')
+        const subset = trySubsetBySelection(keepAtoms, bonds, raw.residues || entry.residues, sel)
+        if (subset.ok) {
+          if (v.atoms?.length) {
+            // Keep current atom objects (working coords); only refresh bonds.
+            const idxSet = new Set(
+              v.atoms
+                .map((/** @type {{ index?: number }} */ a) => a.index)
+                .filter((/** @type {unknown} */ n) => typeof n === 'number')
+            )
+            v.bonds = bonds.filter(
+              (b) =>
+                Array.isArray(b) &&
+                b.length >= 2 &&
+                idxSet.has(Number(b[0])) &&
+                idxSet.has(Number(b[1]))
+            )
+          } else {
+            v.atoms = subset.atoms
+            v.bonds = subset.bonds
+            v.residues = subset.residues
+          }
+          v._prefetched = true
+          v._bondOrderFetchDone = true
+        } else {
+          v.bonds = []
+          v._prefetched = false
+        }
+      }
+      views = [...views]
+      coordsGeneration += 1
+      logEvent(
+        'info',
+        'view',
+        'Recalculated bonds',
+        `${entry.label || structureId}: ${bonds.length} bond(s)`
+      )
+    } catch (ex) {
+      alert(ex instanceof Error ? ex.message : String(ex))
+    } finally {
+      loadingPDB = false
+    }
+  }
+
   async function applyEditResult(result) {
     selectedGroupIndices = new Set()
     selectedAtom = null
@@ -4491,9 +4746,8 @@
       coordUndoStack.clear()
       previewPositions = null
       animCoordOverlay = null
-      measurements = []
-      measurePicks = []
-      atomLabels = []
+      // Keep labels / measurements; refresh xyz for the edited structure only.
+      if (editedId) rematchOverlaysAfterMove(editedId, newStructure.atoms)
       measureMode = null
       ctxMenu = null
       const byIndex = new Map()
@@ -4505,6 +4759,7 @@
         if (v.structureId !== editedId) continue
         const snap = viewIndexSnapshots.find((s) => s.id === v.id)
         v.path = editedPath
+        v._bondOrderFetchDone = false
         if (snap?.lockToIndices && snap.indices.length) {
           const atoms = snap.indices.map((i) => byIndex.get(i)).filter(Boolean)
           if (atoms.length) {
@@ -4522,6 +4777,7 @@
                 )
               : []
             v._prefetched = true
+            v._bondOrderFetchDone = true
             continue
           }
         }
@@ -5010,7 +5266,11 @@
     void trajPlayhead
     void trajXyzEpoch
     void trajAlign.apply
+    void previewPositions
     const owner = findStructure(structures, view.structureId) ?? structure
+    const sid = owner?.id ?? view.structureId ?? activeStructureId
+    const previewOverlay =
+      sid === activeStructureId && previewPositions ? previewPositions : null
     const sel = effectiveViewSelection(view)
     const each = view.selectionEachFrame === true
     const level = clampTrajSmooth(view.trajSmooth)
@@ -5026,7 +5286,8 @@
       hit.each === each &&
       hit.sel === sel &&
       hit.sourceAtoms === view.atoms &&
-      hit.ownerAtoms === owner?.atoms
+      hit.ownerAtoms === owner?.atoms &&
+      hit.preview === previewOverlay
     ) {
       return hit.result
     }
@@ -5073,8 +5334,12 @@
         result: liveAtoms
       })
     }
+    if (previewOverlay) {
+      liveAtoms = applyPreviewOverlayToAtoms(liveAtoms, previewOverlay)
+    }
+    const drawXyz = previewOverlay ? applyPreviewOverlayToPackedXyz(xyz, previewOverlay) : xyz
 
-    const result = { atoms: liveAtoms, bonds, residues, xyz }
+    const result = { atoms: liveAtoms, bonds, residues, xyz: drawXyz }
     if (cacheKey) {
       viewDrawCache.set(cacheKey, {
         epoch: trajXyzEpoch,
@@ -5085,6 +5350,7 @@
         sel,
         sourceAtoms: view.atoms,
         ownerAtoms: owner?.atoms,
+        preview: previewOverlay,
         result
       })
     }
@@ -5918,6 +6184,7 @@
         op: _buildTransformOp()
       })
       previewPositions = previewFromComputeResult(r)
+      previewGen += 1
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : String(ex))
     } finally {
@@ -6019,6 +6286,115 @@
   function openMemproDialog() {
     toolsMenuOpen = false
     memproDialogOpen = true
+    memproShowNewRunForm = false
+    refreshMemproJobs().catch(() => {})
+  }
+
+  /** @param {string | null | undefined} pathStr */
+  function pathBasename(pathStr) {
+    if (!pathStr) return ''
+    const norm = String(pathStr).replace(/\\/g, '/')
+    const i = norm.lastIndexOf('/')
+    return i >= 0 ? norm.slice(i + 1) : norm
+  }
+
+  /** @param {string | null | undefined} a @param {string | null | undefined} b */
+  function samePathLoose(a, b) {
+    if (!a || !b) return false
+    const na = String(a).replace(/\\/g, '/').toLowerCase()
+    const nb = String(b).replace(/\\/g, '/').toLowerCase()
+    return na === nb || pathBasename(na) === pathBasename(nb)
+  }
+
+  /** @param {object | null | undefined} job */
+  function memproJobSourcePath(job) {
+    return job?.source_path || job?.params?.path || null
+  }
+
+  /** @param {object | null | undefined} job */
+  function memproJobSourceLabel(job) {
+    if (job?.source_label) return String(job.source_label)
+    const p = memproJobSourcePath(job)
+    return p ? pathBasename(p) : 'Unknown structure'
+  }
+
+  /** @param {object | null | undefined} job */
+  function findStructureForMemproJob(job) {
+    if (job?.structure_id) {
+      const byId = findStructure(structures, job.structure_id)
+      if (byId) return byId
+    }
+    const src = memproJobSourcePath(job)
+    if (!src) return null
+    return structures.find((s) => samePathLoose(s.path, src)) ?? null
+  }
+
+  function syncMemproStatusChip() {
+    const running = memproJobs.find((j) => j.status === 'running')
+    const latest =
+      running ||
+      memproJobs.find((j) => j.job_id === memproSelectedJobId) ||
+      memproJobs[0] ||
+      null
+    if (!latest) {
+      visualizeStatus.memproJobId = null
+      visualizeStatus.memproStatus = null
+      visualizeStatus.memproStartedAt = null
+      visualizeStatus.memproSourceLabel = null
+      return
+    }
+    visualizeStatus.memproJobId = latest.job_id ?? null
+    visualizeStatus.memproStatus = latest.status ?? null
+    visualizeStatus.memproStartedAt = latest.start_time ?? null
+    visualizeStatus.memproSourceLabel = memproJobSourceLabel(latest)
+  }
+
+  /**
+   * @param {object} job
+   * @param {{ quiet?: boolean }} [opts]
+   */
+  function applyMemproJobToPanel(job, opts = {}) {
+    if (!job?.job_id) return
+    memproSelectedJobId = job.job_id
+    memproJobId = job.job_id
+    memproJobStatus = job.status ?? null
+    memproResults = Array.isArray(job.results) ? job.results : []
+    memproError = job.error ?? null
+    memproSourcePath = memproJobSourcePath(job)
+    memproSourceLabel = memproJobSourceLabel(job)
+    memproSourceStructureId = job.structure_id ?? null
+    memproShowNewRunForm = false
+    const matched = findStructureForMemproJob(job)
+    memproApplyTargetId = matched?.id ?? activeStructureId
+    if (!opts.quiet) syncMemproStatusChip()
+  }
+
+  async function refreshMemproJobs() {
+    if (!workingDir) {
+      syncMemproStatusChip()
+      return memproJobs
+    }
+    const r = await memproScan(workingDir)
+    const diskJobs = Array.isArray(r.jobs) ? r.jobs : r.found ? [r] : []
+    /** @type {Map<string, object>} */
+    const byId = new Map()
+    for (const j of memproJobs) {
+      if (j?.job_id) byId.set(String(j.job_id), j)
+    }
+    for (const j of diskJobs) {
+      if (j?.job_id) byId.set(String(j.job_id), { ...byId.get(String(j.job_id)), ...j })
+    }
+    memproJobs = Array.from(byId.values()).sort((a, b) =>
+      String(b.start_time || '').localeCompare(String(a.start_time || ''))
+    )
+    if (!memproSelectedJobId && memproJobs.length) {
+      applyMemproJobToPanel(memproJobs[0], { quiet: true })
+    } else if (memproSelectedJobId) {
+      const cur = memproJobs.find((j) => j.job_id === memproSelectedJobId)
+      if (cur) applyMemproJobToPanel(cur, { quiet: true })
+    }
+    syncMemproStatusChip()
+    return memproJobs
   }
 
   function closePackmolDialog() {
@@ -6966,10 +7342,11 @@
   }
 
   async function onMemproRun() {
-    if (!filePath) return
+    if (!filePath || !structure) return
     if (!confirmProceedWithoutWorkingDir('mempro')) return
     memproBusy = true
     try {
+      const sourceLabel = structure.label || pathBasename(filePath) || 'structure'
       const r = await memproRun({
         path: filePath,
         workingDir: workingDir || undefined,
@@ -6979,16 +7356,29 @@
         peripheral: memproPeripheral,
         useWeights: memproUseWeights,
         flip: memproFlip,
-        membraneThickness: memproMembrane ? parseFloat(memproMembrane) : null
+        membraneThickness: memproMembrane ? parseFloat(memproMembrane) : null,
+        sourceLabel,
+        structureId: activeStructureId
       })
-      memproJobId = r.job_id
-      memproJobStatus = 'running'
-      memproResults = []
-      memproError = null
-      visualizeStatus.memproJobId = r.job_id
-      visualizeStatus.memproStatus = 'running'
-      visualizeStatus.memproStartedAt = r.start_time ?? new Date().toISOString()
-      logEvent('info', 'view', 'MemPro started', filePath)
+      const job = {
+        job_id: r.job_id,
+        status: 'running',
+        start_time: r.start_time,
+        source_path: r.source_path || filePath,
+        source_label: r.source_label || sourceLabel,
+        structure_id: r.structure_id || activeStructureId,
+        results: null,
+        error: null,
+        params: {
+          path: filePath,
+          n_iters: memproNIters,
+          grid_size: memproGridSize
+        }
+      }
+      memproJobs = [job, ...memproJobs.filter((j) => j.job_id !== r.job_id)]
+      applyMemproJobToPanel(job)
+      memproShowNewRunForm = false
+      logEvent('info', 'view', 'MemPro started', `${sourceLabel} · ${filePath}`)
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : String(ex))
     } finally {
@@ -6997,12 +7387,24 @@
   }
 
   async function onMemproApply(result) {
-    if (!filePath) return
+    const targetId = memproApplyTargetId || activeStructureId
+    const target = findStructure(structures, targetId)
+    if (!target?.path) {
+      alert('Select a target structure to apply the MemPro orientation.')
+      return
+    }
+    const runLabel = memproSourceLabel || memproJobSourceLabel(
+      memproJobs.find((j) => j.job_id === memproSelectedJobId)
+    )
+    const targetLabel = target.label || pathBasename(target.path)
     editBusy = true
     try {
+      if (targetId !== activeStructureId) setActiveStructure(targetId)
       const res = await memproApply({
-        sourcePath: filePath,
-        pdbPath: result.pdb_path
+        sourcePath: target.path,
+        pdbPath: result.pdb_path,
+        sourceLabel: runLabel,
+        targetLabel
       })
       closeMemproDialog()
       await applyEditResult(res)
@@ -7010,10 +7412,16 @@
         'info',
         'view',
         `Applied MemPro orientation rank ${result.rank}`,
-        filePath
+        `${runLabel} → ${targetLabel}`
       )
     } catch (ex) {
-      alert(ex instanceof Error ? ex.message : String(ex))
+      const msg = ex instanceof Error ? ex.message : String(ex)
+      alert(
+        `${msg}\n\n` +
+          `MemPro run belonged to: ${runLabel}\n` +
+          `You tried to apply it to: ${targetLabel}\n` +
+          'Pick the matching structure in “Apply to”, or run MemPro again on the structure you want to orient.'
+      )
     } finally {
       editBusy = false
     }
@@ -7378,7 +7786,9 @@
       const raw = await getStructure({
         path: newPath,
         topology: entry.topologyPath || null,
-        needs_bonds: false,
+        // Superimpose / MemPro write a PDB without CONECT — guess bonds so
+        // ball-and-stick and licorice stay connected.
+        needs_bonds: true,
         needs_secondary_structure: false,
         save_dir: workingDir || null
       })
@@ -7403,6 +7813,7 @@
         coordUndoStack.clear()
         previewPositions = null
       }
+      rematchOverlaysAfterMove(entryId, raw.atoms)
       for (const view of views) {
         if (view.structureId !== entryId) continue
         view.path = raw.path
@@ -7410,6 +7821,7 @@
         view.bonds = []
         view.residues = []
         view._prefetched = false
+        view._bondOrderFetchDone = false
       }
       views = [...views]
     } finally {
@@ -7498,7 +7910,7 @@
               <BallStick
                 atoms={draw.atoms}
                 xyz={draw.xyz}
-                xyzEpoch={trajPlayhead + trajXyzEpoch}
+                xyzEpoch={trajPlayhead + trajXyzEpoch + previewGen}
                 trajSmooth={clampTrajSmooth(view.trajSmooth)}
                 trajSmoothRestoreH={trajSmoothRestoreHEnabled(view.trajSmoothRestoreH)}
                 bonds={draw.bonds}
@@ -7524,7 +7936,7 @@
               <Licorice
                 atoms={draw.atoms}
                 xyz={draw.xyz}
-                xyzEpoch={trajPlayhead + trajXyzEpoch}
+                xyzEpoch={trajPlayhead + trajXyzEpoch + previewGen}
                 trajSmooth={clampTrajSmooth(view.trajSmooth)}
                 trajSmoothRestoreH={trajSmoothRestoreHEnabled(view.trajSmoothRestoreH)}
                 bonds={draw.bonds}
@@ -7548,7 +7960,7 @@
               <Cartoon
                 atoms={draw.atoms}
                 xyz={draw.xyz}
-                xyzEpoch={trajPlayhead + trajXyzEpoch}
+                xyzEpoch={trajPlayhead + trajXyzEpoch + previewGen}
                 trajSmooth={clampTrajSmooth(view.trajSmooth)}
                 trajSmoothRestoreH={trajSmoothRestoreHEnabled(view.trajSmoothRestoreH)}
                 residues={draw.residues ?? []}
@@ -7572,7 +7984,7 @@
               <Tube
                 atoms={draw.atoms}
                 xyz={draw.xyz}
-                xyzEpoch={trajPlayhead + trajXyzEpoch}
+                xyzEpoch={trajPlayhead + trajXyzEpoch + previewGen}
                 trajSmooth={clampTrajSmooth(view.trajSmooth)}
                 trajSmoothRestoreH={trajSmoothRestoreHEnabled(view.trajSmoothRestoreH)}
                 residues={draw.residues ?? []}
@@ -7594,7 +8006,7 @@
               <VdwSpheres
                 atoms={draw.atoms}
                 xyz={draw.xyz}
-                xyzEpoch={trajPlayhead + trajXyzEpoch}
+                xyzEpoch={trajPlayhead + trajXyzEpoch + previewGen}
                 trajSmooth={clampTrajSmooth(view.trajSmooth)}
                 trajSmoothRestoreH={trajSmoothRestoreHEnabled(view.trajSmoothRestoreH)}
                 getColor={view.colorScheme.resolver}
@@ -7614,7 +8026,7 @@
             {:else if view.representation.type === 'surface'}
               <OrganicSurface
                 atoms={draw.atoms}
-                xyzEpoch={trajPlayhead + trajXyzEpoch}
+                xyzEpoch={trajPlayhead + trajXyzEpoch + previewGen}
                 deferRemesh={!view.selectionEachFrame && (trajScrubbing || trajPlaying) && !animExporting}
                 residues={draw.residues ?? []}
                 getColor={view.colorScheme.resolver}
@@ -7637,7 +8049,7 @@
               <AtomPoints
                 atoms={draw.atoms}
                 xyz={draw.xyz}
-                xyzEpoch={trajPlayhead + trajXyzEpoch}
+                xyzEpoch={trajPlayhead + trajXyzEpoch + previewGen}
                 trajSmooth={clampTrajSmooth(view.trajSmooth)}
                 trajSmoothRestoreH={trajSmoothRestoreHEnabled(view.trajSmoothRestoreH)}
                 getColor={view.colorScheme.resolver}
@@ -8023,11 +8435,11 @@
       </h2>
       {#if views.length > 0 || filePath}
         <div class="flex min-h-0 min-w-0 flex-1 flex-col">
-        <div class="flex shrink-0 gap-1 border-b border-neutral-200 p-2 dark:border-neutral-800">
+        <div class="flex shrink-0 flex-wrap gap-1 border-b border-neutral-200 p-2 dark:border-neutral-800">
           {#snippet toolbarBtn(title, onclick, Icon, className, disabled = false)}
             <button
               type="button"
-              class="flex size-7 items-center justify-center rounded-lg border border-neutral-200 bg-neutral-100 transition-colors hover:border-neutral-300 hover:bg-neutral-200 active:translate-y-0.5 disabled:pointer-events-none disabled:opacity-40 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:border-neutral-700 dark:hover:bg-neutral-800"
+              class="flex size-7 shrink-0 items-center justify-center rounded-lg border border-neutral-200 bg-neutral-100 transition-colors hover:border-neutral-300 hover:bg-neutral-200 active:translate-y-0.5 disabled:pointer-events-none disabled:opacity-40 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:border-neutral-700 dark:hover:bg-neutral-800"
               aria-label={title}
               {title}
               {onclick}
@@ -8041,7 +8453,7 @@
           {#if autoGeneratingViews}
             <button
               type="button"
-              class="flex size-7 items-center justify-center rounded-lg border border-neutral-200 bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-900"
+              class="flex size-7 shrink-0 items-center justify-center rounded-lg border border-neutral-200 bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-900"
               aria-label="Generating representations"
               title="Generating representations…"
               disabled
@@ -8078,7 +8490,7 @@
           )}
           <button
             type="button"
-            class="flex size-7 items-center justify-center rounded-lg border transition-colors
+            class="flex size-7 shrink-0 items-center justify-center rounded-lg border transition-colors
               {viewerSettings.dof?.enabled
                 ? 'border-yellow-500 bg-yellow-500/10 text-yellow-400'
                 : 'border-neutral-200 bg-neutral-100 text-neutral-600 hover:border-neutral-300 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400'}"
@@ -8128,12 +8540,13 @@
             'size-4 stroke-2 stroke-neutral-800 dark:stroke-white',
             loadingPDB
           )}
-          <!-- Measurement mode buttons -->
+          <!-- Measurement mode buttons (keep divider + tools together when wrapping) -->
+          <div class="flex shrink-0 items-center gap-1">
           <div class="mx-0.5 h-4 w-px bg-neutral-300 dark:bg-neutral-700"></div>
           {#snippet measureBtn(title, mode)}
             <button
               type="button"
-              class="flex size-7 items-center justify-center rounded-lg border transition-colors active:translate-y-0.5
+              class="flex size-7 shrink-0 items-center justify-center rounded-lg border transition-colors
               {measureMode === mode
                 ? 'border-yellow-500 bg-yellow-500/10 text-yellow-400'
                 : 'border-neutral-200 bg-neutral-100 text-neutral-600 hover:border-neutral-300 hover:bg-neutral-200 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:border-neutral-700 dark:hover:bg-neutral-800'}"
@@ -8203,6 +8616,7 @@
           {@render measureBtn('Distance — click 2 atoms', 'distance')}
           {@render measureBtn('Angle — click 3 atoms', 'angle')}
           {@render measureBtn('Dihedral — click 4 atoms', 'dihedral')}
+          </div>
         </div>
         <div class="min-h-0 flex-1 overflow-y-auto">
           {#if applyRepsBusy}
@@ -8339,6 +8753,7 @@
                       topology={st.topologyPath}
                       onremove={() => removeView(view.id)}
                       onduplicate={() => duplicateView(view.id)}
+                      onrecalculatebonds={() => recalculateBondsForStructure(view.structureId || st.id)}
                       onsplitby={(mode) => splitViewBy(view.id, mode)}
                       oncenter={() => centerCameraOnAtoms(viewDraw(view).atoms)}
                     />
@@ -8444,14 +8859,26 @@
                 {/if}
                 <button
                   type="button"
-                  class="px-1 text-xs text-neutral-500 hover:text-neutral-200 disabled:opacity-40"
+                  class="flex size-6 items-center justify-center rounded text-neutral-500 hover:bg-neutral-100 hover:text-neutral-200 disabled:opacity-40 dark:hover:bg-neutral-800"
+                  title="Recalculate covalent bonds (ball-and-stick / licorice). Use if bonds vanished after MemPro, superimpose, or a sparse PDB."
+                  aria-label="Recalculate bonds"
+                  disabled={loadingPDB}
+                  onclick={(e) => {
+                    e.stopPropagation()
+                    recalculateBondsForStructure(st.id)
+                  }}
+                ><Link2Icon className="size-3.5" /></button>
+                <button
+                  type="button"
+                  class="flex size-6 items-center justify-center rounded text-neutral-500 hover:bg-neutral-100 hover:text-neutral-200 disabled:opacity-40 dark:hover:bg-neutral-800"
                   title="Duplicate structure"
+                  aria-label="Duplicate structure"
                   disabled={!!duplicatingStructureId}
                   onclick={(e) => {
                     e.stopPropagation()
                     duplicateStructure(st.id)
                   }}
-                >⧉</button>
+                ><CopyIcon className="size-3.5" /></button>
                 <button
                   type="button"
                   class="px-1 text-xs text-neutral-500 hover:text-neutral-200"
@@ -8537,6 +8964,12 @@
               <span class="min-w-0 flex-1 truncate text-[10px] font-semibold uppercase tracking-wide text-neutral-500"
                 >Workspace</span
               >
+              <button
+                type="button"
+                class="flex size-6 items-center justify-center rounded text-xs text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                title={workspaceAnyExpanded ? 'Collapse all structures' : 'Expand all structures'}
+                onclick={toggleWorkspaceCollapsed}
+              >{workspaceAnyExpanded ? '▾' : '▸'}</button>
               <button
                 type="button"
                 class="flex size-6 items-center justify-center rounded text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
@@ -8700,6 +9133,32 @@
                     hidePanelSelection()
                   }}
                 >Hide</button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="block w-full px-3 py-1.5 text-left text-neutral-800 hover:bg-neutral-100 disabled:opacity-40 dark:text-neutral-100 dark:hover:bg-neutral-800"
+                  title={selectedStructureIds.size
+                    ? `Collapse ${selectedStructureIds.size} selected structure(s)`
+                    : 'Select one or more structures first'}
+                  disabled={!selectedStructureIds.size}
+                  onclick={() => {
+                    structureCtxMenu = null
+                    collapsePanelSelection()
+                  }}
+                >Collapse</button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="block w-full px-3 py-1.5 text-left text-neutral-800 hover:bg-neutral-100 disabled:opacity-40 dark:text-neutral-100 dark:hover:bg-neutral-800"
+                  title={selectedStructureIds.size
+                    ? `Expand ${selectedStructureIds.size} selected structure(s)`
+                    : 'Select one or more structures first'}
+                  disabled={!selectedStructureIds.size}
+                  onclick={() => {
+                    structureCtxMenu = null
+                    expandPanelSelection()
+                  }}
+                >Expand</button>
               </div>
             </div>
           {/if}
@@ -9680,6 +10139,8 @@
   open={entryPicker.open}
   sourcePath={entryPicker.sourcePath}
   entries={entryPicker.entries}
+  loading={entryPicker.loading}
+  loadingMessage="Reading Maestro file…"
   onConfirm={(indices) => resolveEntryPicker(indices)}
   onCancel={() => resolveEntryPicker(null)}
 />
@@ -10624,7 +11085,9 @@
 
 <dialog
   bind:this={dlgTransform}
-  class="rounded-lg border border-neutral-300 bg-white p-0 text-neutral-900 shadow-2xl backdrop:bg-black/60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
+  class="rounded-lg border border-neutral-300 bg-white p-0 text-neutral-900 shadow-2xl dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 {previewPositions
+    ? 'backdrop:bg-black/20'
+    : 'backdrop:bg-black/60'}"
 >
   <!-- Header -->
   <div class="flex items-center justify-between border-b dialog-divider px-4 py-2.5">
@@ -10639,6 +11102,7 @@
       class="ml-2 text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
       onclick={() => {
         previewPositions = null
+        previewGen += 1
         dlgTransform?.close()
       }}>✕</button
     >
@@ -10871,6 +11335,7 @@
       class="dialog-btn-outline"
       onclick={() => {
         previewPositions = null
+        previewGen += 1
         dlgTransform?.close()
       }}>Cancel</button
     >
@@ -11008,7 +11473,7 @@
 <!-- MemPro orientation panel (non-modal — viewer stays interactive) -->
 {#if memproDialogOpen}
   <div
-    class="viewer-side-panel--nonmodal fixed top-10 bottom-10 left-16 z-50 flex w-[520px] max-w-[calc(100vw-5rem)] flex-col overflow-hidden rounded-lg border border-neutral-300 bg-white p-0 text-neutral-900 shadow-2xl dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
+    class="viewer-side-panel--nonmodal fixed top-10 bottom-10 left-16 z-50 flex w-[560px] max-w-[calc(100vw-5rem)] flex-col overflow-hidden rounded-lg border border-neutral-300 bg-white p-0 text-neutral-900 shadow-2xl dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
     role="dialog"
     aria-labelledby="mempro-panel-title"
   >
@@ -11029,70 +11494,42 @@
     </div>
   {/if}
 
-  {#if memproJobStatus === 'running'}
-    <!-- Running -->
-    <div class="flex flex-1 flex-col items-center gap-3 overflow-y-auto px-6 py-8 text-center">
-      <Spinner className="size-6" />
-      <p class="text-sm">Running MemPro orientation…</p>
-      <p class="text-xs text-neutral-400">
-        This may take several minutes depending on the structure size.
+  {#if memproJobs.length > 0 && !memproShowNewRunForm}
+    <div class="border-b dialog-divider px-4 py-2">
+      <p class="mb-1 text-[10px] font-medium uppercase tracking-wide text-neutral-500">
+        MemPro runs ({memproJobs.length})
       </p>
-      <p class="font-mono text-xs text-neutral-500">
-        Iterations: {memproNIters} · Grid: {memproGridSize}
-      </p>
-    </div>
-  {:else if memproJobStatus === 'done'}
-    <!-- Results -->
-    <div class="min-h-0 flex-1 overflow-y-auto p-4">
-      <p class="mb-2 text-xs text-neutral-600 dark:text-neutral-400">
-        Orientation results — Apply transforms the loaded structure (keeps ligands, water, etc.):
-      </p>
-      <div class="overflow-x-auto rounded border border-neutral-200 dark:border-neutral-800">
-        <table class="w-full text-xs">
-          <thead>
-            <tr class="border-b border-neutral-200 text-left text-neutral-600 dark:border-neutral-800 dark:text-neutral-500">
-              <th class="px-2 py-1">Rank</th>
-              <th class="px-2 py-1">Rel. Potential</th>
-              <th class="px-2 py-1">Hits %</th>
-              <th class="px-2 py-1">Re-rank</th>
-              <th class="px-2 py-1">Depth</th>
-              <th class="px-2 py-1"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each memproResults as r}
-              <tr class="border-b border-neutral-200/80 hover:bg-neutral-100 dark:border-neutral-800/50 dark:hover:bg-neutral-800/30">
-                <td class="px-2 py-1 font-semibold text-yellow-700 dark:text-yellow-400">#{r.rank}</td>
-                <td class="px-2 py-1 font-mono">{r.relative_potential?.toFixed(3) ?? '—'}</td>
-                <td class="px-2 py-1 font-mono">{r.hits_pct?.toFixed(1) ?? '—'}%</td>
-                <td class="px-2 py-1 font-mono">{r.rerank_value?.toFixed(3) ?? '—'}</td>
-                <td class="px-2 py-1 font-mono">{r.rerank_depth?.toFixed(2) ?? '—'} Å</td>
-                <td class="px-2 py-1">
-                  <button
-                    type="button"
-                    class="flex items-center gap-1 rounded bg-yellow-600 px-2 py-0.5 text-xs font-semibold text-black hover:bg-yellow-500 disabled:opacity-40"
-                    disabled={editBusy}
-                    onclick={() => onMemproApply(r)}
-                    >{#if editBusy}<Spinner />{/if} Apply</button
-                  >
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
+      <div class="max-h-28 space-y-1 overflow-y-auto">
+        {#each memproJobs as job (job.job_id)}
+          <button
+            type="button"
+            class="flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-left text-xs {memproSelectedJobId ===
+            job.job_id
+              ? 'bg-yellow-500/20 text-yellow-800 dark:text-yellow-200'
+              : 'hover:bg-neutral-100 dark:hover:bg-neutral-800'}"
+            onclick={() => applyMemproJobToPanel(job)}
+          >
+            <span class="min-w-0 truncate font-medium">{memproJobSourceLabel(job)}</span>
+            <span class="shrink-0 text-[10px] uppercase text-neutral-500">
+              {job.status === 'done'
+                ? `${(job.results || []).length} orient.`
+                : job.status || '—'}
+            </span>
+          </button>
+        {/each}
       </div>
     </div>
-  {:else if memproJobStatus === 'error'}
-    <!-- Error -->
-    <div class="flex-1 overflow-y-auto p-4">
-      <p class="mb-1 text-xs text-neutral-600 dark:text-neutral-400">MemPro failed:</p>
-      <p class="gw-notice gw-notice-error font-mono">
-        {memproError}
-      </p>
-    </div>
-  {:else}
+  {/if}
+
+  {#if memproShowNewRunForm || ((!memproJobStatus || memproJobStatus === 'error') && !memproJobs.length)}
     <!-- Setup form -->
     <div class="min-h-0 flex-1 space-y-2.5 overflow-y-auto p-4">
+      <p class="text-xs text-neutral-600 dark:text-neutral-400">
+        Run on active structure:
+        <span class="font-semibold text-neutral-800 dark:text-neutral-100"
+          >{structure?.label || pathBasename(filePath) || 'none'}</span
+        >
+      </p>
       <div class="flex items-center gap-2">
         <label for="mp-iters" class="dialog-label w-36 shrink-0 text-xs">Iterations</label>
         <input
@@ -11142,27 +11579,142 @@
           </label>
         {/each}
       </div>
+      {#if memproJobStatus === 'error' && memproError}
+        <p class="gw-notice gw-notice-error font-mono text-xs">{memproError}</p>
+      {/if}
+    </div>
+  {:else if memproJobStatus === 'running'}
+    <!-- Running -->
+    <div class="flex flex-1 flex-col items-center gap-3 overflow-y-auto px-6 py-8 text-center">
+      <Spinner className="size-6" />
+      <p class="text-sm">Running MemPro orientation…</p>
+      <p class="text-xs text-neutral-600 dark:text-neutral-300">
+        Structure: <span class="font-semibold">{memproSourceLabel || '—'}</span>
+      </p>
+      <p class="text-xs text-neutral-400">
+        This may take several minutes depending on the structure size.
+      </p>
+      <p class="font-mono text-xs text-neutral-500">
+        Iterations: {memproNIters} · Grid: {memproGridSize}
+      </p>
+    </div>
+  {:else if memproJobStatus === 'done'}
+    <!-- Results -->
+    <div class="min-h-0 flex-1 overflow-y-auto p-4">
+      <div class="mb-3 space-y-2 rounded border border-neutral-200 p-2 text-xs dark:border-neutral-800">
+        <p>
+          <span class="text-neutral-500">MemPro run for:</span>
+          <span class="font-semibold">{memproSourceLabel || '—'}</span>
+          {#if memproSourcePath}
+            <span class="block truncate font-mono text-[10px] text-neutral-500"
+              >{pathBasename(memproSourcePath)}</span
+            >
+          {/if}
+        </p>
+        <div class="flex items-center gap-2">
+          <label for="mp-apply-target" class="shrink-0 text-neutral-500">Apply to</label>
+          <select
+            id="mp-apply-target"
+            class="field-input min-w-0 flex-1"
+            bind:value={memproApplyTargetId}
+          >
+            {#each structures as st (st.id)}
+              <option value={st.id}
+                >{st.label || pathBasename(st.path)}{st.id === memproSourceStructureId ||
+                samePathLoose(st.path, memproSourcePath)
+                  ? ' (source)'
+                  : ''}</option
+              >
+            {/each}
+          </select>
+        </div>
+        {#if memproApplyTargetId && memproSourcePath && !samePathLoose(findStructure(structures, memproApplyTargetId)?.path, memproSourcePath) && findStructure(structures, memproApplyTargetId)?.id !== memproSourceStructureId}
+          <p class="gw-notice gw-notice-warning text-[11px]">
+            Apply target is not the structure used for this MemPro run. Atom matching will likely
+            fail — switch “Apply to” to the source structure.
+          </p>
+        {/if}
+      </div>
+      <p class="mb-2 text-xs text-neutral-600 dark:text-neutral-400">
+        Orientation ranks — Apply transforms the selected structure (keeps ligands, water, etc.):
+      </p>
+      <div class="overflow-x-auto rounded border border-neutral-200 dark:border-neutral-800">
+        <table class="w-full text-xs">
+          <thead>
+            <tr class="border-b border-neutral-200 text-left text-neutral-600 dark:border-neutral-800 dark:text-neutral-500">
+              <th class="px-2 py-1">Rank</th>
+              <th class="px-2 py-1">Rel. Potential</th>
+              <th class="px-2 py-1">Hits %</th>
+              <th class="px-2 py-1">Re-rank</th>
+              <th class="px-2 py-1">Depth</th>
+              <th class="px-2 py-1"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each memproResults as r}
+              <tr class="border-b border-neutral-200/80 hover:bg-neutral-100 dark:border-neutral-800/50 dark:hover:bg-neutral-800/30">
+                <td class="px-2 py-1 font-semibold text-yellow-700 dark:text-yellow-400">#{r.rank}</td>
+                <td class="px-2 py-1 font-mono">{r.relative_potential?.toFixed(3) ?? '—'}</td>
+                <td class="px-2 py-1 font-mono">{r.hits_pct?.toFixed(1) ?? '—'}%</td>
+                <td class="px-2 py-1 font-mono">{r.rerank_value?.toFixed(3) ?? '—'}</td>
+                <td class="px-2 py-1 font-mono">{r.rerank_depth?.toFixed(2) ?? '—'} Å</td>
+                <td class="px-2 py-1">
+                  <button
+                    type="button"
+                    class="flex items-center gap-1 rounded bg-yellow-600 px-2 py-0.5 text-xs font-semibold text-black hover:bg-yellow-500 disabled:opacity-40"
+                    disabled={editBusy}
+                    onclick={() => onMemproApply(r)}
+                    >{#if editBusy}<Spinner />{/if} Apply</button
+                  >
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  {:else if memproJobStatus === 'error'}
+    <div class="flex-1 overflow-y-auto p-4">
+      <p class="mb-1 text-xs text-neutral-600 dark:text-neutral-400">
+        MemPro failed for <span class="font-semibold">{memproSourceLabel || 'structure'}</span>:
+      </p>
+      <p class="gw-notice gw-notice-error font-mono">
+        {memproError}
+      </p>
+    </div>
+  {:else}
+    <div class="flex flex-1 items-center justify-center p-6 text-xs text-neutral-500">
+      Select a MemPro run above, or start a new one.
     </div>
   {/if}
 
   <!-- Footer -->
   <div class="flex items-center justify-between border-t dialog-divider px-4 py-3">
-    <div>
-      {#if memproJobStatus === 'done'}
+    <div class="flex gap-2">
+      {#if !memproShowNewRunForm}
         <button
           type="button"
           class="dialog-btn-outline"
           onclick={() => {
-            memproJobId = null
+            memproShowNewRunForm = true
             memproJobStatus = null
-            memproResults = []
             memproError = null
           }}>New run</button
+        >
+      {:else if memproJobs.length}
+        <button
+          type="button"
+          class="dialog-btn-outline"
+          onclick={() => {
+            memproShowNewRunForm = false
+            const cur = memproJobs.find((j) => j.job_id === memproSelectedJobId) || memproJobs[0]
+            if (cur) applyMemproJobToPanel(cur)
+          }}>Back to results</button
         >
       {/if}
     </div>
     <div class="flex gap-2">
-      {#if !memproJobStatus || memproJobStatus === 'error'}
+      {#if memproShowNewRunForm || !memproJobStatus || memproJobStatus === 'error'}
         <button
           type="button"
           class="flex items-center gap-1 rounded bg-yellow-600 px-3 py-1 text-xs font-semibold text-black hover:bg-yellow-500 disabled:opacity-40"

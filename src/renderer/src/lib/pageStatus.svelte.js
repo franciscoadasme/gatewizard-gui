@@ -21,6 +21,8 @@ export const visualizeStatus = $state({
   memproStatus: /** @type {'running'|'done'|'error'|null} */ (null),
   /** ISO timestamp when the job was started, or null */
   memproStartedAt: /** @type {string|null} */ (null),
+  /** Structure label the MemPro job was run on */
+  memproSourceLabel: /** @type {string|null} */ (null),
   /** Set to true to trigger the results dialog from the status bar */
   openMemproDialog: false,
   /** Packmol hydration job status */

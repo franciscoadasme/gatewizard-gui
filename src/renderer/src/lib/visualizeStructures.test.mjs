@@ -79,7 +79,7 @@ test('createStructureEntry fills defaults', () => {
     atoms: [{ index: 0, x: 0, y: 0, z: 0 }],
     kind: 'pdb_model',
     modelIndex: 2,
-    label: 'a.pdb · model 3'
+    label: 'model 3 · a.pdb'
   })
   assert.ok(s.id)
   assert.equal(s.kind, 'pdb_model')
@@ -207,13 +207,24 @@ test('serializeStructuresMeta prefers durable Maestro sourcePath', () => {
     kind: 'maestro_ct',
     ctIndex: 1,
     atoms: [{ index: 0, x: 0, y: 0, z: 0 }],
-    label: 'CT 2'
+    label: 'CT 2',
+    collapsed: true
   })
   const meta = serializeStructuresMeta([s])[0]
   assert.equal(meta.path, '/data/ligands.maegz')
   assert.equal(meta.sourcePath, '/data/ligands.maegz')
   assert.equal(meta.ctIndex, 1)
   assert.equal(meta.kind, 'maestro_ct')
+  assert.equal(meta.collapsed, true)
+})
+
+test('normalizeStructuresMeta preserves collapsed flag', () => {
+  const [a, b] = normalizeStructuresMeta([
+    { id: 'a', path: '/data/a.pdb', collapsed: true },
+    { id: 'b', path: '/data/b.pdb' }
+  ])
+  assert.equal(a.collapsed, true)
+  assert.equal(b.collapsed, false)
 })
 
 test('groupStructureMetasForLoad buckets maestro by source', () => {
