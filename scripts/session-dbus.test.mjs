@@ -38,6 +38,12 @@ test('isChromiumDbusNoise matches WSL Chromium bus errors', () => {
     ),
     true
   )
+  assert.equal(
+    isChromiumDbusNoise(
+      '[37830:0929/124404.706807:ERROR:chrome/browser/process_singleton_posix.cc:186] write() failed: Broken pipe (32)\n'
+    ),
+    true
+  )
 })
 
 test('unixPathFromAddress reads unix:path', () => {

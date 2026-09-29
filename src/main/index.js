@@ -95,6 +95,10 @@ import { buildAugmentedPath } from './shell-path.js'
 import { applyDisplayGpuEnv } from '../../scripts/display-gpu-policy.cjs'
 import { clearCorruptedGpuCache, getAppConfigDir } from '../../scripts/gpu-cache.cjs'
 import { ensureSessionDbus } from '../../scripts/session-dbus.cjs'
+import {
+  clearStaleSingletonLock,
+  getSingletonUserDataDir
+} from '../../scripts/singleton-lock.cjs'
 import { ignoreBrokenStdio, isBrokenPipeError, writeStdioSafe } from '../../scripts/stdio-guard.cjs'
 
 const BACKEND_URL = 'http://127.0.0.1:8765'
@@ -893,10 +897,29 @@ function relaunchInGpuSafeMode(reason) {
   return true
 }
 
-const gotSingleInstanceLock = app.requestSingleInstanceLock()
-if (!gotSingleInstanceLock) {
+const gotTheLock = (() => {
+  // WSL/WSLg: Chromium's process_singleton often logs Broken pipe on every
+  // launch (even with a clean userData). Skip the lock there; multi-instance is rare.
+  if (isRunningUnderWsl()) {
+    return true
+  }
+  // Before Chromium probes SingletonSocket — avoids Broken pipe ERROR spam after pkill.
+  try {
+    let userData = getSingletonUserDataDir()
+    try {
+      userData = app.getPath('userData')
+    } catch {
+      /* app path may be unavailable in rare early edges */
+    }
+    clearStaleSingletonLock(userData)
+  } catch {
+    /* best-effort */
+  }
+  return app.requestSingleInstanceLock()
+})()
+if (!gotTheLock) {
   app.exit(0)
-} else {
+} else if (!isRunningUnderWsl()) {
   app.on('second-instance', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore()

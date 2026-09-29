@@ -153,7 +153,8 @@ function assertLinuxElectronLibs(binPath) {
 function buildWrapperScript(realBinName) {
   const { buildDisplayGpuShell } = require('./display-gpu-policy.cjs')
   const { buildGpuCacheShell } = require('./gpu-cache.cjs')
-  const { buildDbusEnsureShell } = require('./session-dbus.cjs')
+  const { buildSingletonLockShell } = require('./singleton-lock.cjs')
+  const { buildDbusEnsureShell, buildChromiumStderrRunShell } = require('./session-dbus.cjs')
   const bin = String(realBinName || '').replace(/[^A-Za-z0-9._+-]/g, '')
   if (!bin) throw new Error('realBinName is required')
 
@@ -252,9 +253,9 @@ See the terminal for the full list."
   fi
   exit 1
 fi
-${buildDbusEnsureShell()}${buildDisplayGpuShell()}${buildGpuCacheShell()}
+${buildDbusEnsureShell()}${buildDisplayGpuShell()}${buildGpuCacheShell()}${buildSingletonLockShell()}
 # Detach stdin so Chromium does not stop the shell job (SIGTSTP) when launched from a terminal.
-exec "$bin" "$@" </dev/null
+${buildChromiumStderrRunShell()}
 `
 }
 

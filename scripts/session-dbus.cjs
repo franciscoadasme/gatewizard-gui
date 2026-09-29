@@ -26,6 +26,9 @@ function isChromiumDbusNoise(line) {
   if (/org\.freedesktop\.DBus\.NameHasOwner/.test(s)) return true
   // Stale GPU shader disk cache after Mesa / WSL GPU stack changes (Chromium recovers).
   if (/ERROR:net\/disk_cache\/blockfile\/block_files\.cc.*GPUCache/.test(s)) return true
+  // Single-instance notify on WSL/Linux often logs Broken pipe even when the app starts fine.
+  if (/ERROR:chrome\/browser\/process_singleton_posix\.cc/.test(s)) return true
+  if (/process_singleton_posix\.cc.*write\(\) failed/.test(s)) return true
   return false
 }
 
@@ -249,6 +252,46 @@ fi
 `
 }
 
+/**
+ * POSIX sh: run Electron with stderr filtered (Chromium native LOG bypasses Node).
+ * Keeps stdout on the TTY; replaces a plain `exec "$bin"`.
+ * Expects `$bin` already set to the real ELF path.
+ */
+function buildChromiumStderrRunShell() {
+  return `
+# Filter Chromium ERROR spam on stderr (process_singleton Broken pipe, dbus, GPUCache).
+# Native Chromium logs bypass Node, so the parent wrapper must strip them.
+gw_err_fifo="\${TMPDIR:-/tmp}/gw-electron-err.\$\$"
+rm -f "\$gw_err_fifo"
+if mkfifo "\$gw_err_fifo" 2>/dev/null; then
+  (
+    while IFS= read -r gw_err_line || [ -n "\$gw_err_line" ]; do
+      case "\$gw_err_line" in
+        *ERROR:chrome/browser/process_singleton_posix.cc*) continue ;;
+        *ERROR:dbus/bus.cc*) continue ;;
+        *ERROR:dbus/object_proxy.cc*) continue ;;
+        *Failed\\ to\\ connect\\ to\\ the\\ bus:*) continue ;;
+        *Failed\\ to\\ connect\\ to\\ socket\\ /run/user/*/bus*) continue ;;
+        *Failed\\ to\\ connect\\ to\\ socket\\ /run/user/*/gatewizard-bus*) continue ;;
+        *ERROR:net/disk_cache/blockfile/block_files.cc*GPUCache*) continue ;;
+        *) printf '%s\\n' "\$gw_err_line" >&2 ;;
+      esac
+    done < "\$gw_err_fifo"
+    rm -f "\$gw_err_fifo"
+  ) &
+  gw_err_filter_pid=\$!
+  set +e
+  "\$bin" "\$@" </dev/null 2>"\$gw_err_fifo"
+  gw_status=\$?
+  set -e
+  wait "\$gw_err_filter_pid" 2>/dev/null || true
+  exit "\$gw_status"
+fi
+# Fallback when mkfifo is unavailable.
+exec "\$bin" "\$@" </dev/null
+`
+}
+
 module.exports = {
   BUS_SOCK_NAME,
   isChromiumDbusNoise,
@@ -257,5 +300,6 @@ module.exports = {
   unixSocketIsLive,
   defaultSessionBusPath,
   ensureSessionDbus,
-  buildDbusEnsureShell
+  buildDbusEnsureShell,
+  buildChromiumStderrRunShell
 }

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Linux launch Broken pipe spam:** on WSL, skip Chromium’s single-instance lock (it logs `process_singleton_posix.cc … Broken pipe` even on a clean start). On native Linux, clear dead `Singleton*` files before locking. The packaged Linux wrapper also filters those Chromium ERROR lines (and dbus / GPUCache noise) from stderr.
 - **Visualize animation WebM export:** encoding no longer sits on “Encoding WebM with FFmpeg…” after the PNG frames are written. VP9 was waiting for extra alt-ref frames (and on Electron, for stdin). Export now closes stdin and finishes the last frame.
 - **Visualize Clear keyframes:** the confirm is in-app now. Native `confirm()` on WSLg/Electron was tearing down a GTK dialog and logging `GLib-GObject: instance has no handler with id`. The scene and keyframes were already clearing; only the console noise was from that dialog.
 - **Visualize animation timeline:** clicking or dragging a time no longer clones every atom and does not re-seek the MD frame when nothing moved. Playback no longer waits for that apply before the next clock tick, so the playhead stays responsive.

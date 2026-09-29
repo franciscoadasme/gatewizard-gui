@@ -1,0 +1,193 @@
+'use strict'
+
+/**
+ * Electron/Chromium single-instance lock on Linux uses SingletonLock (symlink
+ * hostname-pid), SingletonSocket, and SingletonCookie under userData.
+ *
+ * After pkill / crash, those files often remain. The next launch then tries to
+ * notify the dead peer and logs:
+ *   ERROR:chrome/browser/process_singleton_posix.cc:… write() failed: Broken pipe
+ *
+ * Clearing only when the recorded PID is gone avoids the ERROR spam and still
+ * preserves a live second-instance handoff.
+ */
+
+const fsDefault = require('fs')
+const os = require('os')
+const path = require('path')
+
+const SINGLETON_NAMES = ['SingletonLock', 'SingletonSocket', 'SingletonCookie']
+
+/**
+ * @param {{ platform?: string, homedir?: string }} [opts]
+ * @returns {string}
+ */
+function getSingletonUserDataDir(opts = {}) {
+  const platform = opts.platform || process.platform
+  const home = opts.homedir || os.homedir()
+  if (platform === 'darwin') {
+    return path.join(home, 'Library', 'Application Support', 'gatewizard-gui')
+  }
+  if (platform === 'win32') {
+    const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming')
+    return path.join(appData, 'gatewizard-gui')
+  }
+  return path.join(home, '.config', 'gatewizard-gui')
+}
+
+/**
+ * @param {string} target symlink target like "hostname-12345"
+ * @returns {number | null}
+ */
+function parseSingletonLockPid(target) {
+  if (typeof target !== 'string' || !target) return null
+  const dash = target.lastIndexOf('-')
+  if (dash < 0 || dash === target.length - 1) return null
+  const raw = target.slice(dash + 1)
+  if (!/^\d+$/.test(raw)) return null
+  const pid = Number(raw)
+  if (!Number.isInteger(pid) || pid <= 0) return null
+  return pid
+}
+
+/**
+ * @param {number} pid
+ * @param {{ kill?: (pid: number, signal?: number | string) => true }} [proc]
+ * @returns {boolean}
+ */
+function isPidAlive(pid, proc = process) {
+  try {
+    proc.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Remove Chromium singleton files when SingletonLock points at a dead local PID.
+ * @param {string} userDataDir
+ * @param {{
+ *   lstatSync?: Function,
+ *   readlinkSync?: Function,
+ *   rmSync?: Function,
+ *   existsSync?: Function,
+ *   kill?: (pid: number, signal?: number | string) => true,
+ *   platform?: string
+ * }} [opts]
+ * @returns {{ cleared: boolean, pid?: number | null, reason?: string }}
+ */
+function clearStaleSingletonLock(userDataDir, opts = {}) {
+  const platform = opts.platform || process.platform
+  if (platform !== 'linux' && platform !== 'darwin') {
+    return { cleared: false, reason: 'unsupported-platform' }
+  }
+  if (!userDataDir) return { cleared: false, reason: 'no-dir' }
+
+  const fs = {
+    lstatSync: opts.lstatSync || fsDefault.lstatSync,
+    readlinkSync: opts.readlinkSync || fsDefault.readlinkSync,
+    rmSync: opts.rmSync || fsDefault.rmSync,
+    existsSync: opts.existsSync || fsDefault.existsSync
+  }
+  const proc = { kill: opts.kill || process.kill.bind(process) }
+
+  const lockPath = path.join(userDataDir, 'SingletonLock')
+  let st
+  try {
+    st = fs.lstatSync(lockPath)
+  } catch {
+    // No lock — drop orphaned socket/cookie if present (prevents pipe noise).
+    return removeOrphanSocketFiles(userDataDir, fs)
+  }
+
+  if (!st.isSymbolicLink()) {
+    return { cleared: false, reason: 'not-symlink' }
+  }
+
+  let target
+  try {
+    target = fs.readlinkSync(lockPath)
+  } catch {
+    return { cleared: false, reason: 'unreadable' }
+  }
+
+  const pid = parseSingletonLockPid(String(target))
+  if (pid == null) {
+    return { cleared: false, reason: 'malformed', pid: null }
+  }
+
+  if (isPidAlive(pid, proc)) {
+    return { cleared: false, reason: 'alive', pid }
+  }
+
+  // Re-check before mutate to shrink the race window with a live relaunch.
+  if (isPidAlive(pid, proc)) {
+    return { cleared: false, reason: 'alive', pid }
+  }
+
+  for (const name of SINGLETON_NAMES) {
+    try {
+      fs.rmSync(path.join(userDataDir, name), { force: true })
+    } catch {
+      /* best-effort */
+    }
+  }
+  return { cleared: true, pid, reason: 'stale' }
+}
+
+/**
+ * @param {string} userDataDir
+ * @param {{ existsSync: Function, rmSync: Function }} fs
+ */
+function removeOrphanSocketFiles(userDataDir, fs) {
+  const sock = path.join(userDataDir, 'SingletonSocket')
+  const cookie = path.join(userDataDir, 'SingletonCookie')
+  let had = false
+  try {
+    if (fs.existsSync(sock) || fs.existsSync(cookie)) had = true
+  } catch {
+    return { cleared: false, reason: 'no-lock' }
+  }
+  if (!had) return { cleared: false, reason: 'no-lock' }
+  for (const p of [sock, cookie]) {
+    try {
+      fs.rmSync(p, { force: true })
+    } catch {
+      /* best-effort */
+    }
+  }
+  return { cleared: true, pid: null, reason: 'orphan-socket' }
+}
+
+/** POSIX sh for the packaged Linux launcher (before Electron exec). */
+function buildSingletonLockShell() {
+  return `
+# Drop stale Chromium single-instance lock (generated by singleton-lock.cjs)
+gw_singleton_dir="\${XDG_CONFIG_HOME:-\$HOME/.config}/gatewizard-gui"
+gw_singleton_lock="\$gw_singleton_dir/SingletonLock"
+if [ -L "\$gw_singleton_lock" ]; then
+  gw_singleton_target=\$(readlink "\$gw_singleton_lock" 2>/dev/null) || gw_singleton_target=""
+  gw_singleton_pid="\${gw_singleton_target##*-}"
+  case "\$gw_singleton_pid" in
+    ''|*[!0-9]*) ;;
+    *)
+      if ! kill -0 "\$gw_singleton_pid" 2>/dev/null; then
+        rm -f "\$gw_singleton_lock" "\$gw_singleton_dir/SingletonSocket" "\$gw_singleton_dir/SingletonCookie" 2>/dev/null || true
+      fi
+      ;;
+  esac
+elif [ ! -e "\$gw_singleton_lock" ]; then
+  rm -f "\$gw_singleton_dir/SingletonSocket" "\$gw_singleton_dir/SingletonCookie" 2>/dev/null || true
+fi
+`
+}
+
+module.exports = {
+  SINGLETON_NAMES,
+  getSingletonUserDataDir,
+  parseSingletonLockPid,
+  isPidAlive,
+  clearStaleSingletonLock,
+  buildSingletonLockShell
+}
