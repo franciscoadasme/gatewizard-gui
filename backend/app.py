@@ -209,6 +209,25 @@ _GUESS_BOND_VDWRADII = {
     "Zn": 1.39,
     "ZN": 1.39,
 }
+
+# Covalent radii (Å) for LINK distance validation (not VdW).
+_COVALENT_RADII_A = {
+    "H": 0.31,
+    "C": 0.76,
+    "N": 0.71,
+    "O": 0.66,
+    "S": 1.05,
+    "P": 1.07,
+    "F": 0.57,
+    "CL": 0.99,
+    "BR": 1.14,
+    "I": 1.33,
+    "SE": 1.20,
+    "DEFAULT": 0.77,
+}
+_LINK_COVALENT_FACTOR = 1.3
+_LINK_COVALENT_MIN_A = 0.5
+_LINK_COVALENT_HARD_MAX_A = 2.5
 LIPID_NAMES = [
     "DPPC",
     "DMPC",
@@ -391,16 +410,92 @@ def _existing_bond_pairs(u: mda.Universe) -> set[tuple[int, int]]:
     return pairs
 
 
+def _atom_element_symbol(atom) -> str:
+    el = ""
+    try:
+        el = str(atom.element).strip().upper()
+    except (mda.exceptions.NoDataError, AttributeError, TypeError, ValueError):
+        el = ""
+    if el and el != "DUMMY":
+        return el
+    name = str(getattr(atom, "name", "") or "").strip().upper()
+    if not name:
+        return "DEFAULT"
+    # PDB-style names: CA, CB, OG1, FE → first letter(s) that look like an element.
+    if name[0].isdigit() and len(name) > 1:
+        name = name[1:]
+    if len(name) >= 2 and name[1].isalpha() and name[1].islower():
+        return name[:2].upper()
+    if len(name) >= 2 and name[:2] in _COVALENT_RADII_A:
+        return name[:2]
+    return name[0]
+
+
+def _covalent_radius_a(atom) -> float:
+    return float(_COVALENT_RADII_A.get(_atom_element_symbol(atom), _COVALENT_RADII_A["DEFAULT"]))
+
+
+def _link_pair_within_covalent(u: mda.Universe, i: int, j: int) -> bool:
+    """True when Cartesian distance is a plausible covalent length (non-periodic)."""
+    try:
+        pos = u.atoms.positions
+        d = float(np.linalg.norm(pos[i] - pos[j]))
+    except Exception:
+        return False
+    if d < _LINK_COVALENT_MIN_A or d > _LINK_COVALENT_HARD_MAX_A:
+        return False
+    ri = _covalent_radius_a(u.atoms[i])
+    rj = _covalent_radius_a(u.atoms[j])
+    return d < (ri + rj) * _LINK_COVALENT_FACTOR
+
+
+def _parse_pdb_link_endpoint(line: str, name_slice: slice, chain_i: int, resid_slice: slice):
+    """Parse one LINK endpoint → (chain, resid, atom_name) or None."""
+    if len(line) <= max(name_slice.stop, resid_slice.stop, chain_i):
+        return None
+    name = line[name_slice].strip().upper()
+    if not name:
+        return None
+    chain = line[chain_i : chain_i + 1].strip().upper()
+    try:
+        resid = int(line[resid_slice].strip())
+    except ValueError:
+        return None
+    return (chain, resid, name)
+
+
 def _add_bonds_from_pdb_link_records(pdb_path: str, u: mda.Universe) -> int:
-    """Add covalent bonds from PDB LINK records (intra-chain peptide links, etc.)."""
-    serial_to_index: dict[int, int] = {}
+    """Add covalent bonds from PDB LINK records (disulfides, polymer links, etc.).
+
+    Resolves endpoints by chain / residue / atom name (PDB LINK has no serials).
+    Metal coordination and mis-parses are rejected by a Cartesian covalent-length check.
+    """
+    # (chain, resid, atom_name) → atom index. First match wins (altLoc A preferred by MDA order).
+    key_to_index: dict[tuple[str, int, str], int] = {}
     try:
         for atom in u.atoms:
+            chain = ""
             try:
-                serial = int(atom.id)
+                chain = str(getattr(atom, "chainID", "") or "").strip().upper()
+            except Exception:
+                chain = ""
+            if not chain:
+                try:
+                    chain = str(getattr(atom, "segid", "") or "").strip().upper()
+                except Exception:
+                    chain = ""
+            if chain in {"", "SYSTEM", "DEFAULT"}:
+                chain = ""
+            try:
+                resid = int(atom.resid)
             except (TypeError, ValueError, AttributeError):
                 continue
-            serial_to_index[serial] = int(atom.index)
+            name = str(atom.name).strip().upper()
+            if not name:
+                continue
+            key = (chain, resid, name)
+            if key not in key_to_index:
+                key_to_index[key] = int(atom.index)
     except Exception:
         return 0
 
@@ -411,18 +506,20 @@ def _add_bonds_from_pdb_link_records(pdb_path: str, u: mda.Universe) -> int:
             for line in handle:
                 if not line.startswith("LINK"):
                     continue
-                # PDB LINK: atom1 serial cols 23-27, atom2 serial cols 53-57 (1-based)
+                # PDB LINK columns (1-based): name1 13-16, chain1 22, resSeq1 23-26,
+                # name2 43-46, chain2 52, resSeq2 53-56.
                 if len(line) < 57:
                     continue
-                try:
-                    s1 = int(line[22:27].strip())
-                    s2 = int(line[52:57].strip())
-                except ValueError:
+                ep1 = _parse_pdb_link_endpoint(line, slice(12, 16), 21, slice(22, 26))
+                ep2 = _parse_pdb_link_endpoint(line, slice(42, 46), 51, slice(52, 56))
+                if ep1 is None or ep2 is None:
                     continue
-                if s1 not in serial_to_index or s2 not in serial_to_index:
+                i = key_to_index.get(ep1)
+                j = key_to_index.get(ep2)
+                if i is None or j is None or i == j:
                     continue
-                i = serial_to_index[s1]
-                j = serial_to_index[s2]
+                if not _link_pair_within_covalent(u, i, j):
+                    continue
                 key = (i, j) if i < j else (j, i)
                 if key in existing:
                     continue
@@ -438,6 +535,41 @@ def _add_bonds_from_pdb_link_records(pdb_path: str, u: mda.Universe) -> int:
     except Exception:
         return 0
     return len(new_pairs)
+
+
+def _guess_bonds_nonperiodic(ag: mda.AtomGroup) -> None:
+    """Distance-guess covalent bonds without PBC (GUI draws unwrapped sticks).
+
+    MDAnalysis ``AtomGroup.guess_bonds`` passes ``box=self.dimensions`` since
+    0.20.2; CRYST1 then creates minimum-image pairs that become long Cartesian
+    sticks in the viewer. Guess with ``box=None`` instead.
+    """
+    from MDAnalysis.guesser.default_guesser import DefaultGuesser
+
+    if len(ag) < 2:
+        return
+    guesser = DefaultGuesser(
+        None,
+        fudge_factor=0.55,
+        lower_bound=0.1,
+        box=None,
+        vdwradii=_GUESS_BOND_VDWRADII,
+    )
+    pairs = guesser.guess_bonds(ag.atoms, ag.atoms.positions)
+    if not pairs:
+        return
+    existing = _existing_bond_pairs(ag.universe)
+    new_pairs = []
+    for raw in pairs:
+        i, j = int(raw[0]), int(raw[1])
+        key = (i, j) if i < j else (j, i)
+        if key in existing:
+            continue
+        existing.add(key)
+        new_pairs.append(key)
+    if not new_pairs:
+        return
+    ag.universe.add_bonds(new_pairs)
 
 
 def _add_water_template_bonds(u: mda.Universe) -> int:
@@ -501,7 +633,7 @@ def _ensure_bonds_efficient(u: mda.Universe, pdb_path: str | None = None) -> str
     before = _existing_bond_pairs(u)
 
     def _guess(ag: mda.AtomGroup) -> None:
-        ag.guess_bonds(vdwradii=_GUESS_BOND_VDWRADII)
+        _guess_bonds_nonperiodic(ag)
 
     solute = None
     try:
@@ -2749,9 +2881,10 @@ class PreparePDBRequest(BaseModel):
     complete_missing_atoms: bool = Field(
         True,
         description=(
-            "Fill missing protein heavy atoms from Amber residue templates (tleap) "
-            "before protonation. Does not build missing loop residues. Ligands, "
-            "water, and ions are left unchanged."
+            "After Amber protonation names (ASH, GLH, HIP, …), fill missing protein "
+            "atoms from tleap residue templates, including the extra protons. Does "
+            "not build missing loop residues. Ligands, water, and ions are left "
+            "unchanged."
         ),
     )
     add_hydrogens: bool = Field(
@@ -2851,19 +2984,16 @@ def prepare_pdb(payload: PreparePDBRequest) -> dict:
     os.close(fd_complete)
 
     try:
-        protonation_input = path
-        complete_info: dict = {}
-        if payload.complete_missing_atoms:
-            complete_info = complete_missing_heavy_atoms(path, tmp_complete)
-            protonation_input = tmp_complete
-
         custom_states = {
             get_residue_id(info): info["current_state"]
             for info in payload.protonation_states
             if info["current_state"] != info["initial_state"]
         }
+        # Names first (ASP→ASH, …), then tleap. Completing on ASP and renaming
+        # afterward leaves ASH/GLH/HIP without the extra Amber proton — the
+        # same templates packmol-memgen uses at final parametrization.
         manager.apply_protonation_states(
-            protonation_input,
+            path,
             tmp_path,
             payload.target_ph,
             custom_states,
@@ -2874,6 +3004,11 @@ def prepare_pdb(payload: PreparePDBRequest) -> dict:
         remap_pdb_peptide_resnames(tmp_path, tmp_path)
 
         manager.apply_disulfide_bonds(tmp_path, tmp_path, payload.disulfide_bonds)
+
+        complete_info: dict = {}
+        if payload.complete_missing_atoms:
+            complete_info = complete_missing_heavy_atoms(tmp_path, tmp_complete)
+            shutil.copyfile(tmp_complete, tmp_path)
 
         reduce_available = resolve_reduce_executable() is not None
         removed_h = 0
@@ -6614,15 +6749,92 @@ def transform_apply(payload: TransformRequest) -> dict:
 _mempro_jobs: dict = {}  # job_id → {status, results, error, ...}
 
 
-def _mempro_state_file(working_dir: str) -> str:
+def _mempro_jobs_dir(working_dir: str) -> str:
+    return os.path.join(working_dir, ".mempro_jobs")
+
+
+def _mempro_job_file(working_dir: str, job_id: str) -> str:
+    return os.path.join(_mempro_jobs_dir(working_dir), f"{job_id}.json")
+
+
+def _legacy_mempro_state_file(working_dir: str) -> str:
     return os.path.join(working_dir, ".mempro_job.json")
 
 
 def _write_mempro_state(state_file: str, data: dict) -> None:
+    parent = os.path.dirname(state_file)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     tmp = state_file + ".tmp"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f)
     os.replace(tmp, state_file)
+
+
+def _read_mempro_state(state_file: str) -> dict | None:
+    if not os.path.isfile(state_file):
+        return None
+    try:
+        with open(state_file, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _refresh_running_mempro_state(state: dict, state_file: str | None = None) -> dict:
+    """If status is running, verify the worker PID is still alive."""
+    if state.get("status") != "running":
+        return state
+    pid = state.get("pid")
+    if not pid:
+        return state
+    try:
+        os.kill(int(pid), 0)
+    except (ProcessLookupError, OSError, TypeError, ValueError):
+        state = dict(state)
+        state["status"] = "error"
+        state["error"] = "Worker process terminated unexpectedly"
+        if state_file:
+            try:
+                _write_mempro_state(state_file, state)
+            except Exception:
+                pass
+    return state
+
+
+def _list_mempro_job_files(working_dir: str) -> list[tuple[str, dict]]:
+    """Return [(path, state), ...] for persisted MemPro jobs (newest first)."""
+    found: list[tuple[str, dict]] = []
+    jobs_dir = _mempro_jobs_dir(working_dir)
+    if os.path.isdir(jobs_dir):
+        for name in os.listdir(jobs_dir):
+            if not name.endswith(".json"):
+                continue
+            path = os.path.join(jobs_dir, name)
+            state = _read_mempro_state(path)
+            if state and state.get("job_id"):
+                state = _refresh_running_mempro_state(state, path)
+                found.append((path, state))
+                _mempro_jobs[str(state["job_id"])] = state
+
+    legacy = _legacy_mempro_state_file(working_dir)
+    legacy_state = _read_mempro_state(legacy)
+    if legacy_state and legacy_state.get("job_id"):
+        job_id = str(legacy_state["job_id"])
+        if not any(s.get("job_id") == job_id for _, s in found):
+            legacy_state = _refresh_running_mempro_state(legacy_state, legacy)
+            # Migrate into the multi-job folder so later scans see it.
+            try:
+                migrated = _mempro_job_file(working_dir, job_id)
+                _write_mempro_state(migrated, legacy_state)
+                found.append((migrated, legacy_state))
+            except Exception:
+                found.append((legacy, legacy_state))
+            _mempro_jobs[job_id] = legacy_state
+
+    found.sort(key=lambda item: str(item[1].get("start_time") or ""), reverse=True)
+    return found
 
 
 class MemProRunRequest(BaseModel):
@@ -6636,6 +6848,8 @@ class MemProRunRequest(BaseModel):
     use_weights: bool = False
     flip: bool = False
     membrane_thickness: float | None = None
+    source_label: str | None = None
+    structure_id: str | None = None
 
 
 @app.post("/mempro/run")
@@ -6653,8 +6867,10 @@ def mempro_run(payload: MemProRunRequest) -> dict:
 
     job_id = str(uuid.uuid4())
     start_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    source_path = os.path.abspath(os.path.expanduser(payload.path))
+    source_label = (payload.source_label or "").strip() or Path(source_path).name
     params = {
-        "path": payload.path,
+        "path": source_path,
         "n_cpus": payload.n_cpus,
         "n_iters": payload.n_iters,
         "grid_size": payload.grid_size,
@@ -6665,18 +6881,23 @@ def mempro_run(payload: MemProRunRequest) -> dict:
         "membrane_thickness": payload.membrane_thickness,
     }
 
+    state = {
+        "job_id": job_id,
+        "status": "running",
+        "start_time": start_time,
+        "params": params,
+        "source_path": source_path,
+        "source_label": source_label,
+        "structure_id": payload.structure_id,
+        "results": None,
+        "error": None,
+        "pid": None,
+        "working_dir": payload.working_dir,
+    }
+
     if payload.working_dir:
         # Persistent path: detached subprocess that survives backend/app close
-        state = {
-            "job_id": job_id,
-            "status": "running",
-            "start_time": start_time,
-            "params": params,
-            "results": None,
-            "error": None,
-            "pid": None,
-        }
-        state_file = _mempro_state_file(payload.working_dir)
+        state_file = _mempro_job_file(payload.working_dir, job_id)
         _write_mempro_state(state_file, state)
         worker_script = os.path.join(os.path.dirname(__file__), "mempro_worker.py")
         proc = subprocess.Popen(
@@ -6691,19 +6912,13 @@ def mempro_run(payload: MemProRunRequest) -> dict:
         _mempro_jobs[job_id] = state
     else:
         # In-memory fallback (no working_dir — results lost on app close)
-        _mempro_jobs[job_id] = {
-            "job_id": job_id,
-            "status": "running",
-            "start_time": start_time,
-            "results": None,
-            "error": None,
-        }
+        _mempro_jobs[job_id] = state
 
         def _run() -> None:
             try:
                 mp = MemPrO()
                 results = mp.run(
-                    payload.path,
+                    source_path,
                     n_cpus=payload.n_cpus,
                     n_iters=payload.n_iters,
                     grid_size=payload.grid_size,
@@ -6732,44 +6947,74 @@ def mempro_run(payload: MemProRunRequest) -> dict:
 
         threading.Thread(target=_run, daemon=True).start()
 
-    return {"job_id": job_id, "start_time": start_time}
+    return {
+        "job_id": job_id,
+        "start_time": start_time,
+        "source_path": source_path,
+        "source_label": source_label,
+        "structure_id": payload.structure_id,
+    }
 
 
 @app.get("/mempro/scan")
 def mempro_scan(working_dir: str) -> dict:
-    """Return persisted MemPro job state from the working directory, if any."""
-    state_file = _mempro_state_file(working_dir)
-    if not os.path.exists(state_file):
-        return {"found": False}
-    try:
-        with open(state_file) as f:
-            state = json.load(f)
-    except Exception:
-        return {"found": False}
-    # If still marked running, verify the worker PID is actually alive
-    if state.get("status") == "running":
-        pid = state.get("pid")
-        if pid:
-            try:
-                os.kill(pid, 0)
-            except (ProcessLookupError, OSError):
-                # Worker died without updating the state file (crash)
-                state["status"] = "error"
-                state["error"] = "Worker process terminated unexpectedly"
-                _write_mempro_state(state_file, state)
-    return {"found": True, **state}
+    """Return all persisted MemPro jobs from the working directory (newest first)."""
+    jobs = [state for _, state in _list_mempro_job_files(working_dir)]
+    if not jobs:
+        return {"found": False, "jobs": []}
+    latest = jobs[0]
+    return {
+        "found": True,
+        "jobs": jobs,
+        # Backward-compatible top-level fields = newest job
+        "job_id": latest.get("job_id"),
+        "status": latest.get("status"),
+        "start_time": latest.get("start_time"),
+        "results": latest.get("results"),
+        "error": latest.get("error"),
+        "pid": latest.get("pid"),
+        "source_path": latest.get("source_path")
+        or (latest.get("params") or {}).get("path"),
+        "source_label": latest.get("source_label"),
+        "structure_id": latest.get("structure_id"),
+        "params": latest.get("params"),
+    }
 
 
 @app.get("/mempro/status/{job_id}")
-def mempro_status(job_id: str) -> dict:
-    if job_id not in _mempro_jobs:
-        raise HTTPException(404, f"MemPro job {job_id!r} not found")
-    return _mempro_jobs[job_id]
+def mempro_status(job_id: str, working_dir: str | None = None) -> dict:
+    if job_id in _mempro_jobs:
+        state = _mempro_jobs[job_id]
+        wd = working_dir or state.get("working_dir")
+        if wd and state.get("status") == "running":
+            disk = _read_mempro_state(_mempro_job_file(wd, job_id))
+            if disk:
+                disk = _refresh_running_mempro_state(disk, _mempro_job_file(wd, job_id))
+                _mempro_jobs[job_id] = disk
+                return disk
+        return state
+    if working_dir:
+        path = _mempro_job_file(working_dir, job_id)
+        state = _read_mempro_state(path)
+        if state:
+            state = _refresh_running_mempro_state(state, path)
+            _mempro_jobs[job_id] = state
+            return state
+        legacy = _read_mempro_state(_legacy_mempro_state_file(working_dir))
+        if legacy and str(legacy.get("job_id")) == job_id:
+            legacy = _refresh_running_mempro_state(
+                legacy, _legacy_mempro_state_file(working_dir)
+            )
+            _mempro_jobs[job_id] = legacy
+            return legacy
+    raise HTTPException(404, f"MemPro job {job_id!r} not found")
 
 
 class MemProApplyRequest(BaseModel):
     pdb_path: str
     source_path: str | None = None
+    source_label: str | None = None
+    target_label: str | None = None
 
 
 @app.post("/mempro/apply")
@@ -6787,7 +7032,17 @@ def mempro_apply(payload: MemProApplyRequest) -> dict:
                 lambda mv: mv.apply_mempro_orientation(oriented_pdb),
             )
         except (StructureError, MemProError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            src_label = (payload.source_label or "").strip() or Path(source_path).name
+            tgt_label = (payload.target_label or "").strip() or Path(source_path).name
+            ori_name = Path(oriented_pdb).name
+            detail = (
+                f"{exc}\n\n"
+                f"MemPro run source: {src_label}\n"
+                f"Apply target structure: {tgt_label}\n"
+                f"Oriented PDB: {ori_name}\n"
+                "Choose the same structure that was used for the MemPro run."
+            )
+            raise HTTPException(status_code=400, detail=detail) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
