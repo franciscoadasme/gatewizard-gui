@@ -54,6 +54,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Analysis custom outside legend:** Side includes Custom. X and Y are percent from the top-left of the figure, and the legend can be dragged there. Publication PNG uses the same position.
+- **Analysis energetic plot settings:** a Property picker chooses which log the settings edit. Y tick count, decimals, and step can differ per cell; X ticks stay shared across the mosaic. Line color can be typed as well as picked.
 - **Visualize center on visible:** structure-row focus icon frames the camera on that structure’s visible representations (drawn coords). Toolbar reset still frames the whole active structure and restores the home orbit.
 - **Visualize representation clip:** gear **Clip** hard-cuts one representation (camera slab or world X/Y/Z Near/Far). Independent of global depth cueing. Saved in viewpoints and animation keyframes; Near/Far interpolate.
 - **Visualize scene lighting:** Scene rendering gains **Follow camera** (default, stable shading while orbiting) vs **Fixed in world** lights, per-light and ambient colors, hemisphere sky/ground (unchanged), optional **depth cueing** (Near/Far fog), and optional soft **shadows** (strength 0–1, separate softness). World mode shows draggable L1/L2… markers in the viewport; **Reset lights around structure** places key/fill around the current framing. Save view and animation keyframes store the full scene, including session **light/dark theme**.

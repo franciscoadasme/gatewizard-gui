@@ -3185,6 +3185,60 @@
     focusedPanelKey = key
   }
 
+  /**
+   * Plot-settings target for energetic logs (one property at a time).
+   * Prefer the focused property, then the selected mosaic cell.
+   */
+  const energeticPlotPropertyOptions = $derived.by(() => {
+    const keys = energeticPropertyKeys()
+    if (keys.length) return keys
+    return [...selectedProperties]
+  })
+
+  const energeticPlotProperty = $derived.by(() => {
+    const opts = energeticPlotPropertyOptions
+    if (!opts.length) return ''
+    if (focusedPanelKey && opts.includes(focusedPanelKey)) return focusedPanelKey
+    if (energeticCompareLayout === 'grid') {
+      const cell = activeGridCells(energeticGridLayout)[selectedGridCell]
+      const hit = (cell?.propertyKeys || []).find((k) => opts.includes(k))
+      if (hit) return hit
+    }
+    return opts.find((k) => selectedProperties.includes(k)) || opts[0]
+  })
+
+  /**
+   * Choose which log property the energetic plot settings edit.
+   * Also selects the mosaic cell for that property so “This cell” is not stuck on the first one.
+   * @param {string} key
+   */
+  function selectEnergeticPlotProperty(key) {
+    if (!key) return
+    ensureEPlotPanel(key)
+    focusedPanelKey = key
+    if (energeticCompareLayout !== 'grid') return
+    const cells = activeGridCells(energeticGridLayout)
+    const current = cells[selectedGridCell]
+    if ((current?.propertyKeys || []).includes(key)) return
+    let idx = cells.findIndex(
+      (c) => (c.propertyKeys || []).includes(key) && (c.setIds || []).includes(activeSetId)
+    )
+    if (idx < 0) idx = cells.findIndex((c) => (c.propertyKeys || []).includes(key))
+    if (idx >= 0) selectedGridCell = idx
+  }
+
+  /**
+   * Select a mosaic cell and keep the property picker on a property in that cell.
+   * @param {number} index
+   */
+  function selectEnergeticGridCell(index) {
+    selectedGridCell = index
+    const keys = activeGridCells(energeticGridLayout)[index]?.propertyKeys || []
+    if (!keys.length || keys.includes(focusedPanelKey)) return
+    ensureEPlotPanel(keys[0])
+    focusedPanelKey = keys[0]
+  }
+
   /** @param {string} key @param {{ xMin?: number|null, xMax?: number|null, yMin?: number|null, yMax?: number|null }} range */
   function applyPanelAxisRange(key, range) {
     if (!key) return
@@ -3874,7 +3928,11 @@
     markSessionDirty()
     const globalOnly = {}
     const rest = { ...patch }
-    for (const key of ['xTickStep', 'yTickStep', 'xTickCount', 'yTickCount', 'xTickDecimals', 'yTickDecimals', 'xMin', 'xMax']) {
+    const sharedAcrossCells =
+      mode === 'energetic'
+        ? ['xTickStep', 'xTickCount', 'xTickDecimals', 'xMin', 'xMax']
+        : ['xTickStep', 'yTickStep', 'xTickCount', 'yTickCount', 'xTickDecimals', 'yTickDecimals', 'xMin', 'xMax']
+    for (const key of sharedAcrossCells) {
       if (key in rest) {
         globalOnly[key] = rest[key]
         delete rest[key]
@@ -4700,7 +4758,10 @@
         const cellW = 3.6
         let figW = Math.max(6, cols * cellW)
         let figH = Math.max(3, rows * (cellW / Math.max(0.4, aspect)))
-        if (energeticGridLayout.legendMode === 'outside') {
+        if (
+          energeticGridLayout.legendMode === 'outside' &&
+          energeticGridLayout.legendOutside !== 'custom'
+        ) {
           if (
             energeticGridLayout.legendOutside === 'top' ||
             energeticGridLayout.legendOutside === 'bottom'
@@ -4742,6 +4803,8 @@
               cell: Number(energeticGridLayout.legendCell) || 0,
               loc: energeticGridLayout.legendOutside,
               align: energeticGridLayout.legendOutsideAlign || 'center',
+              x: Number(energeticGridLayout.legendOutsideX),
+              y: Number(energeticGridLayout.legendOutsideY),
               entries: energeticGridLayout.legendEntries,
               fontsize: guiSvgFontToMpl(outsideLegendFontSize(energeticGridLayout), 8),
               title_fontsize: guiSvgFontToMpl(
@@ -7086,7 +7149,7 @@
         const cellW = 3.6
         let figW = Math.max(6, cols * cellW)
         let figH = Math.max(3, rows * (cellW / Math.max(0.4, aspect)))
-        if (gridLayout.legendMode === 'outside') {
+        if (gridLayout.legendMode === 'outside' && gridLayout.legendOutside !== 'custom') {
           if (gridLayout.legendOutside === 'top' || gridLayout.legendOutside === 'bottom') figH += 0.75
           else figW += 2.1
         }
@@ -7123,6 +7186,8 @@
               cell: Number(gridLayout.legendCell) || 0,
               loc: gridLayout.legendOutside,
               align: gridLayout.legendOutsideAlign || 'center',
+              x: Number(gridLayout.legendOutsideX),
+              y: Number(gridLayout.legendOutsideY),
               entries: gridLayout.legendEntries,
               fontsize: guiSvgFontToMpl(outsideLegendFontSize(gridLayout), 8),
               title_fontsize: guiSvgFontToMpl(outsideLegendTitleFontSize(gridLayout), 8),
@@ -7468,7 +7533,7 @@
     {chartInteractionMode}
     {statsRange}
     xTickStep={ePlotGlobal.xTickStep || ''}
-    yTickStep={ePlotGlobal.yTickStep || ''}
+    yTickStep={cps.yTickStep != null ? cps.yTickStep : ePlotGlobal.yTickStep || ''}
     {structReferenceLines}
     structReferenceBands={structReferenceBandsDraw}
     editing={gridCellEditorOpen === idx}
@@ -7478,11 +7543,11 @@
     availableProperties={energeticPropertyKeys()}
     sets={gridChipSets}
     onSelectCell={(i) => {
-      selectedGridCell = i
+      selectEnergeticGridCell(i)
       if (gridCellEditorOpen != null && gridCellEditorOpen !== i) gridCellEditorOpen = null
     }}
     onEditCell={() => {
-      selectedGridCell = idx
+      selectEnergeticGridCell(idx)
       gridCellEditorOpen = gridCellEditorOpen === idx ? null : idx
     }}
     onCloseEditor={() => (gridCellEditorOpen = null)}
@@ -9103,6 +9168,25 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           <div class="plot-settings-section">
             <div class="plot-settings-section-static">
               <p class="plot-settings-section-title">Figure</p>
+            {#if mode === 'energetic' && energeticPlotPropertyOptions.length > 0}
+              <div data-option-id="plot-property">
+                <p class="sidebar-label mb-0.5">Property</p>
+                <Select
+                  size="sm"
+                  className="w-full"
+                  value={energeticPlotProperty}
+                  title="Which log property these plot settings edit"
+                  onchange={(e) =>
+                    selectEnergeticPlotProperty(
+                      /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                    )}
+                >
+                  {#each energeticPlotPropertyOptions as prop (prop)}
+                    <option value={prop}>{prop}</option>
+                  {/each}
+                </Select>
+              </div>
+            {/if}
             {#if toolbarIsGrid}
               <div>
                 <p class="sidebar-label mb-0.5">Apply settings</p>
@@ -9123,7 +9207,9 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 </div>
                 <p class="sidebar-hint">
                   {activeMosaicLayout.plotApplyScope === 'cell'
-                    ? 'Applies to the selected square (click a plot to choose it).'
+                    ? mode === 'energetic' && energeticPlotProperty
+                      ? `Applies to ${energeticPlotProperty} (cell ${selectedGridCell + 1}). Change Property above, or click a plot.`
+                      : 'Applies to the selected square (click a plot to choose it).'
                     : 'Applies to every square.'}
                 </p>
               </div>
@@ -9392,7 +9478,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                         min="2"
                         max="20"
                         step="1"
-                        value={ps.yTickCount}
+                        value={mode === 'energetic' ? plotEdit.yTickCount : ps.yTickCount}
                         className="w-full min-w-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                         title="Number of Y tick marks. Clears Y tick step so count is used."
                         oninput={(e) =>
@@ -9411,7 +9497,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                         min="0"
                         max="8"
                         step="1"
-                        value={ps.yTickDecimals}
+                        value={mode === 'energetic' ? (plotEdit.yTickDecimals ?? '') : ps.yTickDecimals}
                         placeholder="auto"
                         className="w-full min-w-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                         title="Y tick decimal places. Empty = auto."
@@ -9456,7 +9542,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                       type="number"
                       min="0"
                       step="any"
-                      value={ps.yTickStep || ''}
+                      value={mode === 'energetic' ? plotEdit.yTickStep || '' : ps.yTickStep || ''}
                       placeholder="count"
                       className="w-full"
                       title="Spacing in Y units. Empty uses tick count."
@@ -9976,8 +10062,8 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                       </div>
                     </div>
                   {:else if mode === 'energetic'}
-                    {#if selectedProperties[0]}
-                      {@const pk = selectedProperties[0]}
+                    {#if energeticPlotProperty}
+                      {@const pk = energeticPlotProperty}
                       <div
                         class={optionsSearchHighlightId === 'line-color'
                           ? 'option-pulse-highlight rounded p-0.5'
@@ -9988,7 +10074,9 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                         <div class="flex items-center gap-1">
                           <input
                             type="color"
-                            value={ePlotPanels[pk]?.lineColor || '#f59e0b'}
+                            value={/^#[0-9a-fA-F]{6}$/.test(ePlotPanels[pk]?.lineColor || '')
+                              ? ePlotPanels[pk].lineColor
+                              : '#f59e0b'}
                             class="h-7 w-8 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
                             oninput={(e) => {
                               ensureEPlotPanel(pk)
@@ -9996,6 +10084,25 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                               ePlotPanels = {
                                 ...ePlotPanels,
                                 [pk]: { ...ePlotPanels[pk], lineColor: e.currentTarget.value }
+                              }
+                              cellLineCache = new WeakMap()
+                              syncEnergeticChartViewFromSets()
+                            }}
+                          />
+                          <Input
+                            size="sm"
+                            blurOnEnter
+                            value={ePlotPanels[pk]?.lineColor || '#f59e0b'}
+                            className="min-w-0 flex-1 font-mono"
+                            oninput={(e) => {
+                              ensureEPlotPanel(pk)
+                              markSessionDirty()
+                              ePlotPanels = {
+                                ...ePlotPanels,
+                                [pk]: {
+                                  ...ePlotPanels[pk],
+                                  lineColor: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                                }
                               }
                               cellLineCache = new WeakMap()
                               syncEnergeticChartViewFromSets()
@@ -11507,6 +11614,24 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
         {/if}
 
         {#if pageActive}
+        {#snippet floatingOutsideLegend()}
+          {@const layout = mode === 'energetic' ? energeticGridLayout : gridLayout}
+          {@const fontFamily =
+            (mode === 'energetic' ? ePlotGlobal.fontFamily : ps.fontFamily) || 'Roboto, sans-serif'}
+          {@const textColor =
+            mode === 'energetic' ? resolvedEnergColors.textColor : resolvedStructColors.textColor}
+          <ChartLegend
+            series={outsideLegendSeries}
+            columns={layout.legendColumns}
+            title={layout.legendTitle}
+            {fontFamily}
+            {...outsideLegendChrome(layout)}
+            {textColor}
+            anchorX={layout.legendOutsideX}
+            anchorY={layout.legendOutsideY}
+            onAnchor={(x, y) => patchGridChrome({ legendOutsideX: x, legendOutsideY: y })}
+          />
+        {/snippet}
         {#if mode === 'structural' && chartView.mode === 'grid'}
           {@const outside = gridLayout.legendMode === 'outside'}
           {@const loc = gridLayout.legendOutside}
@@ -11514,10 +11639,13 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           {@const stripAlign = outsideLegendAlignClasses(gridLayout)}
           {@const stripFlex = outside && (loc === 'left' || loc === 'right') ? stripAlign.wrapper : 'flex-col'}
           <div
-            class={`flex min-w-0 ${stripFlex}`}
+            class={`${loc === 'custom' ? 'relative ' : ''}flex min-w-0 ${stripFlex}`}
             data-chart-mosaic="1"
             style={`gap: ${mosaicGap}; ${gridLayout.figureBg ? `background: ${gridLayout.figureBg};` : ''} padding: 0.25rem; overflow-anchor: none; ${mosaicPanelLetterPadStyle(gridLayout)}`}
           >
+            {#if outside && loc === 'custom'}
+              {@render floatingOutsideLegend()}
+            {/if}
             {#if outside && loc === 'top'}
               <ChartLegend
                 className={stripAlign.self}
@@ -11606,10 +11734,13 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             ps.fontFamily || 'Roboto, sans-serif'
           )}
           <div
-            class={`flex min-w-0 ${stripFlex}`}
+            class={`${loc === 'custom' ? 'relative ' : ''}flex min-w-0 ${stripFlex}`}
             data-chart-export=""
             style={`gap: ${mosaicGap}; ${gridLayout.figureBg ? `background: ${gridLayout.figureBg};` : ''} overflow-anchor: none; ${mosaicPanelLetterPadStyle(gridLayout)}`}
           >
+            {#if outside && loc === 'custom'}
+              {@render floatingOutsideLegend()}
+            {/if}
             {#if outside && loc === 'top'}
               <ChartLegend
                 className={stripAlign.self}
@@ -11715,10 +11846,13 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           {@const stripAlign = outsideLegendAlignClasses(energeticGridLayout)}
           {@const stripFlex = outside && (loc === 'left' || loc === 'right') ? stripAlign.wrapper : 'flex-col'}
           <div
-            class={`flex min-w-0 ${stripFlex}`}
+            class={`${loc === 'custom' ? 'relative ' : ''}flex min-w-0 ${stripFlex}`}
             data-chart-mosaic="1"
             style={`gap: ${mosaicGap}; ${energeticGridLayout.figureBg ? `background: ${energeticGridLayout.figureBg};` : ''} padding: 0.25rem; overflow-anchor: none; ${mosaicPanelLetterPadStyle(energeticGridLayout)}`}
           >
+            {#if outside && loc === 'custom'}
+              {@render floatingOutsideLegend()}
+            {/if}
             {#if outside && loc === 'top'}
               <ChartLegend
                 className={stripAlign.self}
@@ -11828,10 +11962,13 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             ePlotGlobal.fontFamily || 'Roboto, sans-serif'
           )}
           <div
-            class={`flex min-w-0 ${stripFlex}`}
+            class={`${loc === 'custom' ? 'relative ' : ''}flex min-w-0 ${stripFlex}`}
             data-chart-export=""
             style={`gap: ${mosaicGap}; ${energeticGridLayout.figureBg ? `background: ${energeticGridLayout.figureBg};` : ''} overflow-anchor: none; ${mosaicPanelLetterPadStyle(energeticGridLayout)}`}
           >
+            {#if outside && loc === 'custom'}
+              {@render floatingOutsideLegend()}
+            {/if}
             {#if outside && loc === 'top'}
               <ChartLegend
                 className={stripAlign.self}
@@ -12280,7 +12417,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             <div class="space-y-1">
               <p class="sidebar-label mb-0">Placement</p>
               <div class="grid grid-cols-2 gap-1.5">
-                <label>
+                <label class={activeMosaicLayout.legendOutside === 'custom' ? 'col-span-2' : ''}>
                   <span class="sidebar-label mb-0 block">Side</span>
                   <Select
                     size="sm"
@@ -12296,25 +12433,66 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     <option value="top">Top</option>
                     <option value="right">Right</option>
                     <option value="left">Left</option>
+                    <option value="custom">Custom</option>
                   </Select>
                 </label>
-                <label>
-                  <span class="sidebar-label mb-0 block">Align</span>
-                  <Select
-                    size="sm"
-                    className="w-full"
-                    value={activeMosaicLayout.legendOutsideAlign || 'center'}
-                    onchange={(e) =>
-                      patchGridChrome({
-                        legendOutsideAlign: /** @type {HTMLSelectElement} */ (e.currentTarget).value
-                      })
-                    }
-                  >
-                    <option value="start">Start</option>
-                    <option value="center">Center</option>
-                    <option value="end">End</option>
-                  </Select>
-                </label>
+                {#if activeMosaicLayout.legendOutside === 'custom'}
+                  <label title="Percent from the left edge of the figure">
+                    <span class="sidebar-label mb-0 block">X</span>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="-20"
+                      max="120"
+                      step="0.5"
+                      value={activeMosaicLayout.legendOutsideX}
+                      className="w-full"
+                      oninput={(e) =>
+                        patchGridChrome({
+                          legendOutsideX: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                        })
+                      }
+                    />
+                  </label>
+                  <label title="Percent from the top edge of the figure">
+                    <span class="sidebar-label mb-0 block">Y</span>
+                    <Input
+                      size="sm"
+                      type="number"
+                      min="-20"
+                      max="120"
+                      step="0.5"
+                      value={activeMosaicLayout.legendOutsideY}
+                      className="w-full"
+                      oninput={(e) =>
+                        patchGridChrome({
+                          legendOutsideY: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                        })
+                      }
+                    />
+                  </label>
+                  <p class="sidebar-hint col-span-2">
+                    Percent from the top-left of the figure. Drag the legend to place it.
+                  </p>
+                {:else}
+                  <label>
+                    <span class="sidebar-label mb-0 block">Align</span>
+                    <Select
+                      size="sm"
+                      className="w-full"
+                      value={activeMosaicLayout.legendOutsideAlign || 'center'}
+                      onchange={(e) =>
+                        patchGridChrome({
+                          legendOutsideAlign: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                        })
+                      }
+                    >
+                      <option value="start">Start</option>
+                      <option value="center">Center</option>
+                      <option value="end">End</option>
+                    </Select>
+                  </label>
+                {/if}
                 <label>
                   <span class="sidebar-label mb-0 block">Entries</span>
                   <Select

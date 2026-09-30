@@ -18,6 +18,8 @@ import {
   outsidePanelLetterBadge,
   MAX_AXIS_TICKS,
   axisTickFractions,
+  mergeCellPlotSettings,
+  ENERGETIC_CELL_PLOT_KEYS,
   normalizeGridCell,
   normalizeGridLayout,
   normalizeManualLegendItems,
@@ -412,6 +414,19 @@ test('outsideLegendAlignClasses centers side strips by default', () => {
   assert.equal(bottomEnd.self, 'self-end')
 })
 
+test('custom outside legend keeps an x,y anchor from the top-left', () => {
+  const layout = normalizeGridLayout({ legendOutside: 'custom', legendOutsideX: 12.5, legendOutsideY: 80 })
+  assert.equal(layout.legendOutside, 'custom')
+  assert.equal(layout.legendOutsideX, 12.5)
+  assert.equal(layout.legendOutsideY, 80)
+  const defaults = normalizeGridLayout({})
+  assert.equal(defaults.legendOutsideX, 62)
+  assert.equal(defaults.legendOutsideY, 4)
+  const clamped = normalizeGridLayout({ legendOutsideX: 400, legendOutsideY: -80 })
+  assert.equal(clamped.legendOutsideX, 120)
+  assert.equal(clamped.legendOutsideY, -20)
+})
+
 test('normalizeManualLegendItems and seedManualLegendItemsFromSeries', () => {
   assert.deepEqual(normalizeManualLegendItems(null), [])
   const seeded = seedManualLegendItemsFromSeries([
@@ -531,4 +546,20 @@ test('normalizeReferenceBands preserves sibling bound when one field is cleared'
   const ordered = finalizeReferenceBands([{ axis: 'y', min: 50, max: 10 }])
   assert.equal(ordered[0].min, 10)
   assert.equal(ordered[0].max, 50)
+})
+
+test('energetic Y tick settings merge per cell while X stays on the shared base', () => {
+  const base = { yTickCount: '5', yTickDecimals: '2', yTickStep: '10', xTickCount: '6' }
+  const cell = mergeCellPlotSettings(
+    base,
+    { yTickCount: '8', yTickDecimals: '', yTickStep: '', xTickCount: '3' },
+    ENERGETIC_CELL_PLOT_KEYS
+  )
+  assert.equal(cell.yTickCount, '8')
+  assert.equal(cell.yTickDecimals, '')
+  assert.equal(cell.yTickStep, '')
+  assert.equal(cell.xTickCount, '6')
+  const untouched = mergeCellPlotSettings(base, { yMin: '0' }, ENERGETIC_CELL_PLOT_KEYS)
+  assert.equal(untouched.yTickCount, '5')
+  assert.equal(untouched.yTickStep, '10')
 })

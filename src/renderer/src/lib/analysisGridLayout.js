@@ -38,6 +38,9 @@ export const GRID_LAYOUT_DEFAULTS = {
   legendOutside: 'bottom',
   /** Along the strip axis: left/right = vertical, top/bottom = horizontal */
   legendOutsideAlign: 'center',
+  /** Custom placement: percent from the top-left of the figure */
+  legendOutsideX: 62,
+  legendOutsideY: 4,
   legendEntries: 'sets',
   legendColumns: 1,
   legendTitle: '',
@@ -102,7 +105,7 @@ export const GRID_LAYOUT_DEFAULTS = {
 const LABEL_PRESETS = new Set(['all', 'bottom', 'left', 'none'])
 const LAST_ROW = new Set(['start', 'center', 'end'])
 const LEGEND_MODES = new Set(['each', 'one', 'outside', 'none'])
-const LEGEND_OUTSIDE = new Set(['bottom', 'top', 'right', 'left'])
+const LEGEND_OUTSIDE = new Set(['bottom', 'top', 'right', 'left', 'custom'])
 const LEGEND_OUTSIDE_ALIGN = new Set(['start', 'center', 'end'])
 const LEGEND_ENTRIES = new Set(['sets', 'roles', 'both', 'manual'])
 const PANEL_LETTER_POS = new Set(['outside-tl', 'inside-tl', 'outside-tr', 'inside-tr'])
@@ -489,6 +492,8 @@ export function normalizeGridLayout(raw) {
     legendCell: clampInt(src.legendCell, 0, Math.max(0, cellCount - 1), 0),
     legendOutside,
     legendOutsideAlign,
+    legendOutsideX: clampNum(src.legendOutsideX, -20, 120, GRID_LAYOUT_DEFAULTS.legendOutsideX),
+    legendOutsideY: clampNum(src.legendOutsideY, -20, 120, GRID_LAYOUT_DEFAULTS.legendOutsideY),
     legendEntries,
     legendColumns: clampInt(src.legendColumns, 1, 8, 1),
     legendTitle: String(src.legendTitle || ''),
@@ -1260,8 +1265,20 @@ export const CELL_PLOT_KEYS = [
   'plotBgCustomized'
 ]
 
-/** Extra per-cell keys for energetic mosaics (mixed Y units). */
-export const ENERGETIC_CELL_PLOT_KEYS = [...CELL_PLOT_KEYS, 'yMin', 'yMax', 'yLabel', 'title']
+/** Extra per-cell keys for energetic mosaics (mixed Y units). X ticks stay shared. */
+export const ENERGETIC_CELL_PLOT_KEYS = [
+  ...CELL_PLOT_KEYS,
+  'yMin',
+  'yMax',
+  'yLabel',
+  'title',
+  'yTickCount',
+  'yTickDecimals',
+  'yTickStep'
+]
+
+/** Empty string is an explicit per-cell value (auto decimals, or tick count instead of step). */
+const CELL_EMPTY_OVERRIDE_KEYS = new Set(['yTickDecimals', 'yTickStep'])
 
 /**
  * Overlay per-cell plot settings on the analysis-type defaults.
@@ -1273,7 +1290,8 @@ export function mergeCellPlotSettings(base, override, keys = CELL_PLOT_KEYS) {
   const o = override && typeof override === 'object' ? override : {}
   const out = { ...(base || {}) }
   for (const key of keys) {
-    if (o[key] === undefined || o[key] === '') continue
+    if (o[key] === undefined) continue
+    if (o[key] === '' && !CELL_EMPTY_OVERRIDE_KEYS.has(key)) continue
     out[key] = o[key]
   }
   return out

@@ -37,6 +37,14 @@
     exportNode = false,
     className = '',
     /**
+     * When both are finite, the legend floats over its parent (percent from the top-left).
+     * Parent must be position:relative.
+     */
+    anchorX = undefined,
+    anchorY = undefined,
+    /** @type {((x: number, y: number) => void) | undefined} */
+    onAnchor = undefined,
+    /**
      * Draw a framed strip box. When false, still applies border if boxBorderWidth > 0
      * so top/bottom strips can share the same chrome controls.
      */
@@ -143,6 +151,56 @@
     return `width: ${innerW}px; height: ${innerH}px; display: block;`
   })
 
+  const floating = $derived(
+    Number.isFinite(Number(anchorX)) &&
+      Number.isFinite(Number(anchorY)) &&
+      typeof onAnchor === 'function'
+  )
+  const floatingStyle = $derived(
+    floating
+      ? `position:absolute;left:${Number(anchorX)}%;top:${Number(anchorY)}%;z-index:30;cursor:grab;touch-action:none;user-select:none;`
+      : ''
+  )
+
+  /**
+   * Drag the floating legend. X/Y are percents of the parent box, from the top-left.
+   * @param {PointerEvent} event
+   */
+  function onLegendPointerDown(event) {
+    if (!floating || typeof onAnchor !== 'function') return
+    if (event.button != null && event.button !== 0) return
+    const node = /** @type {HTMLElement} */ (event.currentTarget)
+    const host = node.parentElement
+    if (!host) return
+    const rect = host.getBoundingClientRect()
+    if (rect.width < 1 || rect.height < 1) return
+    event.preventDefault()
+    const originX = Number(anchorX) || 0
+    const originY = Number(anchorY) || 0
+    const startX = event.clientX
+    const startY = event.clientY
+    node.setPointerCapture?.(event.pointerId)
+    const move = (/** @type {PointerEvent} */ ev) => {
+      const x = originX + ((ev.clientX - startX) / rect.width) * 100
+      const y = originY + ((ev.clientY - startY) / rect.height) * 100
+      onAnchor(clampLegendPercent(x), clampLegendPercent(y))
+    }
+    const up = () => {
+      node.removeEventListener('pointermove', move)
+      node.removeEventListener('pointerup', up)
+      node.removeEventListener('pointercancel', up)
+    }
+    node.addEventListener('pointermove', move)
+    node.addEventListener('pointerup', up)
+    node.addEventListener('pointercancel', up)
+  }
+
+  /** @param {number} value */
+  function clampLegendPercent(value) {
+    const n = Math.max(-20, Math.min(120, value))
+    return Math.round(n * 10) / 10
+  }
+
   /**
    * @param {string | undefined} marker
    * @param {number} cx
@@ -179,8 +237,12 @@
 {#if items.length > 0}
   <div
     class={`${frameClass} ${className}`.trim()}
+    role="group"
+    aria-label={floating ? 'Draggable legend' : titleText || 'Legend'}
     data-chart-export={exportNode ? 'legend' : undefined}
-    style={frameStyle}
+    style={`${frameStyle}${floatingStyle}`}
+    title={floating ? 'Drag to move the legend' : undefined}
+    onpointerdown={onLegendPointerDown}
   >
     <svg
       width={sized ? undefined : contentW}

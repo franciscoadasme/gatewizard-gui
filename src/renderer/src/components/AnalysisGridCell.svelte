@@ -164,9 +164,11 @@
           chartSubtitle=""
           xTickLabels={displayXTickLabels}
           xTicks={Number(ps.xTickCount) || 5}
-          yTicks={Number(ps.yTickCount) || 5}
+          yTicks={Number(
+            cps.yTickCount != null && cps.yTickCount !== '' ? cps.yTickCount : ps.yTickCount
+          ) || 5}
           xTickDecimals={ps.xTickDecimals}
-          yTickDecimals={ps.yTickDecimals}
+          yTickDecimals={cps.yTickDecimals != null ? cps.yTickDecimals : ps.yTickDecimals}
           {...lineChartExtraMarginProps(cps)}
           tickLabelGap={Number(cps.tickLabelGap) || 8}
           legendPosition={showLegend ? cps.legendPosition || 'top-left' : 'none'}
