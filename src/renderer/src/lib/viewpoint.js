@@ -13,6 +13,7 @@ import { toPlainJson } from './animation/schema.js'
 import { normalizeFadeSettings } from './animation/fade.js'
 import { normalizeStructuresMeta } from './visualizeStructures.js'
 import { normalizeVisibilityGroups } from './visualizeGroups.js'
+import { normalizeClip } from './viewer/viewClip.js'
 
 export const VIEWPOINT_FORMAT = 'gatewizard-viewpoint'
 /** v4: trajectory metadata + per-view trajSmooth. */
@@ -148,17 +149,23 @@ function normalizeView(raw) {
   const representation = /** @type {Record<string, unknown>} */ (v.representation ?? {})
   const colorScheme = /** @type {Record<string, unknown>} */ (v.colorScheme ?? {})
   const schemeName = typeof colorScheme.name === 'string' ? colorScheme.name : 'cpk'
+  // Older saves used selection:"" + baseSelection:"protein" for named presets.
+  // Keep baseSelection as the keyword, but never leave both empty.
+  const rawSel = typeof v.selection === 'string' ? v.selection : ''
+  const rawBase =
+    typeof v.baseSelection === 'string'
+      ? v.baseSelection
+      : typeof v.selection === 'string'
+        ? v.selection
+        : 'all'
+  const baseSelection = String(rawBase || '').trim() || 'all'
+  const selection = String(rawSel || '').trim() || baseSelection
   return {
     id: v.id,
     structureId: typeof v.structureId === 'string' ? v.structureId : undefined,
     componentKey: typeof v.componentKey === 'string' ? v.componentKey : undefined,
-    selection: typeof v.selection === 'string' ? v.selection : 'all',
-    baseSelection:
-      typeof v.baseSelection === 'string'
-        ? v.baseSelection
-        : typeof v.selection === 'string'
-          ? v.selection
-          : 'all',
+    selection,
+    baseSelection,
     representation: {
       type: typeof representation.type === 'string' ? representation.type : 'points'
     },
@@ -207,6 +214,7 @@ function normalizeView(raw) {
       typeof v.opacity === 'number' && Number.isFinite(v.opacity)
         ? Math.max(0, Math.min(1, v.opacity))
         : 1,
+    clip: normalizeClip(v.clip),
     ...normalizeFadeSettings(v)
   }
 }

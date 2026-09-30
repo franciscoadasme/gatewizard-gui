@@ -9,8 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Visualize depth of field aliasing:** DoF now renders at full resolution (was 0.75×), keeps MSAA on the effect composer, softens CoC edges, and applies SMAA so bokeh rings and in-focus edges are much less jagged.
+- **Visualize cartoon / tube + clip:** the clip wrapper no longer binds the Three group into `$state` (that remounted children and blanked cartoon/tube). Camera-slab clip planes follow the live viewer camera while orbiting.
+- **Visualize custom selection (gear):** free-text Other selections edit as a draft — Apply / Enter commits; mid-typing no longer hits `/get-structure` (fixes 422 spam and sluggish arrow keys on long `bonded` expressions).
+- **Visualize Apply representation:** progress dialog stays open while copying (count updates). Hidden source representations are cloned as hidden on targets so visibility matches across structures.
+- **Visualize shadows:** Strength stays in Three.js’s valid 0–1 range (values above ~1 broke shadows). Softness maps to a milder PCF blur so high settings no longer look stippled.
+- **Visualize depth cueing:** fog Strength was reversed (lower values fogged more of the molecule) and washed the whole structure. Depth cueing now uses DOF-style **Near** / **Far** (front stays lit; only the back fades), with **Fit to view**.
+- **Visualize gear sliders:** range controls stay responsive while dragging the thumb; mouse-wheel over a slider no longer nudges the value on hover.
 - **Linux launch Broken pipe spam:** on WSL, skip Chromium’s single-instance lock (it logs `process_singleton_posix.cc … Broken pipe` even on a clean start). On native Linux, clear dead `Singleton*` files before locking. The packaged Linux wrapper also filters those Chromium ERROR lines (and dbus / GPUCache noise) from stderr.
-- **Visualize Representations toolbar:** buttons keep a fixed size and wrap to a second row when the side panel is narrow, instead of staying cramped on one line.
+- **Visualize Representations toolbar:** icons shrink a little when the side panel is narrow, then wrap onto more rows instead of staying fixed-size on one cramped line.
 - **Visualize PDB LINK bonds:** LINK records are matched by chain / residue / atom name (not residue number as serial). Metal coordination and other non-covalent LINKs are skipped by a Cartesian length check. Distance `guess_bonds` for ball-and-stick runs without PBC so CRYST1 does not create long unwrapped sticks (fixes fans on RCSB PDBs like 6RV2).
 - **Visualize MemPro multi-structure:** the orientation panel lists every MemPro run (not only the latest), shows which structure each run belonged to, and lets you choose which loaded structure to Apply onto. Mismatch alerts name both the MemPro source and the apply target. Jobs are stored under `.mempro_jobs/` so one working directory can keep several calculations.
 - **Visualize after MemPro / superimpose:** those writes leave a PDB without CONECT. Superimpose re-guesses bonds on reload. **Recalculate bonds** is on the structure row (link icon) and in the representation context menu when ball-and-stick / licorice stay empty. Labels and measurements on the moved structure keep their text and follow the new atom coordinates; they are no longer cleared for the whole scene.
@@ -47,6 +54,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Visualize center on visible:** structure-row focus icon frames the camera on that structure’s visible representations (drawn coords). Toolbar reset still frames the whole active structure and restores the home orbit.
+- **Visualize representation clip:** gear **Clip** hard-cuts one representation (camera slab or world X/Y/Z Near/Far). Independent of global depth cueing. Saved in viewpoints and animation keyframes; Near/Far interpolate.
+- **Visualize scene lighting:** Scene rendering gains **Follow camera** (default, stable shading while orbiting) vs **Fixed in world** lights, per-light and ambient colors, hemisphere sky/ground (unchanged), optional **depth cueing** (Near/Far fog), and optional soft **shadows** (strength 0–1, separate softness). World mode shows draggable L1/L2… markers in the viewport; **Reset lights around structure** places key/fill around the current framing. Save view and animation keyframes store the full scene, including session **light/dark theme**.
 - **Visualize Maestro / multi-MODEL open:** the entry picker opens right away with a “Reading Maestro file…” spinner while the file is inspected, then shows the CT/MODEL list. Imports land in one outer Representations group named after the source file, and entry labels use `title/CT/model · filename` (entry first).
 - **Visualize structure collapse:** Maestro / multi-MODEL opens with every structure row collapsed. Viewpoint and animation files store each structure’s collapsed/expanded state. Workspace header gains ▾/▸ **Collapse all** / **Expand all** next to Hide/Show everything. Structure right-click menu adds **Collapse** / **Expand** for the current selection.
 - **Visualize structure row icons:** **Recalculate bonds** and **Duplicate** use the link and copy icons on the structure row (replacing the old `B+` / `dup` text).

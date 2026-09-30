@@ -6,6 +6,7 @@ import { mergeTrackOrder, sortViewsByTracks, viewsById, cloneSerializedView, vie
 import { interpolateLabelLift } from '../viewer/labelStyle.js'
 import { lerpPatches } from '../viewer/workingCoords.js'
 import { interpolateTrajFrame } from './trajFrame.js'
+import { normalizeClip } from '../viewer/viewClip.js'
 
 /**
  * @param {import('./schema.js').AnimationCameraPose} cam
@@ -424,6 +425,26 @@ function interpolateViewFade(a, b, t) {
 }
 
 /**
+ * @param {import('./schema.js').SerializedView['clip']} ca
+ * @param {import('./schema.js').SerializedView['clip']} cb
+ * @param {number} t
+ */
+function interpolateClip(ca, cb, t) {
+  const a = normalizeClip(ca)
+  const b = normalizeClip(cb)
+  const near = lerpNum(a.near, b.near, t)
+  let far = lerpNum(a.far, b.far, t)
+  if (far < near + 0.01) far = near + 0.01
+  return normalizeClip({
+    enabled: t < 0.5 ? a.enabled : b.enabled,
+    mode: t < 0.5 ? a.mode : b.mode,
+    axis: t < 0.5 ? a.axis : b.axis,
+    near,
+    far
+  })
+}
+
+/**
  * @param {import('./schema.js').SerializedView} a
  * @param {import('./schema.js').SerializedView} b
  * @param {number} t
@@ -475,6 +496,7 @@ function interpolateView(a, b, t) {
       typeof b.opacity === 'number' ? b.opacity : 1,
       t
     ),
+    clip: interpolateClip(a.clip, b.clip, t),
     ...interpolateViewFade(a, b, t)
   }
 }
@@ -551,7 +573,13 @@ function interpolateViews(keyframes, time_s, from, to, localT, rawT, segmentDura
 
 function isColorSceneKey(key) {
   const k = key.toLowerCase()
-  return k.includes('hex') || k.includes('sky') || k.includes('ground')
+  return (
+    k.includes('hex') ||
+    k.includes('sky') ||
+    k.includes('ground') ||
+    k.includes('color') ||
+    k === 'ambientcolor'
+  )
 }
 
 /**
@@ -569,7 +597,11 @@ function interpolateScene(a, b, t) {
     } else if (typeof va === 'string' && typeof vb === 'string' && isColorSceneKey(key)) {
       if (va.startsWith('#') && vb.startsWith('#')) out[key] = lerpHex(va, vb, t)
       else out[key] = t < 0.5 ? va : vb
-    } else if (key === 'backgroundMode' && typeof va === 'string' && typeof vb === 'string') {
+    } else if (
+      (key === 'backgroundMode' || key === 'lightMode' || key === 'theme') &&
+      typeof va === 'string' &&
+      typeof vb === 'string'
+    ) {
       out[key] = t < 0.5 ? va : vb
     } else if (key === 'directionalLights' && Array.isArray(va) && Array.isArray(vb)) {
       out[key] = vb.map((light, i) => {
@@ -577,6 +609,8 @@ function interpolateScene(a, b, t) {
         const lb = /** @type {Record<string, unknown>} */ (light)
         const posA = /** @type {number[]} */ (la.position ?? [0, 0, 0])
         const posB = /** @type {number[]} */ (lb.position ?? [0, 0, 0])
+        const colorA = typeof la.color === 'string' ? la.color : '#ffffff'
+        const colorB = typeof lb.color === 'string' ? lb.color : '#ffffff'
         return {
           enabled: t < 0.5 ? la.enabled !== false : lb.enabled !== false,
           position: posA.map((v, j) => lerpNum(v, posB[j] ?? v, t)),
@@ -584,9 +618,75 @@ function interpolateScene(a, b, t) {
             typeof la.intensity === 'number' ? la.intensity : 0.4,
             typeof lb.intensity === 'number' ? lb.intensity : 0.4,
             t
-          )
+          ),
+          color:
+            colorA.startsWith('#') && colorB.startsWith('#')
+              ? lerpHex(colorA, colorB, t)
+              : t < 0.5
+                ? colorA
+                : colorB
         }
       })
+    } else if (
+      key === 'fog' &&
+      ((va && typeof va === 'object') || (vb && typeof vb === 'object'))
+    ) {
+      const fa = /** @type {Record<string, unknown>} */ (va && typeof va === 'object' ? va : {})
+      const fb = /** @type {Record<string, unknown>} */ (vb && typeof vb === 'object' ? vb : {})
+      /** @param {Record<string, unknown>} f */
+      function fogNear(f) {
+        if (typeof f.near === 'number' && Number.isFinite(f.near)) return f.near
+        if (typeof f.density === 'number' && Number.isFinite(f.density)) {
+          const s = Math.max(0, Math.min(1, f.density > 1 ? 1 : f.density))
+          return Math.max(1, 80 - 20 * s)
+        }
+        return 70
+      }
+      /** @param {Record<string, unknown>} f */
+      function fogFar(f) {
+        if (typeof f.far === 'number' && Number.isFinite(f.far)) return f.far
+        if (typeof f.density === 'number' && Number.isFinite(f.density)) {
+          const s = Math.max(0, Math.min(1, f.density > 1 ? 1 : f.density))
+          return 80 + 40 * s
+        }
+        return 140
+      }
+      let near = lerpNum(fogNear(fa), fogNear(fb), t)
+      let far = lerpNum(fogFar(fa), fogFar(fb), t)
+      if (far <= near) far = near + 4
+      const enA = fa.enabled === true
+      const enB = fb.enabled === true
+      const colorA = typeof fa.color === 'string' ? fa.color : '#0c0e12'
+      const colorB = typeof fb.color === 'string' ? fb.color : '#0c0e12'
+      out[key] = {
+        enabled: t < 0.5 ? enA : enB,
+        near,
+        far,
+        color:
+          colorA.startsWith('#') && colorB.startsWith('#')
+            ? lerpHex(colorA, colorB, t)
+            : t < 0.5
+              ? colorA
+              : colorB,
+        matchBackground:
+          t < 0.5 ? fa.matchBackground !== false : fb.matchBackground !== false
+      }
+    } else if (
+      key === 'shadows' &&
+      ((va && typeof va === 'object') || (vb && typeof vb === 'object'))
+    ) {
+      const sa = /** @type {Record<string, unknown>} */ (va && typeof va === 'object' ? va : {})
+      const sb = /** @type {Record<string, unknown>} */ (vb && typeof vb === 'object' ? vb : {})
+      const strA = sa.enabled === true && typeof sa.strength === 'number' ? sa.strength : 0
+      const strB = sb.enabled === true && typeof sb.strength === 'number' ? sb.strength : 0
+      const softA = typeof sa.softness === 'number' ? sa.softness : 0.45
+      const softB = typeof sb.softness === 'number' ? sb.softness : 0.45
+      const strength = lerpNum(strA, strB, t)
+      out[key] = {
+        enabled: strength > 0.001,
+        strength,
+        softness: lerpNum(softA, softB, t)
+      }
     } else if (
       key === 'dof' &&
       ((va && typeof va === 'object') || (vb && typeof vb === 'object'))

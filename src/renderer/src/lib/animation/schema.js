@@ -121,6 +121,13 @@ import { normalizeVisibilityGroups } from '../visualizeGroups.js'
  * @property {[number, number, number, number]} [fadeInBezier]
  * @property {[number, number, number, number]} [fadeOutBezier]
  * @property {number} [opacity] Base representation opacity 0–1 (animation fade multiplies this)
+ * @property {{
+ *   enabled?: boolean,
+ *   mode?: 'camera' | 'world',
+ *   axis?: 'x' | 'y' | 'z',
+ *   near?: number,
+ *   far?: number
+ * }} [clip] Per-representation hard clip (camera slab or world axis)
  */
 
 /**
@@ -579,7 +586,8 @@ export function serializeAnimationProject(project, structure) {
           ? k.scene.directionalLights.map((l) => ({
               enabled: l.enabled,
               position: Array.isArray(l.position) ? [...l.position] : [0, 0, 0],
-              intensity: l.intensity
+              intensity: l.intensity,
+              color: typeof l.color === 'string' ? l.color : '#ffffff'
             }))
           : undefined
       },

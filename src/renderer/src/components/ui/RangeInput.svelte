@@ -43,7 +43,8 @@
   }
 
   function onRangeInput(/** @type {Event} */ e) {
-    commit(/** @type {HTMLInputElement} */ (e.currentTarget).value)
+    const el = /** @type {HTMLInputElement} */ (e.currentTarget)
+    commit(el.value)
   }
 
   function onNumberFocus() {

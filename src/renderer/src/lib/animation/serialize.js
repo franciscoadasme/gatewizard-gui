@@ -8,11 +8,13 @@ import {
   ssScheme,
   DEFAULT_VIEW_MATERIAL
 } from '../colorSchemes.js'
-import { viewerSettings } from '../viewerSettings.svelte.js'
+import { viewerSettings, normalizeFog, SHADOW_STRENGTH_MAX } from '../viewerSettings.svelte.js'
+import { themeState, setSessionTheme } from '../theme.svelte.js'
 import { captureCameraPose } from './cameraPose.js'
 import { defaultFadeSettings, normalizeFadeSettings } from './fade.js'
 import { effectiveViewSelection } from '../viewer/viewSelection.js'
 import { atomsForOverlayRecord } from './overlayAtoms.js'
+import { normalizeClip } from '../viewer/viewClip.js'
 
 /** @param {Record<string, unknown> | null | undefined} material */
 export function cloneMaterial(material) {
@@ -308,6 +310,7 @@ export function serializeView(view) {
     trajSmoothRestoreH: view.trajSmoothRestoreH !== false,
     selectionEachFrame: view.selectionEachFrame === true,
     opacity,
+    clip: normalizeClip(view.clip),
     ...fade
   }
 }
@@ -370,6 +373,7 @@ export function mergeSerializedViewInto(live, data) {
   assignIf(live, 'trajSmooth', Math.max(0, Math.min(8, Number(data.trajSmooth ?? 0) || 0)))
   assignIf(live, 'trajSmoothRestoreH', data.trajSmoothRestoreH !== false)
   assignIf(live, 'selectionEachFrame', data.selectionEachFrame === true)
+  assignJsonIf(live, 'clip', normalizeClip(data.clip))
   if (typeof data.structureId === 'string') assignIf(live, 'structureId', data.structureId)
   if (typeof data.componentKey === 'string') assignIf(live, 'componentKey', data.componentKey)
   // `colorScheme.resolver` is a function identity that representation components
@@ -481,6 +485,7 @@ export function deserializeView(data, structureCtx) {
       typeof data.opacity === 'number' && Number.isFinite(data.opacity)
         ? Math.max(0, Math.min(1, data.opacity))
         : 1,
+    clip: normalizeClip(data.clip),
     ...normalizeFadeSettings(data)
   }
 }
@@ -544,19 +549,43 @@ export function serializeSceneSettings() {
     bokehScale: 2.5,
     focusTarget: null
   }
+  const fog = viewerSettings.fog ?? {
+    enabled: false,
+    near: 70,
+    far: 140,
+    color: '#0c0e12',
+    matchBackground: true
+  }
+  const shadows = viewerSettings.shadows ?? { enabled: false, strength: 1, softness: 0.45 }
   return JSON.parse(
     JSON.stringify({
+      theme: themeState.current === 'light' ? 'light' : 'dark',
       backgroundMode: viewerSettings.backgroundMode,
       customBackgroundHex: viewerSettings.customBackgroundHex,
+      lightMode: viewerSettings.lightMode === 'world' ? 'world' : 'camera',
       hemisphereSky: viewerSettings.hemisphereSky,
       hemisphereGround: viewerSettings.hemisphereGround,
       hemisphereIntensity: viewerSettings.hemisphereIntensity,
+      ambientColor: viewerSettings.ambientColor || '#ffffff',
       ambientIntensity: viewerSettings.ambientIntensity,
       directionalLights: viewerSettings.directionalLights.map((l) => ({
         enabled: l.enabled,
         position: [...l.position],
-        intensity: l.intensity
+        intensity: l.intensity,
+        color: l.color || '#ffffff'
       })),
+      fog: {
+        enabled: fog.enabled === true,
+        near: fog.near,
+        far: fog.far,
+        color: fog.color,
+        matchBackground: fog.matchBackground !== false
+      },
+      shadows: {
+        enabled: shadows.enabled === true,
+        strength: shadows.strength,
+        softness: typeof shadows.softness === 'number' ? shadows.softness : 0.55
+      },
       dof: {
         enabled: dof.enabled === true,
         focusDistance: dof.focusDistance,
@@ -574,11 +603,17 @@ export function serializeSceneSettings() {
  * @param {Record<string, unknown>} scene
  */
 export function applySceneSettings(scene) {
+  if (scene.theme === 'light' || scene.theme === 'dark') {
+    setSessionTheme(scene.theme)
+  }
   if (typeof scene.backgroundMode === 'string') {
     viewerSettings.backgroundMode = /** @type {'theme' | 'custom'} */ (scene.backgroundMode)
   }
   if (typeof scene.customBackgroundHex === 'string') {
     viewerSettings.customBackgroundHex = scene.customBackgroundHex
+  }
+  if (scene.lightMode === 'world' || scene.lightMode === 'camera') {
+    viewerSettings.lightMode = scene.lightMode
   }
   if (typeof scene.hemisphereSky === 'string') viewerSettings.hemisphereSky = scene.hemisphereSky
   if (typeof scene.hemisphereGround === 'string') {
@@ -587,6 +622,9 @@ export function applySceneSettings(scene) {
   if (typeof scene.hemisphereIntensity === 'number') {
     viewerSettings.hemisphereIntensity = scene.hemisphereIntensity
   }
+  if (typeof scene.ambientColor === 'string' && scene.ambientColor.startsWith('#')) {
+    viewerSettings.ambientColor = scene.ambientColor
+  }
   if (typeof scene.ambientIntensity === 'number') {
     viewerSettings.ambientIntensity = scene.ambientIntensity
   }
@@ -594,8 +632,9 @@ export function applySceneSettings(scene) {
     viewerSettings.directionalLights = scene.directionalLights.map((l, i) => {
       const fallback = viewerSettings.directionalLights[i] ?? {
         enabled: true,
-        position: [0, 0, 0],
-        intensity: 0.4
+        position: /** @type {[number, number, number]} */ ([0, 0, 0]),
+        intensity: 0.4,
+        color: '#ffffff'
       }
       const item = /** @type {Record<string, unknown>} */ (l)
       return {
@@ -604,9 +643,30 @@ export function applySceneSettings(scene) {
           ? /** @type {[number, number, number]} */ ([...item.position])
           : fallback.position,
         intensity:
-          typeof item.intensity === 'number' ? item.intensity : fallback.intensity
+          typeof item.intensity === 'number' ? item.intensity : fallback.intensity,
+        color:
+          typeof item.color === 'string' && item.color.startsWith('#')
+            ? item.color
+            : fallback.color || '#ffffff'
       }
     })
+  }
+  if (scene.fog && typeof scene.fog === 'object') {
+    viewerSettings.fog = normalizeFog(scene.fog)
+  }
+  if (scene.shadows && typeof scene.shadows === 'object') {
+    const s = /** @type {Record<string, unknown>} */ (scene.shadows)
+    viewerSettings.shadows = {
+      enabled: s.enabled === true,
+      strength:
+        typeof s.strength === 'number'
+          ? Math.max(0, Math.min(SHADOW_STRENGTH_MAX, s.strength))
+          : viewerSettings.shadows?.strength ?? 1,
+      softness:
+        typeof s.softness === 'number'
+          ? Math.max(0, Math.min(1, s.softness))
+          : viewerSettings.shadows?.softness ?? 0.45
+    }
   }
   if (scene.dof && typeof scene.dof === 'object') {
     const d = /** @type {Record<string, unknown>} */ (scene.dof)

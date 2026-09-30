@@ -2,83 +2,60 @@
   import SceneDefaultsForm from './SceneDefaultsForm.svelte'
   import { themeState } from '../lib/theme.svelte.js'
 
-  /** @type {{ open?: boolean }} */
-  let { open = $bindable(false) } = $props()
+  /**
+   * Non-modal Scene rendering panel — keeps the 3D view rotatable and light
+   * gizmos interactive while settings stay open.
+   * @type {{
+   *   open?: boolean
+   *   structureBBox?: { center: [number, number, number], radius: number } | null
+   *   selectedLightIndex?: number | null
+   * }}
+   */
+  let {
+    open = $bindable(false),
+    structureBBox = null,
+    selectedLightIndex = $bindable(null)
+  } = $props()
 
-  /** @type {HTMLDialogElement | null} */
-  let dialogEl = $state(null)
-  let backdropPointerDown = $state(false)
-  // Dialog is moved to document.body (outside #app), so it needs its own .dark class.
   const isDark = $derived(themeState.current === 'dark')
 
-  /** @param {HTMLDialogElement | null} dialog */
-  function mountDialogToBody(dialog) {
-    if (dialog && dialog.parentElement !== document.body) {
-      document.body.appendChild(dialog)
-    }
-  }
-
-  function closeDialog() {
+  function closePanel() {
     open = false
-    dialogEl?.close()
-  }
-
-  $effect(() => {
-    if (!dialogEl) return
-    if (open) {
-      mountDialogToBody(dialogEl)
-      if (!dialogEl.open) dialogEl.showModal()
-    } else if (dialogEl.open) {
-      dialogEl.close()
-    }
-  })
-
-  /** @param {MouseEvent} event */
-  function onDialogClick(event) {
-    if (event.target === dialogEl && backdropPointerDown) closeDialog()
-    backdropPointerDown = false
-  }
-
-  /** @param {PointerEvent} event */
-  function onDialogPointerDown(event) {
-    backdropPointerDown = event.target === dialogEl
   }
 </script>
 
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<dialog
-  bind:this={dialogEl}
-  class="fixed top-10 bottom-10 left-16 z-50 m-0 w-80 max-w-[calc(100vw-5rem)] overflow-y-auto rounded-lg border border-neutral-300 bg-white p-0 text-xs text-neutral-900 shadow-2xl backdrop:bg-black/20 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 {isDark
-    ? 'dark'
-    : ''}"
-  onpointerdown={onDialogPointerDown}
-  onclick={onDialogClick}
-  oncancel={(e) => {
-    e.preventDefault()
-    closeDialog()
-  }}
->
-  <div class="flex flex-col gap-0">
+{#if open}
+  <div
+    class="viewer-side-panel--nonmodal fixed top-10 bottom-10 left-16 z-50 flex w-80 max-w-[calc(100vw-5rem)] flex-col overflow-hidden rounded-lg border border-neutral-300 bg-white p-0 text-xs text-neutral-900 shadow-2xl dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 {isDark
+      ? 'dark'
+      : ''}"
+    role="dialog"
+    aria-labelledby="scene-rendering-title"
+  >
     <div
-      class="sticky top-0 z-10 flex items-center justify-between border-b border-neutral-200 bg-white px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+      class="flex shrink-0 items-center justify-between border-b border-neutral-200 bg-white px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
     >
-      <span class="text-sm font-medium">Scene rendering</span>
+      <span
+        id="scene-rendering-title"
+        class="text-sm font-medium"
+        title="Orbit the view while this panel is open. World-fixed lights show draggable L1/L2 markers."
+      >Scene rendering</span
+      >
       <button
         type="button"
-        class="relative z-20 -mr-1 min-h-8 min-w-8 rounded px-2 text-lg leading-none text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 dark:hover:bg-neutral-800 dark:hover:text-white"
+        class="dialog-btn-outline px-2 py-0.5 text-xs"
         aria-label="Close"
-        onclick={(e) => {
-          e.stopPropagation()
-          closeDialog()
-        }}>&times;</button
+        onclick={closePanel}
+      >✕</button
       >
     </div>
 
-    <div class="flex flex-col gap-3 p-3">
-      <p class="text-[10px] leading-snug text-neutral-500 dark:text-neutral-400">
-        Changes apply to this session only. Save startup defaults in Settings.
-      </p>
-      <SceneDefaultsForm persistOnChange={false} />
+    <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
+      <SceneDefaultsForm
+        persistOnChange={false}
+        {structureBBox}
+        bind:selectedLightIndex
+      />
     </div>
   </div>
-</dialog>
+{/if}

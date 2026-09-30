@@ -14,7 +14,8 @@
     Tube,
     VdwSpheres,
     OrganicSurface,
-    HydrationBoxOverlay
+    HydrationBoxOverlay,
+    ViewClipApply
   } from '../components/viewer'
   import { T } from '@threlte/core'
   import {
@@ -189,6 +190,7 @@
   import Link2Icon from '../components/icons/Link2.svelte'
   import ResizableSidePanel from '../components/ResizableSidePanel.svelte'
   import ResetIcon from '../components/icons/Reset.svelte'
+  import FocusIcon from '../components/icons/Focus.svelte'
   import Sun from '../components/icons/Sun.svelte'
   import Spinner from '../components/ui/Spinner.svelte'
   import RangeInput from '../components/ui/RangeInput.svelte'
@@ -198,6 +200,7 @@
   import RadialMenu from '../components/RadialMenu.svelte'
   import TransformGizmo from '../components/TransformGizmo.svelte'
   import HydrationBoxManipulatorOverlay from '../components/viewer/HydrationBoxManipulatorOverlay.svelte'
+  import LightGizmoOverlay from '../components/viewer/LightGizmoOverlay.svelte'
   import { visualizeStatus, logEvent } from '../lib/pageStatus.svelte.js'
   import { requestSidePanelExpand } from '../lib/pageSidePanelStore.svelte.js'
   import { syncGoodsellSceneLighting } from '../lib/goodsellSceneLighting.svelte.js'
@@ -545,6 +548,8 @@
   let axesLinesVisible = $state(false)
   let axesVisible = $state(true)
   let sceneSettingsOpen = $state(false)
+  /** Selected directional light row / gizmo (Scene rendering). */
+  let selectedLightIndex = $state(/** @type {number | null} */ (null))
   const sceneBackgroundStyle = $derived.by(() => {
     const theme = themeState.current
     const mode = viewerSettings.backgroundMode
@@ -3366,6 +3371,37 @@
     return out.length ? out : (structure?.atoms ?? [])
   }
 
+  /**
+   * Atoms from visible representations of one structure (drawn coords).
+   * @param {string} structureId
+   * @returns {Atom[]}
+   */
+  function collectVisibleStructureViewAtoms(structureId) {
+    /** @type {Atom[]} */
+    const out = []
+    const seen = new Set()
+    for (const v of views) {
+      if (v.structureId !== structureId || v._isSelHighlight) continue
+      if (v.visible === false || (v.opacity ?? 1) <= 0.001) continue
+      if (structureHiddenIds.has(structureId)) continue
+      const atoms = viewDraw(v)?.atoms ?? v.atoms ?? []
+      for (const a of atoms) {
+        const key = typeof a.index === 'number' ? a.index : `${a.x},${a.y},${a.z}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        out.push(a)
+      }
+    }
+    if (out.length) return out
+    const st = findStructure(structures, structureId)
+    return st?.atoms ?? []
+  }
+
+  /** @param {string} structureId */
+  function centerCameraOnStructureVisible(structureId) {
+    centerCameraOnAtoms(collectVisibleStructureViewAtoms(structureId))
+  }
+
   /** Reframe camera to *atoms* and reset orbit pose (e.g. after auto-generate). @param {Atom[] | undefined | null} atoms */
   function reframeCameraOnAtoms(atoms) {
     const base = getCameraForAtoms(atoms)
@@ -5488,7 +5524,7 @@
           colorScheme: { ...src.colorScheme },
           material: src.material ? { ...src.material } : { ...DEFAULT_VIEW_MATERIAL },
           ssColors: src.ssColors ? { ...src.ssColors } : null,
-          visible: true
+          visible: src.visible !== false
         }
       }
     } catch (ex) {
@@ -5513,7 +5549,8 @@
     if (!targets.length) return
 
     applyRepsBusy = true
-    applyRepsPhase = `Applying… 0 / ${targets.length}`
+    applyRepsPhase = `Copying… 0 / ${targets.length}`
+    await tick()
     const failed = []
     /** @type {View[]} */
     const created = []
@@ -5522,7 +5559,7 @@
       await mapPool(targets, 4, async (target) => {
         const { view, skip } = await resolveClonedViewOnTarget(src, target)
         done += 1
-        applyRepsPhase = `Applying… ${done} / ${targets.length}`
+        applyRepsPhase = `Copying… ${done} / ${targets.length}`
         if (view) created.push(view)
         else if (skip) failed.push(skip)
       })
@@ -5574,7 +5611,8 @@
     if (!ok) return
 
     applyRepsBusy = true
-    applyRepsPhase = `Applying… 0 / ${targets.length}`
+    applyRepsPhase = `Copying… 0 / ${targets.length}`
+    await tick()
     const skips = []
     /** @type {View[]} */
     const allNew = []
@@ -5589,7 +5627,7 @@
           else if (skip) skips.push(skip)
         }
         done += 1
-        applyRepsPhase = `Applying… ${done} / ${targets.length}`
+        applyRepsPhase = `Copying… ${done} / ${targets.length}`
         return { targetId: target.id, views: forTarget }
       })
 
@@ -6450,7 +6488,11 @@
       const local = owner?.atoms?.length
         ? trySubsetBySelection(owner.atoms, owner.bonds, owner.residues, selection)
         : { ok: false, fallback: true }
-      if (local.ok) {
+      const needsSS = repr === 'cartoon' || repr === 'tube'
+      const localHasSec =
+        Array.isArray(local.residues) && local.residues.some((r) => r && String(r.sec || '').trim())
+      // Local protein subsets often lack DSSP `sec`; cartoon/tube still need a SS fetch.
+      if (local.ok && !(needsSS && (!local.residues?.length || !localHasSec))) {
         view.atoms = local.atoms
         view.bonds = local.bonds
         view.residues = local.residues
@@ -6458,14 +6500,14 @@
         changed = true
         continue
       }
-      if (!local.fallback) continue
+      if (local.ok === false && !local.fallback) continue
       try {
         const struc = await getStructure({
           path: ownerPath,
           topology: owner?.topologyPath ?? null,
           selection,
           needs_bonds: repr === 'ball-stick' || repr === 'licorice',
-          needs_secondary_structure: repr === 'cartoon' || repr === 'tube'
+          needs_secondary_structure: needsSS
         })
         if (!struc.atoms?.length) continue
         view.atoms = struc.atoms
@@ -7904,7 +7946,7 @@
           <CameraRig framing={camera} />
           {#each views.filter((v) => v.visible !== false && (v.opacity ?? 1) > 0.001) as view (view.id)}
             {@const draw = viewDraw(view)}
-            <T.Group visible={isOwnerStructureVisible(view)}>
+            <ViewClipApply clip={view.clip} visible={isOwnerStructureVisible(view)}>
             {#key `${view.representation.type}-${coordsGeneration}`}
             {#if view.representation.type === 'ball-stick'}
               <BallStick
@@ -8072,7 +8114,7 @@
                 highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, glowHighlightIndices)}
               />
             {/if}
-            </T.Group>
+            </ViewClipApply>
           {/each}
           {#if mutPreviewAtoms.length}
             <BallStick
@@ -8317,6 +8359,16 @@
           />
         {/if}
 
+        {#if sceneSettingsOpen && !animExporting && !measureMode && !editBusy}
+          <LightGizmoOverlay
+            visible={true}
+            width={canvasWidth}
+            height={canvasHeight}
+            selectedIndex={selectedLightIndex}
+            onSelect={(i) => (selectedLightIndex = i)}
+          />
+        {/if}
+
         <!-- Transform gizmo overlay (hidden while Packmol box editor is active) -->
         {#if gizmoCentroid && showGizmo && !measureMode && !editBusy && !packmolDialogOpen}
           <TransformGizmo
@@ -8435,11 +8487,15 @@
       </h2>
       {#if views.length > 0 || filePath}
         <div class="flex min-h-0 min-w-0 flex-1 flex-col">
-        <div class="flex shrink-0 flex-wrap gap-1 border-b border-neutral-200 p-2 dark:border-neutral-800">
+        <div class="flex shrink-0 flex-wrap content-start gap-1 border-b border-neutral-200 p-2 dark:border-neutral-800">
+          <!--
+            Mild flex shrink (min ~18px → max 28px) so icons compress a little when the
+            panel is narrow, then wrap onto more rows instead of staying one cramped line.
+          -->
           {#snippet toolbarBtn(title, onclick, Icon, className, disabled = false)}
             <button
               type="button"
-              class="flex size-7 shrink-0 items-center justify-center rounded-lg border border-neutral-200 bg-neutral-100 transition-colors hover:border-neutral-300 hover:bg-neutral-200 active:translate-y-0.5 disabled:pointer-events-none disabled:opacity-40 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:border-neutral-700 dark:hover:bg-neutral-800"
+              class="flex h-7 max-w-7 min-w-[1.15rem] flex-[1_1_1.4rem] items-center justify-center rounded-lg border border-neutral-200 bg-neutral-100 transition-colors hover:border-neutral-300 hover:bg-neutral-200 active:translate-y-0.5 disabled:pointer-events-none disabled:opacity-40 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:border-neutral-700 dark:hover:bg-neutral-800"
               aria-label={title}
               {title}
               {onclick}
@@ -8453,7 +8509,7 @@
           {#if autoGeneratingViews}
             <button
               type="button"
-              class="flex size-7 shrink-0 items-center justify-center rounded-lg border border-neutral-200 bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-900"
+              class="flex h-7 max-w-7 min-w-[1.15rem] flex-[1_1_1.4rem] items-center justify-center rounded-lg border border-neutral-200 bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-900"
               aria-label="Generating representations"
               title="Generating representations…"
               disabled
@@ -8481,7 +8537,12 @@
             AxesLinesIcon,
             `size-4 stroke-2 ${axesLinesVisible ? 'opacity-100' : 'opacity-45'}`
           )}
-          {@render toolbarBtn('Reset camera', resetCamera, ResetIcon, 'size-3 fill-neutral-800 dark:fill-white')}
+          {@render toolbarBtn(
+            'Reset framing to the active structure',
+            resetCamera,
+            ResetIcon,
+            'size-3 fill-neutral-800 dark:fill-white'
+          )}
           {@render toolbarBtn(
             'Scene rendering settings',
             () => (sceneSettingsOpen = true),
@@ -8490,7 +8551,7 @@
           )}
           <button
             type="button"
-            class="flex size-7 shrink-0 items-center justify-center rounded-lg border transition-colors
+            class="flex h-7 max-w-7 min-w-[1.15rem] flex-[1_1_1.4rem] items-center justify-center rounded-lg border transition-colors
               {viewerSettings.dof?.enabled
                 ? 'border-yellow-500 bg-yellow-500/10 text-yellow-400'
                 : 'border-neutral-200 bg-neutral-100 text-neutral-600 hover:border-neutral-300 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400'}"
@@ -8519,7 +8580,7 @@
               mainViewerInvalidate.fn()
             }}
           >
-            <svg viewBox="0 0 16 16" class="size-4" fill="currentColor" aria-hidden="true">
+            <svg viewBox="0 0 16 16" class="size-4 shrink" fill="currentColor" aria-hidden="true">
               <path
                 d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13m0 1.5a5 5 0 1 1 0 10 5 5 0 0 1 0-10m0 2a3 3 0 1 0 0 6 3 3 0 0 0 0-6m0 1.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3"
               />
@@ -8540,9 +8601,9 @@
             'size-4 stroke-2 stroke-neutral-800 dark:stroke-white',
             loadingPDB
           )}
-          <!-- Measurement mode buttons (keep divider + tools together when wrapping) -->
-          <div class="flex shrink-0 items-center gap-1">
-          <div class="mx-0.5 h-4 w-px bg-neutral-300 dark:bg-neutral-700"></div>
+          <!-- Measure tools stay on one strip; the whole strip wraps to the next row start -->
+          <div class="flex shrink-0 flex-nowrap items-center gap-1">
+          <div class="mx-0.5 h-4 w-px shrink-0 bg-neutral-300 dark:bg-neutral-700"></div>
           {#snippet measureBtn(title, mode)}
             <button
               type="button"
@@ -8848,6 +8909,17 @@
                   title={isStructureHidden(st.id) ? 'Show structure' : 'Hide structure'}
                   onclick={() => toggleStructureVisible(st.id)}
                 >{isStructureHidden(st.id) ? '○' : '●'}</button>
+                <button
+                  type="button"
+                  class="flex size-6 items-center justify-center rounded text-neutral-500 hover:bg-neutral-100 hover:text-neutral-200 dark:hover:bg-neutral-800"
+                  title="Center on visible representations"
+                  aria-label="Center on visible representations"
+                  onclick={(e) => {
+                    e.stopPropagation()
+                    setActiveStructure(st.id)
+                    centerCameraOnStructureVisible(st.id)
+                  }}
+                ><FocusIcon className="size-3.5" /></button>
                 {#if structures.length > 1}
                   <button
                     type="button"
@@ -10151,15 +10223,39 @@
   targets={applyMenuTargets}
   selected={applyMenuSelected}
   busy={applyRepsBusy}
+  phase={applyRepsPhase}
   onSelectedChange={(next) => (applyMenuSelected = next)}
-  onCancel={() => (applyMenu = { viewId: null, open: false })}
+  onCancel={() => {
+    if (applyRepsBusy) return
+    applyMenu = { viewId: null, open: false }
+  }}
   onConfirm={async () => {
     const vid = applyMenu.viewId
     const targets = [...applyMenuSelected]
+    if (!vid || !targets.length) return
+    await applyViewToStructures(vid, targets)
     applyMenu = { viewId: null, open: false }
-    if (vid) await applyViewToStructures(vid, targets)
   }}
 />
+
+{#if applyRepsBusy && !(applyMenu.open && applyMenu.viewId)}
+  <div
+    class="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4"
+    role="alertdialog"
+    aria-busy="true"
+    aria-live="polite"
+    aria-label="Copying representations"
+  >
+    <div
+      class="w-full max-w-sm rounded-lg border border-neutral-300 bg-white px-5 py-4 text-neutral-900 shadow-2xl dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+    >
+      <p class="text-sm font-semibold">Copying representations…</p>
+      <p class="mt-1 text-xs tabular-nums text-neutral-500 dark:text-neutral-400">
+        {applyRepsPhase || 'Working…'}
+      </p>
+    </div>
+  </div>
+{/if}
 
 
 
@@ -10838,7 +10934,20 @@
 {/if}
 <!-- Edit dialogs -->
 
-<ViewerSettingsDialog bind:open={sceneSettingsOpen} />
+<ViewerSettingsDialog
+  bind:open={sceneSettingsOpen}
+  bind:selectedLightIndex
+  structureBBox={camera?.center && typeof camera.extent === 'number'
+    ? {
+        center: /** @type {[number, number, number]} */ ([
+          camera.center.x,
+          camera.center.y,
+          camera.center.z
+        ]),
+        radius: Math.max(8, camera.extent)
+      }
+    : null}
+/>
 
 <dialog
   bind:this={dlgRenameChain}

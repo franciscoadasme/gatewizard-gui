@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   evaluateSelectionIndices,
   filterByIndexSet,
+  selectionLooksIncomplete,
   selectionNeedsEachFrame,
   selectionUsesByres,
   trySubsetBySelection
@@ -118,4 +119,17 @@ test('filterByIndexSet drops bonds and residues', () => {
   assert.equal(out.atoms.length, 2)
   assert.deepEqual(out.bonds, [[0, 1]])
   assert.equal(out.residues.length, 1)
+})
+
+test('selectionLooksIncomplete detects mid-edit bonded drafts', () => {
+  assert.equal(selectionLooksIncomplete(''), true)
+  assert.equal(selectionLooksIncomplete('(not (protein or nucleic'), true)
+  assert.equal(selectionLooksIncomplete('element H and bonded'), true)
+  assert.equal(selectionLooksIncomplete('element H and bonded element O N S'), false)
+  assert.equal(
+    selectionLooksIncomplete(
+      '(not (protein or nucleic or water or resname NA CL K MG CA ZN)) and ((not element H) or (element H and bonded element O N S))'
+    ),
+    false
+  )
 })

@@ -47,7 +47,12 @@
     shouldDeferFullSystemSelection,
     structureFetchSelection
   } from '../lib/viewer/viewSelection.js'
-  import { trySubsetBySelection } from '../lib/viewer/dynamicSelection.js'
+  import { selectionLooksIncomplete, trySubsetBySelection } from '../lib/viewer/dynamicSelection.js'
+  import {
+    fitClipRangeFromAtoms,
+    normalizeClip
+  } from '../lib/viewer/viewClip.js'
+  import { mainViewerCamera } from './viewer/CameraRig.svelte'
   import { GLOW_LIGHTS_PERF_WARN } from '../lib/viewer/viewerDiagnostics.js'
   import { viewerBusy } from '../lib/viewer/viewerBusy.svelte.js'
   import { getStructure } from '../lib/backendApi'
@@ -135,7 +140,8 @@ Coordinate clip (use Update each frame on a trajectory):
    *   surfaceSubdivision?: number,
    *   trajSmooth?: number,
    *   trajSmoothRestoreH?: boolean,
-   *   selectionEachFrame?: boolean
+   *   selectionEachFrame?: boolean,
+   *   clip?: import('../lib/viewer/viewClip.js').ViewClipConfig
    * }} View
    */
 
@@ -217,11 +223,16 @@ Coordinate clip (use Update each frame on a trajectory):
   let helpBackdropPointerDown = $state(false)
   // Dialogs are moved to document.body (outside #app), so they need their own .dark class.
   const isDark = $derived(themeState.current === 'dark')
+  const clipUi = $derived(normalizeClip(view.clip))
   /** Inline selection edit (double-click the label). */
   let editingSelection = $state(false)
   let selectionDraft = $state('')
   /** @type {HTMLInputElement | null} */
   let selectionInputEl = $state(null)
+  /** Gear dialog free-text draft — apply on Enter / Apply (not every keystroke). */
+  let gearSelectionDraft = $state('')
+  /** Previous named dropdown value (tracked in $effect when syncing gear draft). */
+  let _prevNamedForGearDraft = $state('')
   /** Ignore stale /get-structure responses when a newer request was started. */
   let structureFetchGen = 0
 
@@ -292,6 +303,8 @@ Coordinate clip (use Update each frame on a trajectory):
     }
     if (sel === _lastSelection) return
     _lastSelection = sel
+    // Mid-edit drafts (and incomplete bonded…) must not hit /get-structure.
+    if (selectionLooksIncomplete(sel)) return
     // New selection → allow one densify / bond-order pass again.
     view._bondOrderFetchDone = false
     const tid = setTimeout(() => {
@@ -299,6 +312,15 @@ Coordinate clip (use Update each frame on a trajectory):
       scheduleStructureUpdate()
     }, 500)
     return () => clearTimeout(tid)
+  })
+
+  // Keep gear free-text draft in sync when switching to Other or when live selection changes.
+  $effect(() => {
+    const sel = namedSelection
+    if (sel === 'other' && _prevNamedForGearDraft !== 'other') {
+      gearSelectionDraft = String(view.selection || '').trim()
+    }
+    _prevNamedForGearDraft = sel
   })
 
   let _pathInitialized = false
@@ -581,14 +603,17 @@ Coordinate clip (use Update each frame on a trajectory):
       bondOrderFetchDone: view._bondOrderFetchDone
     })
     if (local === 'invalid') return
-    if (local === 'applied' && !bondsMissing) return
-    const needsResidues =
-      (view.representation.type === 'cartoon' ||
-        view.representation.type === 'tube' ||
-        colorSchemeName === 'ss' ||
-        (view.representation.type === 'surface' && view.surfaceSource === 'backbone')) &&
-      !(view.residues?.length) &&
-      !view._residueFetchDone
+    const needsSSCheck =
+      view.representation.type === 'cartoon' ||
+      view.representation.type === 'tube' ||
+      colorSchemeName === 'ss' ||
+      (view.representation.type === 'surface' && view.surfaceSource === 'backbone')
+    const hasSec =
+      Array.isArray(view.residues) && view.residues.some((r) => r && String(r.sec || '').trim())
+    const needsResidueFetch =
+      needsSSCheck && (!(view.residues?.length) || !hasSec) && !view._residueFetchDone
+    if (local === 'applied' && !bondsMissing && !needsResidueFetch) return
+    const needsResidues = needsResidueFetch
     // Atoms for "all" are already on the view after a split/append. Cartoon and tube
     // still need the residue list (Cα + secondary structure), which that load skips.
     if ((fetchSel === 'all' || !fetchSel) && view.atoms?.length && !needsResidues && !bondsMissing) {
@@ -661,7 +686,8 @@ Coordinate clip (use Update each frame on a trajectory):
       (view.representation.type === 'cartoon' ||
         view.representation.type === 'tube' ||
         (view.representation.type === 'surface' && view.surfaceSource === 'backbone')) &&
-      !(view.residues?.length) &&
+      (!(view.residues?.length) ||
+        !view.residues.some((r) => r && String(r.sec || '').trim())) &&
       !view._residueFetchDone
     if (view._prefetched && !needsBondsNow && !needsBondOrders && !needsResidues) return
     if (needsBondsNow || needsBondOrders || needsResidues) view._prefetched = false
@@ -722,6 +748,62 @@ Coordinate clip (use Update each frame on a trajectory):
     selectionDraft = ''
   }
 
+  function syncGearSelectionDraft() {
+    gearSelectionDraft = String(view.selection || '').trim()
+  }
+
+  function commitGearSelection() {
+    const next = gearSelectionDraft.trim()
+    if (!next) return
+    if (selectionLooksIncomplete(next)) {
+      invalidSelection = true
+      return
+    }
+    namedSelection = 'other'
+    view.selection = next
+    view.baseSelection = next
+    invalidSelection = false
+  }
+
+  function wrapGearPolar() {
+    const base = gearSelectionDraft.trim() || String(view.selection || view.baseSelection || 'all').trim()
+    gearSelectionDraft =
+      !base || base === 'all' ? POLAR_SELECTION : `(${base}) and (${POLAR_SELECTION})`
+    commitGearSelection()
+  }
+
+  /** @returns {import('../lib/viewer/viewClip.js').ViewClipConfig} */
+  function clipOrDefault() {
+    return normalizeClip(view.clip)
+  }
+
+  /** @param {Partial<import('../lib/viewer/viewClip.js').ViewClipConfig>} patch */
+  function patchClip(patch) {
+    view.clip = normalizeClip({ ...clipOrDefault(), ...patch })
+  }
+
+  function enableClipAndFit() {
+    const base = clipOrDefault()
+    const range = fitClipRangeFromAtoms(
+      view.atoms ?? [],
+      base,
+      mainViewerCamera.current,
+      2
+    )
+    patchClip({ enabled: true, near: range.near, far: range.far })
+  }
+
+  function fitClipToView() {
+    const base = clipOrDefault()
+    const range = fitClipRangeFromAtoms(
+      view.atoms ?? [],
+      base,
+      mainViewerCamera.current,
+      2
+    )
+    patchClip({ near: range.near, far: range.far, enabled: true })
+  }
+
   function applyMaterialPreset(preset) {
     view.material = buildMaterialFromPreset(preset)
     if (preset === 'Goodsell') {
@@ -738,6 +820,7 @@ Coordinate clip (use Update each frame on a trajectory):
   }
 
   function openGearDialog() {
+    syncGearSelectionDraft()
     mountDialogToBody(gearDialog)
     gearDialog?.showModal()
   }
@@ -1269,23 +1352,32 @@ Coordinate clip (use Update each frame on a trajectory):
               <Input
                 type="text"
                 size="sm"
-                className="flex-1 {invalidSelection ? 'border-red-500!' : ''}"
-                placeholder="chainID A  ·  resid 1:20  ·  ..."
-                bind:value={view.selection}
+                className="flex-1 font-mono {invalidSelection ? 'border-red-500!' : ''}"
+                placeholder="chainID A  ·  resid 1:20  ·  …"
+                title="Enter to apply · Esc clears draft to last applied"
+                bind:value={gearSelectionDraft}
+                onkeydown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    commitGearSelection()
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault()
+                    syncGearSelectionDraft()
+                    invalidSelection = false
+                  }
+                }}
               />
               <button
                 type="button"
                 class="shrink-0 rounded border border-neutral-300 px-1.5 py-0.5 text-[10px] text-neutral-600 transition-colors hover:border-yellow-500/60 hover:text-yellow-600 dark:border-neutral-600 dark:text-neutral-400 dark:hover:border-yellow-500/50 dark:hover:text-yellow-400"
+                title="Apply selection"
+                onclick={commitGearSelection}
+              >Apply</button>
+              <button
+                type="button"
+                class="shrink-0 rounded border border-neutral-300 px-1.5 py-0.5 text-[10px] text-neutral-600 transition-colors hover:border-yellow-500/60 hover:text-yellow-600 dark:border-neutral-600 dark:text-neutral-400 dark:hover:border-yellow-500/50 dark:hover:text-yellow-400"
                 title="Keep heavy atoms + polar H only (hide non-polar hydrogens)"
-                onclick={() => {
-                  const base = String(view.selection || view.baseSelection || 'all').trim()
-                  const wrapped =
-                    !base || base === 'all'
-                      ? POLAR_SELECTION
-                      : `(${base}) and (${POLAR_SELECTION})`
-                  view.selection = wrapped
-                  view.baseSelection = wrapped
-                }}
+                onclick={wrapGearPolar}
               >∩ polar</button>
               <button
                 type="button"
@@ -1294,6 +1386,9 @@ Coordinate clip (use Update each frame on a trajectory):
                 onclick={openHelpDialog}>?</button
               >
             </div>
+            <p class="text-[10px] text-neutral-500 dark:text-neutral-400">
+              Type freely, then <span class="font-medium">Enter</span> or Apply.
+            </p>
           {/if}
           {#if hasTrajectory}
             <label class="flex items-start gap-2 pt-0.5 text-[11px] text-neutral-600 dark:text-neutral-400">
@@ -1920,6 +2015,138 @@ Coordinate clip (use Update each frame on a trajectory):
               }}
             />
           </div>
+        </section>
+
+        <!-- Clip (hard cut; independent of global depth cueing) -->
+        <section class="space-y-2">
+          <p
+            class="font-medium text-neutral-800 dark:text-neutral-300"
+            title="Hard cut for this representation only. Depth cueing is soft and scene-wide."
+          >
+            Clip
+          </p>
+          <label class="flex items-center gap-2 text-neutral-700 dark:text-neutral-300">
+            <input
+              type="checkbox"
+              checked={clipUi.enabled}
+              onchange={(e) => {
+                if (e.currentTarget.checked) enableClipAndFit()
+                else patchClip({ enabled: false })
+              }}
+            />
+            Enable clip
+          </label>
+          {#if clipUi.enabled}
+            <div class="flex flex-wrap gap-1">
+              <button
+                type="button"
+                title="Cut along the view direction (Near / Far)"
+                class="rounded px-2 py-0.5 text-[10px] transition-colors {clipUi.mode !== 'world'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-neutral-200 text-neutral-700 hover:bg-neutral-300 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700'}"
+                onclick={() => {
+                  const next = { ...clipUi, mode: /** @type {'camera'} */ ('camera') }
+                  const range = fitClipRangeFromAtoms(
+                    view.atoms ?? [],
+                    next,
+                    mainViewerCamera.current,
+                    2
+                  )
+                  patchClip({ mode: 'camera', near: range.near, far: range.far })
+                }}
+              >Camera slab</button>
+              <button
+                type="button"
+                title="Cut along a fixed world axis"
+                class="rounded px-2 py-0.5 text-[10px] transition-colors {clipUi.mode === 'world'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-neutral-200 text-neutral-700 hover:bg-neutral-300 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700'}"
+                onclick={() => {
+                  const next = { ...clipUi, mode: /** @type {'world'} */ ('world') }
+                  const range = fitClipRangeFromAtoms(
+                    view.atoms ?? [],
+                    next,
+                    mainViewerCamera.current,
+                    2
+                  )
+                  patchClip({ mode: 'world', near: range.near, far: range.far })
+                }}
+              >World axis</button>
+            </div>
+            {#if clipUi.mode === 'world'}
+              <div class="flex flex-wrap gap-1">
+                {#each (['x', 'y', 'z']) as ax (ax)}
+                  <button
+                    type="button"
+                    class="rounded px-2 py-0.5 text-[10px] uppercase transition-colors {clipUi.axis === ax
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-neutral-200 text-neutral-700 hover:bg-neutral-300 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700'}"
+                    onclick={() => {
+                      const next = {
+                        ...clipUi,
+                        axis: /** @type {'x' | 'y' | 'z'} */ (ax)
+                      }
+                      const range = fitClipRangeFromAtoms(
+                        view.atoms ?? [],
+                        next,
+                        mainViewerCamera.current,
+                        2
+                      )
+                      patchClip({
+                        axis: /** @type {'x' | 'y' | 'z'} */ (ax),
+                        near: range.near,
+                        far: range.far
+                      })
+                    }}
+                  >{ax}</button>
+                {/each}
+              </div>
+            {/if}
+            <div class="flex items-center gap-2">
+              <span
+                class="w-10 shrink-0 text-neutral-600 dark:text-neutral-400"
+                title="Keep geometry at or beyond this coordinate"
+              >Near</span
+              >
+              <RangeInput
+                value={clipUi.near}
+                min={-500}
+                max={500}
+                step={0.5}
+                decimals={1}
+                oninput={(v) => {
+                  const far = Math.max(v + 0.5, clipUi.far)
+                  patchClip({ near: v, far })
+                }}
+              />
+            </div>
+            <div class="flex items-center gap-2">
+              <span
+                class="w-10 shrink-0 text-neutral-600 dark:text-neutral-400"
+                title="Keep geometry at or before this coordinate"
+              >Far</span
+              >
+              <RangeInput
+                value={clipUi.far}
+                min={-500}
+                max={500}
+                step={0.5}
+                decimals={1}
+                oninput={(v) => {
+                  const near = Math.min(v - 0.5, clipUi.near)
+                  patchClip({ far: v, near })
+                }}
+              />
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="text-xs"
+              title="Set Near/Far from this representation’s atoms"
+              onclick={fitClipToView}
+            >Fit to view</Button>
+          {/if}
         </section>
 
         <!-- Quality (shared 1–5 for all representations) -->

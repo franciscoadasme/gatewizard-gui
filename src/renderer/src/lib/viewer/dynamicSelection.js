@@ -570,6 +570,28 @@ export function trySubsetBySelection(atoms, bonds, residues, selection, xyz = nu
 }
 
 /**
+ * True when a free-text selection is still being typed (unbalanced parens or
+ * trailing keyword). Used to avoid /get-structure 422 storms mid-edit.
+ * @param {string} selection
+ */
+export function selectionLooksIncomplete(selection) {
+  const s = String(selection || '').trim()
+  if (!s) return true
+  let depth = 0
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (ch === '(') depth += 1
+    else if (ch === ')') depth -= 1
+    if (depth < 0) return true
+  }
+  if (depth !== 0) return true
+  if (/\b(and|or|not|bonded|element|resname|name|resid|segid|chainid|around|byres|prop|same|as|to)\s*$/i.test(s)) {
+    return true
+  }
+  return false
+}
+
+/**
  * @param {object[]} atoms
  * @param {unknown[]} [bonds]
  * @param {Array<{ atom_indices?: number[] }>} [residues]

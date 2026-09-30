@@ -7,10 +7,10 @@
   import { Canvas as ThrelteCanvas, T } from '@threlte/core'
   import { TrackballControls } from '@threlte/extras'
   import { MOUSE, WebGLRenderer } from 'three'
-  import { goodsellLightingState } from '../../lib/goodsellSceneLighting.svelte.js'
   import { viewerSettings } from '../../lib/viewerSettings.svelte.js'
   import DepthOfFieldPass from './DepthOfFieldPass.svelte'
   import SceneBackground from './SceneBackground.svelte'
+  import SceneLighting from './SceneLighting.svelte'
 
   /**
    * @type {{
@@ -91,13 +91,6 @@
   /** @type {{ x: number, y: number }} */
   let dragStart = { x: 0, y: 0 }
 
-  const hemisphereSky = $derived(viewerSettings.hemisphereSky)
-  const hemisphereGround = $derived(viewerSettings.hemisphereGround)
-  const hemisphereIntensity = $derived(viewerSettings.hemisphereIntensity)
-  const ambientIntensity = $derived(viewerSettings.ambientIntensity)
-  const directionalLights = $derived(viewerSettings.directionalLights)
-  const dirLightMultiplier = $derived(goodsellLightingState.active ? 0.35 : 1)
-
   function _coords(e) {
     const r = wrapEl.getBoundingClientRect()
     return { x: e.clientX - r.left, y: e.clientY - r.top, w: r.width, h: r.height }
@@ -138,6 +131,8 @@
         alpha: true,
         preserveDrawingBuffer: true
       })
+      // Required for per-representation clip planes (ViewClipApply).
+      renderer.localClippingEnabled = true
       if (import.meta.env?.DEV) {
         renderer.debug.checkShaderErrors = true
       }
@@ -156,15 +151,7 @@
       zoomSpeed={ZOOM_SPEED}
     />
 
-    <T.HemisphereLight args={[hemisphereSky, hemisphereGround, hemisphereIntensity]} />
-
-    <T.AmbientLight intensity={ambientIntensity} />
-
-    {#each directionalLights as light, i (i)}
-      {#if light.enabled}
-        <T.DirectionalLight position={light.position} intensity={light.intensity * dirLightMultiplier} />
-      {/if}
-    {/each}
+    <SceneLighting />
 
     {@render children?.()}
 
