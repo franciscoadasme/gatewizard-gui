@@ -144,7 +144,8 @@ export const STRUCTURAL_TYPE_TITLES = {
   distance: 'Distance',
   radius_of_gyration: 'Radius of Gyration',
   membrane_thickness: 'Membrane Thickness',
-  area_per_lipid: 'Area per Lipid'
+  area_per_lipid: 'Area per Lipid',
+  titration: 'Titration'
 }
 
 /**
@@ -166,6 +167,11 @@ export const STRUCTURAL_TYPE_GROUPS = [
     id: 'membrane',
     label: 'Membrane',
     types: ['membrane_thickness', 'area_per_lipid']
+  },
+  {
+    id: 'protonation',
+    label: 'Protonation',
+    types: ['titration']
   }
 ]
 

@@ -21,6 +21,9 @@
     xMaxOverride = null,
     yMinOverride = null,
     yMaxOverride = null,
+    /** When both are set, Y ticks span this range and the overrides are the drawn range. */
+    yTickMin = null,
+    yTickMax = null,
     svgEl = $bindable(null),
     aspectRatio = 2.5,
     transparentBg = false,
@@ -42,6 +45,10 @@
     yTickDecimals = '',
     /** Width/height of the legend color square in SVG units */
     legendSwatchSize = 12,
+    /** In-chart legend marker. Square for other analyses; titration uses circle. */
+    legendSwatchShape = 'square',
+    /** Draw the border around an inside legend. */
+    legendFrame = true,
     /** Legend text size */
     legendFontSize = 10,
     /** Axis tick and axis-title size */
@@ -63,6 +70,7 @@
     tickLength = 4,
     tickWidth = 1,
     spineWidth = 1,
+    lineStyle = 'solid',
     showSpineLeft = true,
     showSpineBottom = true,
     showSpineTop = false,
@@ -97,31 +105,39 @@
   } = $props()
 
   const palette = ['#f59e0b', '#22c55e', '#38bdf8', '#f87171', '#a78bfa', '#f472b6']
-  /** CSS pixel width of the chart box — settings are screen px, SVG viewBox is 900. */
+  /**
+   * ViewBox is the chart box in CSS pixels. Font numbers in the SVG then match
+   * the on-screen size, including the rotated Y label when the PNG is rasterized.
+   */
   let cssW = $state(400)
-  const width = 900
-  const height = $derived(Math.round(width / aspectRatio))
-  const pxToSvg = $derived(cssW > 16 ? width / cssW : 1)
+  const width = $derived(Math.max(32, Math.round(cssW)))
+  const height = $derived(
+    Math.max(32, Math.round(width / (Number(aspectRatio) > 0.2 ? Number(aspectRatio) : 1)))
+  )
+  const pxToSvg = 1
 
-  // Measure once (and on window resize). ResizeObserver + bind:clientWidth
-  // fought mosaic layout after Overlay/Grid session load and starved all clicks.
+  // Width only, and only when it actually changes. A live clientWidth binding
+  // fought mosaic layout and starved clicks.
   onMount(() => {
     const el = wrapEl
     if (!el) return
     const apply = () => {
       const n = Math.round(el.getBoundingClientRect().width)
-      if (n > 16) cssW = n
+      if (n > 16 && Math.abs(n - cssW) > 1) cssW = n
     }
     apply()
     let timer = 0
-    const onResize = () => {
+    const schedule = () => {
       clearTimeout(timer)
-      timer = window.setTimeout(apply, 200)
+      timer = window.setTimeout(apply, 150)
     }
-    window.addEventListener('resize', onResize)
+    window.addEventListener('resize', schedule)
+    const observer = new ResizeObserver(schedule)
+    observer.observe(el)
     return () => {
       clearTimeout(timer)
-      window.removeEventListener('resize', onResize)
+      window.removeEventListener('resize', schedule)
+      observer.disconnect()
     }
   })
 
@@ -166,6 +182,7 @@
   const tickLen = $derived(Math.max(0, Number(tickLength) || 0) * pxToSvg)
   const tickStroke = $derived(Math.max(0.2, Number(tickWidth) || 1) * pxToSvg)
   const spineStroke = $derived(Math.max(0.2, Number(spineWidth) || 1) * pxToSvg)
+  const spineDash = $derived(strokeDashForStyle(lineStyle, Number(spineWidth) || 1) || undefined)
   const tickGap = $derived(Math.max(0, Number(tickLabelGap) || 8) * pxToSvg)
   const titleBand = $derived.by(() => {
     if (!chartTitle && !chartSubtitle) return edgePad
@@ -701,7 +718,20 @@
   }
 
   const xTickFractions = $derived(axisTickFractions(extents.xMin, extents.xMax, xTickStep, xTicks))
-  const yTickFractions = $derived(axisTickFractions(extents.yMin, extents.yMax, yTickStep, yTicks))
+  const yTickMarks = $derived.by(() => {
+    const tickLo = Number(yTickMin)
+    const tickHi = Number(yTickMax)
+    const hasTickDomain = Number.isFinite(tickLo) && Number.isFinite(tickHi) && tickHi !== tickLo
+    const lo = hasTickDomain ? tickLo : extents.yMin
+    const hi = hasTickDomain ? tickHi : extents.yMax
+    const span = hi - lo
+    const view = extents.yMax - extents.yMin
+    return axisTickFractions(lo, hi, yTickStep, yTicks).map((t) => {
+      const value = hi - span * t
+      const viewT = view === 0 ? 0 : (extents.yMax - value) / view
+      return { t: viewT, value }
+    })
+  })
 
   const xTickData = $derived.by(() => {
     const ticks = xTickFractions
@@ -865,6 +895,7 @@
           y2={margin.top + plotHeight}
           stroke={axisColor}
           stroke-width={spineStroke}
+          stroke-dasharray={spineDash}
           stroke-linecap="square"
         />
         {/if}
@@ -876,6 +907,7 @@
           y2={margin.top + plotHeight}
           stroke={axisColor}
           stroke-width={spineStroke}
+          stroke-dasharray={spineDash}
           stroke-linecap="square"
         />
         {/if}
@@ -887,6 +919,7 @@
           y2={margin.top}
           stroke={axisColor}
           stroke-width={spineStroke}
+          stroke-dasharray={spineDash}
           stroke-linecap="square"
         />
         {/if}
@@ -898,13 +931,14 @@
           y2={margin.top + plotHeight}
           stroke={axisColor}
           stroke-width={spineStroke}
+          stroke-dasharray={spineDash}
           stroke-linecap="square"
         />
         {/if}
 
-        {#each yTickFractions as t (t)}
-          {@const yVal = extents.yMax - (extents.yMax - extents.yMin) * t}
-          {@const ty = margin.top + plotHeight * t}
+        {#each yTickMarks as mark (mark.value)}
+          {@const yVal = mark.value}
+          {@const ty = margin.top + plotHeight * mark.t}
           {#if showGrid}
             <line
               x1={margin.left}
@@ -1203,19 +1237,28 @@
             rx="3"
             fill={plotBg}
             fill-opacity="0.85"
-            stroke={axisColor}
-            stroke-width="0.5"
+            stroke={legendFrame ? axisColor : 'none'}
+            stroke-width={legendFrame ? 0.5 : 0}
           />
           {#each series as s, i (s.key ?? i)}
             {@const iy = ly + 5 + itemH * i + itemH / 2}
-            <rect
-              x={lx + 4}
-              y={iy - legendSwatch / 2}
-              width={legendSwatch}
-              height={legendSwatch}
-              rx="1"
-              fill={s.color || palette[i % palette.length]}
-            />
+            {#if legendSwatchShape === 'circle'}
+              <circle
+                cx={lx + 4 + legendSwatch / 2}
+                cy={iy}
+                r={legendSwatch / 2}
+                fill={s.color || palette[i % palette.length]}
+              />
+            {:else}
+              <rect
+                x={lx + 4}
+                y={iy - legendSwatch / 2}
+                width={legendSwatch}
+                height={legendSwatch}
+                rx="1"
+                fill={s.color || palette[i % palette.length]}
+              />
+            {/if}
             <text
               x={lx + 8 + legendSwatch}
               y={iy + legendFs * 0.35}
@@ -1241,6 +1284,7 @@
       fontFamily={fontFamily}
       fontSize={legendFs}
       swatchSize={legendSwatch}
+      swatchShape={legendSwatchShape}
       textColor={labelColor}
     />
   {/if}

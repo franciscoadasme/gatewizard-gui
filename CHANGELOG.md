@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Analysis titration plot:** Y units are hidden, because angstroms and nanometers do not apply to this figure. New plots start from a tighter default layout. Panel C can hide the legend border, and line style applies to the axis edges and the curves.
+
 ### Fixed
 
+- **Analysis titration PNG:** the exported figure keeps the same label sizes as on screen, including the rotated Y-axis titles. Saving over a file that is already open no longer fails.
 - **Visualize depth of field aliasing:** DoF now renders at full resolution (was 0.75×), keeps MSAA on the effect composer, softens CoC edges, and applies SMAA so bokeh rings and in-focus edges are much less jagged.
 - **Visualize cartoon / tube + clip:** the clip wrapper no longer binds the Three group into `$state` (that remounted children and blanked cartoon/tube). Camera-slab clip planes follow the live viewer camera while orbiting.
 - **Visualize custom selection (gear):** free-text Other selections edit as a draft — Apply / Enter commits; mid-typing no longer hits `/get-structure` (fixes 422 spam and sluggish arrow keys on long `bonded` expressions).
@@ -54,6 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Analysis titration:** structural type Titration runs PropKa on one PDB, with no topology or trajectory. The figure shows pKa values, protonation fractions, and titration curves. Target pH, which residues appear, and colors are editable, and the result stays in the analysis session. Disulfide cysteines are left out of the pKa and fraction panels, with a short note that PropKa’s 99.99 on those bridges is a placeholder, not a titration pKa.
 - **Analysis custom outside legend:** Side includes Custom. X and Y are percent from the top-left of the figure, and the legend can be dragged there. Publication PNG uses the same position.
 - **Analysis energetic plot settings:** a Property picker chooses which log the settings edit. Y tick count, decimals, and step can differ per cell; X ticks stay shared across the mosaic. Line color can be typed as well as picked.
 - **Visualize center on visible:** structure-row focus icon frames the camera on that structure’s visible representations (drawn coords). Toolbar reset still frames the whole active structure and restores the home orbit.

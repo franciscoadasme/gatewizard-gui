@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, Notification, screen, shell } from 'electron'
 import { spawn, spawnSync } from 'child_process'
 import { existsSync, accessSync, readFileSync, statSync, watch } from 'fs'
-import { mkdir, open as openFile, readFile, writeFile } from 'fs/promises'
+import { mkdir, open as openFile, readFile, rename, unlink, writeFile } from 'fs/promises'
 import path, { join } from 'path'
 import { buildFfmpegEncodeArgs, formatFfmpegError } from './animationEncode.js'
 import { resolveWritableDir, sidecarFsCandidates, sidecarReadCandidates } from './wslPaths.js'
@@ -1541,14 +1541,50 @@ ipcMain.handle('fs:writeJson', async (_event, filePath, data) => {
   await writeFile(filePath, JSON.stringify(data, null, 2))
 })
 
+function resolveWritableFile(filePath) {
+  const requested = String(filePath || '')
+  const destDir = resolveWritableDir(path.dirname(requested), existsSync, path.dirname)
+  return path.join(destDir, path.basename(requested))
+}
+
+/**
+ * Write beside the destination, then rename over it.
+ * Truncating a PNG that a viewer already has open returns EINVAL on /mnt/c.
+ * @param {string} dest
+ * @param {string | Buffer} data
+ * @param {BufferEncoding | undefined} [encoding]
+ */
+async function writeReplacing(dest, data, encoding) {
+  await mkdir(path.dirname(dest), { recursive: true })
+  const tmp = path.join(path.dirname(dest), `.${path.basename(dest)}.${process.pid}.${Date.now()}.tmp`)
+  try {
+    if (encoding) await writeFile(tmp, data, encoding)
+    else await writeFile(tmp, data)
+    try {
+      await rename(tmp, dest)
+    } catch (err) {
+      const code = err && /** @type {{ code?: string }} */ (err).code
+      if (code === 'EEXIST' || code === 'EPERM') {
+        await unlink(dest)
+        await rename(tmp, dest)
+        return
+      }
+      throw err
+    }
+  } catch (err) {
+    await unlink(tmp).catch(() => {})
+    throw err
+  }
+}
+
 ipcMain.handle('fs:writeText', async (_event, filePath, text) => {
-  await mkdir(path.dirname(filePath), { recursive: true })
-  await writeFile(filePath, text, 'utf-8')
+  const dest = resolveWritableFile(filePath)
+  await writeReplacing(dest, text, 'utf-8')
 })
 
 ipcMain.handle('fs:writeBinary', async (_event, filePath, base64) => {
-  await mkdir(path.dirname(filePath), { recursive: true })
-  await writeFile(filePath, Buffer.from(base64, 'base64'))
+  const dest = resolveWritableFile(filePath)
+  await writeReplacing(dest, Buffer.from(base64, 'base64'))
 })
 
 ipcMain.handle('animation:ensureDir', async (_event, dirPath) => {

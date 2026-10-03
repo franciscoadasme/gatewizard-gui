@@ -18,6 +18,8 @@
     swatchHeight = 0,
     /** Rounded color squares (rx) vs sharp */
     swatchRound = true,
+    /** square or circle */
+    swatchShape = 'square',
     /** Rounded outer box vs sharp */
     boxRound = true,
     /** Frame border color (empty → theme default when boxed) */
@@ -270,14 +272,18 @@
         {@const y = titleBand + 4 + row * itemH}
         {@const cy = y + (itemH - 4) / 2}
         {@const color = s.color || palette[i % palette.length]}
-        <rect
-          x={x}
-          y={cy - swH / 2}
-          width={swW}
-          height={swH}
-          rx={swRx}
-          fill={color}
-        />
+        {#if swatchShape === 'circle'}
+          <circle cx={x + swW / 2} cy={cy} r={Math.min(swW, swH) / 2} fill={color} />
+        {:else}
+          <rect
+            x={x}
+            y={cy - swH / 2}
+            width={swW}
+            height={swH}
+            rx={swRx}
+            fill={color}
+          />
+        {/if}
         {#if s.marker && s.marker !== 'none'}
           <path
             d={markerPath(

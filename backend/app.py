@@ -1152,6 +1152,29 @@ class RunPropKaRequest(BaseModel):
     )
 
 
+class TitrationAnalysisRequest(BaseModel):
+    path: str = Field(..., description="Absolute path to a PDB file")
+    target_ph: float = Field(7.0, description="pH used to mark protonated residues")
+    ph_min: float = Field(0.0, description="First pH on the titration curves")
+    ph_max: float = Field(14.0, description="Last pH on the titration curves")
+    ph_step: float = Field(0.5, description="pH spacing of the titration curves")
+    exclude_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Residues left out of panels A and B. "
+            "Each entry may be CYS77, CYS77:A, or the figure id."
+        ),
+    )
+    curve_ids: list[str] | None = Field(
+        None,
+        description="Residues drawn in panel C. Omit to keep every curve.",
+    )
+    type_filter: list[str] = Field(
+        default_factory=list,
+        description="Residue names kept in panels A, B, and C. Empty means all types.",
+    )
+
+
 class DetectLigandsRequest(BaseModel):
     path: str = Field(..., description="Absolute path to a PDB/mmCIF file")
 
@@ -1478,6 +1501,31 @@ def run_propka(payload: RunPropKaRequest) -> dict:
 
         tb_str = "".join(traceback.format_exception(type(ex), ex, ex.__traceback__))
         raise HTTPException(status_code=400, detail=str(ex) + "\n" + tb_str) from ex
+
+
+@app.post("/analysis-titration")
+def analysis_titration(payload: TitrationAnalysisRequest) -> dict:
+    """PropKa pKa rows and pH titration curves for one PDB (no trajectory)."""
+    path = os.path.abspath(os.path.expanduser(payload.path))
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    try:
+        from titration_analysis import run_titration
+
+        return sanitize_value(
+            run_titration(
+                path,
+                target_ph=payload.target_ph,
+                ph_min=payload.ph_min,
+                ph_max=payload.ph_max,
+                ph_step=payload.ph_step,
+                exclude_ids=payload.exclude_ids,
+                curve_ids=payload.curve_ids,
+                type_filter=payload.type_filter,
+            )
+        )
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
 
 
 @app.post("/detect-ligands")
@@ -5497,6 +5545,29 @@ def render_analysis_plot(payload: AnalysisRenderPlotRequest):
     try:
         spec = normalize_plot_spec(payload.plot_spec)
         png = render_energetic_to_bytes(payload.data, spec, fmt="png")
+        return Response(content=png, media_type="image/png")
+    except ImportError as ex:
+        raise HTTPException(
+            status_code=503,
+            detail="matplotlib is required for publication plot export",
+        ) from ex
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+class TitrationRenderRequest(BaseModel):
+    spec: dict = Field(..., description="Titration figure specification")
+
+
+@app.post("/analysis-render-titration")
+def render_titration_plot(payload: TitrationRenderRequest):
+    """Publication PNG for the three-panel titration figure."""
+    from fastapi.responses import Response
+
+    from titration_analysis import render_titration_png
+
+    try:
+        png = render_titration_png(payload.spec or {})
         return Response(content=png, media_type="image/png")
     except ImportError as ex:
         raise HTTPException(

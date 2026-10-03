@@ -666,7 +666,8 @@ export function serializeAnalysisSession(state) {
     // Keep legacy fields for older GUI builds reading this session.
     residueMappingPath: groups[0]?.path || '',
     useOriginalResidueNumbers: Boolean(groups.some((g) => g.enabled)),
-    plotSettings: state.plotSettings ? clonePlainAnalysisData(state.plotSettings) : null
+    plotSettings: state.plotSettings ? clonePlainAnalysisData(state.plotSettings) : null,
+    titration: state.titration ? clonePlainAnalysisData(state.titration) : null
   }
 }
 
@@ -740,7 +741,8 @@ export function deserializeAnalysisSession(raw) {
     plotSettings:
       obj.plotSettings && typeof obj.plotSettings === 'object'
         ? normalizeSessionPlotSettings(obj.plotSettings)
-        : null
+        : null,
+    titration: obj.titration && typeof obj.titration === 'object' ? obj.titration : null
   })
 }
 
@@ -763,6 +765,9 @@ export function formatAnalysisSessionIdentity(session) {
  * @returns {boolean}
  */
 export function sessionHasPlottableResults(session) {
+  if (Array.isArray(session?.titration?.result?.residues) && session.titration.result.residues.length) {
+    return true
+  }
   if (!session?.sets?.length) return false
   return (
     setsHavePlottableResults(session.sets, 'structural') ||

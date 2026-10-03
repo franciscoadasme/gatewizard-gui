@@ -10,7 +10,15 @@
   import Button from '../components/ui/Button.svelte'
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Divider from '../components/ui/Divider.svelte'
-  import { analysisStatus, logEvent } from '../lib/pageStatus.svelte.js'
+  import { analysisStatus, logEvent, preparationStatus } from '../lib/pageStatus.svelte.js'
+  import TitrationFigure from '../components/TitrationFigure.svelte'
+  import {
+    buildTitrationPublicationSpec,
+    deriveTitrationView,
+    normalizeTitrationResult,
+    suggestTitrationCurveIds,
+    titrationTypeColor
+  } from '../lib/titration.js'
   import { defaultPeptideExcludeSelection, peptideOrProteinSelection } from '../lib/peptideResidues.js'
   import { liveReorderAtMidpoint, LIST_REORDER_FLIP } from '../lib/liveListReorder.js'
   import Input from '../components/ui/Input.svelte'
@@ -33,7 +41,9 @@
     getEnergeticProperties,
     getFatslimStatus,
     renderAnalysisPlot,
+    renderTitrationPlot,
     runEnergeticAnalysis,
+    runTitrationAnalysis,
     runStructuralAnalysis,
     scanAnalysisSessions
   } from '../lib/backendApi'
@@ -164,6 +174,7 @@
     CELL_PLOT_KEYS,
     ENERGETIC_CELL_PLOT_KEYS,
     strokeDashForStyle,
+    panelLetterForCell,
     lineChartAxisProps,
     plotSpecAxisChrome,
     lineChartExtraMarginProps,
@@ -244,6 +255,28 @@
   /** @type {Array<{ path: string, timeNs: string, stride: string }>} */
   let trajectoryFiles = $state([])
   let structuralType = $state('rmsd')
+  let titrationPdb = $state('')
+  let titrationTargetPh = $state('6')
+  let titrationPhMin = $state('0')
+  let titrationPhMax = $state('14')
+  let titrationPhStep = $state('0.5')
+  /** @type {string[]} empty = every residue type PropKa reported */
+  let titrationTypeFilter = $state(/** @type {string[]} */ ([]))
+  /** @type {string[]} */
+  let titrationCurveIds = $state(/** @type {string[]} */ ([]))
+  /** Residue ids left out of the pKa and fraction plots. */
+  let titrationExcludeIds = $state(/** @type {string[]} */ ([]))
+  /** Centered notice when disulfide cysteines were omitted from panels A and B. */
+  let titrationDisulfideOpen = $state(false)
+  /** @type {Record<string, string>} */
+  let titrationColorOverrides = $state(/** @type {Record<string, string>} */ ({}))
+  let titrationShowA = $state(true)
+  let titrationShowB = $state(true)
+  let titrationShowC = $state(true)
+  let titrationTitles = $state({ a: '', b: '', c: '' })
+  let titrationCurveQuery = $state('')
+  /** @type {ReturnType<typeof normalizeTitrationResult> | null} */
+  let titrationResult = $state(/** @type {ReturnType<typeof normalizeTitrationResult> | null} */ (null))
   let selection = $state(`${peptideOrProteinSelection()} and backbone`)
   let selection2 = $state(`${peptideOrProteinSelection()} and resid 50`)
   /** @type {number | null} */
@@ -1767,6 +1800,7 @@
         ])
       )
     }
+    applyTitrationSession(session.titration)
     warnMissingSessionPaths(session)
     // Energetic charts read live set data; rebuild so the open energetic tab shows
     // immediately without toggling Structural → Energetic.
@@ -2115,6 +2149,42 @@
     /** Horizontal/vertical shaded bands for this analysis type */
     referenceBands: []
   }
+
+  function titrationPlotDefaults() {
+    return {
+      ...structDefaults,
+      yLabel: 'pKa',
+      xLabel: 'pH',
+      showGrid: false,
+      legendPosition: 'top-right',
+      legendSwatchSize: '14',
+      axisFontSize: '14',
+      titleFontSize: '14',
+      pkaMarkerSize: '3',
+      curveMarkerSize: '4',
+      titrationLeftShare: '47',
+      titrationHeightA: '1.65',
+      titrationHeightB: '1',
+      titrationGap: '2',
+      titrationColGap: '6',
+      titrationFigureAspect: '3',
+      titrationFontScope: 'all',
+      titrationPanelFonts: {
+        a: { axisFontSize: '15', titleFontSize: '14', axisFontBold: true },
+        b: { titleFontSize: '14', axisFontBold: true },
+        c: { axisFontSize: '16', titleFontSize: '14', legendFontSize: '14', axisFontBold: true }
+      },
+      titrationLegendA: 'top-right',
+      titrationLegendFrameC: true,
+      titrationPanelAxes: {
+        a: { yMax: '20' },
+        b: { yMin: '0', yMax: '1', yTickDecimals: '1', yTickCount: '3', yTickStep: '' },
+        c: { yMin: '0', yMax: '1', yTickStep: '0.5', yTickDecimals: '2' }
+      },
+      titrationYPad: '0.05'
+    }
+  }
+
   // Energetic plot settings defaults
   const energDefaults = {
     title: '',
@@ -2153,8 +2223,9 @@
     rmsf: { ...structDefaults },
     distance: { ...structDefaults },
     radius_of_gyration: { ...structDefaults },
-    area_per_lipid: { ...structDefaults, yUnit: 'Å²' },
-    membrane_thickness: { ...structDefaults }
+      area_per_lipid: { ...structDefaults, yUnit: 'Å²' },
+    membrane_thickness: { ...structDefaults },
+    titration: titrationPlotDefaults()
   })
   // Energetic plot: global defaults + per-panel overrides
   const energPanelShell = {
@@ -2189,6 +2260,14 @@
   let ePlotPanels = $state({})
   /** @type {'none' | 'pan' | 'boxZoom' | 'rangeSelect'} */
   let chartInteractionMode = $state(/** @type {'none' | 'pan' | 'boxZoom' | 'rangeSelect'} */ ('none'))
+  /** Zoom limits for titration panels A, B, and C. Null uses the Plot settings limits. */
+  let titrationZoom = $state(
+    /** @type {{ a: { yMin: number, yMax: number } | null, b: { yMin: number, yMax: number } | null, c: { xMin?: number, xMax?: number, yMin?: number, yMax?: number } | null }} */ ({
+      a: null,
+      b: null,
+      c: null
+    })
+  )
   let focusedPanelKey = $state('')
   /** @type {{ t0: number, t1: number } | null} */
   let statsRange = $state(null)
@@ -2210,8 +2289,46 @@
     canRunAnalysis &&
       (setsHavePlottableResults(analysisSets, mode) ||
         (mode === 'structural' && Object.values(structResults).some((r) => r != null)) ||
-        (mode === 'energetic' && analysisSets.some((s) => s.energeticResult != null)))
+        (mode === 'energetic' && analysisSets.some((s) => s.energeticResult != null)) ||
+        (titrationResult?.residues?.length ?? 0) > 0)
   )
+
+  const titrationView = $derived.by(() => {
+    if (!titrationResult?.residues?.length) return null
+    return deriveTitrationView(titrationResult, {
+      targetPh: Number(titrationTargetPh),
+      typeFilter: titrationTypeFilter,
+      curveIds: titrationCurveIds,
+      excludeIds: titrationExcludeIds,
+      disulfideIds: (titrationResult.disulfideHidden || []).map((row) => row.id),
+      colorOverrides: titrationColorOverrides
+    })
+  })
+
+  const titrationFigureOn = $derived(
+    mode === 'structural' &&
+      structuralType === 'titration' &&
+      Boolean(titrationView && (titrationShowA || titrationShowB || titrationShowC))
+  )
+
+  const titrationLegendItems = $derived.by(() => {
+    if (!titrationView) return []
+    if (gridLayout.legendEntries === 'manual') return figureLegendItems([], gridLayout)
+    /** @type {Array<{ key: string, name: string, color: string }>} */
+    const items = []
+    if (titrationShowA) {
+      items.push(
+        { key: 'protonated', name: 'Protonated (pH < pKa)', color: '#111827' },
+        { key: 'deprotonated', name: 'Deprotonated (pH ≥ pKa)', color: '#d1d5db' }
+      )
+    }
+    if (titrationShowC) {
+      for (const curve of titrationView.curves || []) {
+        items.push({ key: curve.id, name: curve.label, color: curve.color })
+      }
+    }
+    return items
+  })
 
   /**
    * Build a short subtitle describing the selection(s) used for a structural run.
@@ -2260,6 +2377,91 @@
     return text.length > max ? `${text.slice(0, max - 1)}…` : text
   }
 
+  const TITRATION_FONT_KEYS = ['axisFontSize', 'titleFontSize', 'legendFontSize', 'axisFontBold']
+  const TITRATION_AXIS_KEYS = [
+    'xMin',
+    'xMax',
+    'yMin',
+    'yMax',
+    'xTickCount',
+    'yTickCount',
+    'xTickDecimals',
+    'yTickDecimals',
+    'xTickStep',
+    'yTickStep'
+  ]
+
+  /** @param {string} key */
+  function titrationFontShown(key) {
+    const row = sPlots.titration || {}
+    const scope = row.titrationFontScope || 'all'
+    if (scope === 'all') return row[key]
+    const panel = row.titrationPanelFonts?.[scope] || {}
+    return panel[key] != null && panel[key] !== '' ? panel[key] : row[key]
+  }
+
+  /** @param {'a' | 'b' | 'c'} panel */
+  function titrationPanelFonts(panel) {
+    const row = sPlots.titration || {}
+    const override = row.titrationPanelFonts?.[panel] || {}
+    const pick = (key, fallback) => {
+      const value = override[key]
+      return value != null && value !== '' ? value : (row[key] ?? fallback)
+    }
+    return {
+      axisFontSize: Number(pick('axisFontSize', 11)) || 11,
+      titleFontSize: Number(pick('titleFontSize', 13)) || 13,
+      legendFontSize: Number(pick('legendFontSize', 11)) || 11,
+      axisFontBold: Boolean(pick('axisFontBold', false))
+    }
+  }
+
+  /**
+   * @param {'a' | 'b' | 'c'} panel
+   * @param {{ xMin?: number, xMax?: number, yMin?: number, yMax?: number }} range
+   */
+  function onTitrationAxisRange(panel, range) {
+    titrationZoom = { ...titrationZoom, [panel]: range }
+  }
+
+  /** @param {string} key */
+  function titrationAxisShown(key) {
+    const row = sPlots.titration || {}
+    const scope = row.titrationFontScope || 'all'
+    if (scope === 'a' || scope === 'b' || scope === 'c') return titrationAxisValue(scope, key)
+    return row[key] ?? ''
+  }
+
+  /**
+   * @param {'a' | 'b' | 'c'} panel
+   * @param {string} key
+   */
+  function titrationYPad() {
+    const raw = sPlots.titration?.titrationYPad
+    if (raw === '' || raw == null) return 0.05
+    const n = Number(raw)
+    return Number.isFinite(n) ? Math.max(0, n) : 0.05
+  }
+
+  function titrationAxisValue(panel, key) {
+    const row = sPlots.titration || {}
+    const stored = row.titrationPanelAxes?.[panel] || {}
+    if (Object.prototype.hasOwnProperty.call(stored, key)) return stored[key] ?? ''
+    if (panel === 'c') {
+      const preset = { yMin: '0', yMax: '1', yTickStep: '0.5', yTickDecimals: '2' }
+      if (Object.prototype.hasOwnProperty.call(preset, key)) return preset[key]
+    }
+    if (panel === 'a') return row[key] ?? ''
+    return ''
+  }
+
+  /** @param {string} key */
+  function limitShown(key) {
+    if (mode === 'structural' && structuralType === 'titration') return titrationAxisShown(key)
+    if (mode === 'energetic' && key.startsWith('y')) return plotEdit[key] ?? ''
+    return ps[key] ?? ''
+  }
+
   // Derived: active plot settings for the open tab
   const ps = $derived(mode === 'structural' ? sPlots[structuralType] : ePlotGlobal)
   const gridPlotApplyCell = $derived(
@@ -2276,6 +2478,12 @@
         )
       : ps
   )
+
+  /** @param {string} key */
+  function shownFont(key) {
+    if (mode === 'structural' && structuralType === 'titration') return titrationFontShown(key)
+    return plotEdit[key]
+  }
   const resolvedStructColors = $derived(resolvePlotColors(ps, themeState.current))
   const resolvedEnergColors = $derived(resolvePlotColors(ePlotGlobal, themeState.current))
   const displayPlotBg = $derived(
@@ -3313,6 +3521,7 @@
 
   function resetChartView() {
     chartInteractionMode = 'none'
+    titrationZoom = { a: null, b: null, c: null }
     statsRange = null
     panelRangeStats = {}
     statsRangeStartInput = ''
@@ -3928,6 +4137,43 @@
     markSessionDirty()
     const globalOnly = {}
     const rest = { ...patch }
+    if (mode === 'structural' && structuralType === 'titration') {
+      const axisPatch = {}
+      for (const key of TITRATION_AXIS_KEYS) {
+        if (key in rest) axisPatch[key] = rest[key]
+      }
+      if (Object.keys(axisPatch).length) {
+        const scope = sPlots.titration?.titrationFontScope || 'all'
+        const panels = scope === 'a' || scope === 'b' || scope === 'c' ? [scope] : ['a', 'b', 'c']
+        const prev = sPlots.titration?.titrationPanelAxes || {}
+        const nextAxes = {
+          a: { ...(prev.a || {}) },
+          b: { ...(prev.b || {}) },
+          c: { ...(prev.c || {}) }
+        }
+        for (const panel of panels) nextAxes[panel] = { ...nextAxes[panel], ...axisPatch }
+        rest.titrationPanelAxes = nextAxes
+        if (panels.length === 1) {
+          for (const key of Object.keys(axisPatch)) delete rest[key]
+        }
+        const zoomNext = { ...titrationZoom }
+        for (const panel of panels) {
+          const z = zoomNext[panel] ? { ...zoomNext[panel] } : null
+          if (!z) continue
+          if ('yMin' in axisPatch || 'yMax' in axisPatch) {
+            delete z.yMin
+            delete z.yMax
+          }
+          if ('xMin' in axisPatch || 'xMax' in axisPatch) {
+            delete z.xMin
+            delete z.xMax
+          }
+          const empty = z.xMin == null && z.xMax == null && z.yMin == null && z.yMax == null
+          zoomNext[panel] = empty ? null : z
+        }
+        titrationZoom = zoomNext
+      }
+    }
     const sharedAcrossCells =
       mode === 'energetic'
         ? ['xTickStep', 'xTickCount', 'xTickDecimals', 'xMin', 'xMax']
@@ -3941,6 +4187,34 @@
     if (Object.keys(globalOnly).length) {
       if (mode === 'energetic') ePlotGlobal = { ...ePlotGlobal, ...globalOnly }
       else patchStructuralPlot(globalOnly)
+    }
+    if (Object.keys(rest).length === 0) return
+    if (mode === 'structural' && structuralType === 'titration') {
+      const fontKeys = TITRATION_FONT_KEYS
+      const fontPatch = {}
+      for (const key of fontKeys) {
+        if (key in rest) fontPatch[key] = rest[key]
+      }
+      const scope = sPlots.titration?.titrationFontScope || 'all'
+      if (Object.keys(fontPatch).length && scope !== 'all') {
+        for (const key of fontKeys) delete rest[key]
+        const prev = sPlots.titration?.titrationPanelFonts || {}
+        rest.titrationPanelFonts = {
+          a: { ...(prev.a || {}) },
+          b: { ...(prev.b || {}) },
+          c: { ...(prev.c || {}) },
+          [scope]: { ...(prev[scope] || {}), ...fontPatch }
+        }
+      } else if (Object.keys(fontPatch).length) {
+        const prev = sPlots.titration?.titrationPanelFonts || {}
+        const cleared = {}
+        for (const panel of ['a', 'b', 'c']) {
+          const row = { ...(prev[panel] || {}) }
+          for (const key of Object.keys(fontPatch)) delete row[key]
+          cleared[panel] = row
+        }
+        rest.titrationPanelFonts = cleared
+      }
     }
     if (Object.keys(rest).length === 0) return
     if (mode === 'energetic') {
@@ -4119,7 +4393,8 @@
       distance: { ...structDefaults },
       radius_of_gyration: { ...structDefaults },
       area_per_lipid: { ...structDefaults, yUnit: 'Å²' },
-      membrane_thickness: { ...structDefaults }
+      membrane_thickness: { ...structDefaults },
+      titration: titrationPlotDefaults()
     }
   }
 
@@ -5934,7 +6209,8 @@
       distance: { ...structDefaults },
       radius_of_gyration: { ...structDefaults },
       area_per_lipid: { ...structDefaults, yUnit: 'Å²' },
-      membrane_thickness: { ...structDefaults }
+      membrane_thickness: { ...structDefaults },
+      titration: titrationPlotDefaults()
     }
     ePlotGlobal = { ...energGlobalDefaults, ...energPanelShell }
     ePlotPanels = {}
@@ -6115,6 +6391,239 @@
     bumpPlotData()
   }
 
+  function titrationSessionBlob() {
+    return {
+      pdbPath: titrationPdb,
+      targetPh: titrationTargetPh,
+      phMin: titrationPhMin,
+      phMax: titrationPhMax,
+      phStep: titrationPhStep,
+      typeFilter: [...titrationTypeFilter],
+      curveIds: [...titrationCurveIds],
+      excludeIds: [...titrationExcludeIds],
+      colorOverrides: { ...titrationColorOverrides },
+      showA: titrationShowA,
+      showB: titrationShowB,
+      showC: titrationShowC,
+      titles: { ...titrationTitles },
+      result: titrationResult
+    }
+  }
+
+  /** @param {Record<string, unknown> | null | undefined} blob */
+  function applyTitrationSession(blob) {
+    if (!blob || typeof blob !== 'object') return
+    titrationPdb = String(blob.pdbPath || blob.pdb_path || titrationPdb || '')
+    if (blob.targetPh != null || blob.target_ph != null) {
+      titrationTargetPh = String(blob.targetPh ?? blob.target_ph)
+    }
+    if (blob.phMin != null || blob.ph_min != null) titrationPhMin = String(blob.phMin ?? blob.ph_min)
+    if (blob.phMax != null || blob.ph_max != null) titrationPhMax = String(blob.phMax ?? blob.ph_max)
+    if (blob.phStep != null || blob.ph_step != null) {
+      titrationPhStep = String(blob.phStep ?? blob.ph_step)
+    }
+    titrationTypeFilter = Array.isArray(blob.typeFilter)
+      ? blob.typeFilter.map((t) => String(t))
+      : Array.isArray(blob.type_filter)
+        ? blob.type_filter.map((t) => String(t))
+        : []
+    titrationCurveIds = Array.isArray(blob.curveIds)
+      ? blob.curveIds.map((t) => String(t))
+      : Array.isArray(blob.curve_ids)
+        ? blob.curve_ids.map((t) => String(t))
+        : []
+    titrationExcludeIds = Array.isArray(blob.excludeIds)
+      ? blob.excludeIds.map((t) => String(t))
+      : Array.isArray(blob.exclude_ids)
+        ? blob.exclude_ids.map((t) => String(t))
+        : []
+    titrationColorOverrides =
+      blob.colorOverrides && typeof blob.colorOverrides === 'object'
+        ? { ...blob.colorOverrides }
+        : blob.color_overrides && typeof blob.color_overrides === 'object'
+          ? { ...blob.color_overrides }
+          : {}
+    titrationShowA = blob.showA !== false && blob.show_a !== false
+    titrationShowB = blob.showB !== false && blob.show_b !== false
+    titrationShowC = blob.showC !== false && blob.show_c !== false
+    const titles = blob.titles && typeof blob.titles === 'object' ? blob.titles : {}
+    titrationTitles = {
+      a: String(titles.a || ''),
+      b: String(titles.b || ''),
+      c: String(titles.c || '')
+    }
+    titrationResult = blob.result ? normalizeTitrationResult(blob.result) : null
+    titrationDisulfideOpen = Boolean(titrationResult?.disulfideWarning)
+  }
+
+  function titrationDisulfideLocked(id) {
+    return (titrationResult?.disulfideHidden || []).some((row) => row.id === id)
+  }
+
+  /** @param {unknown} ph */
+  function titrationPhLineLabel(ph) {
+    const n = Number(ph)
+    if (!Number.isFinite(n)) return 'pH'
+    const rounded = Math.round(n * 1000) / 1000
+    return `pH = ${rounded}`
+  }
+
+  /** @param {unknown} label */
+  function isAutoTitrationPhLabel(label) {
+    const text = String(label || '').trim()
+    return text.startsWith('Optimal transport pH') || text.startsWith('pH =')
+  }
+
+  function syncTitrationPhLines(ph) {
+    const n = Number(ph)
+    if (!Number.isFinite(n)) return
+    const label = titrationPhLineLabel(n)
+    const current = normalizeReferenceLines(sPlots.titration?.referenceLines)
+    const rest = current.filter((line) => !isAutoTitrationPhLabel(line.label))
+    const marker = {
+      color: '#e74c3c',
+      width: 1.6,
+      style: 'dashed',
+      label,
+      opacity: 0.9,
+      zOrder: 'forward'
+    }
+    patchStructuralPlot({
+      referenceLines: [
+        { ...marker, axis: 'y', value: n },
+        { ...marker, axis: 'x', value: n },
+        ...rest
+      ]
+    })
+  }
+
+  async function browseTitrationPdb() {
+    const result = await window.api.openFileDialog(
+      'PDB for titration',
+      [{ name: 'Structure', extensions: ['pdb', 'ent'] }],
+      workingDir || outputParentDir || outputDir || undefined
+    )
+    if (result.canceled || !result.filePath) return
+    titrationPdb = result.filePath
+    markSessionDirty()
+  }
+
+  /** @param {string} name @param {string[]} allTypes */
+  function toggleTitrationType(name, allTypes) {
+    const showingAll = titrationTypeFilter.length === 0
+    const hidingAll = titrationTypeFilter.includes('__none__')
+    const current = hidingAll ? [] : showingAll ? [...allTypes] : [...titrationTypeFilter]
+    const next = current.includes(name) ? current.filter((t) => t !== name) : [...current, name]
+    if (next.length === allTypes.length) titrationTypeFilter = []
+    else if (next.length === 0) titrationTypeFilter = ['__none__']
+    else titrationTypeFilter = next
+    markSessionDirty()
+  }
+
+  function toggleTitrationExclude(id) {
+    if (titrationDisulfideLocked(id)) return
+    titrationExcludeIds = titrationExcludeIds.includes(id)
+      ? titrationExcludeIds.filter((item) => item !== id)
+      : [...titrationExcludeIds, id]
+    markSessionDirty()
+  }
+
+  function toggleTitrationCurve(id) {
+    titrationCurveIds = titrationCurveIds.includes(id)
+      ? titrationCurveIds.filter((item) => item !== id)
+      : [...titrationCurveIds, id]
+    markSessionDirty()
+  }
+
+  function titrationCurveChoices() {
+    const q = titrationCurveQuery.trim().toLowerCase()
+    return (titrationResult?.residues || []).filter((residue) => {
+      if (!q) return true
+      return `${residue.label} ${residue.residue} ${residue.resId} ${residue.chain}`
+        .toLowerCase()
+        .includes(q)
+    })
+  }
+
+  function selectAllTitrationCurves() {
+    const ids = new Set(titrationCurveIds)
+    for (const residue of titrationCurveChoices()) ids.add(residue.id)
+    titrationCurveIds = [...ids]
+    markSessionDirty()
+  }
+
+  function unselectAllTitrationCurves() {
+    const hide = new Set(titrationCurveChoices().map((residue) => residue.id))
+    titrationCurveIds = titrationCurveIds.filter((id) => !hide.has(id))
+    markSessionDirty()
+  }
+
+  function setTitrationColor(key, hex) {
+    const raw = String(hex || '').trim()
+    titrationColorOverrides = { ...titrationColorOverrides, [key]: raw }
+    markSessionDirty()
+  }
+
+  async function runTitration() {
+    const path = titrationPdb.trim()
+    if (!path) {
+      lastError = 'Choose a PDB file for the titration analysis.'
+      return
+    }
+    const targetPh = Number(titrationTargetPh)
+    const phMin = Number(titrationPhMin)
+    const phMax = Number(titrationPhMax)
+    const phStep = Number(titrationPhStep)
+    if (![targetPh, phMin, phMax, phStep].every((n) => Number.isFinite(n))) {
+      lastError = 'Target pH, range, and step must be numbers.'
+      return
+    }
+    resetAnalysisProgress()
+    startAnalysisAbort()
+    running = true
+    lastError = ''
+    try {
+      const raw = await runTitrationAnalysis(
+        { path, targetPh, phMin, phMax, phStep },
+        analysisRunOpts()
+      )
+      const normalized = normalizeTitrationResult(raw)
+      titrationResult = normalized
+      const locked = new Set((normalized.disulfideHidden || []).map((row) => row.id))
+      titrationDisulfideOpen = Boolean(normalized.disulfideWarning)
+      const curvePool = normalized.residues.filter((row) => !locked.has(row.id))
+      if (!titrationCurveIds.length) {
+        titrationCurveIds = suggestTitrationCurveIds(curvePool, targetPh, 4)
+      } else {
+        const ids = new Set(normalized.residues.map((r) => r.id))
+        titrationCurveIds = titrationCurveIds.filter((id) => ids.has(id))
+        titrationExcludeIds = titrationExcludeIds.filter((id) => ids.has(id))
+        if (!titrationCurveIds.length) {
+          titrationCurveIds = suggestTitrationCurveIds(curvePool, targetPh, 4)
+        }
+      }
+      titrationExcludeIds = [...new Set([...titrationExcludeIds, ...locked])]
+      structuralType = 'titration'
+      syncTitrationPhLines(targetPh)
+      markSessionDirty()
+      logEvent(
+        'info',
+        'analysis',
+        'Titration analysis finished',
+        `${normalized.residues.length} residues · pH ${phMin}–${phMax}`
+      )
+    } catch (error) {
+      if (!isAnalysisCancelled(error)) {
+        lastError = error instanceof Error ? error.message : String(error)
+        logEvent('error', 'analysis', 'Titration analysis failed', lastError)
+      } else {
+        lastError = 'Analysis cancelled'
+      }
+    } finally {
+      running = false
+    }
+  }
+
   // ---- Run analysis ----
   function analysisRunOpts() {
     return {
@@ -6161,6 +6670,10 @@
 
   /** @param {'current' | 'all' | 'selected'} [scope] */
   async function runAnalysis(scope = runAnalysisScope) {
+    if (mode === 'structural' && structuralType === 'titration') {
+      await runTitration()
+      return
+    }
     if (scope === 'all' && analysisSets.length > 1) {
       await runAnalysisOnSets(analysisSets)
       return
@@ -6549,7 +7062,8 @@
   }
 
   const canExportOnscreenChart = $derived(
-    mode === 'structural' ? chartView.series.length > 0 : energeticPanels.length > 0
+    titrationFigureOn ||
+      (mode === 'structural' ? chartView.series.length > 0 : energeticPanels.length > 0)
   )
 
   function buildCsvContent(series) {
@@ -6589,36 +7103,118 @@
   }
 
   /**
+   * Rotated axis titles. An SVG loaded as an image, then stretched into the
+   * on-screen box, scales a rotated glyph on the other axis from horizontal
+   * text, so a long Y label exports larger than the app. These are painted
+   * from the live text instead.
+   * @param {SVGSVGElement} svg
+   */
+  function collectRotatedLabelPaint(svg) {
+    /** @type {Array<{ text: string, x: number, y: number, angle: number, fontPx: number, fontWeight: string, fontFamily: string, fill: string }>} */
+    const labels = []
+    for (const node of svg.querySelectorAll('text')) {
+      const text = /** @type {SVGTextElement} */ (node)
+      const transform = text.getAttribute('transform') || ''
+      const rot = /rotate\(\s*(-?\d+(?:\.\d+)?)/i.exec(transform)
+      if (!rot) continue
+      const owner = text.ownerSVGElement
+      const parent = text.parentNode
+      if (!owner || !parent || typeof /** @type {SVGGraphicsElement} */ (parent).getScreenCTM !== 'function') {
+        continue
+      }
+      const pt = owner.createSVGPoint()
+      pt.x = Number(text.getAttribute('x'))
+      pt.y = Number(text.getAttribute('y'))
+      if (!Number.isFinite(pt.x) || !Number.isFinite(pt.y)) continue
+      const parentCtm = /** @type {SVGGraphicsElement} */ (parent).getScreenCTM()
+      if (!parentCtm) continue
+      const anchor = pt.matrixTransform(parentCtm)
+      const cs = getComputedStyle(text)
+      const specified = parseFloat(cs.fontSize)
+      // Parent X scale is the size the app actually paints for a rotated label.
+      const viewScale = Math.hypot(parentCtm.a, parentCtm.b)
+      if (!Number.isFinite(specified) || specified <= 0) continue
+      labels.push({
+        text: text.textContent || '',
+        x: anchor.x,
+        y: anchor.y,
+        angle: Number(rot[1]),
+        fontPx: specified * (Number.isFinite(viewScale) && viewScale > 0 ? viewScale : 1),
+        fontWeight: cs.fontWeight || '400',
+        fontFamily: cs.fontFamily || 'sans-serif',
+        fill: cs.fill || '#222222'
+      })
+    }
+    return labels
+  }
+
+  /**
+   * @param {SVGSVGElement} clone
+   */
+  function stripRotatedLabels(clone) {
+    for (const node of [...clone.querySelectorAll('text')]) {
+      if (/rotate\(/i.test(node.getAttribute('transform') || '')) node.remove()
+    }
+  }
+
+  /**
+   * @param {CanvasRenderingContext2D} ctx
+   * @param {ReturnType<typeof collectRotatedLabelPaint>} labels
+   * @param {{ left: number, top: number }} origin
+   * @param {number} pixelScale
+   */
+  function paintRotatedLabels(ctx, labels, origin, pixelScale) {
+    for (const label of labels) {
+      if (!label.text) continue
+      ctx.save()
+      ctx.translate((label.x - origin.left) * pixelScale, (label.y - origin.top) * pixelScale)
+      ctx.rotate((label.angle * Math.PI) / 180)
+      ctx.font = `${label.fontWeight} ${label.fontPx * pixelScale}px ${label.fontFamily}`
+      ctx.fillStyle = label.fill
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'alphabetic'
+      ctx.fillText(label.text, 0, 0)
+      ctx.restore()
+    }
+  }
+
+  /**
    * @param {SVGSVGElement} svg
    * @param {number} index
    */
   async function rasterizeChartSvgToPng(svg, index = 0) {
     const vb = svg.viewBox?.baseVal
-    const svgW = vb && vb.width > 0 ? vb.width : 900
-    const svgH = vb && vb.height > 0 ? vb.height : 360
+    const box = svg.getBoundingClientRect()
+    // Viewport must be the on-screen box. Rasterizing at the viewBox and then
+    // stretching into this box enlarges rotated Y labels (their cap height
+    // follows the horizontal scale; titles follow the vertical scale).
+    const cssW = box.width > 1 ? box.width : vb && vb.width > 0 ? vb.width : 900
+    const cssH = box.height > 1 ? box.height : vb && vb.height > 0 ? vb.height : 360
     const dpi = Math.max(
       72,
       Math.min(600, Number(mode === 'energetic' ? ePlotGlobal.dpi : ps.dpi) || 150)
     )
     const pixelScale = dpi / 96
+    const labels = collectRotatedLabelPaint(svg)
     const clone = /** @type {SVGSVGElement} */ (svg.cloneNode(true))
-    clone.setAttribute('width', String(svgW))
-    clone.setAttribute('height', String(svgH))
+    stripRotatedLabels(clone)
+    clone.setAttribute('width', String(cssW))
+    clone.setAttribute('height', String(cssH))
     uniquifySvgClipIds(clone, index)
     const svgData = new XMLSerializer().serializeToString(clone)
     const svgB64 = btoa(unescape(encodeURIComponent(svgData)))
     const url = `data:image/svg+xml;base64,${svgB64}`
     const img = new Image()
-    img.width = svgW
-    img.height = svgH
+    img.width = cssW
+    img.height = cssH
     await new Promise((resolve, reject) => {
       img.onload = resolve
       img.onerror = (e) => reject(new Error('SVG image failed to load: ' + String(e)))
       img.src = url
     })
     const canvas = document.createElement('canvas')
-    canvas.width = Math.round(svgW * pixelScale)
-    canvas.height = Math.round(svgH * pixelScale)
+    canvas.width = Math.max(1, Math.round(cssW * pixelScale))
+    canvas.height = Math.max(1, Math.round(cssH * pixelScale))
     const ctx = canvas.getContext('2d')
     if (!ctx) throw new Error('Could not create canvas for PNG export')
     const transparent = mode === 'structural' && ps.transparentBg
@@ -6628,6 +7224,7 @@
       ctx.fillRect(0, 0, canvas.width, canvas.height)
     }
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+    paintRotatedLabels(ctx, labels, { left: box.left, top: box.top }, pixelScale)
     const dataUrl = canvas.toDataURL('image/png')
     return dataUrl.replace(/^data:image\/png;base64,/, '')
   }
@@ -6806,6 +7403,9 @@
   }
 
   function chartMosaicRoot() {
+    if (titrationFigureOn) {
+      return plotExportRoot?.querySelector('[data-titration-figure]') || null
+    }
     if (!toolbarIsGrid) return null
     return plotExportRoot?.querySelector('[data-chart-mosaic]') || null
   }
@@ -6932,7 +7532,7 @@
         lastError = 'Set an output folder name before saving.'
         return false
       }
-      if (!setsHaveAnyPlottableResults(analysisSets)) {
+      if (!setsHaveAnyPlottableResults(analysisSets) && !(titrationResult?.residues?.length)) {
         lastError = 'No analysis results to save. Run analysis first.'
         return false
       }
@@ -6971,7 +7571,8 @@
             structural: clonePlainAnalysisData(sPlots),
             energeticGlobal: clonePlainAnalysisData(ePlotGlobal),
             energeticPanels: clonePlainAnalysisData(ePlotPanels)
-          }
+          },
+          titration: clonePlainAnalysisData(titrationSessionBlob())
         })
         const filePath = `${output_dir}/${ANALYSIS_SESSION_FILENAME}`.replace(/\\/g, '/')
         await window.api.writeJson(filePath, session)
@@ -7338,10 +7939,105 @@
     return mode === 'energetic' ? buildEnergeticPlotPayload() : buildStructuralPlotPayload()
   }
 
+  /** @param {unknown} raw */
+  function titrationFigureFrameStyle(raw) {
+    const aspect = Number(raw)
+    if (!Number.isFinite(aspect) || aspect < 0.3) return 'width:100%;height:100%;'
+    const locked = Math.min(6, aspect)
+    return `aspect-ratio:${locked};width:min(100cqw, calc(100cqh * ${locked}));height:auto;flex:none;`
+  }
+
+  function titrationScreenPixels() {
+    const root = document.querySelector('[data-titration-figure]')
+    if (!(root instanceof HTMLElement)) return null
+    const measure = (name) => {
+      const el = root.querySelector(`[data-chart-export="${name}"]`)
+      if (!(el instanceof HTMLElement)) return null
+      const rect = el.getBoundingClientRect()
+      if (rect.width < 8 || rect.height < 8) return null
+      return { w: Math.round(rect.width), h: Math.round(rect.height) }
+    }
+    const a = measure('titration-a')
+    const b = measure('titration-b')
+    const c = measure('titration-c')
+    if (!a && !b && !c) return null
+    return { a, b, c }
+  }
+
+  function buildTitrationPublicationPayload() {
+    const ph = Number(titrationTargetPh)
+    const letters = {}
+    if (gridLayout.panelLetterShow) {
+      letters.a = panelLetterForCell(gridLayout, 0)
+      letters.b = panelLetterForCell(gridLayout, 1)
+      letters.c = panelLetterForCell(gridLayout, 2)
+    }
+    return {
+      spec: buildTitrationPublicationSpec(titrationView, {
+        targetPh: ph,
+        showA: titrationShowA,
+        showB: titrationShowB,
+        showC: titrationShowC,
+        letters,
+        titles: {
+          a: titrationTitles.a || `pKa Distribution and Protonation States at pH ${ph}`,
+          b: titrationTitles.b || `Protonation State Distribution at pH ${ph}`,
+          c: titrationTitles.c || 'Protein Titration Curves'
+        },
+        labels: {
+          a_y: ps.yLabel || 'pKa',
+          b_y: 'Protonated Fraction',
+          b_x: 'Residue Type',
+          c_x: ps.xLabel || 'pH',
+          c_y: 'Protonation State (1=protonated, 0=deprotonated)'
+        },
+        referenceLines: normalizeReferenceLines(ps.referenceLines),
+        aYMin: titrationZoom.a?.yMin ?? titrationAxisValue('a', 'yMin'),
+        aYMax: titrationZoom.a?.yMax ?? titrationAxisValue('a', 'yMax'),
+        bYMin: titrationZoom.b?.yMin ?? titrationAxisValue('b', 'yMin'),
+        bYMax: titrationZoom.b?.yMax ?? titrationAxisValue('b', 'yMax'),
+        cXMin: titrationZoom.c?.xMin ?? titrationAxisValue('c', 'xMin'),
+        cXMax: titrationZoom.c?.xMax ?? titrationAxisValue('c', 'xMax'),
+        cYMin: titrationZoom.c?.yMin ?? titrationAxisValue('c', 'yMin'),
+        cYMax: titrationZoom.c?.yMax ?? titrationAxisValue('c', 'yMax'),
+        cYPad: titrationYPad(),
+        cYTickStep: titrationAxisValue('c', 'yTickStep'),
+        cYTickCount: titrationAxisValue('c', 'yTickCount'),
+        cYTickDecimals: titrationAxisValue('c', 'yTickDecimals'),
+        fonts: {
+          a: titrationPanelFonts('a'),
+          b: titrationPanelFonts('b'),
+          c: titrationPanelFonts('c')
+        },
+        pixels: titrationScreenPixels(),
+        dpi: Number(ps.dpi) || 200,
+        textColor: resolvedStructColors.textColor,
+        plotBg: resolvedStructColors.plotBg,
+        figBg: gridLayout.figureBg || resolvedStructColors.plotBg,
+        fontFamily: ps.fontFamily || 'Roboto, sans-serif',
+        showGrid: ps.showGrid !== false,
+        legendFontSize: Number(ps.legendFontSize) || 10,
+        pkaMarkerSize: Number(ps.pkaMarkerSize) || 5,
+        curveMarkerSize: Number(ps.curveMarkerSize) || 4,
+        heightA: Number(ps.titrationHeightA) || 1.65,
+        heightB: Number(ps.titrationHeightB) || 1,
+        leftShare: Number(ps.titrationLeftShare) || 52,
+        panelGap: ps.titrationGap == null || ps.titrationGap === '' ? 4 : Number(ps.titrationGap),
+        columnGap: Number(ps.titrationColGap) || 12,
+        ...lineChartAxisProps(ps),
+        ...lineChartExtraMarginProps(ps),
+        lineWidth: Number(ps.lineWidth) || 1.6,
+        lineStyle: ps.lineStyle || 'solid',
+        legendFrameC: ps.titrationLegendFrameC !== false
+      })
+    }
+  }
+
   const canExportPublicationPng = $derived(
-    mode === 'energetic'
-      ? displaySeries.length > 0 || rawSeries.length > 0
-      : displaySeries.length > 0
+    titrationFigureOn ||
+      (mode === 'energetic'
+        ? displaySeries.length > 0 || rawSeries.length > 0
+        : displaySeries.length > 0)
   )
 
   async function exportPublicationPng() {
@@ -7354,7 +8050,9 @@
           [{ name: 'PNG Image', extensions: ['png'] }]
         )
         if (!filePath) return
-        const blob = await renderAnalysisPlot(buildPublicationPlotPayload())
+        const blob = titrationFigureOn
+          ? await renderTitrationPlot(buildTitrationPublicationPayload())
+          : await renderAnalysisPlot(buildPublicationPlotPayload())
         const buf = await blob.arrayBuffer()
         const bytes = new Uint8Array(buf)
         let binary = ''
@@ -7996,6 +8694,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
     <Divider />
 
     {#if mode === 'structural'}
+      {#if structuralType !== 'titration'}
       <!-- Structural Input -->
       <div class="space-y-2">
         <h2 class="sidebar-heading">Structural Input <span class="font-normal text-neutral-500">(active set)</span></h2>
@@ -8131,6 +8830,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
           {/if}
         </div>
       </div>
+      {/if}
 
       <Divider />
 
@@ -8163,9 +8863,201 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 {/each}
               </optgroup>
             {/each}
-          </Select>
+            </Select>
         </div>
 
+        {#if structuralType === 'titration'}
+          <div class="space-y-2">
+            <p class="sidebar-hint">
+              PropKa pKa distribution, protonation fraction, and titration curves from one PDB. No trajectory is required.
+            </p>
+            <div class="space-y-1">
+              <p class="sidebar-label">PDB file</p>
+              <div class="flex gap-1">
+                <span class="min-w-0 flex-1" title={titrationPdb || undefined}>
+                  <Input size="sm" value={basename(titrationPdb) || '—'} disabled className="w-full" />
+                </span>
+                <Button size="sm" variant="outline" onclick={browseTitrationPdb}>Browse</Button>
+              </div>
+              {#if preparationStatus.outputFile}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="px-0"
+                  onclick={() => {
+                    titrationPdb = preparationStatus.outputFile
+                    markSessionDirty()
+                  }}
+                >
+                  Use prepared PDB
+                </Button>
+              {/if}
+            </div>
+            <div class="grid grid-cols-2 gap-1.5">
+              <label>
+                <span class="sidebar-label mb-0 block">Target pH</span>
+                <Input
+                  size="sm"
+                  type="number"
+                  step="0.1"
+                  value={titrationTargetPh}
+                  className="w-full"
+                  oninput={(e) => {
+                    titrationTargetPh = /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    if (titrationResult) syncTitrationPhLines(titrationTargetPh)
+                    markSessionDirty()
+                  }}
+                />
+              </label>
+              <label>
+                <span class="sidebar-label mb-0 block">Step</span>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="0.05"
+                  step="0.1"
+                  value={titrationPhStep}
+                  className="w-full"
+                  oninput={(e) => {
+                    titrationPhStep = /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    markSessionDirty()
+                  }}
+                />
+              </label>
+              <label>
+                <span class="sidebar-label mb-0 block">pH min</span>
+                <Input
+                  size="sm"
+                  type="number"
+                  step="0.1"
+                  value={titrationPhMin}
+                  className="w-full"
+                  oninput={(e) => {
+                    titrationPhMin = /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    markSessionDirty()
+                  }}
+                />
+              </label>
+              <label>
+                <span class="sidebar-label mb-0 block">pH max</span>
+                <Input
+                  size="sm"
+                  type="number"
+                  step="0.1"
+                  value={titrationPhMax}
+                  className="w-full"
+                  oninput={(e) => {
+                    titrationPhMax = /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    markSessionDirty()
+                  }}
+                />
+              </label>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <label class="flex items-center gap-1 text-[11px]">
+                <Checkbox size="sm" checked={titrationShowA} onchange={(e) => (titrationShowA = e.currentTarget.checked)} />
+                A · pKa
+              </label>
+              <label class="flex items-center gap-1 text-[11px]">
+                <Checkbox size="sm" checked={titrationShowB} onchange={(e) => (titrationShowB = e.currentTarget.checked)} />
+                B · fraction
+              </label>
+              <label class="flex items-center gap-1 text-[11px]">
+                <Checkbox size="sm" checked={titrationShowC} onchange={(e) => (titrationShowC = e.currentTarget.checked)} />
+                C · curves
+              </label>
+            </div>
+            {#if titrationResult}
+              <div class="space-y-1">
+                <p class="sidebar-label">Residue types in A and B</p>
+                <p class="sidebar-hint">Uncheck a type to hide it. Leave every box checked to show all types.</p>
+                <div class="max-h-28 space-y-0.5 overflow-y-auto">
+                  {#each titrationView?.allTypes || [] as name (name)}
+                    {@const on = titrationTypeFilter.length === 0 || titrationTypeFilter.includes(name)}
+                    <label class="flex items-center gap-1.5 text-[11px]">
+                      <Checkbox
+                        size="sm"
+                        checked={on}
+                        onchange={() => toggleTitrationType(name, titrationView?.allTypes || [])}
+                      />
+                      <input
+                        type="color"
+                        class="size-5 cursor-pointer border-0 bg-transparent p-0"
+                        value={titrationColorOverrides[`type:${name}`] || titrationTypeColor(name, 0)}
+                        oninput={(e) =>
+                          setTitrationColor(`type:${name}`, /** @type {HTMLInputElement} */ (e.currentTarget).value)}
+                        title={`Color for ${name}`}
+                      />
+                      <span>{name}</span>
+                    </label>
+                  {/each}
+                </div>
+              </div>
+              <div class="space-y-1">
+                <p class="sidebar-label">Residues</p>
+                <p class="sidebar-hint">A/B includes the residue in the pKa and fraction plots. C draws its titration curve. Cysteines in a disulfide bond are left out of A and B. Uncheck A/B for any other residue to leave it out of those panels.</p>
+                <Input
+                  size="sm"
+                  placeholder="Filter residues"
+                  value={titrationCurveQuery}
+                  className="w-full"
+                  oninput={(e) => (titrationCurveQuery = e.currentTarget.value)}
+                />
+                <div class="flex gap-1">
+                  <Button size="sm" variant="outline" className="flex-1" onclick={selectAllTitrationCurves}
+                    >All curves</Button
+                  >
+                  <Button size="sm" variant="outline" className="flex-1" onclick={unselectAllTitrationCurves}
+                    >No curves</Button
+                  >
+                </div>
+                <div class="flex gap-3 px-0.5 text-[10px] text-neutral-500">
+                  <span class="w-8">A/B</span>
+                  <span>C</span>
+                </div>
+                <div class="max-h-40 space-y-0.5 overflow-y-auto">
+                  {#each titrationCurveChoices() as residue (residue.id)}
+                    <div class="flex items-center gap-1.5 text-[11px]">
+                      <Checkbox
+                        size="sm"
+                        checked={!titrationExcludeIds.includes(residue.id) && !titrationDisulfideLocked(residue.id)}
+                        disabled={titrationDisulfideLocked(residue.id)}
+                        onchange={() => toggleTitrationExclude(residue.id)}
+                        title={
+                          titrationDisulfideLocked(residue.id)
+                            ? 'Disulfide cysteine. Left out of panels A and B. PropKa writes 99.99 and skips the pKa calculation.'
+                            : 'Include in the pKa and fraction plots'
+                        }
+                      />
+                      <Checkbox
+                        size="sm"
+                        checked={titrationCurveIds.includes(residue.id)}
+                        onchange={() => toggleTitrationCurve(residue.id)}
+                        title="Draw this titration curve"
+                      />
+                      <input
+                        type="color"
+                        class="size-5 cursor-pointer border-0 bg-transparent p-0"
+                        value={titrationColorOverrides[`curve:${residue.id}`] || titrationTypeColor(residue.residue, 0)}
+                        oninput={(e) =>
+                          setTitrationColor(
+                            `curve:${residue.id}`,
+                            /** @type {HTMLInputElement} */ (e.currentTarget).value
+                          )}
+                        title={`Color for ${residue.label}`}
+                      />
+                      <span class="truncate" title={`pKa ${residue.pka.toFixed(2)}`}
+                        >{residue.label} · {residue.pka.toFixed(2)}</span
+                      >
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+          </div>
+        {/if}
+
+        {#if structuralType !== 'titration'}
         {#if isBilayerType(structuralType)}
           <div class="space-y-2">
             {#if bilayerSelectionWarning}
@@ -8864,6 +9756,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             {/if}
           </div>
         {/if}
+        {/if}
       </div>
     {:else}
       <!-- Energetic Input -->
@@ -9214,7 +10107,31 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                 </p>
               </div>
             {/if}
-            {#if mode === 'structural'}
+            {#if mode === 'structural' && structuralType === 'titration'}
+              <div class="space-y-1">
+                <p class="sidebar-label mb-0.5">Panel titles</p>
+                {#each [
+                  ['a', `pKa Distribution and Protonation States at pH ${titrationTargetPh}`],
+                  ['b', `Protonation State Distribution at pH ${titrationTargetPh}`],
+                  ['c', 'Protein Titration Curves']
+                ] as [id, placeholder] (id)}
+                  <Input
+                    size="sm"
+                    value={titrationTitles[id]}
+                    {placeholder}
+                    className="w-full"
+                    oninput={(e) => {
+                      titrationTitles = {
+                        ...titrationTitles,
+                        [id]: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                      }
+                      markSessionDirty()
+                    }}
+                  />
+                {/each}
+                <p class="sidebar-hint">Empty uses the default title for that panel.</p>
+              </div>
+            {:else if mode === 'structural'}
               <div
                 class={optionsSearchHighlightId === 'plot-title' ? 'option-pulse-highlight rounded' : ''}
                 data-option-id="plot-title"
@@ -9301,7 +10218,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   </Select>
                 </div>
               {/if}
-              {#if mode === 'structural'}
+              {#if mode === 'structural' && structuralType !== 'titration'}
                 <div>
                   <p class="sidebar-label mb-0.5">Y units</p>
                   <Select
@@ -9351,12 +10268,32 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             </button>
             {#if plotSectionOpen.limits}
               <div class="plot-settings-section-body">
+                {#if mode === 'structural' && structuralType === 'titration'}
+                  <div class="flex flex-wrap gap-1">
+                    {#each [
+                      ['all', 'All panels'],
+                      ['a', 'A'],
+                      ['b', 'B'],
+                      ['c', 'C']
+                    ] as [id, label] (id)}
+                      <Button
+                        size="sm"
+                        variant={(ps.titrationFontScope || 'all') === id ? 'default' : 'outline'}
+                        onclick={() => setPlotField({ titrationFontScope: id })}
+                      >{label}</Button>
+                    {/each}
+                  </div>
+                  <p class="sidebar-hint">
+                    Limits and ticks follow the selected panel. All panels writes A, B, and C. Click a plot to select it.
+                  </p>
+                {/if}
                 <div
                   class="min-w-0 space-y-1 {optionsSearchHighlightId === 'x-limits' ||
                   optionsSearchHighlightId === 'y-limits'
                     ? 'option-pulse-highlight rounded p-1'
                     : ''}"
                 >
+                  {#if !(mode === 'structural' && structuralType === 'titration' && (ps.titrationFontScope === 'a' || ps.titrationFontScope === 'b'))}
                   <div
                     class="grid min-w-0 grid-cols-[1.15rem_minmax(0,1.35fr)_minmax(0,1.35fr)_2.35rem_2.85rem] items-end gap-1"
                     data-option-id="x-limits"
@@ -9366,7 +10303,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                       <p class="sidebar-label mb-0.5">Min</p>
                       <Input
                         size="sm"
-                        value={ps.xMin}
+                        value={limitShown('xMin')}
                         placeholder="auto"
                         className="w-full min-w-0"
                         oninput={(e) => {
@@ -9381,7 +10318,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                       <p class="sidebar-label mb-0.5">Max</p>
                       <Input
                         size="sm"
-                        value={ps.xMax}
+                        value={limitShown('xMax')}
                         placeholder="auto"
                         className="w-full min-w-0"
                         oninput={(e) => {
@@ -9400,7 +10337,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                         min="2"
                         max="20"
                         step="1"
-                        value={ps.xTickCount}
+                        value={limitShown('xTickCount')}
                         className="w-full min-w-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                         title="Number of X tick marks. Clears X tick step so count is used."
                         oninput={(e) =>
@@ -9419,7 +10356,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                         min="0"
                         max="8"
                         step="1"
-                        value={ps.xTickDecimals}
+                        value={limitShown('xTickDecimals')}
                         placeholder="auto"
                         className="w-full min-w-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                         title="X tick decimal places. Empty = auto."
@@ -9431,6 +10368,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                       />
                     </div>
                   </div>
+                  {/if}
                   <div
                     class="grid min-w-0 grid-cols-[1.15rem_minmax(0,1.35fr)_minmax(0,1.35fr)_2.35rem_2.85rem] items-end gap-1"
                     data-option-id="y-limits"
@@ -9440,7 +10378,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                       <p class="sidebar-label mb-0.5">Min</p>
                       <Input
                         size="sm"
-                        value={mode === 'energetic' ? plotEdit.yMin ?? '' : ps.yMin}
+                        value={limitShown('yMin')}
                         placeholder="auto"
                         className="w-full min-w-0"
                         oninput={(e) => {
@@ -9457,7 +10395,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                       <p class="sidebar-label mb-0.5">Max</p>
                       <Input
                         size="sm"
-                        value={mode === 'energetic' ? plotEdit.yMax ?? '' : ps.yMax}
+                        value={limitShown('yMax')}
                         placeholder="auto"
                         className="w-full min-w-0"
                         oninput={(e) => {
@@ -9478,7 +10416,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                         min="2"
                         max="20"
                         step="1"
-                        value={mode === 'energetic' ? plotEdit.yTickCount : ps.yTickCount}
+                        value={limitShown('yTickCount')}
                         className="w-full min-w-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                         title="Number of Y tick marks. Clears Y tick step so count is used."
                         oninput={(e) =>
@@ -9497,7 +10435,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                         min="0"
                         max="8"
                         step="1"
-                        value={mode === 'energetic' ? (plotEdit.yTickDecimals ?? '') : ps.yTickDecimals}
+                        value={limitShown('yTickDecimals')}
                         placeholder="auto"
                         className="w-full min-w-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                         title="Y tick decimal places. Empty = auto."
@@ -9511,6 +10449,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   </div>
                 </div>
                 <div class="grid grid-cols-2 gap-1">
+                  {#if !(mode === 'structural' && structuralType === 'titration' && (ps.titrationFontScope === 'a' || ps.titrationFontScope === 'b'))}
                   <div
                     class={optionsSearchHighlightId === 'x-tick-step' ? 'option-pulse-highlight rounded p-0.5' : ''}
                     data-option-id="x-tick-step"
@@ -9521,7 +10460,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                       type="number"
                       min="0"
                       step="any"
-                      value={ps.xTickStep || ''}
+                      value={limitShown('xTickStep') || ''}
                       placeholder="count"
                       className="w-full"
                       title="Spacing in X units. Empty uses tick count."
@@ -9532,6 +10471,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                       }
                     />
                   </div>
+                  {/if}
                   <div
                     class={optionsSearchHighlightId === 'y-tick-step' ? 'option-pulse-highlight rounded p-0.5' : ''}
                     data-option-id="y-tick-step"
@@ -9542,7 +10482,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                       type="number"
                       min="0"
                       step="any"
-                      value={mode === 'energetic' ? plotEdit.yTickStep || '' : ps.yTickStep || ''}
+                      value={limitShown('yTickStep') || ''}
                       placeholder="count"
                       className="w-full"
                       title="Spacing in Y units. Empty uses tick count."
@@ -9553,6 +10493,28 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                       }
                     />
                   </div>
+                  {#if mode === 'structural' && structuralType === 'titration'}
+                    <div>
+                      <p class="sidebar-label mb-0.5">Y pad (panel C)</p>
+                      <Input
+                        size="sm"
+                        type="number"
+                        min="0"
+                        step="any"
+                        value={ps.titrationYPad ?? '0.05'}
+                        className="w-full"
+                        title="Space added above and below the Y limits. Ticks stay on the limits."
+                        oninput={(e) =>
+                          setPlotField({
+                            titrationYPad: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                          })
+                        }
+                      />
+                      <p class="sidebar-hint">
+                        Extra space outside Y min and max so curves on the limit stay visible. Ticks still run from the limits.
+                      </p>
+                    </div>
+                  {/if}
                 </div>
                 {#if mode === 'energetic' && energeticCompareLayout === 'grid'}
                   <label
@@ -10596,7 +11558,45 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             </button>
             {#if plotSectionOpen.legend}
               <div class="plot-settings-section-body">
-                {#if showInChartLegendControls}
+                {#if mode === 'structural' && structuralType === 'titration'}
+                  <div class="grid grid-cols-2 gap-1">
+                    <div>
+                      <p class="sidebar-label mb-0.5">pKa marker size</p>
+                      <Input
+                        size="sm"
+                        type="number"
+                        min="1.5"
+                        max="16"
+                        step="0.5"
+                        value={ps.pkaMarkerSize ?? '5'}
+                        className="w-full"
+                        title="Filled and open points on the pKa distribution"
+                        oninput={(e) =>
+                          setPlotField({
+                            pkaMarkerSize: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                          })}
+                      />
+                    </div>
+                    <div>
+                      <p class="sidebar-label mb-0.5">Curve marker size</p>
+                      <Input
+                        size="sm"
+                        type="number"
+                        min="1.5"
+                        max="16"
+                        step="0.5"
+                        value={ps.curveMarkerSize ?? '4'}
+                        className="w-full"
+                        title="Markers on the protein titration curves"
+                        oninput={(e) =>
+                          setPlotField({
+                            curveMarkerSize: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                          })}
+                      />
+                    </div>
+                  </div>
+                {/if}
+                {#if showInChartLegendControls && !(mode === 'structural' && structuralType === 'titration')}
                   <div
                     class={optionsSearchHighlightId === 'legend-position'
                       ? 'option-pulse-highlight rounded p-0.5'
@@ -10657,7 +11657,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                         type="number"
                         min="1"
                         step="1"
-                        value={plotEdit.legendFontSize}
+                        value={shownFont('legendFontSize')}
                         className="w-full"
                         oninput={(e) =>
                           setPlotField({
@@ -10668,7 +11668,46 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     </div>
                   </div>
                 {:else}
-                  <p class="sidebar-hint">Outside legend chrome is in Grid options.</p>
+                  {#if mode === 'structural' && structuralType === 'titration'}
+                    <div class="grid grid-cols-2 gap-1">
+                      <div>
+                        <p class="sidebar-label mb-0.5">Legend square (px)</p>
+                        <Input
+                          size="sm"
+                          type="number"
+                          min="6"
+                          max="48"
+                          step="1"
+                          value={plotEdit.legendSwatchSize}
+                          className="w-full"
+                          oninput={(e) =>
+                            setPlotField({
+                              legendSwatchSize: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                            })}
+                        />
+                      </div>
+                      <div>
+                        <p class="sidebar-label mb-0.5">Legend font (px)</p>
+                        <Input
+                          size="sm"
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={shownFont('legendFontSize')}
+                          className="w-full"
+                          oninput={(e) =>
+                            setPlotField({
+                              legendFontSize: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                            })}
+                        />
+                      </div>
+                    </div>
+                  {/if}
+                  <p class="sidebar-hint">
+                    {mode === 'structural' && structuralType === 'titration'
+                      ? 'Outside legend placement is in Figure options. Square size and font still apply to this figure.'
+                      : 'Outside legend chrome is in Grid options.'}
+                  </p>
                   <Button
                     size="sm"
                     variant="outline"
@@ -10678,7 +11717,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                       plotLayoutOptionsCollapsed = false
                       requestSidePanelExpand('analysis-grid')
                     }}
-                  >Open Grid options</Button>
+                  >{mode === 'structural' && structuralType === 'titration' ? 'Open Figure options' : 'Open Grid options'}</Button>
                 {/if}
               </div>
             {/if}
@@ -10701,6 +11740,23 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             </button>
             {#if plotSectionOpen.typography}
               <div class="plot-settings-section-body">
+                {#if mode === 'structural' && structuralType === 'titration'}
+                  <div class="flex flex-wrap gap-1">
+                    {#each [
+                      ['all', 'All panels'],
+                      ['a', 'A'],
+                      ['b', 'B'],
+                      ['c', 'C']
+                    ] as [id, label] (id)}
+                      <Button
+                        size="sm"
+                        variant={(ps.titrationFontScope || 'all') === id ? 'default' : 'outline'}
+                        onclick={() => setPlotField({ titrationFontScope: id })}
+                      >{label}</Button>
+                    {/each}
+                  </div>
+                  <p class="sidebar-hint">Click a panel, or pick one here. Font size applies to that panel, or to all of them.</p>
+                {/if}
                 <div class="grid grid-cols-2 gap-1">
                   <div
                     class={optionsSearchHighlightId === 'axis-font' ? 'option-pulse-highlight rounded p-0.5' : ''}
@@ -10713,7 +11769,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                       min="7"
                       max="64"
                       step="1"
-                      value={plotEdit.axisFontSize}
+                      value={shownFont('axisFontSize')}
                       className="w-full"
                       oninput={(e) =>
                         setPlotField({
@@ -10723,7 +11779,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                     />
                     <label class="mt-1 flex items-center gap-1.5 text-[11px] text-neutral-600 dark:text-neutral-400">
                       <Checkbox
-                        checked={plotEdit.axisFontBold === true}
+                        checked={shownFont('axisFontBold') === true}
                         onchange={(e) => setPlotField({ axisFontBold: e.currentTarget.checked })}
                       />
                       Bold
@@ -10740,7 +11796,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                       min="8"
                       max="64"
                       step="1"
-                      value={plotEdit.titleFontSize}
+                      value={shownFont('titleFontSize')}
                       className="w-full"
                       oninput={(e) =>
                         setPlotField({
@@ -10939,6 +11995,9 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   data-option-id="axis-box"
                 >
                   <p class="sidebar-label mb-0.5">Axis box</p>
+                  <p class="sidebar-hint mb-1">
+                    Turn each edge on or off. Line style (Series &amp; lines) draws these edges, and the titration curves.
+                  </p>
                   <div class="grid grid-cols-2 gap-x-2 gap-y-1">
                     <label class="flex items-center gap-2">
                       <Checkbox
@@ -11006,6 +12065,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                   </label>
                 {/if}
                 <div class="grid grid-cols-2 gap-1">
+                  {#if !(mode === 'structural' && structuralType === 'titration')}
                   <div
                     class={optionsSearchHighlightId === 'aspect-ratio'
                       ? 'option-pulse-highlight rounded p-0.5'
@@ -11023,6 +12083,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
                       className="w-full"
                     />
                   </div>
+                  {/if}
                   <div
                     class={optionsSearchHighlightId === 'export-dpi'
                       ? 'option-pulse-highlight rounded p-0.5'
@@ -11402,6 +12463,7 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
     {#if mode === 'structural' || mode === 'energetic'}
       <div class="mx-3 mb-1.5 space-y-1.5">
         <div class="relative z-10 flex flex-wrap items-center gap-1">
+          {#if !(mode === 'structural' && structuralType === 'titration')}
           <Button
             size="sm"
             variant={!toolbarIsGrid ? 'default' : 'outline'}
@@ -11462,20 +12524,170 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               {/if}</span
             >
           {/if}
+          {/if}
           <Button
             size="sm"
             variant={plotLayoutOptionsOpen ? 'default' : 'outline'}
             onclick={toggleLayoutOptionsPanel}
-            title={toolbarIsGrid
+            title={mode === 'structural' && structuralType === 'titration'
+              ? 'Panel letters, legend, and figure options'
+              : toolbarIsGrid
               ? 'Show or hide the Grid options panel on the right'
               : 'Show or hide the Overlay options panel on the right'}
-            >{toolbarIsGrid ? 'Grid options' : 'Overlay options'}</Button
+            >{mode === 'structural' && structuralType === 'titration'
+              ? 'Figure options'
+              : toolbarIsGrid
+                ? 'Grid options'
+                : 'Overlay options'}</Button
           >
         </div>
       </div>
     {/if}
 
-    {#if (mode === 'structural' ? chartView.mode === 'empty' : energeticChartIsEmpty)}
+    {#if mode === 'structural' && structuralType === 'titration'}
+      {#if titrationFigureOn && titrationView}
+        <div
+          class="relative mx-3 mb-3 flex min-h-0 flex-1 flex-col gap-2 overflow-auto"
+          style="scrollbar-gutter: stable;"
+          bind:this={plotExportRoot}
+        >
+          <div class="flex flex-wrap items-center gap-2 px-1">
+            <span class="text-xs text-neutral-400">Tools:</span>
+            <Button
+              size="sm"
+              variant={chartInteractionMode === 'pan' ? 'default' : 'outline'}
+              title={chartInteractionMode === 'pan' ? 'Pan is on — click again to turn off' : 'Enable pan on plots'}
+              onclick={() => (chartInteractionMode = chartInteractionMode === 'pan' ? 'none' : 'pan')}
+            >Pan</Button>
+            <Button
+              size="sm"
+              variant={chartInteractionMode === 'boxZoom' ? 'default' : 'outline'}
+              onclick={() => (chartInteractionMode = 'boxZoom')}
+            >Box zoom</Button>
+            <Button size="sm" variant="outline" onclick={resetChartView} title="Undo zoom and pan. Plot Settings min/max stay."
+            >Reset view</Button>
+            {#if titrationResult?.disulfideWarning && !titrationDisulfideOpen}
+              <Button
+                size="sm"
+                variant="outline"
+                onclick={() => (titrationDisulfideOpen = true)}
+                title="Why some cysteines are missing from panels A and B"
+              >Disulfide bonds</Button>
+            {/if}
+          </div>
+          <div class="flex min-h-0 min-w-0 flex-1 items-center justify-center" style="container-type: size;">
+          <div
+            class="relative flex min-h-0 min-w-0 max-h-full max-w-full flex-1 flex-col"
+            style={titrationFigureFrameStyle(ps.titrationFigureAspect)}
+          >
+          <TitrationFigure
+            view={titrationView}
+            showA={titrationShowA}
+            showB={titrationShowB}
+            showC={titrationShowC}
+            targetPh={Number(titrationTargetPh) || 7}
+            titles={titrationTitles}
+            plotBg={resolvedStructColors.plotBg}
+            textColor={resolvedStructColors.textColor}
+            gridColor={String(ps.gridColor || '').trim() || '#e5e5e5'}
+            showGrid={ps.showGrid !== false}
+            fontFamily={ps.fontFamily || 'Roboto, sans-serif'}
+            axisFontSize={Number(ps.axisFontSize) || 12}
+            titleFontSize={Number(ps.titleFontSize) || 13}
+            legendPosition={gridLayout.legendMode === 'outside' ? 'none' : ps.legendPosition || 'top-right'}
+            legendFrameC={ps.titrationLegendFrameC !== false}
+            outsideLegend={gridLayout.legendMode === 'outside'}
+            legendSide={gridLayout.legendOutside || 'bottom'}
+            legendColumns={gridLayout.legendColumns}
+            legendTitle={gridLayout.legendTitle}
+            legendItems={titrationLegendItems}
+            legendChrome={outsideLegendChrome(gridLayout)}
+            legendClass={outsideLegendAlignClasses(gridLayout).self}
+            legendWrapClass={outsideLegendAlignClasses(gridLayout).wrapper}
+            legendAnchorX={gridLayout.legendOutsideX}
+            legendAnchorY={gridLayout.legendOutsideY}
+            onLegendAnchor={(x, y) => patchGridChrome({ legendOutsideX: x, legendOutsideY: y })}
+            referenceLines={normalizeReferenceLines(ps.referenceLines)}
+            letterLayout={gridLayout}
+            yMinA={titrationZoom.a?.yMin ?? titrationAxisValue('a', 'yMin')}
+            yMaxA={titrationZoom.a?.yMax ?? titrationAxisValue('a', 'yMax')}
+            yTickStepA={titrationAxisValue('a', 'yTickStep')}
+            yTickCountA={titrationAxisValue('a', 'yTickCount')}
+            yTickDecimalsA={titrationAxisValue('a', 'yTickDecimals')}
+            yMinB={titrationZoom.b?.yMin ?? titrationAxisValue('b', 'yMin')}
+            yMaxB={titrationZoom.b?.yMax ?? titrationAxisValue('b', 'yMax')}
+            yTickStepB={titrationAxisValue('b', 'yTickStep')}
+            yTickCountB={titrationAxisValue('b', 'yTickCount')}
+            yTickDecimalsB={titrationAxisValue('b', 'yTickDecimals')}
+            xMinC={titrationZoom.c?.xMin ?? titrationAxisValue('c', 'xMin')}
+            xMaxC={titrationZoom.c?.xMax ?? titrationAxisValue('c', 'xMax')}
+            yMinC={titrationZoom.c?.yMin ?? titrationAxisValue('c', 'yMin')}
+            yMaxC={titrationZoom.c?.yMax ?? titrationAxisValue('c', 'yMax')}
+            yPadC={titrationYPad()}
+            xTickStepC={titrationAxisValue('c', 'xTickStep')}
+            yTickStepC={titrationAxisValue('c', 'yTickStep')}
+            xTickCountC={titrationAxisValue('c', 'xTickCount')}
+            yTickCountC={titrationAxisValue('c', 'yTickCount')}
+            xTickDecimalsC={titrationAxisValue('c', 'xTickDecimals')}
+            yTickDecimalsC={titrationAxisValue('c', 'yTickDecimals')}
+            legendPositionA={ps.titrationLegendA || 'top-left'}
+            lineWidth={Number(ps.lineWidth) || 1.6}
+            lineStyle={ps.lineStyle || 'solid'}
+            legendFontSize={Number(ps.legendFontSize) || 10}
+            legendSwatchSize={Number(ps.legendSwatchSize) || 12}
+            pkaMarkerSize={Number(ps.pkaMarkerSize) || 5}
+            curveMarkerSize={Number(ps.curveMarkerSize) || 4}
+            leftShare={Number(ps.titrationLeftShare) || 52}
+            heightA={Number(ps.titrationHeightA) || 1.65}
+            heightB={Number(ps.titrationHeightB) || 1}
+            panelGap={ps.titrationGap == null || ps.titrationGap === '' ? 4 : Number(ps.titrationGap)}
+            columnGap={Number(ps.titrationColGap) || 12}
+            interactionMode={chartInteractionMode}
+            selectedPanel={ps.titrationFontScope || 'all'}
+            onSelectPanel={(panel) => setPlotField({ titrationFontScope: panel })}
+            onAxisRange={onTitrationAxisRange}
+            fontsA={titrationPanelFonts('a')}
+            fontsB={titrationPanelFonts('b')}
+            fontsC={titrationPanelFonts('c')}
+            {...lineChartExtraMarginProps(ps)}
+            {...lineChartAxisProps(ps)}
+            axisFontBold={ps.axisFontBold === true}
+            referenceBands={structReferenceBandsDraw}
+            yLabelA={ps.yLabel || 'pKa'}
+            yLabelC="Protonation State (1=protonated, 0=deprotonated)"
+            xLabelC={ps.xLabel || 'pH'}
+          />
+          {#if titrationDisulfideOpen && titrationResult?.disulfideWarning}
+            <div class="absolute inset-0 z-30 flex items-center justify-center bg-black/40 p-4">
+              <div
+                class="max-h-full w-full max-w-lg overflow-y-auto rounded-lg border border-amber-400 bg-white p-4 text-neutral-900 shadow-lg dark:bg-neutral-900 dark:text-neutral-100"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="titration-disulfide-title"
+              >
+                <h2 id="titration-disulfide-title" class="text-base font-semibold">
+                  Disulfide cysteines omitted
+                </h2>
+                <p class="mt-2 whitespace-pre-wrap text-[13px] leading-relaxed">
+                  {titrationResult.disulfideWarning}
+                </p>
+                <div class="mt-3 flex justify-end">
+                  <Button size="sm" onclick={() => (titrationDisulfideOpen = false)}>Close</Button>
+                </div>
+              </div>
+            </div>
+          {/if}
+          </div>
+          </div>
+        </div>
+      {:else}
+        <p
+          class="mx-3 mb-3 flex flex-1 items-center justify-center rounded-lg border border-dashed border-neutral-300 text-neutral-500 dark:border-neutral-800 dark:text-neutral-700"
+        >
+          Choose a PDB and run the analysis to draw the titration figure.
+        </p>
+      {/if}
+    {:else if (mode === 'structural' ? chartView.mode === 'empty' : energeticChartIsEmpty)}
       <p
         class="mx-3 mb-3 flex flex-1 items-center justify-center rounded-lg border border-dashed border-neutral-300 text-neutral-500 dark:border-neutral-800 dark:text-neutral-700"
       >
@@ -12138,7 +13350,11 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
       className="flex min-h-0 min-w-0 flex-col overflow-x-clip overflow-y-auto border-l border-neutral-200 bg-white p-2.5 text-xs select-none dark:border-neutral-800 dark:bg-neutral-950"
     >
       <div class="mb-2 flex items-center justify-between gap-1">
-        <h2 class="sidebar-heading mb-0">{toolbarIsGrid ? 'Grid options' : 'Overlay options'}</h2>
+        <h2 class="sidebar-heading mb-0">{mode === 'structural' && structuralType === 'titration'
+          ? 'Figure options'
+          : toolbarIsGrid
+            ? 'Grid options'
+            : 'Overlay options'}</h2>
         <Button
           size="sm"
           variant="ghost"
@@ -12150,6 +13366,161 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
       </div>
 
       <div class="space-y-2.5">
+        {#if mode === 'structural' && structuralType === 'titration'}
+          <div class="space-y-1.5">
+            <p class="sidebar-subheading">Figure</p>
+            <div>
+              <p class="sidebar-label mb-0.5">Figure aspect (W/H)</p>
+              <Input
+                size="sm"
+                type="number"
+                min="0.4"
+                max="6"
+                step="0.05"
+                value={ps.titrationFigureAspect ?? ''}
+                className="w-full"
+                placeholder="Fill area"
+                title="Width divided by height. A larger number shortens the figure. A smaller number narrows it. Empty fills the area."
+                oninput={(e) =>
+                  setPlotField({
+                    titrationFigureAspect: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                  })}
+              />
+              <p class="sidebar-hint">Larger makes the figure shorter. Smaller makes it narrower. Empty fills the area.</p>
+            </div>
+            <p class="sidebar-subheading">Panel size</p>
+            <p class="sidebar-hint">A and B share one width. C uses the rest of the figure.</p>
+            <div>
+              <p class="sidebar-label mb-0.5">A/B width (%)</p>
+              <Input
+                size="sm"
+                type="number"
+                min="20"
+                max="80"
+                step="1"
+                value={ps.titrationLeftShare ?? '52'}
+                className="w-full"
+                oninput={(e) =>
+                  setPlotField({
+                    titrationLeftShare: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                  })}
+              />
+            </div>
+            <div class="grid grid-cols-2 gap-1">
+              <div>
+                <p class="sidebar-label mb-0.5">A height</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="0.25"
+                  max="8"
+                  step="0.05"
+                  value={ps.titrationHeightA ?? '1.65'}
+                  className="w-full"
+                  oninput={(e) =>
+                    setPlotField({
+                      titrationHeightA: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    })}
+                />
+              </div>
+              <div>
+                <p class="sidebar-label mb-0.5">B height</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="0.25"
+                  max="8"
+                  step="0.05"
+                  value={ps.titrationHeightB ?? '1'}
+                  className="w-full"
+                  oninput={(e) =>
+                    setPlotField({
+                      titrationHeightB: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    })}
+                />
+              </div>
+              <div>
+                <p class="sidebar-label mb-0.5">A–B gap (px)</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="0"
+                  max="64"
+                  step="1"
+                  value={ps.titrationGap ?? '4'}
+                  className="w-full"
+                  oninput={(e) =>
+                    setPlotField({
+                      titrationGap: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    })}
+                />
+              </div>
+              <div>
+                <p class="sidebar-label mb-0.5">Column gap (px)</p>
+                <Input
+                  size="sm"
+                  type="number"
+                  min="0"
+                  max="80"
+                  step="1"
+                  value={ps.titrationColGap ?? '12'}
+                  className="w-full"
+                  oninput={(e) =>
+                    setPlotField({
+                      titrationColGap: /** @type {HTMLInputElement} */ (e.currentTarget).value
+                    })}
+                />
+              </div>
+            </div>
+            <div>
+              <p class="sidebar-label mb-0.5">Panel A legend</p>
+              <Select
+                size="sm"
+                value={ps.titrationLegendA || 'top-left'}
+                className="w-full"
+                onchange={(e) =>
+                  setPlotField({
+                    titrationLegendA: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                  })}
+              >
+                <option value="bottom">Below chart</option>
+                <option value="top-left">Inside — top left</option>
+                <option value="top-right">Inside — top right</option>
+                <option value="bottom-left">Inside — bottom left</option>
+                <option value="bottom-right">Inside — bottom right</option>
+                <option value="none">Hidden</option>
+              </Select>
+            </div>
+            <div>
+              <p class="sidebar-label mb-0.5">Panel C legend</p>
+              <Select
+                size="sm"
+                value={ps.legendPosition || 'top-right'}
+                className="w-full"
+                onchange={(e) =>
+                  setPlotField({
+                    legendPosition: /** @type {HTMLSelectElement} */ (e.currentTarget).value
+                  })}
+              >
+                <option value="bottom">Below chart</option>
+                <option value="top-left">Inside — top left</option>
+                <option value="top-right">Inside — top right</option>
+                <option value="bottom-left">Inside — bottom left</option>
+                <option value="bottom-right">Inside — bottom right</option>
+                <option value="none">Hidden</option>
+              </Select>
+              <label class="mt-1 flex items-center gap-2">
+                <Checkbox
+                  name="titration-legend-frame-c"
+                  checked={ps.titrationLegendFrameC !== false}
+                  onchange={(e) =>
+                    setPlotField({ titrationLegendFrameC: e.currentTarget.checked })}
+                />
+                <span class="sidebar-label">Legend outline</span>
+              </label>
+            </div>
+          </div>
+        {/if}
         {#if !toolbarIsGrid && analysisSets.length > 1}
           <div class="space-y-1">
             <p class="sidebar-subheading">Draw order</p>

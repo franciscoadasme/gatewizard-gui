@@ -401,6 +401,39 @@ export function runEnergeticAnalysis(payload, opts = {}) {
  * @param {{ data: object, plotSpec: object }} payload
  * @returns {Promise<Blob>}
  */
+/**
+ * PropKa pKa table and titration curves for one PDB.
+ * @param {{ path: string, targetPh?: number, phMin?: number, phMax?: number, phStep?: number }} payload
+ * @param {{ signal?: AbortSignal, cancelledMessage?: string, cancelledName?: string }} [opts]
+ */
+export function runTitrationAnalysis(payload, opts = {}) {
+  return backendJson('/analysis-titration', payload, opts)
+}
+
+/**
+ * Publication PNG for the titration figure.
+ * @param {{ spec: object }} payload
+ * @returns {Promise<Blob>}
+ */
+export async function renderTitrationPlot(payload) {
+  const url = `${BACKEND_BASE_URL}/analysis-render-titration`
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(keysToSnakeCase(payload))
+  })
+  if (!response.ok) {
+    let data = {}
+    try {
+      data = await response.json()
+    } catch {
+      data = {}
+    }
+    throwFromFastApiBody(data, response)
+  }
+  return response.blob()
+}
+
 export async function renderAnalysisPlot(payload) {
   const url = `${BACKEND_BASE_URL}/analysis-render-plot`
   const response = await fetch(url, {
