@@ -89,7 +89,9 @@
     mutateApply,
     structureSplitChain,
     structureMerge,
-    structureSuperimpose
+    structureSuperimpose,
+    structureListAssemblies,
+    structureBuildAssembly
   } from '../lib/backendApi.js'
   import {
     defaultHydrationFolderName,
@@ -148,6 +150,7 @@
   import TrajAlignPanel from '../components/TrajAlignPanel.svelte'
   import MutateResiduePanel from '../components/MutateResiduePanel.svelte'
   import SplitChainPanel from '../components/SplitChainPanel.svelte'
+  import AssemblyPanel from '../components/AssemblyPanel.svelte'
   import SuperimposePanel from '../components/SuperimposePanel.svelte'
   import { defaultSelectionForStructuralType } from '../lib/analysisSets.js'
   import ApplyRepresentationPicker from '../components/ApplyRepresentationPicker.svelte'
@@ -386,6 +389,16 @@
   let splitChainId = $state('')
   let splitBusy = $state(false)
   let splitError = $state('')
+  let assemblyOpen = $state(false)
+  let assemblyBusy = $state(false)
+  let assemblyError = $state('')
+  let assemblyMessage = $state('')
+  let assemblyId = $state('')
+  let assemblyWaters = $state(false)
+  let assemblyDropOverlaps = $state(true)
+  let assemblyConfirm = $state(false)
+  /** @type {Array<{ id: string, description: string, oligomeric_count: number, atom_count: number, atom_count_with_waters: number, already_biological_unit: boolean, needs_confirmation: boolean, needs_confirmation_with_waters: boolean }>} */
+  let assemblyRows = $state([])
   let superOpen = $state(false)
   let superRefId = $state('')
   let superMobId = $state('')
@@ -1055,6 +1068,7 @@
       trajAlignOpen = false
       mutateOpen = false
       splitOpen = false
+      assemblyOpen = false
       superOpen = false
       mutPreviewAtoms = []
       mutPreviewBonds = []
@@ -1063,7 +1077,7 @@
 
   // Close tool panels on Escape while open.
   $effect(() => {
-    if (!memproDialogOpen && !packmolDialogOpen && !trajAlignOpen && !mutateOpen && !splitOpen && !superOpen) return
+    if (!memproDialogOpen && !packmolDialogOpen && !trajAlignOpen && !mutateOpen && !splitOpen && !assemblyOpen && !superOpen) return
     /** @param {KeyboardEvent} e */
     const onKey = (e) => {
       if (e.key !== 'Escape') return
@@ -1072,6 +1086,7 @@
       else if (trajAlignOpen) trajAlignOpen = false
       else if (mutateOpen) closeMutateDialog()
       else if (splitOpen) splitOpen = false
+      else if (assemblyOpen) assemblyOpen = false
       else if (superOpen) superOpen = false
     }
     window.addEventListener('keydown', onKey)
@@ -7683,6 +7698,75 @@
     splitOpen = true
   }
 
+  /** Prefer the file the user opened. A converted cache PDB has no assembly operators. */
+  function assemblySourcePath(entry) {
+    const candidates = [entry?.sourcePath, entry?.path]
+    for (const candidate of candidates) {
+      const text = String(candidate || '')
+      if (/\.(pdb|ent|cif|mmcif)$/i.test(text)) return text
+    }
+    return String(entry?.path || entry?.sourcePath || '')
+  }
+
+  async function openAssemblyDialog() {
+    if (!structure) return
+    toolsMenuOpen = false
+    assemblyOpen = true
+    assemblyError = ''
+    assemblyMessage = ''
+    assemblyRows = []
+    assemblyId = ''
+    assemblyWaters = false
+    assemblyDropOverlaps = true
+    assemblyConfirm = false
+    assemblyBusy = true
+    try {
+      const listed = await structureListAssemblies({ path: assemblySourcePath(structure) })
+      assemblyRows = listed.assemblies || []
+      assemblyMessage = listed.message || ''
+      const buildable = assemblyRows.find((row) => !row.already_biological_unit)
+      assemblyId = (buildable || assemblyRows[0])?.id || ''
+    } catch (ex) {
+      assemblyError = ex instanceof Error ? ex.message : String(ex)
+    } finally {
+      assemblyBusy = false
+    }
+  }
+
+  async function onBuildAssembly() {
+    if (!structure || !assemblyId) return
+    assemblyBusy = true
+    assemblyError = ''
+    try {
+      const result = await structureBuildAssembly({
+        path: assemblySourcePath(structure),
+        assemblyId,
+        includeWaters: assemblyWaters,
+        dropOverlaps: assemblyDropOverlaps
+      })
+      if (!result.built) {
+        assemblyMessage = result.message || 'There is nothing to build.'
+        return
+      }
+      const label = `${structure.label || 'structure'} assembly ${assemblyId}`
+      await appendStructure(result.path, {
+        label,
+        sourcePath: result.path,
+        resetCamera: false,
+        needsSecondaryStructure: true
+      })
+      if (result.message) {
+        assemblyMessage = result.message
+      } else {
+        assemblyOpen = false
+      }
+    } catch (ex) {
+      assemblyError = ex instanceof Error ? ex.message : String(ex)
+    } finally {
+      assemblyBusy = false
+    }
+  }
+
   function openSuperimposeDialog() {
     toolsMenuOpen = false
     const ids = structures.map((entry) => entry.id)
@@ -10849,6 +10933,15 @@
           </button>
           <button
             type="button"
+            class="viz-toolbar-menu-item {assemblyOpen ? 'viz-toolbar-menu-item-on' : ''}"
+            disabled={!structure}
+            onclick={() => void openAssemblyDialog()}
+            title="Build the biological oligomer or capsid from operators in the file"
+          >
+            Build assembly…
+          </button>
+          <button
+            type="button"
             class="viz-toolbar-menu-item {superOpen ? 'viz-toolbar-menu-item-on' : ''}"
             disabled={structures.length < 2}
             onclick={openSuperimposeDialog}
@@ -11514,6 +11607,32 @@
     onChain={(value) => (splitChainId = value)}
     onSplit={() => void onSplitChain()}
     onClose={() => (splitOpen = false)}
+  />
+{/if}
+
+{#if assemblyOpen}
+  <AssemblyPanel
+    assemblies={assemblyRows}
+    assemblyId={assemblyId}
+    waters={assemblyWaters}
+    dropOverlaps={assemblyDropOverlaps}
+    confirmLarge={assemblyConfirm}
+    busy={assemblyBusy}
+    error={assemblyError}
+    message={assemblyMessage}
+    trajectory={!!structure?.trajectory}
+    onAssemblyId={(value) => {
+      assemblyId = value
+      assemblyConfirm = false
+    }}
+    onWaters={(value) => {
+      assemblyWaters = value
+      assemblyConfirm = false
+    }}
+    onDropOverlaps={(value) => (assemblyDropOverlaps = value)}
+    onConfirm={(value) => (assemblyConfirm = value)}
+    onBuild={() => void onBuildAssembly()}
+    onClose={() => (assemblyOpen = false)}
   />
 {/if}
 

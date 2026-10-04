@@ -34,8 +34,22 @@ from visualize_io import scratch_pdb
 from visualize_mutate import apply_mutation, list_rotamers
 from visualize_merge import merge_structures
 from visualize_superimpose import split_chain, superimpose_structures
+from gatewizard.core.assembly import (
+    AssemblyError,
+    build_assembly,
+    is_biological_assembly_mmcif,
+    list_assemblies,
+    universe_from_assembly_mmcif,
+)
 from rcsb_fetch import RcsbDownloadError, download_rcsb_entry
-from mmcif_pdb import StructureConvertError, mda_topology_format, pdb_from_mmcif
+from mmcif_pdb import (
+    StructureConvertError,
+    _write_mmcif_as_pdb,
+    is_mmcif_file,
+    mda_topology_format,
+    pdb_from_mmcif,
+    write_universe_pdb,
+)
 from access_log import attach_poll_access_filter
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -208,6 +222,18 @@ _GUESS_BOND_VDWRADII = {
     "CA": 1.97,
     "Zn": 1.39,
     "ZN": 1.39,
+    # Heme and other metals. Gemmi reports the element as "Fe", which is not
+    # in MDAnalysis's table, and a missing radius aborts the whole load.
+    "Fe": 2.30,
+    "FE": 2.30,
+    "Mn": 2.20,
+    "MN": 2.20,
+    "Mo": 2.10,
+    "MO": 2.10,
+    "Cd": 1.60,
+    "CD": 1.60,
+    "Hg": 1.55,
+    "HG": 1.55,
 }
 
 # Covalent radii (Å) for LINK distance validation (not VdW).
@@ -537,25 +563,63 @@ def _add_bonds_from_pdb_link_records(pdb_path: str, u: mda.Universe) -> int:
     return len(new_pairs)
 
 
+def _radii_for_bond_guess(extra: dict[str, float] | None = None) -> dict[str, float]:
+    """VdW radii for distance bond guessing, including case variants."""
+    radii: dict[str, float] = {}
+    for key, value in _GUESS_BOND_VDWRADII.items():
+        text = str(key)
+        radii[text] = float(value)
+        radii[text.upper()] = float(value)
+        radii[text.capitalize()] = float(value)
+    if extra:
+        radii.update(extra)
+    return radii
+
+
+def _missing_vdw_types(message: str) -> list[str]:
+    marker = "vdw radii for types:"
+    if marker not in message:
+        return []
+    tail = message.split(marker, 1)[1]
+    tail = tail.split(". These can", 1)[0]
+    return [part.strip() for part in tail.split(",") if part.strip()]
+
+
 def _guess_bonds_nonperiodic(ag: mda.AtomGroup) -> None:
     """Distance-guess covalent bonds without PBC (GUI draws unwrapped sticks).
 
     MDAnalysis ``AtomGroup.guess_bonds`` passes ``box=self.dimensions`` since
     0.20.2; CRYST1 then creates minimum-image pairs that become long Cartesian
     sticks in the viewer. Guess with ``box=None`` instead.
+
+    A type missing from the radius table (heme ``Fe``) is filled in and the
+    guess is retried once, so that metal does not abort the structure load.
     """
     from MDAnalysis.guesser.default_guesser import DefaultGuesser
 
     if len(ag) < 2:
         return
-    guesser = DefaultGuesser(
-        None,
-        fudge_factor=0.55,
-        lower_bound=0.1,
-        box=None,
-        vdwradii=_GUESS_BOND_VDWRADII,
-    )
-    pairs = guesser.guess_bonds(ag.atoms, ag.atoms.positions)
+    radii = _radii_for_bond_guess()
+
+    def _pairs(vdwradii: dict[str, float]):
+        guesser = DefaultGuesser(
+            None,
+            fudge_factor=0.55,
+            lower_bound=0.1,
+            box=None,
+            vdwradii=vdwradii,
+        )
+        return guesser.guess_bonds(ag.atoms, ag.atoms.positions)
+
+    try:
+        pairs = _pairs(radii)
+    except ValueError as exc:
+        missing = _missing_vdw_types(str(exc))
+        if not missing:
+            raise
+        for name in missing:
+            radii[name] = 2.30
+        pairs = _pairs(radii)
     if not pairs:
         return
     existing = _existing_bond_pairs(ag.universe)
@@ -783,6 +847,77 @@ def _residue_ca_index(res) -> int | None:
     return found[0] if found else None
 
 
+_COPY_CHAIN = re.compile(r"^([A-Za-z]+?)(\d+)$")
+
+
+def _chain_names(u: mda.Universe) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for residue in u.residues:
+        try:
+            chain = str(residue.atoms[0].chainID or "").strip()
+        except (AttributeError, IndexError):
+            chain = ""
+        if chain and chain not in seen:
+            seen.add(chain)
+            names.append(chain)
+    return names
+
+
+def _subunit_key(chain_name: str) -> tuple[str, int]:
+    """Split gemmi ``AddNumber`` names (``A1``, ``A10``) into subunit and copy."""
+    match = _COPY_CHAIN.match(chain_name)
+    if not match:
+        return chain_name, 0
+    return match.group(1), int(match.group(2))
+
+
+def _ss_map_for_copied_chains(u: mda.Universe) -> dict[tuple[str, int], str]:
+    """Assign secondary structure once per subunit and copy it onto every mate.
+
+    A biological assembly names copies ``A1``, ``A2``, …. Those names do not fit
+    in a PDB chain column, and writing the whole assembly as PDB would stack
+    every copy onto ``A`` with the same residue numbers. Each subunit is a rigid
+    copy of the asymmetric unit, so one assignment per subunit letter is enough.
+    """
+    groups: dict[str, list[tuple[int, str]]] = {}
+    for chain_name in _chain_names(u):
+        subunit, copy = _subunit_key(chain_name)
+        groups.setdefault(subunit, []).append((copy, chain_name))
+
+    assigned: dict[tuple[str, int], str] = {}
+    chain_ids = [str(chain).strip() for chain in u.atoms.chainIDs]
+    for members in groups.values():
+        members.sort()
+        representative = members[0][1]
+        mask = [chain == representative for chain in chain_ids]
+        subset = u.atoms[mask]
+        if len(subset) == 0:
+            continue
+        tmp = tempfile.NamedTemporaryFile("w", suffix=".pdb", delete=False)
+        tmp.close()
+        try:
+            write_universe_pdb(subset, tmp.name)
+            ss_map = assign_secondary_structure_map(tmp.name, method="auto")
+        except Exception as exc:
+            logger.warning(
+                "Secondary structure assignment failed for chain %s: %s",
+                representative,
+                exc,
+            )
+            continue
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+        by_resid = {int(resid): sec for (_chain, resid), sec in ss_map.items()}
+        for _copy, chain_name in members:
+            for resid, sec in by_resid.items():
+                assigned[(chain_name, resid)] = sec
+    return assigned
+
+
 def get_residues(
     u: mda.Universe,
     needs_secondary_structure: bool = False,
@@ -791,7 +926,15 @@ def get_residues(
     residue_sec_table: dict[tuple[str, int, str | None], str] = {}
     resid_unique: dict[int, str] = {}
     resid_ambiguous: set[int] = set()
-    if needs_secondary_structure:
+    chain_names = _chain_names(u) if needs_secondary_structure else []
+    copied_chains = any(len(name) > 1 for name in chain_names)
+    if needs_secondary_structure and copied_chains:
+        try:
+            for (chain, resid), sec in _ss_map_for_copied_chains(u).items():
+                residue_sec_table[(chain, int(resid), None)] = sec
+        except Exception as exc:
+            logger.warning("Secondary structure assignment failed: %s", exc)
+    elif needs_secondary_structure:
         pdb_for_ss = ss_assignment_source_path(source_path)
         cleanup = False
         if not pdb_for_ss:
@@ -5792,9 +5935,19 @@ def get_structure(payload: StructureRequest) -> dict:
         raise HTTPException(status_code=404, detail=f"File not found: {payload.path}")
 
     source = Path(payload.path)
-    if source.suffix.lower() in {".cif", ".mmcif"}:
+    # Assembly mmCIF uses chain names such as A1. pdb_from_mmcif keeps one
+    # letter, so this file is loaded directly and those names are kept.
+    # A copied assembly that was saved with a .pdb suffix is still mmCIF text.
+    mmcif = is_mmcif_file(source)
+    assembly_mmcif = mmcif and is_biological_assembly_mmcif(source)
+    if mmcif and not assembly_mmcif:
         try:
-            payload.path = str(pdb_from_mmcif(source))
+            if source.suffix.lower() in {".cif", ".mmcif"}:
+                payload.path = str(pdb_from_mmcif(source))
+            else:
+                fd, temp_name = tempfile.mkstemp(prefix=f"{source.stem}_", suffix=".pdb")
+                os.close(fd)
+                payload.path = str(pdb_from_mmcif(source, Path(temp_name)))
         except StructureConvertError as ex:
             raise HTTPException(
                 status_code=400, detail=f"Could not read mmCIF file: {ex}"
@@ -5805,9 +5958,19 @@ def get_structure(payload: StructureRequest) -> dict:
         needs_bonds = bool(payload.needs_bonds)
         if sel_raw == "polar" or "bonded" in sel_raw:
             needs_bonds = True
-        u, topology_used, bond_source = load_structure(
-            payload.path, payload.topology, needs_bonds
-        )
+        if assembly_mmcif:
+            u = universe_from_assembly_mmcif(payload.path)
+            topology_used = None
+            if needs_bonds:
+                bond_source = _ensure_bonds_efficient(u, pdb_path=None)
+            else:
+                bond_source = "none"
+        else:
+            u, topology_used, bond_source = load_structure(
+                payload.path, payload.topology, needs_bonds
+            )
+    except AssemblyError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
     except Exception as ex:
         raise HTTPException(status_code=400, detail=f"Could not read structure: {ex}")
 
@@ -5863,10 +6026,15 @@ def get_structure(payload: StructureRequest) -> dict:
     if payload.needs_secondary_structure:
         try:
             atom_indices = {int(i) for i in atoms.indices}
+            # Numbered assembly chains (A1, A2) are assigned per subunit inside
+            # get_residues. Passing the mmCIF path here would make MDAnalysis
+            # reject the file as an unknown topology format.
             all_residues = get_residues(
                 u,
                 needs_secondary_structure=True,
-                source_path=ss_assignment_source_path(payload.path, topology_used),
+                source_path=None
+                if assembly_mmcif
+                else ss_assignment_source_path(payload.path, topology_used),
             )
             data["residues"] = [
                 r
@@ -6060,7 +6228,21 @@ class DetectMoleculesRequest(BaseModel):
 @app.post("/detect-molecules")
 def detect_molecules(payload: DetectMoleculesRequest) -> list[dict]:
     try:
-        u, topology_used, _ = load_structure(payload.path, topology=payload.topology)
+        source = Path(payload.path)
+        if is_mmcif_file(source) and is_biological_assembly_mmcif(source):
+            # Keep A1/A2. Converting to PDB would collapse every copy onto one letter.
+            u = universe_from_assembly_mmcif(source)
+            topology_used = None
+        elif is_mmcif_file(source):
+            if source.suffix.lower() in {".cif", ".mmcif"}:
+                open_path = str(pdb_from_mmcif(source))
+            else:
+                fd, temp_name = tempfile.mkstemp(prefix=f"{source.stem}_", suffix=".pdb")
+                os.close(fd)
+                open_path = str(pdb_from_mmcif(source, Path(temp_name)))
+            u, topology_used, _ = load_structure(open_path, topology=payload.topology)
+        else:
+            u, topology_used, _ = load_structure(payload.path, topology=payload.topology)
     except Exception as ex:
         raise HTTPException(status_code=400, detail=f"Could not open structure: {ex}") from ex
     if not hasattr(u._topology, "resnames"):
@@ -6437,6 +6619,18 @@ class EditSavePdbRequest(BaseModel):
 @app.post("/edit/save-pdb")
 def edit_save_pdb(payload: EditSavePdbRequest) -> dict:
     try:
+        source = Path(payload.source)
+        dest = Path(payload.dest)
+        # The viewer stores an assembly as mmCIF. Copying those bytes onto a
+        # .pdb path makes MDAnalysis read two different atom counts.
+        if is_mmcif_file(source) and dest.suffix.lower() in {".pdb", ".ent"}:
+            if dest.resolve() == source.resolve():
+                partial = dest.with_name(dest.name + ".writing")
+                _write_mmcif_as_pdb(source, partial)
+                partial.replace(dest)
+            else:
+                pdb_from_mmcif(source, dest)
+            return {"path": str(dest), "success": True}
         shutil.copy2(payload.source, payload.dest)
         return {"path": payload.dest, "success": True}
     except Exception as exc:
@@ -6461,11 +6655,29 @@ def structure_write_coords(payload: WriteCoordsRequest) -> dict:
             raise ValueError("indices must not be empty")
         if len(payload.xyz) != len(payload.indices) * 3:
             raise ValueError("xyz length must be 3 × len(indices)")
-        u, _, _ = load_structure(
-            payload.source,
-            topology=payload.topology,
-            needs_bonds=False,
-        )
+        if is_mmcif_file(Path(payload.source)):
+            if is_biological_assembly_mmcif(payload.source):
+                u = universe_from_assembly_mmcif(payload.source)
+            elif Path(payload.source).suffix.lower() in {".cif", ".mmcif"}:
+                u, _, _ = load_structure(
+                    str(pdb_from_mmcif(Path(payload.source))),
+                    topology=payload.topology,
+                    needs_bonds=False,
+                )
+            else:
+                fd, temp_name = tempfile.mkstemp(prefix="mmcif_", suffix=".pdb")
+                os.close(fd)
+                u, _, _ = load_structure(
+                    str(pdb_from_mmcif(Path(payload.source), Path(temp_name))),
+                    topology=payload.topology,
+                    needs_bonds=False,
+                )
+        else:
+            u, _, _ = load_structure(
+                payload.source,
+                topology=payload.topology,
+                needs_bonds=False,
+            )
         idx = np.asarray(payload.indices, dtype=np.int64)
         coords = np.asarray(payload.xyz, dtype=np.float64).reshape(-1, 3)
         index_to_pos = {int(i): coords[n] for n, i in enumerate(idx)}
@@ -6477,7 +6689,10 @@ def structure_write_coords(payload: WriteCoordsRequest) -> dict:
         u.atoms.positions = pos
         dest_dir = os.path.dirname(payload.dest) or "."
         os.makedirs(dest_dir, exist_ok=True)
-        u.atoms.write(payload.dest)
+        if is_mmcif_file(Path(payload.source)):
+            write_universe_pdb(u, Path(payload.dest))
+        else:
+            u.atoms.write(payload.dest)
         return {"path": payload.dest, "success": True, "count": int(len(idx))}
     except HTTPException:
         raise
@@ -6555,6 +6770,44 @@ def structure_split_chain(payload: SplitChainRequest) -> dict:
         return split_chain(payload.path, payload.chain, payload.topology)
     except Exception as exc:
         raise HTTPException(400, str(exc))
+
+
+class AssemblyListRequest(BaseModel):
+    path: str
+
+
+class AssemblyBuildRequest(BaseModel):
+    path: str
+    assembly_id: str
+    include_waters: bool = False
+    drop_overlaps: bool = True
+
+
+@app.post("/structure/assemblies")
+def structure_assemblies(payload: AssemblyListRequest) -> dict:
+    """List biological assemblies in the original PDB or mmCIF."""
+    try:
+        if not os.path.isfile(payload.path):
+            raise AssemblyError(f"Structure not found: {payload.path}")
+        return list_assemblies(payload.path)
+    except AssemblyError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/structure/build-assembly")
+def structure_build_assembly(payload: AssemblyBuildRequest) -> dict:
+    """Write one biological assembly as mmCIF and leave the asymmetric unit untouched."""
+    try:
+        if not os.path.isfile(payload.path):
+            raise AssemblyError(f"Structure not found: {payload.path}")
+        return build_assembly(
+            payload.path,
+            payload.assembly_id,
+            include_waters=payload.include_waters,
+            drop_overlaps=payload.drop_overlaps,
+        )
+    except AssemblyError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 class SuperimposePair(BaseModel):

@@ -201,17 +201,11 @@ Overrides (always win):
 If the console shows `JavaScript heap out of memory` / `renderer process gone` while loading many CTs, raise the heap before launching (value is megabytes; `8192` = 8 GB):
 
 ```bash
-# Linux / WSL / macOS (one session)
-GATEWIZARD_MAX_OLD_SPACE_SIZE=8192 gatewizard-gui-linux
+# WSL (one session)
+GATEWIZARD_MAX_OLD_SPACE_SIZE=8192 npm run dev
 ```
 
-```powershell
-# Windows PowerShell (one session)
-$env:GATEWIZARD_MAX_OLD_SPACE_SIZE = "8192"
-# then start the app as usual (e.g. npm run dev, or the installed shortcut)
-```
-
-To keep it across sessions, set a permanent user environment variable named `GATEWIZARD_MAX_OLD_SPACE_SIZE` (Windows: System Properties → Environment Variables; Linux/macOS: add `export GATEWIZARD_MAX_OLD_SPACE_SIZE=8192` to your shell profile). Restart the app after changing it.
+To keep it across sessions, add `export GATEWIZARD_MAX_OLD_SPACE_SIZE=8192` to your WSL shell profile. Restart the app after changing it.
 
 WSL often has no session D-Bus. The app starts one when needed so Chromium does not print `Failed to connect to socket /run/user/…/bus`.
 
@@ -389,7 +383,16 @@ pip install gatewizard
 
 ## Development
 
-Requirements: **Node.js 20+**, **npm**. For the full MD workflow, use **Linux or WSL** (AmberTools and related tools).
+Requirements: **Node.js 20+**, **npm**, on **WSL** (not Windows PowerShell). For the full MD workflow, AmberTools and related tools live in the WSL conda env `gatewizard`.
+
+Python, pytest, and `backend/` use that env:
+
+```bash
+conda activate gatewizard
+cd backend && python -m pytest
+```
+
+From Windows PowerShell, call the same interpreter through WSL (`~/miniconda3/envs/gatewizard/bin/python`). Do not use Windows `python` or `%APPDATA%\gatewizard-gui\mamba-env`.
 
 ```bash
 git clone https://github.com/maurobedoya/gatewizard-gui.git
@@ -404,7 +407,7 @@ npm run dev
 npm run dev:wsl
 ```
 
-Install `npm` dependencies in **one environment only** (WSL or Windows), not both on the same folder.
+Install `npm` dependencies in **WSL only**, not from Windows on the same folder.
 
 ### Build installers
 

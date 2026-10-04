@@ -1767,6 +1767,30 @@ export function structureSplitChain(payload) {
 }
 
 /**
+ * Biological assemblies stored in the original PDB or mmCIF.
+ * @param {{ path: string }} payload
+ */
+export function structureListAssemblies(payload) {
+  return backendJson('/structure/assemblies', {
+    path: payload.path
+  })
+}
+
+/**
+ * Write one biological assembly as mmCIF. The asymmetric unit is not replaced.
+ * @param {{ path: string, assemblyId: string, includeWaters?: boolean, dropOverlaps?: boolean }} payload
+ * @returns {Promise<{ built: boolean, path: string, n_atoms: number, chains: string[], assembly_id: string, already_biological_unit: boolean, message: string }>}
+ */
+export function structureBuildAssembly(payload) {
+  return backendJson('/structure/build-assembly', {
+    path: payload.path,
+    assembly_id: payload.assemblyId,
+    include_waters: payload.includeWaters === true,
+    drop_overlaps: payload.dropOverlaps !== false
+  })
+}
+
+/**
  * Concatenate structures into one PDB. Chain ids must already be unique.
  * @param {{ paths: string[] }} payload
  * @returns {Promise<{ path: string, n_atoms: number, chains: string[] }>}

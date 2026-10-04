@@ -138,6 +138,19 @@ def test_ensure_bonds_efficient_no_long_from_link(tmp_path: Path):
         assert d <= 5.0, f"spurious long bond {i}-{j} at {d:.2f} Å"
 
 
+def test_guess_bonds_accepts_heme_iron() -> None:
+    """Gemmi reports heme iron as type Fe, which MDAnalysis does not tabulate."""
+    universe = mda.Universe.empty(2, n_residues=1, trajectory=True)
+    universe.add_TopologyAttr("name", ["FE", "NA"])
+    universe.add_TopologyAttr("type", ["Fe", "N"])
+    universe.add_TopologyAttr("element", ["Fe", "N"])
+    universe.add_TopologyAttr("resname", ["HEM"])
+    universe.add_TopologyAttr("resid", [1])
+    universe.atoms.positions = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 2.05]], dtype=np.float64)
+    _guess_bonds_nonperiodic(universe.atoms)
+    assert len(universe.bonds) == 1
+
+
 def test_guess_bonds_nonperiodic_ignores_cryst1_wrap(tmp_path: Path):
     """Atoms close across a tiny box must not bond when guessing without PBC."""
     pdb = tmp_path / "pbc.pdb"

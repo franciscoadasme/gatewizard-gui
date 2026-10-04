@@ -17,7 +17,9 @@ import numpy as np
 
 import MDAnalysis as mda
 
-_SS_STRUCTURE_SUFFIXES = frozenset({".pdb", ".ent", ".cif", ".mmcif"})
+# mmCIF is not an MDAnalysis topology. Assembly and converted CIF files are
+# assigned from a PDB written for that purpose.
+_SS_STRUCTURE_SUFFIXES = frozenset({".pdb", ".ent"})
 _XYZ_CACHE_MAX_FRAMES = 96
 _XYZ_BATCH_MAX = 64
 _XYZ_BIN_HEADER = struct.Struct("<III")  # atom_count, start_frame, count
@@ -129,10 +131,10 @@ def _traj_cache_key(topology: Path, trajectories: list[Path], mtimes: tuple[floa
 
 
 def ss_assignment_source_path(*candidates: str | Path | None) -> str | None:
-    """Return the first PDB/mmCIF path usable for secondary-structure assignment.
+    """Return the first PDB path usable for secondary-structure assignment.
 
-    Coordinate-only files (DCD/XTC) exist on disk but are not SS sources — callers
-    should write a temp PDB from the current universe when this returns None.
+    Coordinate-only files (DCD/XTC) and mmCIF exist on disk but are not SS sources —
+    callers should write a temp PDB from the current universe when this returns None.
     """
     for raw in candidates:
         if not raw:

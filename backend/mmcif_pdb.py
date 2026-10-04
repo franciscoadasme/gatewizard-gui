@@ -72,15 +72,53 @@ def mda_topology_format(path: Path) -> str | None:
     return None
 
 
-def pdb_from_mmcif(cif_path: Path) -> Path:
-    """Return a PDB next to ``cif_path``, rewriting it when the mmCIF is newer."""
+def is_mmcif_file(path: Path) -> bool:
+    """True for ``.cif`` / ``.mmcif``, or a file whose text starts with ``data_``.
+
+    Save PDB used to copy an assembly mmCIF onto a ``.pdb`` path. That file
+    still begins with a data block, so readers can recognize it.
+    """
+    file_path = Path(path)
+    if file_path.suffix.lower() in {".cif", ".mmcif"}:
+        return True
+    try:
+        with file_path.open("r", encoding="utf-8", errors="replace") as handle:
+            for _ in range(20):
+                line = handle.readline()
+                if not line:
+                    return False
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                return stripped.lower().startswith("data_")
+    except OSError:
+        return False
+    return False
+
+
+def pdb_from_mmcif(cif_path: Path, dest: Path | None = None) -> Path:
+    """Return a PDB next to ``cif_path``, rewriting it when the mmCIF is newer.
+
+    Pass ``dest`` to write a specific ``.pdb`` path. That is how Save PDB turns
+    an assembly mmCIF into a file MDAnalysis can open again.
+    """
     cif_path = Path(cif_path)
     if not cif_path.is_file():
         raise StructureConvertError(f"mmCIF file not found: {cif_path}")
-    dest = cif_path.with_suffix(".pdb")
-    src_mtime = cif_path.stat().st_mtime
-    if dest.is_file() and dest.stat().st_size > 0 and dest.stat().st_mtime >= src_mtime:
-        return dest
+    if dest is None:
+        dest = cif_path.with_suffix(".pdb")
+        if dest.resolve() == cif_path.resolve():
+            dest = cif_path.with_name(f"{cif_path.stem}_from_mmcif.pdb")
+        src_mtime = cif_path.stat().st_mtime
+        if dest.is_file() and dest.stat().st_size > 0 and dest.stat().st_mtime >= src_mtime:
+            return dest
+    else:
+        dest = Path(dest)
+        if dest.resolve() == cif_path.resolve():
+            raise StructureConvertError(
+                "Cannot replace an mmCIF file in place; choose a .pdb path."
+            )
+    dest.parent.mkdir(parents=True, exist_ok=True)
     partial = dest.with_name(dest.name + ".writing")
     try:
         _write_mmcif_as_pdb(cif_path, partial)
@@ -94,6 +132,50 @@ def pdb_from_mmcif(cif_path: Path) -> Path:
         partial.unlink(missing_ok=True)
         raise
     return dest
+
+
+def write_universe_pdb(universe, dest: Path) -> None:
+    """Write ``universe`` as a hybrid-36 PDB.
+
+    Chain ids longer than one character are stored as their first letter.
+    Every atom is written, including assemblies past the 99,999 serial limit.
+    """
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    partial = dest.with_name(dest.name + ".writing")
+    atoms = universe.atoms
+    try:
+        with partial.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(f"HEADER    CONVERTED FROM MMCIF{'':>49}\n")
+            for serial, atom in enumerate(atoms, start=1):
+                chain = str(getattr(atom, "chainID", "") or " ").strip() or " "
+                raw = str(atom.name).strip()
+                if len(raw) < 4:
+                    raw = " " + raw
+                element = str(getattr(atom, "element", "") or "").strip().upper()
+                handle.write(
+                    _atom_line(
+                        "ATOM  ",
+                        serial,
+                        f"{raw:<4}"[:4],
+                        " ",
+                        f"{str(atom.resname).strip()[:3]:>3}",
+                        chain[0],
+                        int(atom.resid),
+                        " ",
+                        float(atom.position[0]),
+                        float(atom.position[1]),
+                        float(atom.position[2]),
+                        1.0,
+                        0.0,
+                        f"{element:>2}"[:2] if element else "  ",
+                    )
+                )
+            handle.write("END\n")
+        partial.replace(dest)
+    except Exception:
+        partial.unlink(missing_ok=True)
+        raise
 
 
 def _write_mmcif_as_pdb(cif_path: Path, dest: Path) -> None:

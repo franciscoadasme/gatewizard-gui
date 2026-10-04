@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Visualize biological assembly:** building an assembly that contains heme iron no longer stops on a missing Fe radius. Auto-generate reads mmCIF files, including an assembly. Secondary structure is assigned on each subunit and copied onto `A1`, `A2`, and the other mates, instead of asking MDAnalysis to open the mmCIF. Copies keep names such as `A1` because a PDB chain column cannot separate them. Ions or waters that the operators pile onto one point are reported, and Build can drop the extras. Save PDB writes a real PDB, so reopening it does not report two different atom counts. A copy that was already saved with a `.pdb` name but is still mmCIF text opens as the assembly.
 - **Analysis titration PNG:** the exported figure keeps the same label sizes as on screen, including the rotated Y-axis titles. Saving over a file that is already open no longer fails.
 - **Visualize depth of field aliasing:** DoF now renders at full resolution (was 0.75×), keeps MSAA on the effect composer, softens CoC edges, and applies SMAA so bokeh rings and in-focus edges are much less jagged.
 - **Visualize cartoon / tube + clip:** the clip wrapper no longer binds the Three group into `$state` (that remounted children and blanked cartoon/tube). Camera-slab clip planes follow the live viewer camera while orbiting.
@@ -59,6 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Visualize biological assembly:** Tools → **Build assembly…** reads the operators in the original PDB or mmCIF and loads the oligomer or capsid as a new structure. The asymmetric unit stays loaded. Large assemblies ask for confirmation before they are built. Crystal waters are left out unless requested.
 - **Analysis titration:** structural type Titration runs PropKa on one PDB, with no topology or trajectory. The figure shows pKa values, protonation fractions, and titration curves. Target pH, which residues appear, and colors are editable, and the result stays in the analysis session. Disulfide cysteines are left out of the pKa and fraction panels, with a short note that PropKa’s 99.99 on those bridges is a placeholder, not a titration pKa.
 - **Analysis custom outside legend:** Side includes Custom. X and Y are percent from the top-left of the figure, and the legend can be dragged there. Publication PNG uses the same position.
 - **Analysis energetic plot settings:** a Property picker chooses which log the settings edit. Y tick count, decimals, and step can differ per cell; X ticks stay shared across the mosaic. Line color can be typed as well as picked.
