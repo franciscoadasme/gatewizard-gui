@@ -4,6 +4,7 @@ import { Color } from 'three'
 import {
   buildCartoonGeometries,
   createCartoonSkin,
+  ribbonSamplingForResidues,
   updateRibbonSkins
 } from './cartoon.js'
 
@@ -26,6 +27,21 @@ function toyProtein() {
 }
 
 const colorFn = () => new Color(0.5, 0.4, 0.8)
+
+test('huge assemblies use a coarse ribbon', () => {
+  const coarse = ribbonSamplingForResidues(3, 100_000)
+  assert.equal(coarse.smoothFactor, 1)
+  assert.equal(coarse.csSides, 4)
+  assert.equal(coarse.fastNormals, true)
+  const mid = ribbonSamplingForResidues(5, 20_000)
+  assert.equal(mid.smoothFactor, 2)
+  assert.equal(mid.csSides, 5)
+  assert.equal(mid.fastNormals, true)
+  const small = ribbonSamplingForResidues(3, 200)
+  assert.equal(small.smoothFactor, 12)
+  assert.equal(small.csSides, 14)
+  assert.equal(small.fastNormals, false)
+})
 
 test('buildCartoonGeometries still returns BufferGeometry', () => {
   const { atoms, residues } = toyProtein()

@@ -1,4 +1,4 @@
-import { BufferGeometry, Float32BufferAttribute, Vector3 } from 'three'
+import { BufferGeometry, Float32BufferAttribute, Uint32BufferAttribute, Vector3 } from 'three'
 
 // ── Dimensions (match gatewizard defaults: helix_w=2, sheet_w=2.5, coil_w=0.5) ──
 
@@ -14,6 +14,28 @@ const COIL_HW = 0.125 // coil_w * 0.25
 const QUALITY_PRESETS = /** @type {Record<number,[number,number]>} */ ({ 1: [4, 6], 2: [8, 10], 3: [12, 14], 4: [20, 24], 5: [32, 36] })
 /** @param {number} [q] @returns {[number,number]} */
 function getQualityPreset(q) { return QUALITY_PRESETS[q] ?? QUALITY_PRESETS[3] }
+
+/**
+ * Coarser ribbon for capsids and other huge assemblies. Quality 1 is still
+ * thousands of vertices per chain; a 100,000-residue cartoon at that preset
+ * spends minutes in mesh normals.
+ * @param {number | undefined} quality
+ * @param {number} residueCount
+ * @returns {{ smoothFactor: number, csSides: number, fastNormals: boolean }}
+ */
+export function ribbonSamplingForResidues(quality, residueCount) {
+  const [smoothFactor, csSides] = getQualityPreset(quality)
+  const n = residueCount || 0
+  if (n >= 40_000) return { smoothFactor: 1, csSides: 4, fastNormals: true }
+  if (n >= 12_000) {
+    return {
+      smoothFactor: Math.min(smoothFactor, 2),
+      csSides: Math.min(csSides, 5),
+      fastNormals: true
+    }
+  }
+  return { smoothFactor, csSides, fastNormals: false }
+}
 
 // ── SS helpers ───────────────────────────────────────────────────────────
 
@@ -135,6 +157,8 @@ function catmullRom(p0, p1, p2, p3, t) {
  */
 function smoothCoordsAndNormals(coords, normals, factor) {
   const n = coords.length
+  // factor 1 is the residue trace itself. Skip the per-point Vector3 copies.
+  if (factor <= 1) return { pts: coords, nms: normals }
   /** @type {Vector3[]} */
   const rPts = []
   /** @type {Vector3[]} */
@@ -187,7 +211,7 @@ function smoothCoordsAndNormals(coords, normals, factor) {
  * @param {[number,number,number][]} colors
  * @returns {BufferGeometry | null}
  */
-function buildRibbonGeometry(pts, nms, widths, thicknesses, colors, csSides = CS_SIDES) {
+function buildRibbonGeometry(pts, nms, widths, thicknesses, colors, csSides = CS_SIDES, fastNormals = false) {
   const n = pts.length
   if (n < 2) return null
 
@@ -203,6 +227,7 @@ function buildRibbonGeometry(pts, nms, widths, thicknesses, colors, csSides = CS
   const nVerts = n * S
   const pos = new Float32Array(nVerts * 3)
   const col = new Float32Array(nVerts * 3)
+  const nrm = fastNormals ? new Float32Array(nVerts * 3) : null
 
   const T = new Vector3()
   const B = new Vector3()
@@ -234,38 +259,59 @@ function buildRibbonGeometry(pts, nms, widths, thicknesses, colors, csSides = CS
         col[off] = rgb[0]
         col[off + 1] = rgb[1]
         col[off + 2] = rgb[2]
+        if (nrm) {
+          nrm[off] = N.x
+          nrm[off + 1] = N.y
+          nrm[off + 2] = N.z
+        }
       }
     } else {
       for (let k = 0; k < S; k++) {
         const off = base + k * 3
         const c = cosA[k],
           s = sinA[k]
-        pos[off] = p.x + w * c * N.x + th * s * B.x
-        pos[off + 1] = p.y + w * c * N.y + th * s * B.y
-        pos[off + 2] = p.z + w * c * N.z + th * s * B.z
+        const rx = w * c * N.x + th * s * B.x
+        const ry = w * c * N.y + th * s * B.y
+        const rz = w * c * N.z + th * s * B.z
+        pos[off] = p.x + rx
+        pos[off + 1] = p.y + ry
+        pos[off + 2] = p.z + rz
         col[off] = rgb[0]
         col[off + 1] = rgb[1]
         col[off + 2] = rgb[2]
+        if (nrm) {
+          const nlen = Math.hypot(rx, ry, rz) || 1
+          nrm[off] = rx / nlen
+          nrm[off + 1] = ry / nlen
+          nrm[off + 2] = rz / nlen
+        }
       }
     }
   }
 
-  const idx = []
+  const quads = (n - 1) * S
+  const idx = new Uint32Array(quads * 6)
+  let cursor = 0
   for (let i = 0; i < n - 1; i++) {
     const base = i * S
-    const nb = (i + 1) * S
+    const nb = base + S
     for (let k = 0; k < S; k++) {
       const k1 = (k + 1) % S
-      idx.push(base + k, nb + k, nb + k1)
-      idx.push(base + k, nb + k1, base + k1)
+      idx[cursor++] = base + k
+      idx[cursor++] = nb + k
+      idx[cursor++] = nb + k1
+      idx[cursor++] = base + k
+      idx[cursor++] = nb + k1
+      idx[cursor++] = base + k1
     }
   }
 
   const geom = new BufferGeometry()
   geom.setAttribute('position', new Float32BufferAttribute(pos, 3))
   geom.setAttribute('color', new Float32BufferAttribute(col, 3))
-  geom.setIndex(idx)
-  geom.computeVertexNormals()
+  geom.setIndex(new Uint32BufferAttribute(idx, 1))
+  if (nrm) geom.setAttribute('normal', new Float32BufferAttribute(nrm, 3))
+  else geom.computeVertexNormals()
   return geom
 }
 
@@ -292,7 +338,8 @@ function buildRibbonGeometry(pts, nms, widths, thicknesses, colors, csSides = CS
  *   hasO: Uint8Array,
  *   nrm: Float32Array,
  *   smP: Float32Array,
- *   smN: Float32Array
+ *   smN: Float32Array,
+ *   fastNormals?: boolean
  * }} RibbonSkin
  */
 
@@ -342,11 +389,18 @@ export function buildCartoonGeometries(atoms, residues, colorFn, opts = {}) {
 export function createCartoonSkin(atoms, residues, colorFn, opts = {}) {
   /** @type {Map<number, any>} Map from atom.index (global MDAnalysis id) → atom */
   const atomByIndex = new Map(atoms.map((a) => [a.index, a]))
+  const sampling = ribbonSamplingForResidues(opts.quality, residues?.length ?? 0)
+  const tuned = {
+    ...opts,
+    smoothFactor: sampling.smoothFactor,
+    csSides: sampling.csSides,
+    fastNormals: sampling.fastNormals
+  }
   const segments = splitContinuousSegments(atomByIndex, residues)
   /** @type {RibbonSkin[]} */
   const out = []
   for (const seg of segments) {
-    const skin = buildSegmentCartoon(atomByIndex, seg, colorFn, opts)
+    const skin = buildSegmentCartoon(atomByIndex, seg, colorFn, tuned)
     if (skin) out.push(skin)
   }
   return out
@@ -404,7 +458,9 @@ function buildSegmentCartoon(atomByIndex, segResidues, colorFn, opts = {}) {
   const strandHW = opts.sheetWidth  ?? STRAND_HW
   const coilHW   = opts.coilWidth   ?? COIL_HW
   const arrowHW  = strandHW * (ARROW_HW / STRAND_HW)  // preserve relative scale
-  const [smoothFactor, csSides] = getQualityPreset(opts.quality)
+  const preset = getQualityPreset(opts.quality)
+  const smoothFactor = opts.smoothFactor ?? preset[0]
+  const csSides = opts.csSides ?? preset[1]
 
   const nr = segResidues.length
   if (nr < 2) return null
@@ -508,9 +564,11 @@ function buildSegmentCartoon(atomByIndex, segResidues, colorFn, opts = {}) {
     }
   }
 
-  const geom = buildRibbonGeometry(pts, nms, widths, thicknesses, ptColors, csSides)
+  const geom = buildRibbonGeometry(pts, nms, widths, thicknesses, ptColors, csSides, !!opts.fastNormals)
   if (!geom) return null
-  return allocRibbonSkin(geom, segResidues, atomByIndex, widths, thicknesses, smoothFactor, csSides)
+  const skin = allocRibbonSkin(geom, segResidues, atomByIndex, widths, thicknesses, smoothFactor, csSides)
+  skin.fastNormals = !!opts.fastNormals
+  return skin
 }
 
 // ── Tube ─────────────────────────────────────────────────────────────────────
@@ -543,11 +601,18 @@ export function buildTubeGeometries(atoms, residues, colorFn, opts = {}) {
 export function createTubeSkin(atoms, residues, colorFn, opts = {}) {
   /** @type {Map<number, any>} Map from atom.index (global MDAnalysis id) → atom */
   const atomByIndex = new Map(atoms.map((a) => [a.index, a]))
+  const sampling = ribbonSamplingForResidues(opts.quality, residues?.length ?? 0)
+  const tuned = {
+    ...opts,
+    smoothFactor: sampling.smoothFactor,
+    csSides: sampling.csSides,
+    fastNormals: sampling.fastNormals
+  }
   const segments = splitContinuousSegments(atomByIndex, residues)
   /** @type {RibbonSkin[]} */
   const out = []
   for (const seg of segments) {
-    const skin = buildSegmentTube(atomByIndex, seg, colorFn, opts)
+    const skin = buildSegmentTube(atomByIndex, seg, colorFn, tuned)
     if (skin) out.push(skin)
   }
   return out
@@ -570,7 +635,9 @@ function buildSegmentTube(atomByIndex, segResidues, colorFn, opts) {
   const sheetR = baseRadius
   const coilR  = baseRadius * 0.28
   const arrowR = baseRadius * 1.2
-  const [smoothFactor, csSides] = getQualityPreset(opts.quality)
+  const preset = getQualityPreset(opts.quality)
+  const smoothFactor = opts.smoothFactor ?? preset[0]
+  const csSides = opts.csSides ?? preset[1]
 
   /** @type {Vector3[]} */
   const caCoords = []
@@ -664,9 +731,11 @@ function buildSegmentTube(atomByIndex, segResidues, colorFn, opts) {
     }
   }
 
-  const geom = buildRibbonGeometry(pts, nms, radii, radii, smoothColors, csSides)
+  const geom = buildRibbonGeometry(pts, nms, radii, radii, smoothColors, csSides, !!opts.fastNormals)
   if (!geom) return null
-  return allocRibbonSkin(geom, segResidues, atomByIndex, radii, radii, smoothFactor, csSides)
+  const skin = allocRibbonSkin(geom, segResidues, atomByIndex, radii, radii, smoothFactor, csSides)
+  skin.fastNormals = !!opts.fastNormals
+  return skin
 }
 
 // ── Play: move the ribbon without remeshing ───────────────────────────────
@@ -1090,9 +1159,11 @@ export function updateRibbonSkins(skins, xyz, atoms) {
     smoothCoordsAndNormalsPacked(skin.ca, skin.nrm, skin.nRes, skin.smP, skin.smN, skin.smoothFactor)
     const posAttr = skin.geometry.getAttribute('position')
     if (!posAttr || !(posAttr.array instanceof Float32Array)) continue
+    const nrmAttr = skin.fastNormals ? skin.geometry.getAttribute('normal') : null
+    const nrmArray = nrmAttr && nrmAttr.array instanceof Float32Array ? nrmAttr.array : null
     writeRibbonPositions(
       posAttr.array,
-      null,
+      nrmArray,
       skin.smP,
       skin.smN,
       skin.widths,
@@ -1101,9 +1172,9 @@ export function updateRibbonSkins(skins, xyz, atoms) {
       skin.csSides
     )
     posAttr.needsUpdate = true
-    // Face-averaged normals (same as create). Ellipse-offset normals draw a
-    // centerline thread; leaving frame-0 normals makes helices flicker under
-    // hemisphere / directional lights as the ribbon moves.
-    skin.geometry.computeVertexNormals()
+    if (nrmAttr) nrmAttr.needsUpdate = true
+    // Face-averaged normals match the small-structure look. On a capsid they
+    // dominate the build, so the coarse ribbon keeps the radial normals.
+    if (!skin.fastNormals) skin.geometry.computeVertexNormals()
   }
 }

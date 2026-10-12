@@ -898,7 +898,9 @@ def _ss_map_for_copied_chains(u: mda.Universe) -> dict[tuple[str, int], str]:
         tmp.close()
         try:
             write_universe_pdb(subset, tmp.name)
-            ss_map = assign_secondary_structure_map(tmp.name, method="auto")
+            # One chain of a capsid is still a normal protein. PSIQUE on every
+            # subunit, then again for the whole assembly, is what stalls autogenerate.
+            ss_map = assign_secondary_structure_map(tmp.name, method="heuristic")
         except Exception as exc:
             logger.warning(
                 "Secondary structure assignment failed for chain %s: %s",
@@ -944,8 +946,10 @@ def get_residues(
             pdb_for_ss = tmp.name
             cleanup = True
         try:
-            # auto: PSIQUE first, then PDB HELIX/SHEET records, then CA-angle heuristic
-            ss_map = assign_secondary_structure_map(pdb_for_ss, method="auto")
+            # Past the viewer cap, PSIQUE (and a failed run that then falls
+            # through) dominates. The CA-angle heuristic is enough for cartoons.
+            ss_method = "heuristic" if len(u.atoms) >= _HEURISTIC_SS_ATOM_COUNT else "auto"
+            ss_map = assign_secondary_structure_map(pdb_for_ss, method=ss_method)
             resid_unique: dict[int, str] = {}
             resid_ambiguous: set[int] = set()
             for (chain, resid), sec in ss_map.items():
@@ -992,6 +996,11 @@ def get_residues(
             logger.warning("Skipping residue in get_residues: %s", exc)
             continue
     return residues
+
+
+# Same comfort line as the viewer's LARGE_VIEW_ATOM_LIMIT. Above this, cartoons
+# use the CA-angle heuristic instead of PSIQUE.
+_HEURISTIC_SS_ATOM_COUNT = 80_000
 
 
 _TOPOLOGY_ONLY_SUFFIXES = frozenset(
@@ -6225,6 +6234,18 @@ class DetectMoleculesRequest(BaseModel):
     )
 
 
+def _atoms_outside(universe: mda.Universe, claimed: set[int]) -> mda.AtomGroup:
+    """Atoms whose indices are not in ``claimed``.
+
+    A ``not (index 1 2 3 …)`` selection builds one token per atom. On a capsid
+    that string is hundreds of thousands of indices and the parser stalls.
+    """
+    if not claimed:
+        return universe.atoms
+    mask = [int(index) not in claimed for index in universe.atoms.indices]
+    return universe.atoms[mask]
+
+
 @app.post("/detect-molecules")
 def detect_molecules(payload: DetectMoleculesRequest) -> list[dict]:
     try:
@@ -6297,23 +6318,21 @@ def detect_molecules(payload: DetectMoleculesRequest) -> list[dict]:
         )
         idxs.extend(atoms.indices)
 
-    if idxs:
-        leftover = u.atoms.select_atoms(f"not (index {' '.join(map(str, idxs))})")
-    else:
-        leftover = u.atoms
-    for resname in set(res.resname for res in leftover.residues):
+    leftover = _atoms_outside(u, {int(i) for i in idxs})
+    if len(leftover) == 0:
+        return datalist
+    leftover_names = [str(name).strip() for name in leftover.resnames]
+    for resname in sorted(set(leftover_names)):
         # Polymer HETs already in protein/peptide — never emit resname FVA/DLE/…
-        if is_peptide_polymer_residue(str(resname)):
+        if is_peptide_polymer_residue(resname) or is_ion_resname(resname):
             continue
-        if is_ion_resname(str(resname)):
-            continue
-        residues = leftover.select_atoms(f"resname {resname}")
-        if len(residues) == 0:
+        group = leftover[[name == resname for name in leftover_names]]
+        if len(group) == 0:
             continue
         datalist.append(
             dict(
                 selection=f"resname {resname}",
-                atoms=get_atoms(residues),
+                atoms=get_atoms(group),
             )
         )
 

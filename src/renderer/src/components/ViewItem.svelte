@@ -54,7 +54,7 @@
   } from '../lib/viewer/viewClip.js'
   import { mainViewerCamera } from './viewer/CameraRig.svelte'
   import { GLOW_LIGHTS_PERF_WARN } from '../lib/viewer/viewerDiagnostics.js'
-  import { viewerBusy } from '../lib/viewer/viewerBusy.svelte.js'
+  import { afterNextPaint, beginViewerBusy, endViewerBusy, viewerBusy } from '../lib/viewer/viewerBusy.svelte.js'
   import { getStructure } from '../lib/backendApi'
   import { structureFetchPath } from '../lib/visualizeStructures.js'
   import { onDestroy, tick, untrack } from 'svelte'
@@ -704,9 +704,46 @@ Coordinate clip (use Update each frame on a trajectory):
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
+  let reprApplying = $state(false)
+
+  /**
+   * Paint a wait notice before the mesh rebuild, which runs on the main thread
+   * and otherwise freezes the page with no feedback.
+   * @param {string} reprType
+   */
+  async function setRepresentationType(reprType) {
+    if (!reprType || reprType === view.representation?.type || reprApplying) return
+    reprApplying = true
+    const label = REPR_LABELS[reprType] || 'representation'
+    beginViewerBusy(`Drawing ${label}…`)
+    try {
+      await tick()
+      await afterNextPaint()
+      view.representation = { type: reprType }
+      if (representationNeedsBonds(reprType)) {
+        view._prefetched = false
+        if (!bondsHaveMultiOrder(view.bonds)) {
+          view._bondOrderFetchDone = false
+          if (!tryApplySourceBonds() || !bondsHaveMultiOrder(view.bonds)) {
+            updateStructure()
+          }
+        }
+      }
+      await tick()
+      const started = Date.now()
+      while (loadingStructure && Date.now() - started < 60000) {
+        await new Promise((resolve) => setTimeout(resolve, 80))
+      }
+    } finally {
+      endViewerBusy()
+      reprApplying = false
+    }
+  }
+
   function cycleRepr() {
     const idx = REPR_TYPES.indexOf(view.representation.type)
-    view.representation = { type: REPR_TYPES[(idx + 1) % REPR_TYPES.length] }
+    const next = REPR_TYPES[(idx + 1) % REPR_TYPES.length]
+    void setRepresentationType(next)
   }
 
   function currentSelectionLabel() {
@@ -1054,6 +1091,7 @@ Coordinate clip (use Update each frame on a trajectory):
         type="button"
         class="shrink-0 rounded bg-neutral-200 px-1.5 py-0.5 text-[10px] text-neutral-800 transition-colors hover:bg-neutral-300 dark:bg-neutral-800 dark:text-neutral-100 dark:hover:bg-neutral-700"
         onclick={cycleRepr}
+        disabled={reprApplying}
         title="Click to cycle representation"
       >
         {REPR_LABELS[view.representation.type]}
@@ -1438,16 +1476,7 @@ Coordinate clip (use Update each frame on a trajectory):
             bind:value={
               () => view.representation.type,
               (reprType) => {
-                view.representation = { type: reprType }
-                if (representationNeedsBonds(reprType)) {
-                  view._prefetched = false
-                  if (!bondsHaveMultiOrder(view.bonds)) {
-                    view._bondOrderFetchDone = false
-                    if (!tryApplySourceBonds() || !bondsHaveMultiOrder(view.bonds)) {
-                      updateStructure()
-                    }
-                  }
-                }
+                void setRepresentationType(reprType)
               }
             }
           >

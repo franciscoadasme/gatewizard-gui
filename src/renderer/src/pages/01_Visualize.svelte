@@ -37,7 +37,7 @@
   import { PADDING_FIELD_STYLE, VIEWER_AXES, axisInputStyle } from '../lib/viewer/axisColors.js'
   import { measureDistance, measureAngle, measureDihedral } from '../lib/viewer/measure.js'
   import { splitViewIntoParts, splitViewModeLabel } from '../lib/viewer/splitView.js'
-  import { effectiveViewSelection, resolveViewAtomSubset } from '../lib/viewer/viewSelection.js'
+  import { effectiveViewSelection, resolveViewAtomSubset, LARGE_VIEW_ATOM_LIMIT } from '../lib/viewer/viewSelection.js'
   import {
     evaluateSelectionIndices,
     filterByIndexSet,
@@ -197,7 +197,7 @@
   import Sun from '../components/icons/Sun.svelte'
   import Spinner from '../components/ui/Spinner.svelte'
   import RangeInput from '../components/ui/RangeInput.svelte'
-  import { viewerBusy, waitForViewerIdle } from '../lib/viewer/viewerBusy.svelte.js'
+  import { afterNextPaint, viewerBusy, waitForViewerIdle } from '../lib/viewer/viewerBusy.svelte.js'
   import ViewItem, { skipNextPathFetch, skipNextAtomsFetch } from '../components/ViewItem.svelte'
   import ViewerSettingsDialog from '../components/ViewerSettingsDialog.svelte'
   import RadialMenu from '../components/RadialMenu.svelte'
@@ -635,6 +635,7 @@
 
   /** True while Auto-generate representations is fetching/building views. */
   let autoGeneratingViews = $state(false)
+  let autoGeneratePhase = $state('')
   /** @type {View[]} */
   let views = $state([])
 
@@ -1164,14 +1165,73 @@
   })
 
   /**
-   * Build default representation views for one structure via detectMolecules.
+   * Protein, water, lipid, ion, and leftover ligands from atoms already loaded.
+   * Skips `/detect-molecules`, which reloads the file and assigns secondary structure again.
+   * @param {import('../lib/visualizeStructures.js').StructureEntry} entry
+   * @returns {Array<{ selection: string, atoms: any[], residues: any[] | null, bonds: any[] }> | null}
+   */
+  function localMoleculeGroups(entry) {
+    const atoms = entry.atoms || []
+    const bonds = entry.bonds || []
+    const residues = entry.residues || []
+    if (!atoms.length || !residues.length) return null
+    /** @type {Array<{ selection: string, atoms: any[], residues: any[] | null, bonds: any[] }>} */
+    const groups = []
+    /** @type {Set<number>} */
+    const claimed = new Set()
+    const take = (selection) => {
+      const subset = trySubsetBySelection(atoms, bonds, residues, selection)
+      if (!subset.ok || !subset.atoms?.length) return
+      for (const atom of subset.atoms) {
+        if (typeof atom.index === 'number') claimed.add(atom.index)
+      }
+      groups.push({
+        selection,
+        atoms: subset.atoms,
+        residues: selection === 'protein' ? subset.residues : null,
+        bonds: subset.bonds || []
+      })
+    }
+    take('protein')
+    take('water')
+    take('lipid')
+    take('ion')
+    /** @type {Map<string, any[]>} */
+    const byName = new Map()
+    for (const atom of atoms) {
+      if (typeof atom.index === 'number' && claimed.has(atom.index)) continue
+      const name = String(atom.res_name || '').trim()
+      if (!name) continue
+      const bucket = byName.get(name)
+      if (bucket) bucket.push(atom)
+      else byName.set(name, [atom])
+    }
+    for (const name of [...byName.keys()].sort()) {
+      const groupAtoms = byName.get(name) || []
+      const indexSet = new Set(groupAtoms.map((atom) => atom.index))
+      const filtered = filterByIndexSet(atoms, bonds, residues, indexSet)
+      groups.push({
+        selection: `resname ${name}`,
+        atoms: filtered.atoms,
+        residues: null,
+        bonds: filtered.bonds
+      })
+    }
+    return groups
+  }
+
+  /**
+   * Build default representation views for one structure.
+   * Uses atoms already in memory when residues were loaded with the structure.
    * Returned views carry the owning structureId + componentKey.
    * @param {import('../lib/visualizeStructures.js').StructureEntry} entry
    * @returns {Promise<View[]>}
    */
   async function buildAutoViewsForStructure(entry) {
     if (!entry?.path) return []
-    const data = await detectMolecules(entry.path, { topology: entry.topologyPath ?? null })
+    const data =
+      localMoleculeGroups(entry) ??
+      (await detectMolecules(entry.path, { topology: entry.topologyPath ?? null }))
     /** @type {View[]} */
     const next = []
     const globalBonds = entry.bonds ?? []
@@ -1197,6 +1257,7 @@
       } else {
         colorScheme = { name: 'cpk', resolver: cpkScheme() }
       }
+      const proteinAtoms = isBiopolymerSelection(struc.selection) ? struc.atoms?.length || 0 : 0
       next.push({
         id: crypto.randomUUID(),
         structureId: entry.id,
@@ -1218,7 +1279,7 @@
         atomScale: 1.0,
         bondScale: 1.0,
         pointSize: 3,
-        quality: 3,
+        quality: proteinAtoms > LARGE_VIEW_ATOM_LIMIT ? 1 : 3,
         showMultipleBonds: true,
         stickRoundness: 1.0,
         bondColorMode: 'uniform',
@@ -1240,12 +1301,29 @@
   async function onAutoGenerateViews() {
     const entry = structure
     if (!entry || autoGeneratingViews) return
+    const atomCount = entry.atoms?.length || 0
     autoGeneratingViews = true
+    autoGeneratePhase =
+      atomCount > LARGE_VIEW_ATOM_LIMIT
+        ? `Preparing views for ${atomCount.toLocaleString()} atoms…`
+        : 'Preparing views…'
     try {
+      await tick()
+      await afterNextPaint()
       const generated = await buildAutoViewsForStructure(entry)
+      const heavy = generated.reduce((n, view) => n + (view.residues?.length || 0), 0)
+      autoGeneratePhase =
+        heavy >= 40_000
+          ? `Drawing a simplified cartoon for ${heavy.toLocaleString()} residues…`
+          : 'Drawing representations…'
+      await tick()
+      await afterNextPaint()
       // Replace only this structure's views; keep other structures untouched.
       const others = views.filter((v) => v.structureId !== entry.id)
       views = [...others, ...generated]
+      // Cartoon meshes are built in this flush. The notice from the previous
+      // paint stays up until that work finishes.
+      await tick()
       reframeCameraOnAtoms(collectVisibleViewAtoms(views))
       logEvent(
         'detail',
@@ -1258,6 +1336,7 @@
       logEvent('error', 'view', 'Auto-generate failed', String(err?.message ?? err))
     } finally {
       autoGeneratingViews = false
+      autoGeneratePhase = ''
     }
   }
 
@@ -8311,18 +8390,23 @@
             frameHeight={animProject.exportFrame?.height ?? 1080}
           />
         {/if}
-        {#if viewerBusy.active && !sceneRestoring && !loadingPDB}
+        {#if viewerBusy.active && !autoGeneratingViews && !sceneRestoring && !loadingPDB}
           <div
-            class="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-neutral-950/35"
-            style="backdrop-filter:blur(1px)"
+            class="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-neutral-950/70"
+            style="backdrop-filter:blur(2px)"
             aria-live="polite"
             aria-busy="true"
           >
             <div
-              class="flex items-center gap-2 rounded-lg border border-neutral-600/50 bg-neutral-900/90 px-4 py-2 text-sm text-neutral-100 shadow-lg"
+              class="flex w-[min(22rem,90vw)] flex-col items-center gap-3 rounded-xl border border-yellow-600/40 bg-neutral-900/95 px-6 py-5 text-center text-neutral-100 shadow-xl"
             >
-              <Spinner className="size-5 text-blue-400" />
-              <span>{viewerBusy.label || 'Updating view…'}</span>
+              <Spinner className="size-8 text-yellow-400" />
+              <div class="space-y-1">
+                <p class="text-sm font-semibold text-yellow-100">Updating the view</p>
+                <p class="text-xs leading-snug text-neutral-300">
+                  {viewerBusy.label || 'This can take a moment. The new drawing will appear when it is ready.'}
+                </p>
+              </div>
             </div>
           </div>
         {/if}
@@ -8423,10 +8507,20 @@
           </div>
         {/if}
         {#if autoGeneratingViews}
-          <div class="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
-            <div class="flex items-center gap-2 rounded-full bg-black/50 px-4 py-2 shadow-xl">
-              <Spinner className="size-5 text-yellow-400" />
-              <span class="text-xs font-medium text-yellow-300">Generating representations…</span>
+          <div
+            class="absolute inset-0 z-30 flex items-center justify-center bg-neutral-950/70"
+            style="backdrop-filter:blur(2px)"
+            aria-live="polite"
+            aria-busy="true"
+          >
+            <div
+              class="flex w-[min(22rem,90vw)] flex-col items-center gap-3 rounded-xl border border-yellow-600/40 bg-neutral-900/95 px-6 py-5 text-center text-neutral-100 shadow-xl"
+            >
+              <Spinner className="size-8 text-yellow-400" />
+              <div class="space-y-1">
+                <p class="text-sm font-semibold text-yellow-100">Generating representations</p>
+                <p class="text-xs text-neutral-300">{autoGeneratePhase || 'Preparing views…'}</p>
+              </div>
             </div>
           </div>
         {/if}
@@ -8590,24 +8684,17 @@
           {/snippet}
 
           {@render toolbarBtn('Add representation', () => addView(), Plus, 'size-3 fill-neutral-800 dark:fill-white')}
+          {@render toolbarBtn(
+            'Auto-generate representations',
+            onAutoGenerateViews,
+            DetectIcon,
+            'size-4 stroke-2 stroke-neutral-800 dark:stroke-white',
+            !filePath || autoGeneratingViews
+          )}
           {#if autoGeneratingViews}
-            <button
-              type="button"
-              class="flex h-7 max-w-7 min-w-[1.15rem] flex-[1_1_1.4rem] items-center justify-center rounded-lg border border-neutral-200 bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-900"
-              aria-label="Generating representations"
-              title="Generating representations…"
-              disabled
-            >
-              <Spinner className="size-3.5 text-neutral-700 dark:text-neutral-200" />
-            </button>
-          {:else}
-            {@render toolbarBtn(
-              'Auto-generate representations',
-              onAutoGenerateViews,
-              DetectIcon,
-              'size-4 stroke-2 stroke-neutral-800 dark:stroke-white',
-              !filePath
-            )}
+            <p class="w-full basis-full text-[11px] leading-snug text-amber-700 dark:text-amber-300">
+              {autoGeneratePhase || 'Generating representations…'}
+            </p>
           {/if}
           {@render toolbarBtn(
             axesVisible ? 'Hide axes gizmo' : 'Show axes gizmo',

@@ -134,10 +134,11 @@ ATOM 2 C CA . ALA A 1 ? 1.000 0.000 0.000 1.00 0.00 1 A 1
 
 
 def test_assembly_secondary_structure_copies_onto_each_chain(tmp_path: Path, monkeypatch) -> None:
-    written: list[str] = []
+    written: list[tuple[str, str]] = []
 
     def fake(path, method="auto"):
-        written.append(path)
+        written.append((path, method))
+        assert method == "heuristic"
         universe = mda.Universe(path)
         chains = {str(atom.chainID).strip() for atom in universe.atoms}
         assert chains == {"A"}
@@ -158,7 +159,8 @@ def test_assembly_secondary_structure_copies_onto_each_chain(tmp_path: Path, mon
     assert secs[("A1", 1)] == "H"
     assert secs[("A2", 1)] == "H"
     assert len(written) == 1
-    assert written[0].endswith(".pdb")
+    assert written[0][0].endswith(".pdb")
+    assert written[0][1] == "heuristic"
 
     found = detect_molecules(DetectMoleculesRequest(path=built["path"]))
     protein = next(item for item in found if item["selection"] == "protein")
@@ -168,6 +170,31 @@ def test_assembly_secondary_structure_copies_onto_each_chain(tmp_path: Path, mon
     assert detected[("A1", 1)] == "H"
     assert detected[("A2", 1)] == "H"
     assert len(written) == 2
+    assert written[1][1] == "heuristic"
+
+
+def test_detect_molecules_does_not_join_atom_indices(tmp_path: Path, monkeypatch) -> None:
+    calls: list[str] = []
+    real = mda.AtomGroup.select_atoms
+
+    def spy(self, selection, *args, **kwargs):
+        calls.append(str(selection))
+        return real(self, selection, *args, **kwargs)
+
+    monkeypatch.setattr(mda.AtomGroup, "select_atoms", spy)
+    pdb_path = tmp_path / "waters.pdb"
+    def het(serial: int, name: str, resname: str, chain: str, resid: int, element: str) -> str:
+        # Columns 31–54 are x, y, z. Keep the prefix at 30 characters.
+        prefix = f"HETATM{serial:5d} {name:>4s}{resname:>4s}{chain:>2s}{resid:4d}    "
+        return f"{prefix}{0.0:8.3f}{0.0:8.3f}{float(serial % 9):8.3f}  1.00  0.00          {element:>2s}"
+
+    lines = [het(i, "O", "HOH", "W", i, "O") for i in range(1, 2001)]
+    lines.append(het(2001, "C", "LIG", "L", 1, "C"))
+    lines.append("END")
+    pdb_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    found = detect_molecules(DetectMoleculesRequest(path=str(pdb_path)))
+    assert any(item["selection"] == "resname LIG" for item in found)
+    assert all("not (index" not in call for call in calls)
 
 
 def test_detect_molecules_reads_assembly_mmcif(tmp_path: Path) -> None:

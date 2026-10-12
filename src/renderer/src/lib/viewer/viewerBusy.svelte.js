@@ -6,6 +6,18 @@ export const viewerBusy = $state({
 
 let _depth = 0
 
+/**
+ * tick() updates the DOM but does not paint. Wait until the next frame has
+ * been drawn so a notice is visible before main-thread work freezes the page.
+ */
+export function afterNextPaint() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => resolve(undefined))
+    })
+  })
+}
+
 /** @param {string} [label] */
 export function beginViewerBusy(label = 'Updating view…') {
   _depth += 1
