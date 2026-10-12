@@ -1,5 +1,34 @@
 'use strict'
 
+const fs = require('fs')
+const path = require('path')
+
+/**
+ * Numeric Ubuntu release compare used by tests. The installer and launcher
+ * use the same rule in scripts/wsl-ubuntu-preinst.sh.
+ * @param {string} versionId
+ * @param {string} [minimum]
+ * @returns {boolean}
+ */
+function ubuntuReleaseBefore(versionId, minimum = '24.04') {
+  const parse = (value) => {
+    const match = String(value ?? '').match(/^(\d+)(?:\.(\d+))?/)
+    if (!match) return null
+    return [Number(match[1]), Number(match[2] || 0)]
+  }
+  const rel = parse(versionId)
+  const min = parse(minimum)
+  if (!rel || !min) return false
+  if (rel[0] !== min[0]) return rel[0] < min[0]
+  return rel[1] < min[1]
+}
+
+/** Shell body of the preinst, without shebang or `set -eu`, for the launcher. */
+function wslUbuntuCheckShell() {
+  const src = fs.readFileSync(path.join(__dirname, 'wsl-ubuntu-preinst.sh'), 'utf8')
+  return src.replace(/^#![^\n]*\n/, '').replace(/^set -eu\n/, '')
+}
+
 /**
  * Electron/Chromium always links these sonames. Fresh Ubuntu (esp. 24.04+ t64
  * and minimal 26.04) often lacks ALSA even though the GUI never plays audio.
@@ -150,6 +179,23 @@ function assertLinuxElectronLibs(binPath) {
   process.exit(1)
 }
 
+function buildInstanceLockShell() {
+  return `
+# One launcher at a time. The kernel drops this lock when the shell exits.
+gw_instance_dir="\${XDG_CONFIG_HOME:-\$HOME/.config}/gatewizard-gui"
+mkdir -p "\$gw_instance_dir"
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"\$gw_instance_dir/instance.lock"
+  if ! flock -n 9; then
+    echo "------------------------------------------------------------" >&2
+    echo "GateWizard is already open. Close that window, then start it again." >&2
+    echo "------------------------------------------------------------" >&2
+    exit 1
+  fi
+fi
+`
+}
+
 function buildWrapperScript(realBinName) {
   const { buildDisplayGpuShell } = require('./display-gpu-policy.cjs')
   const { buildGpuCacheShell } = require('./gpu-cache.cjs')
@@ -171,7 +217,7 @@ function buildWrapperScript(realBinName) {
 # Checks Electron's linked .so files before exec so a missing ALSA/GTK
 # library prints install commands instead of a raw loader error.
 set -eu
-
+${wslUbuntuCheckShell()}
 resolve_dir() {
   p=$0
   if command -v readlink >/dev/null 2>&1; then
@@ -253,8 +299,8 @@ See the terminal for the full list."
   fi
   exit 1
 fi
-${buildDbusEnsureShell()}${buildDisplayGpuShell()}${buildGpuCacheShell()}${buildSingletonLockShell()}
-# Detach stdin so Chromium does not stop the shell job (SIGTSTP) when launched from a terminal.
+${buildDbusEnsureShell()}${buildDisplayGpuShell()}${buildGpuCacheShell()}${buildSingletonLockShell()}${buildInstanceLockShell()}
+# Start the ELF with the terminal stderr, the same way npm run dev does.
 ${buildChromiumStderrRunShell()}
 `
 }
@@ -266,5 +312,7 @@ module.exports = {
   formatMissingLibsHelp,
   missingLibsForBinary,
   assertLinuxElectronLibs,
-  buildWrapperScript
+  buildWrapperScript,
+  ubuntuReleaseBefore,
+  wslUbuntuCheckShell
 }

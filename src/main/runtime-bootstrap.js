@@ -11,7 +11,7 @@
 import { spawn, spawnSync } from 'child_process'
 import crypto from 'crypto'
 import { app } from 'electron'
-import { existsSync } from 'fs'
+import { existsSync, readFileSync, rmSync } from 'fs'
 import fs from 'fs/promises'
 import os from 'os'
 import path from 'path'
@@ -180,6 +180,28 @@ export function abortRuntimeInstalls(reason = 'app quit') {
   }
 }
 
+export function isAnotherRuntimeInstallRunning() {
+  try {
+    const existing = JSON.parse(readFileSync(getInstallLockPath(), 'utf8'))
+    const pid = Number(existing?.pid)
+    if (!pid || pid === process.pid) return false
+    return isPidAlive(pid)
+  } catch {
+    return false
+  }
+}
+
+export function releaseInstallLockSync() {
+  const lockPath = getInstallLockPath()
+  try {
+    const existing = JSON.parse(readFileSync(lockPath, 'utf8'))
+    if (Number(existing?.pid) !== process.pid) return
+    rmSync(lockPath, { force: true })
+  } catch {
+    /* lock already gone */
+  }
+}
+
 async function acquireInstallLock(onStatus) {
   const lockPath = getInstallLockPath()
   await fs.mkdir(path.dirname(lockPath), { recursive: true })
@@ -202,21 +224,12 @@ async function acquireInstallLock(onStatus) {
       }
       const holderPid = Number(existing?.pid)
       if (holderPid && holderPid !== process.pid && isPidAlive(holderPid)) {
-        onStatus?.(
-          attempt < 2
-            ? 'Another GateWizard install is running; waiting…'
-            : 'Clearing stalled install lock from a previous launch…'
+        throw new Error(
+          'GateWizard is already installing the Python environment.\n' +
+            'Leave that window open until the install finishes.'
         )
-        // Always clear orphan micromamba; after a couple waits, steal the lock
-        // (common when the UI was killed but the solver kept running).
-        killStaleMicromambaForPrefix(getDefaultRuntimePrefix())
-        if (attempt >= 2) {
-          await fs.rm(lockPath, { force: true })
-        } else {
-          await sleep(1500)
-        }
-        continue
       }
+      onStatus?.('Clearing stalled install lock from a previous launch…')
       await fs.rm(lockPath, { force: true })
     }
   }
@@ -242,7 +255,12 @@ const MICROMAMBA_URL = {
   'win32-x64': `https://github.com/mamba-org/micromamba-releases/releases/download/${MICROMAMBA_TAG}/micromamba-win-64.exe`
 }
 
+let runtimeInstallActive = false
 let cachedLaunchPython = null
+
+export function isRuntimeInstallActive() {
+  return runtimeInstallActive
+}
 
 function getMicromambaKey() {
   const plat = process.platform
@@ -641,6 +659,43 @@ async function ensurePythonSsl(pyPath, runtimePrefix, micromambaDest, mmEnv, onS
   return false
 }
 
+function compilerInstallLines() {
+  if (process.platform === 'darwin') return '  xcode-select --install'
+  if (process.platform === 'win32') {
+    return '  Install Visual Studio Build Tools with the Desktop development with C++ workload.'
+  }
+  let id = ''
+  try {
+    const text = readFileSync('/etc/os-release', 'utf8')
+    const match = text.match(/^ID=(?:"([^"]+)"|(\S+))/m)
+    id = (match?.[1] || match?.[2] || '').toLowerCase()
+  } catch {
+    id = ''
+  }
+  if (id === 'fedora' || id === 'rhel' || id === 'centos' || id === 'rocky' || id === 'almalinux') {
+    return '  sudo dnf install gcc gcc-c++ make'
+  }
+  if (id === 'arch' || id === 'manjaro') {
+    return '  sudo pacman -S --needed base-devel'
+  }
+  return '  sudo apt update\n  sudo apt install build-essential'
+}
+
+function formatPipBuildHint(output) {
+  const needsCc =
+    output.includes('linker `cc` not found') ||
+    output.includes("linker 'cc' not found")
+  if (!needsCc) return ''
+  return (
+    '------------------------------------------------------------\n' +
+    'GateWizard could not finish the first launch because a C compiler is missing.\n' +
+    'Install it, then start GateWizard again:\n' +
+    `${compilerInstallLines()}\n` +
+    'The Python environment already on disk is kept. Starting again continues the install.\n' +
+    '------------------------------------------------------------\n\n'
+  )
+}
+
 function formatPipSslHint(output) {
   if (
     !output.includes('SSL module is not available') &&
@@ -679,7 +734,8 @@ async function runPip(pyPath, pipArgs, runtimePrefix, options) {
     const logPath = getRuntimeInstallLogPath()
     const tail = output.trim().slice(-3000)
     const sslHint = formatPipSslHint(output)
-    const message = `${label} failed.\nLog: ${logPath}${tail ? `\n\n${tail}` : ''}${sslHint}`
+    const buildHint = formatPipBuildHint(output)
+    const message = `${buildHint}${label} failed.\nLog: ${logPath}${tail ? `\n\n${tail}` : ''}${sslHint}`
     if (required) {
       throw new Error(message)
     }
@@ -1046,7 +1102,15 @@ function runProcess(command, args, options = {}) {
         return
       }
       if (code === 0) resolve()
-      else reject(new Error(`${path.basename(command)} exited with code ${code}`))
+      else if (code == null) {
+        reject(
+          new Error(
+            `${path.basename(command)} was interrupted before it finished.\n` +
+              'Close every GateWizard window and start gatewizard-gui-linux once.\n' +
+              'Leave it open until the install finishes.'
+          )
+        )
+      } else reject(new Error(`${path.basename(command)} exited with code ${code}`))
     })
     child.on('error', (err) => {
       if (timeoutId) clearTimeout(timeoutId)
@@ -1104,6 +1168,7 @@ export async function ensureMambaRuntime(options) {
 
   let lockHeld = false
   installAbortRequested = false
+  runtimeInstallActive = true
   const installStartedAt = Date.now()
 
   try {
@@ -1145,15 +1210,15 @@ export async function ensureMambaRuntime(options) {
     }
 
     const runtimePrefix = getDefaultRuntimePrefix()
-    // Prevent two micromamba solvers on the same env (common after cancelling a long install).
+    await acquireInstallLock((msg) => progress.note(msg))
+    lockHeld = true
+    // Only after this process holds the lock. A live install must not be killed.
     const stale = killStaleMicromambaForPrefix(runtimePrefix)
     if (stale.length) {
       progress.note(
         `Stopped ${stale.length} leftover install process(es) from a previous launch…`
       )
     }
-    await acquireInstallLock((msg) => progress.note(msg))
-    lockHeld = true
     await appendRuntimeLog(
       `[runtime] install lock acquired (pid=${process.pid}, prefix=${runtimePrefix})\n`
     )
@@ -1459,6 +1524,7 @@ export async function ensureMambaRuntime(options) {
     process.env.CONDA_PREFIX = runtimePrefix
     progress.done(`Runtime ready: ${runtimePrefix}`)
   } finally {
+    runtimeInstallActive = false
     progress.dispose()
     if (lockHeld) {
       await releaseInstallLock()

@@ -5,6 +5,9 @@
  * No Electron import — used by the dev wrapper and the main process.
  *
  * Supported runtimes: WSL, native Linux, macOS. No native Windows path.
+ *
+ * A GPU child exit during the first Python install must not quit. app.exit
+ * kills micromamba, and the next process prints "already installing".
  */
 
 const fsDefault = require('fs')
@@ -210,12 +213,23 @@ fi
 `
 }
 
+/**
+ * @param {{ installActive?: boolean, safeMode?: boolean, alreadyRelaunched?: boolean }} [state]
+ * @returns {boolean}
+ */
+function shouldRelaunchAfterGpuExit(state = {}) {
+  if (state.installActive) return false
+  if (state.safeMode || state.alreadyRelaunched) return false
+  return true
+}
+
 module.exports = {
   WSL_LIB_DIR,
   WSL_DXG_PATH,
   WSL_D3D12_PATH,
   isWsl,
   hasWslGpu,
+  shouldRelaunchAfterGpuExit,
   getGpuPolicyPath,
   clearPersistedSafeMode,
   applyDisplayGpuEnv,

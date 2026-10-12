@@ -6,6 +6,7 @@ import path, { join } from 'path'
 import { buildFfmpegEncodeArgs, formatFfmpegError } from './animationEncode.js'
 import { resolveWritableDir, sidecarFsCandidates, sidecarReadCandidates } from './wslPaths.js'
 import { readSystemMemoryKbAsync } from './systemMemory.js'
+import { collectInstallFootprint } from './install-footprint.js'
 
 /** Directory from which the process was started (terminal cwd). Captured early. */
 const LAUNCH_CWD = (() => {
@@ -76,9 +77,12 @@ import { listSshIdentityFiles } from './ssh-identity-files.js'
 import {
   abortRuntimeInstalls,
   ensureMambaRuntime,
+  isAnotherRuntimeInstallRunning,
   getGatewizardDataRoot,
   getLaunchPythonPath,
   inferCondaPrefixFromPython,
+  isRuntimeInstallActive,
+  releaseInstallLockSync,
   resolveFfmpegBinary,
   upgradeGatewizardPackage
 } from './runtime-bootstrap.js'
@@ -92,7 +96,7 @@ import {
   getPreferredLaunchDisplay
 } from './window-work-area.js'
 import { buildAugmentedPath } from './shell-path.js'
-import { applyDisplayGpuEnv } from '../../scripts/display-gpu-policy.cjs'
+import { applyDisplayGpuEnv, shouldRelaunchAfterGpuExit } from '../../scripts/display-gpu-policy.cjs'
 import { clearCorruptedGpuCache, getAppConfigDir } from '../../scripts/gpu-cache.cjs'
 import { ensureSessionDbus } from '../../scripts/session-dbus.cjs'
 import {
@@ -109,6 +113,13 @@ const SPLASH_FADE_MS = 350
 /** Transparent splash frame is always square so WSL/Windows chrome looks even. */
 const SPLASH_SIZE = 440
 const SPLASH_LINUX_SIZE = 480
+
+/** WSL has no org.freedesktop.Notifications service — native toasts fail with libnotify. */
+let wslWindowShown = false
+
+function markWslWindowShown() {
+  wslWindowShown = true
+}
 
 /** WSL has no org.freedesktop.Notifications service — native toasts fail with libnotify. */
 function isRunningUnderWsl() {
@@ -692,15 +703,15 @@ function createRuntimeConsoleLogger() {
       phase = 0
       if (!isTty) {
         process.stdout.write(`[runtime] ${text}\n`)
-        return
+      } else {
+        process.stdout.write(`[runtime] ${text}`)
+        timer = setInterval(() => {
+          phase = (phase + 1) % 4
+          const dots = '.'.repeat(phase)
+          const pad = '   '.slice(0, 3 - phase)
+          process.stdout.write(`\r\x1b[K[runtime] ${current}${dots}${pad}`)
+        }, 450)
       }
-      process.stdout.write(`[runtime] ${text}`)
-      timer = setInterval(() => {
-        phase = (phase + 1) % 4
-        const dots = '.'.repeat(phase)
-        const pad = '   '.slice(0, 3 - phase)
-        process.stdout.write(`\r\x1b[K[runtime] ${current}${dots}${pad}`)
-      }, 450)
     },
     /** @param {string} [msg] */
     done(msg) {
@@ -807,6 +818,7 @@ function createSplashWindow() {
 
   splashWindow.loadFile(join(getResourcesDir(), 'splash.html'))
   splashWindow.once('ready-to-show', () => {
+    markWslWindowShown()
     if (splashWindow && !splashWindow.isDestroyed()) {
       // Re-assert placement after show (WSLg/X11 can still nudge the first map).
       splashWindow.setBounds(bounds)
@@ -1166,6 +1178,7 @@ function createWindow() {
   attachUiZoomShortcuts(mainWindow)
 
   mainWindow.on('ready-to-show', async () => {
+    markWslWindowShown()
     if (mainWindow && !mainWindow.isDestroyed() && launchDisplay) {
       mainWindow.setBounds(centerWindowOnDisplay(900, 670, launchDisplay))
     }
@@ -1232,6 +1245,21 @@ app.whenReady().then(async () => {
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.gatewizard.gui')
 
+  if (isAnotherRuntimeInstallRunning()) {
+    writeStdioSafe(
+      process.stderr,
+      [
+        '------------------------------------------------------------',
+        'GateWizard is already installing the Python environment.',
+        'Leave that window open until the install finishes.',
+        '------------------------------------------------------------',
+        ''
+      ].join('\n')
+    )
+    app.exit(0)
+    return
+  }
+
   createSplashWindow()
   await new Promise((resolve) => {
     if (!splashWindow || splashWindow.isDestroyed()) {
@@ -1282,7 +1310,12 @@ app.whenReady().then(async () => {
   } catch (error) {
     runtimeLog.dispose()
     closeSplashWindowImmediate()
-    await dialog.showErrorBox('Runtime bootstrap failed', error.message)
+    const text = error && error.message ? error.message : String(error)
+    writeStdioSafe(process.stderr, `\n${text}\n`)
+    const alreadyInstalling = text.includes('already installing')
+    if (wslWindowShown && !alreadyInstalling) {
+      await dialog.showErrorBox('Runtime bootstrap failed', text)
+    }
     app.quit()
     return
   }
@@ -1328,11 +1361,27 @@ app.on('child-process-gone', (_event, details) => {
     `[gpu] child process gone: reason=${details.reason} exitCode=${details.exitCode}\n`
   )
   const reason = `child-process-gone:${details.reason}`
+  // Quitting here kills micromamba and opens the "interrupted" dialogs.
+  if (
+    !shouldRelaunchAfterGpuExit({
+      installActive: isRuntimeInstallActive(),
+      safeMode: isGpuSafeModeEnabled(),
+      alreadyRelaunched: hasRelaunchedForGpuFallback()
+    })
+  ) {
+    if (isRuntimeInstallActive()) {
+      process.stderr.write(
+        '[gpu] GPU process exited during the Python install. This process keeps installing.\n'
+      )
+    }
+    return
+  }
   // This process only. The next launch tries the GPU again.
   relaunchInGpuSafeMode(reason)
 })
 
 app.on('before-quit', () => {
+  releaseInstallLockSync()
   abortRuntimeInstalls('app quit')
   stopBackendFileWatch()
   killAnimationEncodeChild()
@@ -1343,9 +1392,9 @@ app.on('before-quit', () => {
 // for applications and their menu bar to stay active until the user quits
 // explicitly with Cmd + Q.
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
+  if (process.platform === 'darwin') return
+  if (isRuntimeInstallActive()) return
+  app.quit()
 })
 
 // In this file you can include the rest of your app's specific main process
@@ -1503,6 +1552,20 @@ ipcMain.handle('fs:readBinarySlice', async (_event, filePath, offset, length) =>
 })
 
 ipcMain.handle('system:memoryInfo', () => readSystemMemoryKbAsync())
+
+ipcMain.handle('system:installFootprint', async () => {
+  const runtimePrefix =
+    process.platform === 'darwin'
+      ? path.join(app.getPath('home'), 'Library', 'gatewizard-gui', 'mamba-env')
+      : path.join(app.getPath('userData'), 'mamba-env')
+  return collectInstallFootprint({
+    platform: process.platform,
+    runtimePrefix,
+    appImage: process.env.APPIMAGE || null,
+    packaged: app.isPackaged,
+    execPath: process.execPath
+  })
+})
 
 ipcMain.handle('clusters:load', async () => loadClusterProfiles())
 

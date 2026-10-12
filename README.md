@@ -119,18 +119,20 @@ Install logs:
 
 ### Windows (via WSL)
 
-Native Windows installers are **not published**. On a Windows PC, install **WSL 2** and use the **Linux** build (full MD workflow: ``AmberTools, membrane builder, OpenMM).
+Native Windows installers are **not published**. On a Windows PC, install **WSL 2** and use the **Linux** build (full MD workflow: AmberTools, membrane builder, OpenMM).
 
 **Supported distros (tested):**
 
 | Environment | Ubuntu / Debian / Fedora | Notes |
 |-------------|-----------------|-------|
-| **WSL** | **24.04** | Recommended — WSLg, Electron, and the embedded runtime work reliably |
-| WSL | 26.04 | Supported when WSLg GPU files exist (`/dev/dxg`, `libd3d12.so`); the app selects Mesa d3d12 automatically |
-| WSL | 22.04 | Not recommended — GUI/display issues (WSLg, DBus) are common; upgrade to 24.04 |
-| **Native Linux** | 22.04 or newer | Full support on a standard desktop with X11 or Wayland |
+| **WSL** | **24.04** | Recommended. Tested with WSLg |
+| WSL | 26.04 | Tested. The app selects Mesa d3d12 when `/dev/dxg` and `libd3d12.so` are present |
+| WSL | 22.04 | Not supported. The `.deb` and the launcher refuse this distro |
+| **Native Linux** | 22.04 or newer | Full support on a desktop with X11 or Wayland |
 
-On WSL, use a recent **WSL 2** install with **WSLg** enabled (`wsl --version` should list WSLg). After `wsl --update`, run `wsl --shutdown` once if the app cannot open a window.
+Use **WSL 2** with **WSLg** (`wsl --version` lists WSLg). WSL Ubuntu 24.04 and WSL Ubuntu 26.04 both run the packaged app. If the window reports `Maximum number of clients reached`, the Windows display is full. From Windows PowerShell run `wsl.exe --shutdown`, open one Ubuntu, and start `gatewizard-gui-linux` once.
+
+**Uninstall.** `sudo apt remove gatewizard-gui-linux` removes the app and leaves the embedded Python environment on disk. That environment is `~/.config/gatewizard-gui/mamba-env` (micromamba, often several GB), next to the install log in the same folder. `sudo apt purge gatewizard-gui-linux` deletes `~/.config/gatewizard-gui` for the user who ran `sudo`, including `mamba-env`. The next launch builds it again. Purge does not delete a separate conda env such as `~/miniconda3/envs/gatewizard`, and it does not uninstall ALSA, GTK, or the other system libraries.
 
 **`.deb` (Ubuntu/Debian/WSL):**
 ```bash
@@ -138,7 +140,7 @@ sudo apt install ./gatewizard-gui-*-linux-amd64.deb
 gatewizard-gui-linux
 ```
 
-Use `apt install ./…deb` (not `dpkg -i`) so Electron’s system libraries are pulled in — including **ALSA** (`libasound2t64` / `libasound2`). Chromium links `libasound.so.2` even though GateWizard does not play sound. A fresh Ubuntu 26.04 or a minimal WSL image often does not have it yet.
+The installer checks Electron’s system libraries (including ALSA, `libasound.so.2`) and a C compiler (`cc`) before it unpacks. Chromium links those libraries even though GateWizard does not play sound, and the first launch compiles one Python package. If anything is missing, the install stops and the console prints `sudo apt update` plus one `apt install` line. Run those commands, then install the `.deb` again. A fresh Ubuntu 26.04 list is often stale; that `sudo apt update` is what avoids **404 Not Found** while downloading `alsa-ucm-conf` and similar packages. The same check runs when you start `gatewizard-gui-linux`, so a missing compiler is reported before the long Python install.
 
 **AppImage:**
 ```bash
@@ -184,7 +186,7 @@ This is the Electron / WebGL path, not OpenMM or GROMACS compute. There is no na
 | Native Linux | Unchanged (Mesa or the NVIDIA driver). |
 | macOS | Unchanged (Metal). |
 
-If Chromium’s GPU process crashes, that session relaunches once in software mode (SwiftShader). The next launch tries the GPU again. A `gpu-policy.json` left by an older build is deleted on startup.
+If Chromium’s GPU process crashes after the Python environment is ready, that session relaunches once in software mode (SwiftShader). A crash during the first install does not quit the app, so the install can finish. The next launch tries the GPU again. A `gpu-policy.json` left by an older build is deleted on startup.
 
 Overrides (always win):
 
@@ -207,7 +209,7 @@ GATEWIZARD_MAX_OLD_SPACE_SIZE=8192 npm run dev
 
 To keep it across sessions, add `export GATEWIZARD_MAX_OLD_SPACE_SIZE=8192` to your WSL shell profile. Restart the app after changing it.
 
-WSL often has no session D-Bus. The app starts one when needed so Chromium does not print `Failed to connect to socket /run/user/…/bus`.
+WSL often has no session D-Bus. The app reuses one `gatewizard-bus` socket instead of starting a new daemon on every launch. An older package can leave many `dbus-daemon` processes behind; stop them with `pkill -f gatewizard-bus || true`, then run `wsl.exe --shutdown` from Windows PowerShell.
 
 If the splash screen appears but the main window never opens on WSL, force software rendering:
 

@@ -4,7 +4,11 @@
  * WSL/WSLg may advertise a session bus socket that is missing or dead. Chromium
  * then prints ERROR:dbus/bus.cc. Prefer the live default bus at
  * $XDG_RUNTIME_DIR/bus; only start gatewizard-bus when that is unavailable.
- * Never set DBUS_SESSION_BUS_ADDRESS to a socket that is not connectable.
+ *
+ * The packaged app must not probe a socket by spawning its own Electron binary
+ * (`execPath -e`). That probe always fails, the socket is deleted, and every
+ * launch forks another dbus-daemon that is never stopped. Reuse an existing
+ * gatewizard-bus file instead. Dozens of those daemons make the machine unusable.
  */
 
 const fsDefault = require('fs')
@@ -63,12 +67,32 @@ function unixPathFromAddress(address) {
 }
 
 /**
+ * @param {{ inElectron?: boolean }} [opts]
+ * @returns {boolean}
+ */
+function useElectronSocketFile(opts = {}) {
+  if (opts.inElectron != null) return Boolean(opts.inElectron)
+  return Boolean(process.versions && process.versions.electron)
+}
+
+/**
  * @param {string} socketPath
- * @param {{ spawnSync?: Function, execPath?: string }} [opts]
+ * @param {{ spawnSync?: Function, execPath?: string, fs?: typeof fsDefault, inElectron?: boolean }} [opts]
  * @returns {boolean}
  */
 function unixSocketIsLive(socketPath, opts = {}) {
   if (!socketPath) return false
+  const fs = opts.fs || fsDefault
+  // The packaged app's execPath is Electron. `electron -e` does not run this
+  // probe, so a live gatewizard-bus looked dead and every launch forked another daemon.
+  if (useElectronSocketFile(opts)) {
+    try {
+      fs.accessSync(socketPath)
+      return true
+    } catch {
+      return false
+    }
+  }
   const spawnSync = opts.spawnSync || spawnSyncDefault
   const execPath = opts.execPath || process.execPath
   const r = spawnSync(
@@ -90,7 +114,7 @@ function unixSocketIsLive(socketPath, opts = {}) {
 function defaultSessionBusPath(env, opts = {}) {
   const uid = opts.uid != null ? opts.uid : typeof process.getuid === 'function' ? process.getuid() : 1000
   const rt = String(env.XDG_RUNTIME_DIR || `/run/user/${uid}`).replace(/\/$/, '')
-  return path.join(rt, 'bus')
+  return path.posix.join(rt, 'bus')
 }
 
 /**
@@ -105,7 +129,7 @@ function resolvePrivateBusDir(env, rtDir, homedir, fs) {
     fs.mkdirSync(rtDir, { recursive: true, mode: 0o700 })
     return rtDir
   } catch {
-    const fallback = path.join(homedir, '.config', 'gatewizard-gui')
+    const fallback = path.posix.join(homedir, '.config', 'gatewizard-gui')
     fs.mkdirSync(fallback, { recursive: true })
     return fallback
   }
@@ -129,7 +153,12 @@ function ensureSessionDbus(env, opts = {}) {
   if (platform !== 'linux') return { action: 'skip' }
 
   const fs = opts.fs || fsDefault
-  const probeOpts = { spawnSync: opts.spawnSync, execPath: opts.execPath }
+  const probeOpts = {
+    spawnSync: opts.spawnSync,
+    execPath: opts.execPath,
+    fs,
+    inElectron: opts.inElectron
+  }
   const uid = opts.uid != null ? opts.uid : typeof process.getuid === 'function' ? process.getuid() : 1000
   const homedir = opts.homedir || os.homedir()
   const rt = String(env.XDG_RUNTIME_DIR || `/run/user/${uid}`).replace(/\/$/, '')
@@ -158,7 +187,7 @@ function ensureSessionDbus(env, opts = {}) {
     return { action: 'none' }
   }
 
-  const sock = path.join(dir, BUS_SOCK_NAME)
+  const sock = path.posix.join(dir, BUS_SOCK_NAME)
   if (unixSocketIsLive(sock, probeOpts)) {
     env.DBUS_SESSION_BUS_ADDRESS = `unix:path=${sock}`
     return { action: 'reuse', address: env.DBUS_SESSION_BUS_ADDRESS }
@@ -259,36 +288,8 @@ fi
  */
 function buildChromiumStderrRunShell() {
   return `
-# Filter Chromium ERROR spam on stderr (process_singleton Broken pipe, dbus, GPUCache).
-# Native Chromium logs bypass Node, so the parent wrapper must strip them.
-gw_err_fifo="\${TMPDIR:-/tmp}/gw-electron-err.\$\$"
-rm -f "\$gw_err_fifo"
-if mkfifo "\$gw_err_fifo" 2>/dev/null; then
-  (
-    while IFS= read -r gw_err_line || [ -n "\$gw_err_line" ]; do
-      case "\$gw_err_line" in
-        *ERROR:chrome/browser/process_singleton_posix.cc*) continue ;;
-        *ERROR:dbus/bus.cc*) continue ;;
-        *ERROR:dbus/object_proxy.cc*) continue ;;
-        *Failed\\ to\\ connect\\ to\\ the\\ bus:*) continue ;;
-        *Failed\\ to\\ connect\\ to\\ socket\\ /run/user/*/bus*) continue ;;
-        *Failed\\ to\\ connect\\ to\\ socket\\ /run/user/*/gatewizard-bus*) continue ;;
-        *ERROR:net/disk_cache/blockfile/block_files.cc*GPUCache*) continue ;;
-        *) printf '%s\\n' "\$gw_err_line" >&2 ;;
-      esac
-    done < "\$gw_err_fifo"
-    rm -f "\$gw_err_fifo"
-  ) &
-  gw_err_filter_pid=\$!
-  set +e
-  "\$bin" "\$@" </dev/null 2>"\$gw_err_fifo"
-  gw_status=\$?
-  set -e
-  wait "\$gw_err_filter_pid" 2>/dev/null || true
-  exit "\$gw_status"
-fi
-# Fallback when mkfifo is unavailable.
-exec "\$bin" "\$@" </dev/null
+# Same as npm run dev: the ELF keeps the terminal stderr. No fifo, no helper shell.
+exec "\$bin" "\$@"
 `
 }
 

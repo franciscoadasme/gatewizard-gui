@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 
@@ -8,6 +9,7 @@ const {
   WSL_LIB_DIR,
   WSL_DXG_PATH,
   WSL_D3D12_PATH,
+  shouldRelaunchAfterGpuExit,
   getGpuPolicyPath,
   applyDisplayGpuEnv,
   buildDisplayGpuShell
@@ -203,6 +205,30 @@ test('never writes MESA_D3D12_DEFAULT_ADAPTER_NAME', () => {
     log: () => {}
   })
   assert.ok(!Object.prototype.hasOwnProperty.call(env, 'MESA_D3D12_DEFAULT_ADAPTER_NAME'))
+})
+
+test('a GPU exit during the Python install does not relaunch or quit', () => {
+  assert.equal(shouldRelaunchAfterGpuExit({ installActive: true }), false)
+  assert.equal(
+    shouldRelaunchAfterGpuExit({ installActive: true, safeMode: false, alreadyRelaunched: false }),
+    false
+  )
+  assert.equal(shouldRelaunchAfterGpuExit({ installActive: false }), true)
+  assert.equal(shouldRelaunchAfterGpuExit({ safeMode: true }), false)
+  assert.equal(shouldRelaunchAfterGpuExit({ alreadyRelaunched: true }), false)
+})
+
+test('the main process keeps the install running when the GPU child exits', () => {
+  const src = readFileSync(new URL('../src/main/index.js', import.meta.url), 'utf8')
+  const handlerStart = src.indexOf("app.on('child-process-gone'")
+  const handlerEnd = src.indexOf("app.on('before-quit'")
+  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart)
+  const handler = src.slice(handlerStart, handlerEnd)
+  assert.match(handler, /shouldRelaunchAfterGpuExit\(/)
+  assert.match(handler, /installActive: isRuntimeInstallActive\(\)/)
+  assert.doesNotMatch(handler, /app\.exit/)
+  const quit = src.slice(handlerEnd, src.indexOf("app.on('window-all-closed'"))
+  assert.match(quit, /releaseInstallLockSync\(\)/)
 })
 
 test('buildDisplayGpuShell is valid dash/sh', () => {

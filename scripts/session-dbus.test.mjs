@@ -2,7 +2,6 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import path from 'node:path'
 
 const require = createRequire(import.meta.url)
 const {
@@ -137,7 +136,7 @@ test('ensureSessionDbus starts a private bus only when the default bus is dead',
 
 test('ensureSessionDbus reuses a live gatewizard-bus when default bus is dead', () => {
   const env = { XDG_RUNTIME_DIR: '/run/user/1000' }
-  const sock = path.join('/run/user/1000', 'gatewizard-bus')
+  const sock = '/run/user/1000/gatewizard-bus'
   const result = ensureSessionDbus(env, {
     platform: 'linux',
     uid: 1000,
@@ -151,6 +150,85 @@ test('ensureSessionDbus reuses a live gatewizard-bus when default bus is dead', 
   })
   assert.equal(result.action, 'reuse')
   assert.equal(env.DBUS_SESSION_BUS_ADDRESS, `unix:path=${sock}`)
+})
+
+test('packaged Electron reuses one gatewizard-bus and never probes with its own binary', () => {
+  const sock = '/run/user/1000/gatewizard-bus'
+  const calls = []
+  let unlinked = false
+  const fs = {
+    mkdirSync() {},
+    unlinkSync() {
+      unlinked = true
+    },
+    accessSync(target) {
+      const name = String(target).replace(/\\/g, '/')
+      if (name.endsWith('/gatewizard-bus')) return
+      const err = new Error(`ENOENT ${target}`)
+      err.code = 'ENOENT'
+      throw err
+    }
+  }
+  const spawnSync = (cmd, args) => {
+    calls.push({ cmd, args })
+    return { status: 0 }
+  }
+  for (let i = 0; i < 3; i += 1) {
+    const env = { XDG_RUNTIME_DIR: '/run/user/1000' }
+    const result = ensureSessionDbus(env, {
+      platform: 'linux',
+      uid: 1000,
+      inElectron: true,
+      dbusDaemon: '/usr/bin/dbus-daemon',
+      fs,
+      spawnSync
+    })
+    assert.equal(result.action, 'reuse')
+    assert.equal(env.DBUS_SESSION_BUS_ADDRESS, `unix:path=${sock}`)
+  }
+  assert.equal(calls.length, 0)
+  assert.equal(unlinked, false)
+})
+
+test('packaged Electron starts a daemon only when the socket file is missing', () => {
+  const calls = []
+  const fs = {
+    mkdirSync() {},
+    unlinkSync() {},
+    accessSync() {
+      const err = new Error('ENOENT')
+      err.code = 'ENOENT'
+      throw err
+    }
+  }
+  const result = ensureSessionDbus(
+    { XDG_RUNTIME_DIR: '/run/user/1000' },
+    {
+      platform: 'linux',
+      uid: 1000,
+      inElectron: true,
+      dbusDaemon: '/usr/bin/dbus-daemon',
+      fs,
+      spawnSync: (cmd, args) => {
+        calls.push({ cmd, args })
+        return { status: 1 }
+      }
+    }
+  )
+  assert.equal(result.action, 'none')
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].cmd, '/usr/bin/dbus-daemon')
+  assert.equal(
+    calls.some((call) => (call.args || []).includes('-e')),
+    false
+  )
+})
+
+test('launcher shell does not remove a live gatewizard-bus', () => {
+  const sh = buildDbusEnsureShell()
+  assert.match(sh, /\[ ! -S "\$gw_sock" \]/)
+  assert.doesNotMatch(sh, /rm[^\n]*gatewizard-bus/)
+  assert.doesNotMatch(sh, /unlink/)
 })
 
 test('buildDbusEnsureShell prefers default bus and unsets dead private bus', () => {
