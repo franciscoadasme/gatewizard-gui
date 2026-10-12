@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Versions & updates:** under WSL, Settings shows the WSL version and the Ubuntu release. It also shows the installed app size and the size of the embedded micromamba environment (`~/.config/gatewizard-gui/mamba-env` on Linux).
 - **WSL install:** the Linux `.deb` and launcher refuse Ubuntu older than 24.04 when running under WSL. Native Ubuntu 22.04 is unchanged. The `.deb` checks ALSA, GTK, the other Electron libraries, and a C compiler (`cc`) before unpacking. If any are missing, it prints `sudo apt update` and one package install line, including `build-essential` when `cc` is absent, instead of failing midway through the first Python install or letting a stale Ubuntu index 404. The Linux package reuses one session bus and no longer kills the first-launch install when the GPU process exits. `apt purge gatewizard-gui-linux` deletes `~/.config/gatewizard-gui` for the user who ran sudo, including the embedded micromamba environment `mamba-env`. `apt remove` leaves that directory. Purge does not remove a separate conda env or system libraries such as ALSA and GTK.
 - **Analysis titration plot:** Y units are hidden, because angstroms and nanometers do not apply to this figure. New plots start from a tighter default layout. Panel C can hide the legend border, and line style applies to the axis edges and the curves.
 

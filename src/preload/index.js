@@ -49,6 +49,7 @@ const api = {
   isWindowFocused: () => ipcRenderer.invoke('window:isFocused'),
   captureWindowImage: () => ipcRenderer.invoke('window:capturePage'),
   getSystemMemoryInfo: () => ipcRenderer.invoke('system:memoryInfo'),
+  getInstallFootprint: () => ipcRenderer.invoke('system:installFootprint'),
   showJobNotification: (payload) => ipcRenderer.invoke('notifications:showJobFinished', payload),
   onJobNotificationFallback: (callback) => {
     const listener = (_event, data) => callback(data)

@@ -121,6 +121,8 @@
   let versionsError = $state(null)
   /** @type {Awaited<ReturnType<typeof getDependencyVersions>> | null} */
   let versionsData = $state(null)
+  /** @type {{ wsl: { version: string|null, distro: string|null }|null, appLabel: string|null, runtimeLabel: string|null, runtimePath: string|null } | null} */
+  let installFootprint = $state(null)
   /**
    * All discovered MD engine installs (same discovery as Equilibration picker).
    * @type {Array<{
@@ -158,14 +160,19 @@
     versionsLoading = true
     versionsError = null
     try {
-      const [deps, namd, gromacs, openmm, amber] = await Promise.all([
+      const footprintPromise = window.api?.getInstallFootprint
+        ? window.api.getInstallFootprint().catch(() => null)
+        : Promise.resolve(null)
+      const [deps, namd, gromacs, openmm, amber, footprint] = await Promise.all([
         getDependencyVersions(),
         listEngineExecutables('namd').catch(() => ({ candidates: [] })),
         listEngineExecutables('gromacs').catch(() => ({ candidates: [] })),
         listEngineExecutables('openmm').catch(() => ({ candidates: [] })),
-        listEngineExecutables('amber').catch(() => ({ candidates: [] }))
+        listEngineExecutables('amber').catch(() => ({ candidates: [] })),
+        footprintPromise
       ])
       versionsData = deps
+      installFootprint = footprint
       /** @type {typeof mdEngineCandidates} */
       const rows = []
       for (const [engine, result] of [
@@ -782,6 +789,41 @@
                           title={versionsData.platform.platform}
                         >
                           {versionsData.platform.platform}
+                        </p>
+                      </div>
+                    {/if}
+                    {#if installFootprint?.wsl}
+                      <div class="rounded-md border border-neutral-200 p-2 dark:border-neutral-800">
+                        <p class="text-neutral-500">WSL</p>
+                        <p class="font-semibold text-neutral-800 dark:text-neutral-200">
+                          {installFootprint.wsl.version ?? '—'}
+                        </p>
+                        {#if installFootprint.wsl.distro}
+                          <p
+                            class="truncate text-neutral-500"
+                            title={installFootprint.wsl.distro}
+                          >
+                            {installFootprint.wsl.distro}
+                          </p>
+                        {/if}
+                      </div>
+                    {/if}
+                    {#if installFootprint?.appLabel}
+                      <div class="rounded-md border border-neutral-200 p-2 dark:border-neutral-800">
+                        <p class="text-neutral-500">App</p>
+                        <p class="font-semibold text-neutral-800 dark:text-neutral-200">
+                          {installFootprint.appLabel}
+                        </p>
+                      </div>
+                    {/if}
+                    {#if installFootprint?.runtimeKnown || installFootprint?.runtimeLabel}
+                      <div
+                        class="rounded-md border border-neutral-200 p-2 dark:border-neutral-800"
+                        title={installFootprint.runtimePath || ''}
+                      >
+                        <p class="text-neutral-500">Python environment</p>
+                        <p class="font-semibold text-neutral-800 dark:text-neutral-200">
+                          {installFootprint.runtimeLabel ?? 'not installed'}
                         </p>
                       </div>
                     {/if}
