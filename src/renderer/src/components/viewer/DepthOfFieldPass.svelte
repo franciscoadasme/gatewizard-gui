@@ -1,7 +1,7 @@
 <script>
   import { onDestroy } from 'svelte'
   import { useTask, useThrelte } from '@threlte/core'
-  import { HalfFloatType, Vector3 } from 'three'
+  import { SRGBColorSpace, UnsignedByteType, Vector3 } from 'three'
   import {
     DepthOfFieldEffect,
     EffectComposer,
@@ -12,6 +12,7 @@
     SMAAPreset
   } from 'postprocessing'
   import { viewerSettings } from '../../lib/viewerSettings.svelte.js'
+  import { subscribeExportDrawSize } from '../../lib/viewer/exportCapture.js'
 
   const { renderer, scene, camera, size, autoRender, autoRenderTask, invalidate } = useThrelte()
 
@@ -29,6 +30,8 @@
   let smaaPass = null
   const _focusVec = new Vector3()
   let composerFailed = false
+  /** @type {{ width: number, height: number, bokehFactor: number } | null} */
+  let exportDraw = $state(null)
 
   /**
    * @param {{ dispose?: () => void } | null} pass
@@ -62,7 +65,8 @@
     const dof = viewerSettings.dof
     dofEffect.cocMaterial.focusDistance = dof.focusDistance
     dofEffect.cocMaterial.focusRange = dof.focusRange
-    dofEffect.bokehScale = dof.bokehScale
+    const factor = exportDraw?.bokehFactor > 0 ? exportDraw.bokehFactor : 1
+    dofEffect.bokehScale = dof.bokehScale * factor
     if (dof.focusTarget) {
       _focusVec.set(dof.focusTarget.x, dof.focusTarget.y, dof.focusTarget.z)
       dofEffect.target = _focusVec
@@ -79,9 +83,12 @@
       disposeComposer()
       const dof = viewerSettings.dof
       // MSAA + half-float: when DoF owns the frame, the canvas MSAA path is bypassed.
+      // Unsigned byte matches the normal view. Half-float made colors more vivid
+      // than the same scene with depth of field off.
+      renderer.outputColorSpace = SRGBColorSpace
       composer = new EffectComposer(renderer, {
         multisampling: 4,
-        frameBufferType: HalfFloatType
+        frameBufferType: UnsignedByteType
       })
       renderPass = new RenderPass(scene, cam)
       // Full-res bokeh (was 0.75) — low resolutionScale is the main source of
@@ -101,7 +108,9 @@
       composer.addPass(dofPass)
       composer.addPass(smaaPass)
       const s = size.current
-      if (s?.width && s?.height) composer.setSize(s.width, s.height)
+      const w = exportDraw?.width || s?.width
+      const h = exportDraw?.height || s?.height
+      if (w && h) composer.setSize(w, h)
       return composer
     } catch (err) {
       console.warn('[DepthOfField] composer init failed — effect disabled', err)
@@ -111,6 +120,12 @@
       return null
     }
   }
+
+  $effect(() => {
+    return subscribeExportDrawSize((size) => {
+      exportDraw = size
+    })
+  })
 
   $effect(() => {
     const enabled = viewerSettings.dof?.enabled === true
@@ -146,8 +161,11 @@
 
   $effect(() => {
     const s = $size
-    if (!composer || !s?.width || !s?.height) return
-    composer.setSize(s.width, s.height)
+    const w = exportDraw?.width || s?.width
+    const h = exportDraw?.height || s?.height
+    if (!composer || !w || !h) return
+    composer.setSize(w, h)
+    applyDofParams()
     invalidate()
   })
 

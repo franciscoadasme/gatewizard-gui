@@ -224,6 +224,7 @@ export function drawMeasureOverlayOnContext(ctx, opts) {
  *   sourceRect?: { x: number, y: number, width: number, height: number }
  *   outputWidth?: number
  *   outputHeight?: number
+ *   smoothing?: boolean
  * }} opts
  */
 export async function captureCanvasWithOverlayPng(canvas, opts = {}) {
@@ -245,6 +246,8 @@ export async function captureCanvasWithOverlayPng(canvas, opts = {}) {
   tmp.height = outH
   const ctx = tmp.getContext('2d', { alpha: true })
   if (!ctx) throw new Error('Could not create export canvas')
+  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingQuality = opts.smoothing === true ? 'high' : 'low'
   ctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, outW, outH)
 
   const hasOverlay =

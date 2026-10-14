@@ -3,6 +3,36 @@ import { Color } from 'three'
 /** True while a figure or animation export has cleared the scene background. */
 let exportCaptureActive = false
 
+/**
+ * Drawing-buffer size while a figure or animation export is rendering.
+ * Camera rig must not rebuild the frustum from this resize.
+ * @type {{ width: number, height: number, bokehFactor: number } | null}
+ */
+let exportDrawSize = null
+
+/** @type {Set<(size: { width: number, height: number, bokehFactor: number } | null) => void>} */
+const exportDrawListeners = new Set()
+
+export function isExportResizeActive() {
+  return exportDrawSize != null
+}
+
+/**
+ * @param {(size: { width: number, height: number, bokehFactor: number } | null) => void} fn
+ * @returns {() => void}
+ */
+export function subscribeExportDrawSize(fn) {
+  exportDrawListeners.add(fn)
+  fn(exportDrawSize)
+  return () => exportDrawListeners.delete(fn)
+}
+
+/** @param {{ width: number, height: number, bokehFactor: number } | null} size */
+function setExportDrawSize(size) {
+  exportDrawSize = size
+  for (const fn of exportDrawListeners) fn(size)
+}
+
 const _clearColor = new Color()
 
 export function isExportCaptureActive() {
@@ -97,8 +127,10 @@ export function beginExportRendererSize({
     ortho.updateProjectionMatrix()
   }
 
+  const bokehFactor = prevCssH > 0 ? outH / prevCssH : 1
   renderer.setPixelRatio(1)
   renderer.setSize(outW, outH, false)
+  setExportDrawSize({ width: outW, height: outH, bokehFactor })
   return {
     renderer,
     camera,
@@ -115,6 +147,7 @@ export function beginExportRendererSize({
  * @param {ReturnType<typeof beginExportRendererSize>} handle
  */
 export function endExportRendererSize(handle) {
+  setExportDrawSize(null)
   if (!handle) return
   const {
     renderer,

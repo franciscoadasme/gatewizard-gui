@@ -2,6 +2,13 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { defaultExportFrame, normalizeExportFrame } from './schema.js'
 
+test('normalizeExportFrame keeps quality', () => {
+  const frame = normalizeExportFrame({ width: 800, height: 600, quality: 3 })
+  assert.equal(frame.quality, 3)
+  assert.equal(normalizeExportFrame({ quality: 9 }).quality, 2)
+  assert.equal(defaultExportFrame().quality, 2)
+})
+
 test('normalizeExportFrame defaults transparentBg to false', () => {
   const empty = normalizeExportFrame({})
   assert.equal(empty.transparentBg, false)

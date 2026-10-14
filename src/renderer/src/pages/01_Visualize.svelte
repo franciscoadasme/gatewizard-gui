@@ -98,7 +98,7 @@
     defaultAnimationFolderName,
     outputFolderPath
   } from '../lib/outputFolders.js'
-  import { createEmptyProject, normalizeProject, sortKeyframes, serializeAnimationProject } from '../lib/animation/schema.js'
+  import { createEmptyProject, normalizeExportQuality, normalizeProject, sortKeyframes, serializeAnimationProject } from '../lib/animation/schema.js'
   import { easingForCapturedKeyframe, previousKeyframeAtTime } from '../lib/animation/keyframeEasing.js'
   import {
     applySceneSettings,
@@ -316,8 +316,9 @@
   let figureDefaultHeight = $state(720)
   let figurePreviewWidth = $state(1280)
   let figurePreviewHeight = $state(720)
-  let lastFigureScale = $state(1)
+  let lastFigureQuality = $state(2)
   let lastFigureTransparent = $state(false)
+  let figureSizeSet = $state(false)
   let trajPlayhead = $state(0)
   let trajXyzEpoch = $state(0)
   let trajPlaying = $state(false)
@@ -4373,6 +4374,14 @@
         visibilityGroups: visibilityGroupsForSave(),
         snapshot
       })
+      if (figureSizeSet) {
+        viewpoint.figure = {
+          width: figureDefaultWidth,
+          height: figureDefaultHeight,
+          quality: lastFigureQuality,
+          transparentBg: lastFigureTransparent
+        }
+      }
       // Prefer the project working directory; fall back to the durable source folder.
       const defaultDir =
         workingDir ||
@@ -4408,6 +4417,23 @@
       }
       if (typeof viewpoint.viewport.axesLinesVisible === 'boolean') {
         axesLinesVisible = viewpoint.viewport.axesLinesVisible
+      }
+    }
+
+    if (viewpoint.figure) {
+      rememberFigureSize(viewpoint.figure)
+      lastFigureTransparent = viewpoint.figure.transparentBg === true
+      animProject = {
+        ...animProject,
+        exportFrame: {
+          ...(animProject.exportFrame ?? {}),
+          aspectPreset: 'custom',
+          width: viewpoint.figure.width,
+          height: viewpoint.figure.height,
+          quality: viewpoint.figure.quality,
+          transparentBg: viewpoint.figure.transparentBg,
+          showGuide: animProject.exportFrame?.showGuide !== false
+        }
       }
     }
 
@@ -4609,30 +4635,61 @@
   function openFigureDialog() {
     const canvas = viewerEl?.querySelector('canvas')
     if (!canvas) return
-    figureDefaultWidth = Math.max(1, Math.round(canvas.clientWidth || canvas.width || 1280))
-    figureDefaultHeight = Math.max(1, Math.round(canvas.clientHeight || canvas.height || 720))
+    if (!figureSizeSet) {
+      figureDefaultWidth = Math.max(1, Math.round(canvas.clientWidth || canvas.width || 1280))
+      figureDefaultHeight = Math.max(1, Math.round(canvas.clientHeight || canvas.height || 720))
+    }
     figurePreviewWidth = figureDefaultWidth
     figurePreviewHeight = figureDefaultHeight
     figureDialogOpen = true
   }
 
-  /** @param {{ width: number, height: number, scale: number }} opts */
+  /** @param {{ width: number, height: number, quality?: number }} opts */
+  function rememberFigureSize(opts) {
+    figureDefaultWidth = Math.max(1, Math.round(opts.width))
+    figureDefaultHeight = Math.max(1, Math.round(opts.height))
+    lastFigureQuality = normalizeExportQuality(opts.quality)
+    figureSizeSet = true
+    figurePreviewWidth = figureDefaultWidth
+    figurePreviewHeight = figureDefaultHeight
+  }
+
+  /** Keep Save figure and the animation export frame on the same width, height, and quality. */
+  function syncFigureExport(opts) {
+    rememberFigureSize(opts)
+    if (typeof opts.transparentBg === 'boolean') lastFigureTransparent = opts.transparentBg
+    animProject = {
+      ...animProject,
+      exportFrame: {
+        ...(animProject.exportFrame ?? {}),
+        aspectPreset: 'custom',
+        width: figureDefaultWidth,
+        height: figureDefaultHeight,
+        quality: lastFigureQuality,
+        transparentBg: lastFigureTransparent,
+        showGuide: animProject.exportFrame?.showGuide !== false,
+        exportFormat: animProject.exportFrame?.exportFormat
+      }
+    }
+  }
+
+  /** @param {{ width: number, height: number, quality?: number }} opts */
   function onFigurePreviewChange(opts) {
     figurePreviewWidth = opts.width
     figurePreviewHeight = opts.height
   }
 
   /**
-   * @param {{ width: number, height: number, scale: number, transparentBg: boolean }} opts
+   * @param {{ width: number, height: number, quality?: number, transparentBg: boolean }} opts
    */
   async function onSaveFigure(opts) {
     figureDialogOpen = false
-    lastFigureScale = opts.scale
-    lastFigureTransparent = opts.transparentBg
+    syncFigureExport(opts)
     const canvas = viewerEl?.querySelector('canvas')
     if (!canvas) return
-    const outW = Math.max(1, Math.round(opts.width * opts.scale))
-    const outH = Math.max(1, Math.round(opts.height * opts.scale))
+    const quality = normalizeExportQuality(opts.quality)
+    const outW = Math.max(1, Math.round(opts.width))
+    const outH = Math.max(1, Math.round(opts.height))
     const baseName =
       String(filePath || 'viewport')
         .split(/[/\\]/)
@@ -4662,8 +4719,8 @@
       sizeHandle = beginExportRendererSize({
         renderer,
         camera: cam,
-        width: cssW * opts.scale,
-        height: cssH * opts.scale,
+        width: cssW * quality,
+        height: cssH * quality,
         adjustFrustum: false
       })
       await renderFrame(() => mainViewerInvalidate.fn())
@@ -4676,6 +4733,7 @@
         sourceRect,
         outputWidth: outW,
         outputHeight: outH,
+        smoothing: quality > 1,
         displayW: canvasWidth || cssW,
         displayH: canvasHeight || cssH,
         camera: cam,
@@ -7066,6 +7124,12 @@
       sceneRestoringTotal = 0
       sceneRestoringDetail = ''
       animProject = project
+      if (project.exportFrame?.width > 0 && project.exportFrame?.height > 0) {
+        rememberFigureSize(project.exportFrame)
+        if (typeof project.exportFrame.transparentBg === 'boolean') {
+          lastFigureTransparent = project.exportFrame.transparentBg
+        }
+      }
       syncProjectViewTracks(animProject)
       repairForwardViewInheritance(animProject.keyframes, animProject.viewTracks ?? [])
       // Drop any pre-existing representations (e.g. the default "all" view created on
@@ -7134,6 +7198,7 @@
     const savedPlayhead = animPlayhead
     stopAnimPlayback()
     let transparentHandle = /** @type {ReturnType<typeof beginTransparentCapture> | null} */ (null)
+    let sizeHandle = /** @type {ReturnType<typeof beginExportRendererSize>} */ (null)
     try {
       await tick()
       throwIfAnimExportCancelled()
@@ -7163,6 +7228,18 @@
         })
         await renderFrame(() => mainViewerInvalidate.fn())
       }
+      const animQuality = normalizeExportQuality(exportFrame.quality)
+      const animOutW = Math.max(1, Math.round(exportFrame.width))
+      const animOutH = Math.max(1, Math.round(exportFrame.height))
+      const cssW = Math.max(1, canvas.clientWidth || canvasWidth || exportFrame.width)
+      const cssH = Math.max(1, canvas.clientHeight || canvasHeight || exportFrame.height)
+      sizeHandle = beginExportRendererSize({
+        renderer: mainViewerRenderer.current,
+        camera: mainViewerCamera.current,
+        width: cssW * animQuality,
+        height: cssH * animQuality,
+        adjustFrustum: false
+      })
       for (let i = 0; i < frameCount; i++) {
         throwIfAnimExportCancelled()
         const t = Math.min(animProject.duration_s, i / fps)
@@ -7184,8 +7261,9 @@
         )
         const png = await captureCanvasWithOverlayPng(/** @type {HTMLCanvasElement} */ (canvas), {
           sourceRect,
-          outputWidth: exportFrame.width,
-          outputHeight: exportFrame.height,
+          outputWidth: animOutW,
+          outputHeight: animOutH,
+          smoothing: animQuality > 1,
           displayW: canvasWidth,
           displayH: canvasHeight,
           camera: mainViewerCamera.current,
@@ -7256,6 +7334,7 @@
       }
       alert(ex instanceof Error ? ex.message : String(ex))
     } finally {
+      endExportRendererSize(sizeHandle)
       endTransparentCapture(transparentHandle)
       mainViewerInvalidate.fn()
       animExportCancelRequested = false
@@ -10341,6 +10420,15 @@
             }}
             onExportFrameChange={(frame) => {
               animProject = { ...animProject, exportFrame: frame }
+              if (frame?.width > 0 && frame?.height > 0) {
+                figureDefaultWidth = Math.round(frame.width)
+                figureDefaultHeight = Math.round(frame.height)
+                lastFigureQuality = normalizeExportQuality(frame.quality)
+                if (typeof frame.transparentBg === 'boolean') {
+                  lastFigureTransparent = frame.transparentBg
+                }
+                figureSizeSet = true
+              }
             }}
             onCaptureKeyframe={onAnimCaptureKeyframe}
             onClearKeyframes={onAnimClearKeyframes}
@@ -10372,7 +10460,7 @@
   open={figureDialogOpen}
   defaultWidth={figureDefaultWidth}
   defaultHeight={figureDefaultHeight}
-  defaultScale={lastFigureScale}
+  defaultQuality={lastFigureQuality}
   defaultTransparent={lastFigureTransparent}
   onPreviewChange={onFigurePreviewChange}
   onCancel={() => (figureDialogOpen = false)}

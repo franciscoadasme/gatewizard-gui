@@ -20,6 +20,7 @@
   import { get } from 'svelte/store'
   import { OrthographicCamera, Vector3 } from 'three'
   import { useTask, useThrelte, useThrelteUserContext } from '@threlte/core'
+  import { isExportResizeActive } from '../../lib/viewer/exportCapture.js'
 
   /**
    * @type {{
@@ -80,6 +81,8 @@
   $effect(() => {
     const ext = framing.extent
     const { width, height } = $size
+    // Export resizes the drawing buffer. Rebuilding the frustum here moves the focus.
+    if (isExportResizeActive()) return
 
     const cam = camera.current
     if (!cam || !width || !height) {

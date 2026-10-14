@@ -6,7 +6,8 @@ import {
   beginTransparentCapture,
   endExportRendererSize,
   endTransparentCapture,
-  isExportCaptureActive
+  isExportCaptureActive,
+  isExportResizeActive
 } from './exportCapture.js'
 
 function mockRenderer(clearHex = 0x112233, clearAlpha = 1) {
@@ -118,5 +119,7 @@ test('export renderer size can keep the current ortho frustum', () => {
   assert.ok(handle)
   assert.equal(camera.left, -8)
   assert.equal(camera.right, 8)
+  assert.equal(isExportResizeActive(), true)
   endExportRendererSize(handle)
+  assert.equal(isExportResizeActive(), false)
 })

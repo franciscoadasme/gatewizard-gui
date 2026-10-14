@@ -1,6 +1,6 @@
 <script>
   /**
-   * Save Image options: pixel size, scale, and optional transparent background.
+   * Save Image options: pixel size, quality, and optional transparent background.
    * Stays off the viewport so the export crop guide stays visible.
    */
   import { themeState } from '../lib/theme.svelte.js'
@@ -9,47 +9,53 @@
    *   open: boolean,
    *   defaultWidth?: number,
    *   defaultHeight?: number,
-   *   defaultScale?: number,
+   *   defaultQuality?: number,
    *   defaultTransparent?: boolean,
-   *   onPreviewChange?: (opts: { width: number, height: number, scale: number }) => void,
+   *   onPreviewChange?: (opts: { width: number, height: number, quality: number }) => void,
    *   onCancel?: () => void,
-   *   onSave?: (opts: { width: number, height: number, scale: number, transparentBg: boolean }) => void
+   *   onSave?: (opts: { width: number, height: number, quality: number, transparentBg: boolean }) => void
    * }} */
   let {
     open = false,
     defaultWidth = 1280,
     defaultHeight = 720,
-    defaultScale = 1,
+    defaultQuality = 2,
     defaultTransparent = false,
     onPreviewChange,
     onCancel,
     onSave
   } = $props()
 
-  const SCALE_OPTIONS = [1, 2, 3, 4]
+  const QUALITY_OPTIONS = [1, 2, 3, 4, 5]
 
   let width = $state(1280)
   let height = $state(720)
-  let scale = $state(1)
+  let quality = $state(2)
   let transparentBg = $state(false)
   const isDark = $derived(themeState.current === 'dark')
   const frameW = $derived(Math.max(1, Math.round(Number(width) || 1)))
   const frameH = $derived(Math.max(1, Math.round(Number(height) || 1)))
-  const scaleN = $derived(SCALE_OPTIONS.includes(Number(scale)) ? Number(scale) : 1)
-  const outW = $derived(Math.max(1, Math.round(frameW * scaleN)))
-  const outH = $derived(Math.max(1, Math.round(frameH * scaleN)))
+  const scaleN = $derived(QUALITY_OPTIONS.includes(Number(quality)) ? Number(quality) : 2)
+  const outW = $derived(frameW)
+  const outH = $derived(frameH)
 
+  let opened = false
   $effect(() => {
-    if (!open) return
+    if (!open) {
+      opened = false
+      return
+    }
+    if (opened) return
+    opened = true
     width = Math.max(1, Math.round(defaultWidth) || 1280)
     height = Math.max(1, Math.round(defaultHeight) || 720)
-    scale = SCALE_OPTIONS.includes(defaultScale) ? defaultScale : 1
+    quality = QUALITY_OPTIONS.includes(Number(defaultQuality)) ? Number(defaultQuality) : 2
     transparentBg = Boolean(defaultTransparent)
   })
 
   $effect(() => {
     if (!open) return
-    onPreviewChange?.({ width: frameW, height: frameH, scale: scaleN })
+    onPreviewChange?.({ width: frameW, height: frameH, quality: scaleN })
   })
 
   function cancel() {
@@ -60,7 +66,7 @@
     onSave?.({
       width: frameW,
       height: frameH,
-      scale: scaleN,
+      quality: scaleN,
       transparentBg
     })
   }
@@ -136,17 +142,20 @@
           <span class="text-[10px] text-neutral-500">px</span>
         </div>
         <label class="flex items-center gap-2 text-xs text-neutral-600 dark:text-neutral-400">
-          Scale
+          Quality
           <select
             class="rounded border border-neutral-300 bg-white px-1.5 py-0.5 text-xs dark:border-neutral-600 dark:bg-neutral-800"
-            bind:value={scale}
+            bind:value={quality}
           >
-            {#each SCALE_OPTIONS as n}
+            {#each QUALITY_OPTIONS as n}
               <option value={n}>{n}×</option>
             {/each}
           </select>
           <span class="font-mono text-[10px] text-neutral-500">{outW} × {outH}</span>
         </label>
+        <p class="text-[10px] leading-snug text-neutral-500 dark:text-neutral-400">
+          The file is {outW} × {outH}. Quality {scaleN}× draws it larger, then fits that picture into this size.
+        </p>
         <label class="flex items-center gap-1.5 text-xs text-neutral-600 dark:text-neutral-400">
           <input type="checkbox" bind:checked={transparentBg} />
           Transparent background

@@ -231,6 +231,24 @@
           />
           Show safe area in viewer
         </label>
+        <label class="flex min-w-0 items-center gap-1.5 text-[10px] text-neutral-500">
+          <span class="w-12 shrink-0">Quality</span>
+          <select
+            class="field-input w-[4.25rem] shrink-0 rounded px-1 py-0.5 text-[10px]"
+            value={String(exportFrame.quality ?? 2)}
+            onchange={(e) =>
+              onExportFrameChange({
+                ...exportFrame,
+                quality: Number(e.currentTarget.value) || 2
+              })}
+          >
+            <option value="1">1×</option>
+            <option value="2">2×</option>
+            <option value="3">3×</option>
+            <option value="4">4×</option>
+            <option value="5">5×</option>
+          </select>
+        </label>
         <label
           class="flex items-center gap-1.5 text-[10px] text-neutral-500"
           title="Transparent movies are GIF, WebM, or PNG frames. MP4 and MOV stay opaque."

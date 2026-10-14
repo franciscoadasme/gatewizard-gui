@@ -170,6 +170,7 @@ import { normalizeVisibilityGroups } from '../visualizeGroups.js'
  * @property {boolean} showGuide
  * @property {AnimationExportFormat} [exportFormat]
  * @property {boolean} [transparentBg]
+ * @property {number} [quality]
  */
 
 /**
@@ -210,6 +211,12 @@ export const EXPORT_ASPECT_PRESETS = {
   custom: { width: 1920, height: 1080 }
 }
 
+/** Quality 1–5. 2 draws at 2× and saves the requested size. */
+export function normalizeExportQuality(value, fallback = 2) {
+  const n = Number(value)
+  return n === 1 || n === 2 || n === 3 || n === 4 || n === 5 ? n : fallback
+}
+
 /** @returns {AnimationExportFrame} */
 export function defaultExportFrame() {
   return {
@@ -218,7 +225,8 @@ export function defaultExportFrame() {
     height: 1080,
     showGuide: true,
     exportFormat: DEFAULT_ANIMATION_EXPORT_FORMAT,
-    transparentBg: false
+    transparentBg: false,
+    quality: 2
   }
 }
 
@@ -252,7 +260,8 @@ export function normalizeExportFrame(raw) {
     height,
     showGuide: r.showGuide !== false,
     exportFormat: coerceExportFormat(r.exportFormat, r.transparentBg === true),
-    transparentBg: r.transparentBg === true
+    transparentBg: r.transparentBg === true,
+    quality: normalizeExportQuality(r.quality)
   }
 }
 

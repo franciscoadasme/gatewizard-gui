@@ -9,7 +9,7 @@
  * v4: optional ``trajectory`` on structures; per-view ``trajSmooth``.
  */
 
-import { toPlainJson } from './animation/schema.js'
+import { normalizeExportQuality, toPlainJson } from './animation/schema.js'
 import { normalizeFadeSettings } from './animation/fade.js'
 import { normalizeStructuresMeta } from './visualizeStructures.js'
 import { normalizeVisibilityGroups } from './visualizeGroups.js'
@@ -31,6 +31,7 @@ export const VIEWPOINT_VERSION = 4
  * @property {import('./animation/schema.js').SerializedView[]} views
  * @property {Record<string, unknown>} scene
  * @property {import('./animation/schema.js').AnimationViewport} viewport
+ * @property {{ width: number, height: number, quality: number, transparentBg: boolean } | null} [figure]
  * @property {import('./animation/schema.js').SerializedAtomLabel[]} labels
  * @property {import('./animation/schema.js').SerializedMeasurement[]} measurements
  */
@@ -266,7 +267,8 @@ export function buildViewpoint(opts) {
     scene: snap.scene,
     viewport: snap.viewport,
     labels: snap.labels,
-    measurements: snap.measurements
+    measurements: snap.measurements,
+    figure: opts.figure ?? null
   }
 }
 
@@ -287,7 +289,8 @@ export function serializeViewpoint(viewpoint) {
     scene: viewpoint.scene,
     viewport: viewpoint.viewport,
     labels: viewpoint.labels,
-    measurements: viewpoint.measurements
+    measurements: viewpoint.measurements,
+    figure: viewpoint.figure ?? null
   })
 }
 
@@ -344,6 +347,25 @@ export function normalizeViewpoint(data) {
       ? /** @type {import('./animation/schema.js').SerializedMeasurement[]} */ (
           raw.measurements.map(normalizeMeasurement).filter(Boolean)
         )
-      : []
+      : [],
+    figure: normalizeFigureExport(raw.figure)
+  }
+}
+
+/**
+ * @param {unknown} raw
+ * @returns {{ width: number, height: number, quality: number, transparentBg: boolean } | null}
+ */
+function normalizeFigureExport(raw) {
+  if (!raw || typeof raw !== 'object') return null
+  const r = /** @type {Record<string, unknown>} */ (raw)
+  const width = Number(r.width)
+  const height = Number(r.height)
+  if (!Number.isFinite(width) || width < 1 || !Number.isFinite(height) || height < 1) return null
+  return {
+    width: Math.round(width),
+    height: Math.round(height),
+    quality: normalizeExportQuality(r.quality),
+    transparentBg: r.transparentBg === true
   }
 }

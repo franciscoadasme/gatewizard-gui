@@ -175,6 +175,24 @@ test('saved named ion view with empty selection still resolves to ion', () => {
   assert.equal(namedSelectionFromView(vp.views[0]), 'ion')
 })
 
+test('normalizeViewpoint keeps the figure export size', () => {
+  const vp = normalizeViewpoint({
+    format: VIEWPOINT_FORMAT,
+    version: VIEWPOINT_VERSION,
+    structure: { path: '/tmp/a.pdb' },
+    camera: {
+      position: [0, 0, 1],
+      target: [0, 0, 0],
+      up: [0, 1, 0],
+      zoom: 1
+    },
+    figure: { width: 1600, height: 900, quality: 2, transparentBg: false }
+  })
+  assert.equal(vp.figure?.width, 1600)
+  assert.equal(vp.figure?.height, 900)
+  assert.equal(vp.figure?.quality, 2)
+})
+
 test('normalizeViewpoint rejects animation projects and unknown formats', () => {
   assert.throws(
     () => normalizeViewpoint({ format: 'gatewizard-animation', version: 3 }),

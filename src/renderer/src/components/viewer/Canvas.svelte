@@ -6,7 +6,7 @@
 <script>
   import { Canvas as ThrelteCanvas, T } from '@threlte/core'
   import { TrackballControls } from '@threlte/extras'
-  import { MOUSE, WebGLRenderer } from 'three'
+  import { MOUSE, NoToneMapping, SRGBColorSpace, WebGLRenderer } from 'three'
   import { viewerSettings } from '../../lib/viewerSettings.svelte.js'
   import DepthOfFieldPass from './DepthOfFieldPass.svelte'
   import SceneBackground from './SceneBackground.svelte'
@@ -132,6 +132,8 @@
         preserveDrawingBuffer: true
       })
       // Required for per-representation clip planes (ViewClipApply).
+      renderer.outputColorSpace = SRGBColorSpace
+      renderer.toneMapping = NoToneMapping
       renderer.localClippingEnabled = true
       if (import.meta.env?.DEV) {
         renderer.debug.checkShaderErrors = true
