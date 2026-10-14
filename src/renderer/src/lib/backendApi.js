@@ -496,7 +496,8 @@ function normalizeStructurePayload(data) {
           index: cols.index[i],
           res_name: cols.res_name[i],
           res_id: cols.res_id[i],
-          chain_id: cols.chain_id[i]
+          chain_id: cols.chain_id[i],
+          altloc: cols.altloc ? cols.altloc[i] : ''
         }
       }
       data.atoms = atoms
@@ -1787,6 +1788,26 @@ export function structureBuildAssembly(payload) {
     assembly_id: payload.assemblyId,
     include_waters: payload.includeWaters === true,
     drop_overlaps: payload.dropOverlaps !== false
+  })
+}
+
+/**
+ * Missing atoms, gaps, alternate conformations, and chain differences.
+ * @param {{ path: string }} payload
+ */
+export function structureCheck(payload) {
+  return backendJson('/structure/check', { path: payload.path })
+}
+
+/**
+ * Write a PDB that keeps one altLoc per disordered atom.
+ * @param {{ path: string, choices?: Array<{ chain: string, resid: number, icode?: string, atom: string, altloc: string }>, outputPath?: string }} payload
+ */
+export function structureApplyAltloc(payload) {
+  return backendJson('/structure/apply-altloc', {
+    path: payload.path,
+    choices: payload.choices || [],
+    output_path: payload.outputPath ?? null
   })
 }
 

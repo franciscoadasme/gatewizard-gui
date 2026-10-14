@@ -137,6 +137,7 @@ from gatewizard.utils.residue_restore import (
     discover_cap_mapping_path,
     discover_original_pdb,
 )
+from gatewizard.core.structure_checker import apply_altloc_choices, diagnose_structure
 from gatewizard.core.builder import Builder
 
 logger = get_logger(__name__)
@@ -765,6 +766,7 @@ def get_atoms(atoms: mda.AtomGroup | mda.Universe) -> list[dict]:
             res_name=columnar["res_name"][i],
             res_id=columnar["res_id"][i],
             chain_id=columnar["chain_id"][i],
+            altloc=columnar["altloc"][i],
         )
         for i in range(n)
     ]
@@ -787,6 +789,7 @@ def get_atoms_columnar(atoms: mda.AtomGroup | mda.Universe) -> dict[str, list]:
             "res_name": [],
             "res_id": [],
             "chain_id": [],
+            "altloc": [],
         }
 
     pos = np.asarray(atoms.positions, dtype=np.float64)
@@ -806,6 +809,12 @@ def get_atoms_columnar(atoms: mda.AtomGroup | mda.Universe) -> dict[str, list]:
     chains = [
         resolve_pdb_chain_id(segids[i], chain_ids_attr[i]) for i in range(n)
     ]
+    try:
+        altlocs = [str(letter or "").strip() for letter in atoms.altLocs]
+    except (mda.exceptions.NoDataError, AttributeError, TypeError, ValueError):
+        altlocs = [""] * n
+    if len(altlocs) != n:
+        altlocs = [""] * n
     return {
         "x": pos[:, 0].tolist(),
         "y": pos[:, 1].tolist(),
@@ -816,6 +825,7 @@ def get_atoms_columnar(atoms: mda.AtomGroup | mda.Universe) -> dict[str, list]:
         "res_name": resnames,
         "res_id": resids,
         "chain_id": chains,
+        "altloc": altlocs,
     }
 
 
@@ -6800,6 +6810,47 @@ class AssemblyBuildRequest(BaseModel):
     assembly_id: str
     include_waters: bool = False
     drop_overlaps: bool = True
+
+
+class StructureCheckRequest(BaseModel):
+    path: str
+
+
+class AltlocChoice(BaseModel):
+    chain: str = ""
+    resid: int
+    icode: str = ""
+    atom: str = ""
+    altloc: str
+
+
+class ApplyAltlocRequest(BaseModel):
+    path: str
+    choices: list[AltlocChoice] = []
+    output_path: str | None = None
+
+
+@app.post("/structure/check")
+def structure_check(payload: StructureCheckRequest) -> dict:
+    """Report missing atoms, gaps, alternate conformations, and chain differences."""
+    try:
+        if not os.path.isfile(payload.path):
+            raise FileNotFoundError(f"Structure not found: {payload.path}")
+        return diagnose_structure(payload.path)
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/structure/apply-altloc")
+def structure_apply_altloc(payload: ApplyAltlocRequest) -> dict:
+    """Write a PDB that keeps one alternate conformation per disordered atom."""
+    try:
+        if not os.path.isfile(payload.path):
+            raise FileNotFoundError(f"Structure not found: {payload.path}")
+        choices = [choice.model_dump() for choice in payload.choices]
+        return apply_altloc_choices(payload.path, choices, payload.output_path)
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.post("/structure/assemblies")

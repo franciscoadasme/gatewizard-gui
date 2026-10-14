@@ -91,7 +91,9 @@
     structureMerge,
     structureSuperimpose,
     structureListAssemblies,
-    structureBuildAssembly
+    structureBuildAssembly,
+    structureCheck,
+    structureApplyAltloc
   } from '../lib/backendApi.js'
   import {
     defaultHydrationFolderName,
@@ -151,6 +153,7 @@
   import MutateResiduePanel from '../components/MutateResiduePanel.svelte'
   import SplitChainPanel from '../components/SplitChainPanel.svelte'
   import AssemblyPanel from '../components/AssemblyPanel.svelte'
+  import StructureCheckerPanel from '../components/StructureCheckerPanel.svelte'
   import SuperimposePanel from '../components/SuperimposePanel.svelte'
   import { defaultSelectionForStructuralType } from '../lib/analysisSets.js'
   import ApplyRepresentationPicker from '../components/ApplyRepresentationPicker.svelte'
@@ -400,6 +403,17 @@
   let assemblyConfirm = $state(false)
   /** @type {Array<{ id: string, description: string, oligomeric_count: number, atom_count: number, atom_count_with_waters: number, already_biological_unit: boolean, needs_confirmation: boolean, needs_confirmation_with_waters: boolean }>} */
   let assemblyRows = $state([])
+  let checkerOpen = $state(false)
+  let checkerBusy = $state(false)
+  let checkerError = $state('')
+  /** @type {Record<string, any> | null} */
+  let checkerReport = $state(null)
+  /** @type {Record<string, string>} */
+  let checkerChoices = $state({})
+  /** @type {Record<string, string[]>} */
+  let checkerShown = $state({})
+  let checkerPreviewViewId = $state(/** @type {string | null} */ (null))
+  let checkerPreviewLabel = $state('')
   let superOpen = $state(false)
   let superRefId = $state('')
   let superMobId = $state('')
@@ -1071,6 +1085,8 @@
       mutateOpen = false
       splitOpen = false
       assemblyOpen = false
+      checkerOpen = false
+      clearCheckerPreview()
       superOpen = false
       mutPreviewAtoms = []
       mutPreviewBonds = []
@@ -1079,7 +1095,7 @@
 
   // Close tool panels on Escape while open.
   $effect(() => {
-    if (!memproDialogOpen && !packmolDialogOpen && !trajAlignOpen && !mutateOpen && !splitOpen && !assemblyOpen && !superOpen) return
+    if (!memproDialogOpen && !packmolDialogOpen && !trajAlignOpen && !mutateOpen && !splitOpen && !assemblyOpen && !checkerOpen && !superOpen) return
     /** @param {KeyboardEvent} e */
     const onKey = (e) => {
       if (e.key !== 'Escape') return
@@ -1089,6 +1105,10 @@
       else if (mutateOpen) closeMutateDialog()
       else if (splitOpen) splitOpen = false
       else if (assemblyOpen) assemblyOpen = false
+      else if (checkerOpen) {
+        checkerOpen = false
+        clearCheckerPreview()
+      }
       else if (superOpen) superOpen = false
     }
     window.addEventListener('keydown', onKey)
@@ -7849,6 +7869,208 @@
     focusMutateResidue()
   }
 
+  function checkerShownFromReport(report) {
+    /** @type {Record<string, string[]>} */
+    const next = {}
+    for (const group of report?.altlocs || []) {
+      if (group?.id) next[group.id] = (group.options || []).map((option) => option.altloc)
+    }
+    return next
+  }
+
+  function checkerLikelyShown(report) {
+    /** @type {Record<string, string[]>} */
+    const next = {}
+    for (const group of report?.altlocs || []) {
+      if (group?.id && group.default) next[group.id] = [group.default]
+    }
+    return next
+  }
+
+  function checkerChoicesFromReport(report) {
+    /** @type {Record<string, string>} */
+    const next = {}
+    for (const group of report?.altlocs || []) {
+      if (group?.id) next[group.id] = group.default
+    }
+    return next
+  }
+
+  async function openStructureChecker() {
+    if (!structure) return
+    toolsMenuOpen = false
+    checkerOpen = true
+    checkerBusy = true
+    checkerError = ''
+    checkerReport = null
+    checkerChoices = {}
+    checkerShown = {}
+    try {
+      const report = await structureCheck({ path: structure.path || assemblySourcePath(structure) })
+      checkerReport = report
+      checkerChoices = checkerChoicesFromReport(report)
+      checkerShown = checkerShownFromReport(report)
+    } catch (ex) {
+      checkerError = ex instanceof Error ? ex.message : String(ex)
+    } finally {
+      checkerBusy = false
+    }
+  }
+
+  /** @param {string} selection */
+  function atomsForCheckerSelection(selection) {
+    let query = String(selection || '').trim()
+    if (!structure || !query) return { query: '', atoms: /** @type {typeof structure.atoms} */ ([]) }
+    let indices = evaluateSelectionIndices(structure.atoms, query)
+    if (!indices?.size) {
+      const broader = query.replace(/\s+and\s+name\s+\S+/i, '').trim()
+      if (broader && broader !== query) {
+        query = broader
+        indices = evaluateSelectionIndices(structure.atoms, query)
+      }
+    }
+    if (!indices?.size) return { query, atoms: [] }
+    return { query, atoms: structure.atoms.filter((atom) => indices.has(atom.index)) }
+  }
+
+  function clearCheckerPreview() {
+    if (!checkerPreviewViewId) {
+      checkerPreviewLabel = ''
+      return
+    }
+    const id = checkerPreviewViewId
+    checkerPreviewViewId = null
+    checkerPreviewLabel = ''
+    views = views.filter((view) => view.id !== id)
+  }
+
+  /**
+   * Show the finding as a temporary licorice and center the camera on those atoms.
+   * A missing atom name falls back to the residue that is present.
+   * @param {string} selection
+   * @param {string} [letters]
+   * @param {string} [likely]
+   */
+  function focusCheckerSelection(selection, label = '', letters = '', likely = '') {
+    if (!structure) return
+    clearCheckerPreview()
+    const found = atomsForCheckerSelection(selection)
+    if (!found.atoms.length) return
+    const wanted = String(letters || '')
+      .split(',')
+      .map((item) => item.trim().toUpperCase())
+      .filter(Boolean)
+    const likelyLetter = String(likely || '').trim().toUpperCase()
+    const visible = wanted.length
+      ? found.atoms.filter((atom) => {
+          const mark = String(atom.altloc || '').trim().toUpperCase()
+          return !mark || wanted.includes(mark)
+        })
+      : found.atoms
+    const shown = visible.length ? visible : found.atoms
+    const picked = new Set(shown.map((atom) => atom.index))
+    selectedGroupIndices = picked
+    selectedAtom = shown[0] || null
+    centerCameraOnAtoms(atomsAtCurrentTraj(shown))
+    const owner = structure
+    const subset = resolveViewAtomSubset(owner, found.query, 'licorice')
+    const byIndex = new Map(shown.map((atom) => [atom.index, atom]))
+    const bonds = (subset.bonds || owner.bonds || []).filter((bond) => {
+      if (!Array.isArray(bond) || !picked.has(bond[0]) || !picked.has(bond[1])) return false
+      const left = String(byIndex.get(bond[0])?.altloc || '').trim().toUpperCase()
+      const right = String(byIndex.get(bond[1])?.altloc || '').trim().toUpperCase()
+      return !left || !right || left === right
+    })
+    const likelyColor = cpkScheme({ carbonColor: '#f5c518' })
+    const otherColor = cpkScheme()
+    const comparing = wanted.length > 1
+    const onlyLikely = wanted.length === 1 && wanted[0] === likelyLetter
+    const resolver = (atom) => {
+      const mark = String(atom.altloc || '').trim().toUpperCase()
+      const highlight = comparing ? !mark || mark === likelyLetter : onlyLikely
+      return (highlight ? likelyColor : otherColor)(atom)
+    }
+    const id = crypto.randomUUID()
+    checkerPreviewViewId = id
+    checkerPreviewLabel = label || found.query
+    views = [
+      ...views,
+      {
+        id,
+        _isSelHighlight: true,
+        _isCheckerPreview: true,
+        structureId: activeStructureId,
+        componentKey: componentKeyFromSelection(found.query),
+        selection: found.query,
+        baseSelection: found.query,
+        representation: { type: 'licorice' },
+        path: owner?.path,
+        atoms: shown,
+        bonds,
+        residues: subset.residues || null,
+        visible: true,
+        colorScheme: { name: 'cpk', resolver },
+        helixWidth: 1.0,
+        sheetWidth: 0.875,
+        coilWidth: 0.125,
+        ssColors: null,
+        tubeRadius: 0.9,
+        atomScale: 1.0,
+        bondScale: 1.0,
+        pointSize: 3,
+        quality: 3,
+        showMultipleBonds: true,
+        stickRoundness: 1.0,
+        bondColorMode: comparing || onlyLikely ? 'atoms' : 'uniform',
+        bondColor: '#b8b8bc',
+        opacity: 1,
+        surfaceInflate: 0.25,
+        surfaceSource: 'atoms',
+        surfaceSubdivision: 0,
+        trajSmooth: 0,
+        trajSmoothRestoreH: true,
+        material: { ...DEFAULT_VIEW_MATERIAL }
+      }
+    ]
+  }
+
+  function keepCheckerPreview() {
+    if (!checkerPreviewViewId) return
+    const id = checkerPreviewViewId
+    views = views.map((view) => (view.id === id ? { ...view, _isSelHighlight: false } : view))
+    checkerPreviewViewId = null
+    checkerPreviewLabel = ''
+  }
+
+  async function onCheckerApply() {
+    if (!structure || !checkerReport?.altlocs?.length) return
+    const entryId = structure.id
+    const source = structure.path || assemblySourcePath(structure)
+    checkerBusy = true
+    checkerError = ''
+    try {
+      const choices = checkerReport.altlocs.map((group) => ({
+        chain: group.chain,
+        resid: group.resid,
+        icode: group.icode || '',
+        altloc: checkerChoices[group.id] || group.default
+      }))
+      const result = await structureApplyAltloc({
+        path: source,
+        choices
+      })
+      await reloadStructureInPlace(entryId, result.output_file)
+      const report = await structureCheck({ path: result.output_file })
+      checkerReport = report
+      checkerChoices = checkerChoicesFromReport(report)
+      checkerShown = checkerShownFromReport(report)
+    } catch (ex) {
+      checkerError = ex instanceof Error ? ex.message : String(ex)
+    } finally {
+      checkerBusy = false
+    }
+  }
+
   function openSplitDialog() {
     toolsMenuOpen = false
     splitChainId = defaultProteinChain(structure)
@@ -11099,6 +11321,15 @@
           </button>
           <button
             type="button"
+            class="viz-toolbar-menu-item {checkerOpen ? 'viz-toolbar-menu-item-on' : ''}"
+            disabled={!structure}
+            onclick={() => void openStructureChecker()}
+            title="Report missing atoms, gaps, alternate conformations, and chain differences"
+          >
+            Structure checker…
+          </button>
+          <button
+            type="button"
             class="viz-toolbar-menu-item {splitOpen ? 'viz-toolbar-menu-item-on' : ''}"
             disabled={!structure}
             onclick={openSplitDialog}
@@ -11769,6 +12000,39 @@
     onSelect={onMutateSelect}
     onApply={() => void onMutateApply()}
     onClose={closeMutateDialog}
+  />
+{/if}
+
+{#if checkerOpen}
+  <StructureCheckerPanel
+    report={checkerReport}
+    shown={checkerShown}
+    busy={checkerBusy}
+    error={checkerError}
+    trajectory={!!structure?.trajectory}
+    previewLabel={checkerPreviewLabel}
+    onFocus={focusCheckerSelection}
+    onKeepPreview={keepCheckerPreview}
+    onChoose={(id, altloc) => {
+      checkerChoices = { ...checkerChoices, [id]: altloc }
+    }}
+    onShown={(id, letters) => {
+      checkerShown = { ...checkerShown, [id]: letters }
+    }}
+    onKeepLikely={() => {
+      const ok = confirm(
+        'Put every residue back on its most likely conformation?\n\nOnly that letter stays checked. Letters you chose by hand will be replaced. The file is not written until you click Apply.'
+      )
+      if (!ok) return false
+      checkerChoices = checkerChoicesFromReport(checkerReport)
+      checkerShown = checkerLikelyShown(checkerReport)
+      return true
+    }}
+    onApply={() => void onCheckerApply()}
+    onClose={() => {
+      checkerOpen = false
+      clearCheckerPreview()
+    }}
   />
 {/if}
 
