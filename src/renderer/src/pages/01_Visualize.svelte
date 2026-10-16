@@ -71,6 +71,7 @@
     editDeleteAtoms,
     editDeleteByIndices,
     editSavePdb,
+    saveTrajectoryFrame,
     structureWriteCoords,
     transformCountSelection,
     transformCompute,
@@ -4610,14 +4611,21 @@
 
   async function onSavePdb() {
     if (!filePath || !structure?.atoms?.length) return
+    const traj = structure.trajectory
+    const frameCount = traj?.logicalFrameCount ?? 0
+    const frame =
+      frameCount > 0
+        ? Math.max(0, Math.min(frameCount - 1, Math.round(traj.logicalFrame ?? trajPlayhead)))
+        : 0
     const baseName =
       String(filePath).split(/[/\\]/).pop()?.replace(/\.[^.]+$/, '') || 'structure'
     const defaultDir = (workingDir || '').trim()
+    const fileName = frameCount > 1 ? `${baseName}_frame${frame + 1}.pdb` : `${baseName}.pdb`
     const defaultPath = defaultDir
-      ? `${defaultDir.replace(/[/\\]+$/, '')}/${baseName}.pdb`
-      : `${baseName}.pdb`
+      ? `${defaultDir.replace(/[/\\]+$/, '')}/${fileName}`
+      : fileName
     const r = await window.api.saveFileDialog(
-      'Save PDB',
+      frameCount > 1 ? 'Save current frame as PDB' : 'Save PDB',
       [{ name: 'PDB files', extensions: ['pdb'] }],
       defaultPath
     )
@@ -4637,16 +4645,26 @@
         coordsDirty = false
         baseAtomCoords = snapshotAtomCoords(structure.atoms)
         coordUndoStack.clear()
+      } else if (frameCount > 0 && traj?.files?.length) {
+        await saveTrajectoryFrame({
+          topology_path: topologyPath || filePath,
+          trajectory_paths: traj.files.map((file) => file.path),
+          file_strides: fileStridesFromFiles(traj.files),
+          frame,
+          dest: r.filePath
+        })
       } else {
         await editSavePdb({ source: filePath, dest: r.filePath })
       }
       logEvent('info', 'view', `Saved PDB: ${String(r.filePath).split(/[/\\]/).pop()}`, r.filePath)
-      patchActiveStructure({ path: r.filePath })
-      const sid = activeStructureId
-      for (const v of views) {
-        if (v.structureId === sid) v.path = r.filePath
+      if (!(frameCount > 0 && traj?.files?.length)) {
+        patchActiveStructure({ path: r.filePath })
+        const sid = activeStructureId
+        for (const v of views) {
+          if (v.structureId === sid) v.path = r.filePath
+        }
+        views = [...views]
       }
-      views = [...views]
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : String(ex))
     }
@@ -11381,7 +11399,9 @@
       disabled={!filePath}
       title={coordsDirty
         ? 'Save working coordinates to PDB (unsaved transforms in memory)'
-        : 'Save current PDB file'}>Save PDB{coordsDirty ? ' •' : ''}</button
+        : (structure?.trajectory?.logicalFrameCount ?? 0) > 1
+          ? 'Save the current trajectory frame as a PDB'
+          : 'Save current PDB file'}>Save PDB{coordsDirty ? ' •' : ''}</button
     >
 
     <!-- Save Image -->

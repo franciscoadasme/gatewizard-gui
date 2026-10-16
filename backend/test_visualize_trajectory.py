@@ -5,6 +5,7 @@ from pathlib import Path
 import base64
 import struct
 
+import MDAnalysis as mda
 import numpy as np
 from MDAnalysis.analysis.rms import rmsd as mda_rmsd
 
@@ -270,6 +271,28 @@ def test_sidecar_extract_and_cache_hit(tmp_path: Path):
     xyz = frame_xyz_binary(session, 1, count=1)
     raw = np.frombuffer(xyz, dtype=np.float32, offset=12)
     assert abs(float(raw[0]) - 2.0) < 1e-3
+
+
+def test_save_frame_writes_the_logical_frame_only(tmp_path: Path):
+    from app import TrajectorySaveFrameRequest, trajectory_save_frame
+
+    pdb = tmp_path / "traj.pdb"
+    _write_multimodel_pdb(pdb, 6)
+    dest = tmp_path / "frame.pdb"
+    result = trajectory_save_frame(
+        TrajectorySaveFrameRequest(
+            topology_path=str(pdb),
+            trajectory_paths=[str(pdb)],
+            file_strides={pdb.name: 2},
+            frame=1,
+            dest=str(dest),
+        )
+    )
+    text = dest.read_text(encoding="utf-8")
+    assert text.count("MODEL") <= 1
+    universe = mda.Universe(result["path"])
+    assert len(universe.trajectory) == 1
+    assert abs(float(universe.atoms.positions[0, 0]) - 2.0) < 1e-3
 
 
 def test_load_all_fits_gate():

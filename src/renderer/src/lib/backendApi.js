@@ -565,6 +565,21 @@ export async function getStructure(payload) {
  *   files: Array<{ path: string, name: string, n_frames: number, stride: number, n_logical: number }>
  * }>}
  */
+/**
+ * Write one logical frame as a single-model PDB. The trajectory file is left unchanged.
+ * @param {{
+ *   topology_path: string,
+ *   trajectory_paths: string[],
+ *   file_strides?: Record<string, number> | null,
+ *   frame?: number,
+ *   dest: string
+ * }} payload
+ * @returns {Promise<{ path: string, success: boolean, frame: number, n_atoms: number }>}
+ */
+export function saveTrajectoryFrame(payload) {
+  return backendJson('/trajectory/save-frame', { frame: 0, ...payload })
+}
+
 export function getTrajectoryInfo(payload) {
   return backendJson('/trajectory/info', payload)
 }

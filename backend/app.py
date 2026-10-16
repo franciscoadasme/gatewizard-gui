@@ -48,6 +48,7 @@ from mmcif_pdb import (
     is_mmcif_file,
     mda_topology_format,
     pdb_from_mmcif,
+    pdb_reader_sources,
     write_universe_pdb,
 )
 from access_log import attach_poll_access_filter
@@ -87,6 +88,7 @@ class SelectiveGZipMiddleware:
         await self.gzip_app(scope, receive, send)
 from pydantic import BaseModel, Field
 
+from gatewizard.utils.pdb_frame import write_current_frame_pdb
 from visualize_trajectory import (
     compute_traj_alignment,
     ensure_traj_sidecar,
@@ -1231,11 +1233,17 @@ def load_structure(
             else:
                 # Converted mmCIF uses the extended reader so a new chain that
                 # restarts residue numbering is not shifted by +10000.
-                topo_fmt = mda_topology_format(path)
-                if topo_fmt:
-                    u = mda.Universe(str(path), topology_format=topo_fmt, format="PDB")
+                read_path, repair_topology = pdb_reader_sources(path)
+                if repair_topology is not None:
+                    u = mda.Universe(str(repair_topology), str(read_path))
                 else:
-                    u = mda.Universe(str(path))
+                    topo_fmt = mda_topology_format(read_path)
+                    if topo_fmt:
+                        u = mda.Universe(
+                            str(read_path), topology_format=topo_fmt, format="PDB"
+                        )
+                    else:
+                        u = mda.Universe(str(read_path))
             already = _universe_has_bonds(u)
             # Companion topology bonds are trusted; sparse PDB CONECT is not.
             bonds_complete = bool(top_path) or (already and _bond_coverage_dense(u))
@@ -6076,6 +6084,34 @@ class TrajectoryInfoRequest(BaseModel):
     cache_dir: str | None = Field(
         None, description="Working directory for .gatewizard/traj_cache (optional)"
     )
+
+
+class TrajectorySaveFrameRequest(TrajectoryInfoRequest):
+    dest: str = Field(..., description="PDB path to write")
+    frame: int = Field(0, ge=0, description="Logical frame after stride")
+
+
+@app.post("/trajectory/save-frame")
+def trajectory_save_frame(payload: TrajectorySaveFrameRequest) -> dict:
+    """Write one logical frame as a single-model PDB."""
+    try:
+        session = open_traj_session(
+            payload.topology_path, payload.trajectory_paths, payload.file_strides
+        )
+        seek_logical_frame(session, payload.frame)
+        path = write_current_frame_pdb(session.universe, payload.dest)
+        return {
+            "path": path,
+            "success": True,
+            "frame": int(payload.frame),
+            "n_atoms": int(session.universe.atoms.n_atoms),
+        }
+    except FileNotFoundError as ex:
+        raise HTTPException(status_code=404, detail=str(ex)) from ex
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=f"Could not save frame: {ex}") from ex
 
 
 class TrajectoryFrameRequest(TrajectoryInfoRequest):
