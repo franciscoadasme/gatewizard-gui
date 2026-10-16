@@ -7,6 +7,8 @@ have more than 99,999 atoms, which classic PDB decimal serials cannot store.
 
 from __future__ import annotations
 
+import re
+import tempfile
 from pathlib import Path
 
 from Bio.PDB.MMCIFParser import MMCIFParser
@@ -50,6 +52,244 @@ def hy36encode(width: int, number: int) -> str:
     if not encoded[:1].isalpha() or not encoded[:1].isupper():
         raise StructureConvertError(f"Could not encode {number} as hybrid-36")
     return encoded
+
+
+def pdb_for_reader(path: Path) -> Path:
+    """Coordinate PDB for :func:`pdb_reader_sources`."""
+    coordinates, _topology = pdb_reader_sources(path)
+    return coordinates
+
+
+def pdb_reader_sources(path: Path) -> tuple[Path, Path | None]:
+    """Return ``(coordinates, topology)`` for MDAnalysis.
+
+    A normal PDB is ``(path, None)``. Amber and packmol write decimal serials
+    past 99,999 and residue numbers past 9,999 in the PDB columns, so a
+    coordinate field becomes text such as ``6 104.47``. A negative coordinate
+    can also sit flush against the previous number (``46.591-107.358``).
+    Those files are rewritten to aligned coordinates plus a PSF that keeps
+    the real residue numbers. The earlier hybrid-36 writer only covered
+    mmCIF downloads.
+    """
+    source = Path(path)
+    if source.suffix.lower() != ".pdb" or not source.is_file():
+        return source, None
+    if not _pdb_coord_columns_overflow(source):
+        return source, None
+    stamp = source.stat()
+    folder = Path(tempfile.gettempdir()) / "gatewizard-pdb"
+    stem = f"{source.stem}-{stamp.st_mtime_ns}-{stamp.st_size}"
+    coordinates = folder / f"{stem}.pdb"
+    topology = folder / f"{stem}.psf"
+    if (
+        coordinates.is_file()
+        and topology.is_file()
+        and coordinates.stat().st_size > 0
+        and topology.stat().st_size > 0
+    ):
+        return coordinates, topology
+    folder.mkdir(parents=True, exist_ok=True)
+    partial_pdb = coordinates.with_name(coordinates.name + ".writing")
+    partial_psf = topology.with_name(topology.name + ".writing")
+    try:
+        _rewrite_overflow_pdb(source, partial_pdb, partial_psf)
+        partial_pdb.replace(coordinates)
+        partial_psf.replace(topology)
+    except Exception:
+        partial_pdb.unlink(missing_ok=True)
+        partial_psf.unlink(missing_ok=True)
+        raise
+    return coordinates, topology
+
+
+def _pdb_coord_columns_overflow(path: Path) -> bool:
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if not line.startswith(("ATOM", "HETATM")) or len(line) < 54:
+                continue
+            try:
+                float(line[30:38])
+                float(line[38:46])
+                float(line[46:54])
+            except ValueError:
+                return True
+            parts = line.split()
+            if len(parts) < 2 or not parts[1].isdigit():
+                return True
+    return False
+
+
+def _rewrite_overflow_pdb(source: Path, dest: Path, psf_dest: Path) -> None:
+    atoms: list[tuple] = []
+    with source.open("r", encoding="utf-8", errors="replace") as handle, dest.open(
+        "w", encoding="utf-8", newline="\n"
+    ) as out:
+        for line in handle:
+            if line.startswith(("ATOM", "HETATM")):
+                parsed = _parse_overflow_atom(line)
+                atoms.append(parsed)
+                out.write(_repaired_atom_line(parsed))
+            elif line.startswith("CONECT"):
+                continue
+            else:
+                out.write(line if line.endswith("\n") else line + "\n")
+    with psf_dest.open("w", encoding="utf-8", newline="\n") as psf:
+        psf.write("PSF NAMD\n\n")
+        psf.write("       1 !NTITLE\n")
+        psf.write(" REMARKS gatewizard column repair\n\n")
+        psf.write(f"{len(atoms):8d} !NATOM\n")
+        for index, parsed in enumerate(atoms, start=1):
+            _serial, raw_name, resseq, resname, chain = parsed[:5]
+            segid = chain.strip() or "A"
+            atom = raw_name.strip() or "X"
+            residue = resname.strip() or "UNK"
+            psf.write(
+                f"{index:8d} {segid} {resseq} {residue} {atom} {atom} 0.0 1.0\n"
+            )
+        psf.write("\n       0 !NBOND\n")
+
+
+def _parse_overflow_atom(
+    line: str,
+) -> tuple[int, str, int, str, str, str, str, float, float, float, float, float]:
+    parts = line.split()
+    record = "ATOM  " if line.startswith("ATOM") else "HETATM"
+    serial, glued_name = _split_serial_and_name(parts[1])
+    if glued_name is None:
+        raw_name = parts[2]
+        fields = parts[3:]
+    else:
+        raw_name = glued_name
+        fields = parts[2:]
+    resname = f"{fields[0][:3]:>3}"
+    index = 1
+    chain = " "
+    token = fields[index]
+    if not _signed_int(token):
+        chain = token[:1] or " "
+        index += 1
+        token = fields[index]
+    resseq = int(token)
+    index += 1
+    numbers: list[str] = []
+    for token in fields[index:]:
+        numbers.extend(_split_glued_numbers(token))
+    if len(numbers) < 3:
+        raise ValueError(f"could not read coordinates from {line[:80]!r}")
+    x, y, z = (float(numbers[0]), float(numbers[1]), float(numbers[2]))
+    occ = float(numbers[3]) if len(numbers) > 3 else 1.0
+    bfactor = float(numbers[4]) if len(numbers) > 4 else 0.0
+    return (
+        serial,
+        raw_name,
+        resseq,
+        resname,
+        chain,
+        record,
+        _pdb_atom_name(raw_name),
+        x,
+        y,
+        z,
+        occ,
+        bfactor,
+    )
+
+
+def _repaired_atom_line(
+    parsed: tuple[int, str, int, str, str, str, str, float, float, float, float, float],
+) -> str:
+    serial, raw_name, resseq, resname, chain, record, name, x, y, z, occ, bfactor = parsed
+    stored_resseq = resseq if resseq <= 9999 else 1
+    return _atom_line(
+        record,
+        serial,
+        name,
+        " ",
+        resname,
+        chain,
+        stored_resseq,
+        " ",
+        x,
+        y,
+        z,
+        occ,
+        bfactor,
+        _element_from_name(raw_name),
+    )
+
+
+def _pdb_atom_name(name: str) -> str:
+    text = name.strip()
+    if len(text) >= 4:
+        return text[:4]
+    if len(text) == 1 or (len(text) <= 3 and text[:1].isalpha() and text[1:2].isdigit()):
+        return f" {text:<3}"[:4]
+    return f"{text:<4}"[:4]
+
+
+def _element_from_name(name: str) -> str:
+    letters = "".join(char for char in name if char.isalpha()).upper()
+    if len(letters) >= 2 and letters[:2] in {
+        "BR",
+        "CA",
+        "CL",
+        "FE",
+        "MG",
+        "NA",
+        "ZN",
+    }:
+        return f"{letters[:2]:>2}"
+    if letters:
+        return f"{letters[0]:>2}"
+    return "  "
+
+
+_NUMERIC_TOKEN = re.compile(r"[-+]?(?:\d+\.\d+|\.\d+|\d+)")
+
+
+def _split_serial_and_name(token: str) -> tuple[int, str | None]:
+    """Split ``100044C110`` into serial 100044 and atom name C110.
+
+    A serial past 99,999 is wider than the five PDB columns, so it overwrites
+    the blank before the atom name and ``split`` returns one token.
+    """
+    if token.isdigit():
+        return int(token), None
+    for size in range(min(4, len(token) - 1), 0, -1):
+        serial_text, name = token[:-size], token[-size:]
+        if (
+            serial_text.isdigit()
+            and len(serial_text) >= 5
+            and _looks_like_atom_name(name)
+        ):
+            return int(serial_text), name
+    raise ValueError(f"could not read atom serial from {token!r}")
+
+
+def _looks_like_atom_name(name: str) -> bool:
+    if not 1 <= len(name) <= 4:
+        return False
+    if name[0].isalpha():
+        return True
+    # Hydrogen names such as 1HG. "1Cl-" is the spilled end of a serial.
+    return len(name) >= 2 and name[0] in "123456789" and name[1] == "H"
+
+
+def _split_glued_numbers(token: str) -> list[str]:
+    """Split a coordinate token that contains two numbers.
+
+    ``%8.3f`` writes ``-107.358`` in all eight columns, so the previous
+    field is not followed by a space: ``46.591-107.358``.
+    """
+    pieces = _NUMERIC_TOKEN.findall(token)
+    if len(pieces) > 1 and "".join(pieces) == token:
+        return pieces
+    return [token]
+
+
+def _signed_int(token: str) -> bool:
+    text = token[1:] if token[:1] in "+-" else token
+    return text.isdigit()
 
 
 def mda_topology_format(path: Path) -> str | None:
