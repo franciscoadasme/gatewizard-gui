@@ -1485,7 +1485,7 @@ def health() -> dict:
 @app.get("/available-lipids")
 def available_lipids() -> dict:
     manager = ForceFieldManager()
-    return {"lipids": manager.get_available_lipids()}
+    return {"lipids": manager.get_lipid_catalog()}
 
 
 @app.get("/available-forcefields")

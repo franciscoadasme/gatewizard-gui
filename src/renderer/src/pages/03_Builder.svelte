@@ -69,7 +69,127 @@
       : '02_build_bilayer'
   )
 
-  const lipidsPromise = getAvailableLipids().then((data) => data.lipids)
+  const LIPID_NAME_PREVIEW = 28
+
+  /** @type {Record<string, { name: string, fullName: string, label: string }>} */
+  let lipidByName = $state({})
+  /** Width of the residue-name column, in `ch`, from the longest name in this catalog. */
+  let lipidNameCh = $state(8)
+
+  const lipidsPromise = getAvailableLipids().then((data) => {
+    const choices = data.lipids.map((lipid, index) => ({
+      ...lipidChoice(lipid),
+      number: index + 1
+    }))
+    lipidByName = Object.fromEntries(choices.map((choice) => [choice.name, choice]))
+    lipidNameCh = choices.reduce((max, choice) => Math.max(max, choice.name.length), 4)
+    return choices
+  })
+
+  /**
+   * Residue name plus a short chemical name. The closed field stays inside the sidebar.
+   * The open list also shows the charge.
+   * @param {string | { name: string, full_name?: string, charge?: number }} lipid
+   */
+  function lipidChoice(lipid) {
+    if (typeof lipid === 'string') {
+      return { name: lipid, fullName: '', charge: null, label: lipid, listLabel: lipid }
+    }
+    const name = lipid.name
+    const fullName = lipid.full_name ? String(lipid.full_name) : ''
+    const charge = Number.isFinite(lipid.charge) ? lipid.charge : null
+    const chargeText = charge === null ? '' : String(charge)
+    const preview =
+      fullName.length > LIPID_NAME_PREVIEW
+        ? `${fullName.slice(0, LIPID_NAME_PREVIEW).trimEnd()}…`
+        : fullName
+    const label = preview ? `${name} — ${preview}` : name
+    const listLabel = [name, chargeText, preview].filter(Boolean).join('  ')
+    return { name, fullName, charge, label, listLabel }
+  }
+
+  /**
+   * @param {{ name: string, fullName: string }} choice
+   * @param {string} query
+   */
+  function lipidMatchesQuery(choice, query) {
+    const q = query.trim().toLowerCase()
+    if (!q) return true
+    return (
+      choice.name.toLowerCase().includes(q) ||
+      choice.fullName.toLowerCase().includes(q) ||
+      (choice.charge !== null && String(choice.charge).includes(q))
+    )
+  }
+
+  /** @type {string | null} */
+  let openLipidMenu = $state(null)
+  let lipidMenuQuery = $state('')
+  /** @type {{ top: number, left: number, width: number } | null} */
+  let lipidMenuAnchor = $state(null)
+
+  /** @param {HTMLElement} node */
+  function focusOnMount(node) {
+    node.focus()
+  }
+
+  /**
+   * @param {string} menuId
+   * @param {MouseEvent} event
+   */
+  function toggleLipidMenu(menuId, event) {
+    if (openLipidMenu === menuId) {
+      closeLipidMenu()
+      return
+    }
+    const target = event.currentTarget
+    if (!(target instanceof HTMLElement)) return
+    const rect = target.getBoundingClientRect()
+    const width = Math.max(rect.width, 320)
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))
+    const menuHeight = 280
+    const spaceBelow = window.innerHeight - rect.bottom
+    const top =
+      spaceBelow < menuHeight && rect.top > menuHeight ? rect.top - menuHeight - 2 : rect.bottom + 2
+    lipidMenuAnchor = { top, left, width }
+    lipidMenuQuery = ''
+    openLipidMenu = menuId
+  }
+
+  function closeLipidMenu() {
+    openLipidMenu = null
+    lipidMenuQuery = ''
+    lipidMenuAnchor = null
+  }
+
+  /**
+   * @param {{ lipid: string, ratio: number }} entry
+   * @param {string} name
+   */
+  function chooseLipid(entry, name) {
+    entry.lipid = name
+    closeLipidMenu()
+  }
+
+  $effect(() => {
+    if (!openLipidMenu) return
+    /** @param {PointerEvent} event */
+    function onPointerDown(event) {
+      const target = event.target
+      if (target instanceof Element && target.closest('[data-lipid-menu]')) return
+      closeLipidMenu()
+    }
+    /** @param {KeyboardEvent} event */
+    function onKey(event) {
+      if (event.key === 'Escape') closeLipidMenu()
+    }
+    window.addEventListener('pointerdown', onPointerDown)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown)
+      window.removeEventListener('keydown', onKey)
+    }
+  })
   const ffPromise = getAvailableForceFields()
 
   let waterModel = $state('opc')
@@ -1095,12 +1215,14 @@
   let lowerLeaflet = $state([{ lipid: 'POPC', ratio: 1.0 }])
 
   function addLipid(/** @type {'upper' | 'lower'} */ leaflet) {
+    closeLipidMenu()
     const entry = { lipid: 'POPC', ratio: 1.0 }
     if (leaflet === 'upper') upperLeaflet = [...upperLeaflet, entry]
     else lowerLeaflet = [...lowerLeaflet, entry]
   }
 
   function removeLipid(/** @type {'upper' | 'lower'} */ leaflet, /** @type {number} */ index) {
+    closeLipidMenu()
     if (leaflet === 'upper') upperLeaflet = upperLeaflet.filter((_, i) => i !== index)
     else lowerLeaflet = lowerLeaflet.filter((_, i) => i !== index)
   }
@@ -1567,8 +1689,101 @@
     <Divider />
 
     <!-- Lipid Composition -->
+    {#snippet lipidPicker(
+      /** @type {string} */ menuId,
+      /** @type {{ lipid: string, ratio: number }} */ entry,
+      /** @type {{ name: string, fullName: string, label: string }[]} */ lipids
+    )}
+      {@const selected = lipidByName[entry.lipid]}
+      <div class="relative min-w-0 flex-1">
+        <button
+          type="button"
+          data-lipid-menu
+          class="sidebar-control flex w-full min-w-0 items-center gap-1 p-1 text-left"
+          title={selected?.fullName || entry.lipid}
+          onclick={(event) => toggleLipidMenu(menuId, event)}
+        >
+          <span class="min-w-0 flex-1 truncate">{selected?.label || entry.lipid}</span>
+          <svg class="h-3 w-3 shrink-0 opacity-70" viewBox="0 0 12 12" aria-hidden="true">
+            <path fill="currentColor" d="M2.2 4.2 6 8l3.8-3.8-.9-.9L6 6.2 3.1 3.3z" />
+          </svg>
+        </button>
+        {#if openLipidMenu === menuId && lipidMenuAnchor}
+          {@const shown = lipids.filter((item) => lipidMatchesQuery(item, lipidMenuQuery))}
+          <div
+            data-lipid-menu
+            class="fixed z-50 overflow-hidden rounded-md border border-neutral-300 bg-white shadow-md dark:border-neutral-700 dark:bg-neutral-950"
+            style="top: {lipidMenuAnchor.top}px; left: {lipidMenuAnchor.left}px; width: {lipidMenuAnchor.width}px"
+          >
+            <div class="flex items-center gap-1 border-b border-neutral-200 px-1.5 dark:border-neutral-800">
+              <svg
+                class="h-3.5 w-3.5 shrink-0 text-neutral-500"
+                viewBox="0 0 20 20"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                aria-hidden="true"
+              >
+                <circle cx="8.5" cy="8.5" r="5.5" />
+                <path d="M12.5 12.5 17 17" />
+              </svg>
+              <input
+                type="text"
+                class="w-full bg-transparent py-1 text-xs outline-none placeholder:text-neutral-500 dark:placeholder:text-neutral-600"
+                placeholder="Search"
+                bind:value={lipidMenuQuery}
+                use:focusOnMount
+              />
+            </div>
+            <div
+              class="flex items-center justify-between border-b border-neutral-200 bg-neutral-50 px-2 py-1 dark:border-neutral-800 dark:bg-neutral-900"
+            >
+              <span class="text-[10px] font-medium tracking-wide text-neutral-500 uppercase">Lipids</span>
+              <span class="font-mono text-[10px] text-neutral-500 tabular-nums">
+                {lipidMenuQuery.trim() ? `${shown.length} of ${lipids.length}` : `1–${lipids.length}`}
+              </span>
+            </div>
+            <div
+              class="grid gap-x-2 border-b border-neutral-200 px-2 py-1 text-xs text-neutral-500 uppercase dark:border-neutral-800 [&>span]:text-[10px] [&>span]:tracking-wide"
+              style="grid-template-columns: 2.4rem {lipidNameCh}ch 3.25rem minmax(0, 1fr)"
+            >
+              <span class="text-right">#</span>
+              <span>Lipid</span>
+              <span class="text-right">Charge</span>
+              <span>Name</span>
+            </div>
+            <div class="max-h-52 overflow-y-auto overscroll-contain">
+              {#each shown as item (item.name)}
+                <button
+                  type="button"
+                  class="grid w-full gap-x-2 px-2 py-1 text-left text-xs hover:bg-neutral-100 dark:hover:bg-neutral-800 {item.name ===
+                  entry.lipid
+                    ? 'bg-neutral-100 dark:bg-neutral-800'
+                    : ''}"
+                  style="grid-template-columns: 2.4rem {lipidNameCh}ch 3.25rem minmax(0, 1fr)"
+                  title={item.charge === null
+                    ? item.fullName || item.name
+                    : `${item.charge} · ${item.fullName || item.name}`}
+                  onclick={() => chooseLipid(entry, item.name)}
+                >
+                  <span class="text-right text-neutral-400 tabular-nums">{item.number}</span>
+                  <span class="truncate">{item.name}</span>
+                  <span class="text-right tabular-nums">{item.charge ?? ''}</span>
+                  <span class="truncate text-neutral-500">{item.fullName}</span>
+                </button>
+              {:else}
+                <p class="px-2 py-1 text-neutral-500">No matching lipids.</p>
+              {/each}
+            </div>
+          </div>
+        {/if}
+      </div>
+    {/snippet}
     <div class="space-y-2">
       <h2 class="sidebar-heading">Lipid Composition</h2>
+      <p class="sidebar-hint">
+        GateWizard supports 4028 lipids. SIRAH and coarse-grained lipids are not supported.
+      </p>
       <div class="sidebar-panel space-y-1.5 p-2">
         <div class="flex items-center justify-between">
           <span class="sidebar-subheading">Upper Leaflet</span>
@@ -1578,16 +1793,13 @@
           >
         </div>
         {#each upperLeaflet as entry, i (i)}
-          <div class="flex items-center gap-1">
-            {#await lipidsPromise then lipids}
-              <select
-                class="sidebar-control flex-1 p-1"
-                bind:value={entry.lipid}
-              >
-                {#each lipids as lipid (lipid)}
-                  <option value={lipid}>{lipid}</option>
-                {/each}
-              </select>
+          <div class="flex min-w-0 items-center gap-1">
+            {#await lipidsPromise}
+              <button type="button" class="sidebar-control min-w-0 flex-1 truncate p-1 text-left" disabled>
+                {entry.lipid}
+              </button>
+            {:then lipids}
+              {@render lipidPicker(`upper-${i}`, entry, lipids)}
             {/await}
             <input
               type="text"
@@ -1613,16 +1825,13 @@
           >
         </div>
         {#each lowerLeaflet as entry, i (i)}
-          <div class="flex items-center gap-1">
-            {#await lipidsPromise then lipids}
-              <select
-                class="sidebar-control flex-1 p-1"
-                bind:value={entry.lipid}
-              >
-                {#each lipids as lipid (lipid)}
-                  <option value={lipid}>{lipid}</option>
-                {/each}
-              </select>
+          <div class="flex min-w-0 items-center gap-1">
+            {#await lipidsPromise}
+              <button type="button" class="sidebar-control min-w-0 flex-1 truncate p-1 text-left" disabled>
+                {entry.lipid}
+              </button>
+            {:then lipids}
+              {@render lipidPicker(`lower-${i}`, entry, lipids)}
             {/await}
             <input
               type="text"

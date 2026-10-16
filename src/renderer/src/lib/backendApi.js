@@ -14,7 +14,7 @@ export const BACKEND_BASE_URL = 'http://127.0.0.1:8765'
 // Annotate the arguments and return type with the expected response shape.
 
 /**
- * @returns {Promise<{ lipids: string[] }>}
+ * @returns {Promise<{ lipids: Array<string | { name: string, charge: number, full_name: string, note: string }> }>}
  */
 export function getAvailableLipids() {
   return backendJson('/available-lipids')
