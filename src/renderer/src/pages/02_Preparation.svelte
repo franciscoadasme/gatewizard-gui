@@ -32,12 +32,14 @@
 
   // form fields
   let capProtein = $state(false)
-  /** Strip protein H before pdb4amber (keeps ligand / hetero H). Default on. */
+  /** Prepared PDB has no protein hydrogens. Ligands keep theirs. Default on. */
   let removeProteinHydrogens = $state(true)
   /** Restore input residue numbers after pdb4amber. Default on. */
   let preserveResidueNumbers = $state(true)
   /** Build numbering gaps of 1–6 residues during Prepare. */
   let fillShortGaps = $state(false)
+  /** Keep the higher-occupancy altLoc before protonation. Default on. */
+  let keepMostLikelyAltlocs = $state(true)
   /** @type {{ filled?: object[], skipped?: object[], error?: string } | null} */
   let gapReport = $state(null)
   let maxDisulfideDistance = $state(2.5)
@@ -424,6 +426,7 @@
         removeProteinHydrogens,
         preserveResidueNumbers,
         fillShortGaps,
+        keepMostLikelyAltlocs,
         ...buildOutputOptions()
       })
       preparationOutput = data.output.trim()
@@ -447,6 +450,7 @@
     removeProteinHydrogens = true
     preserveResidueNumbers = true
     fillShortGaps = false
+    keepMostLikelyAltlocs = true
     gapReport = null
     maxDisulfideDistance = 2.5
     targetPh = 7.0
@@ -641,7 +645,7 @@
         <label
           for="remove-protein-h"
           class="sidebar-label"
-          title="Removes hydrogens from protein residues only before pdb4amber. Ligands and other heteroatoms keep their hydrogens. Recommended when the structure came from Schrödinger or similar tools — foreign H names often break tleap after Builder."
+          title="The prepared PDB has no protein hydrogens. Ligands and other heteroatoms keep theirs. Protonation stays in the residue names (ASH, GLH, HIP). Uncheck to let pdb4amber --reduce write Amber hydrogens."
         >
           Remove protein hydrogens
         </label>
@@ -664,6 +668,16 @@
           title="Build numbering gaps of 1 to 6 residues with PDBFixer when SEQRES has the sequence. Longer gaps stay open."
         >
           Fill short gaps (1–6 residues)
+        </label>
+      </div>
+      <div class="flex items-center gap-1">
+        <Checkbox name="most-likely-altloc" bind:checked={keepMostLikelyAltlocs} />
+        <label
+          for="most-likely-altloc"
+          class="sidebar-label"
+          title="On: each residue with alternate locations keeps the conformation with the higher occupancy, and the others are dropped before protonation. A tie keeps the earlier letter. Off: Prepare does not choose, and pdb4amber later keeps the first copy of each atom, which may not be the more occupied one. Choose the conformations on the Visualize page when the assignment matters."
+        >
+          Keep the most likely alternate conformations
         </label>
       </div>
       {#if gapReport?.error}

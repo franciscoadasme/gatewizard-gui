@@ -816,7 +816,7 @@ export async function detectDisulfideBonds(filePath, maxDisulfideDistance, opts 
 }
 
 /**
- * @param {{ path: string, outputPath: string, protonationStates: object, targetPh: number, disulfideBonds: [[ [string, number], [string, number] ]], removeProteinHydrogens?: boolean, preserveResidueNumbers?: boolean, completeMissingAtoms?: boolean, addHydrogens?: boolean, capMappingPath?: string|null, originalPdb?: string|null, workingDir?: string|null, outputFolderName?: string|null }} props
+ * @param {{ path: string, outputPath: string, protonationStates: object, targetPh: number, disulfideBonds: [[ [string, number], [string, number] ]], removeProteinHydrogens?: boolean, preserveResidueNumbers?: boolean, fillShortGaps?: boolean, keepMostLikelyAltlocs?: boolean, completeMissingAtoms?: boolean, addHydrogens?: boolean, capMappingPath?: string|null, originalPdb?: string|null, workingDir?: string|null, outputFolderName?: string|null }} props
  * @returns {Promise<{ output: string, output_path?: string, job_dir?: string, working_path?: string, protein_hydrogens_removed?: number, residue_numbers_preserved?: boolean, remum_path?: string|null, cap_assignments?: Record<string, number>, missing_atoms_added?: number }>}
  */
 export async function preparePDB(props) {

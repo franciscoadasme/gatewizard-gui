@@ -132,7 +132,6 @@ from gatewizard.core.preparation import (
     PreparationManager,
     complete_missing_heavy_atoms,
     count_protein_hydrogens,
-    resolve_reduce_executable,
     strip_protein_hydrogens,
 )
 from gatewizard.core.short_gaps import classify_short_gaps, fill_short_gaps
@@ -141,7 +140,11 @@ from gatewizard.utils.residue_restore import (
     discover_cap_mapping_path,
     discover_original_pdb,
 )
-from gatewizard.core.structure_checker import apply_altloc_choices, diagnose_structure
+from gatewizard.core.structure_checker import (
+    apply_altloc_choices,
+    diagnose_structure,
+    keep_most_likely_altlocs,
+)
 from gatewizard.core.builder import Builder
 
 logger = get_logger(__name__)
@@ -3076,9 +3079,10 @@ class PreparePDBRequest(BaseModel):
     remove_protein_hydrogens: bool = Field(
         True,
         description=(
-            "Strip protein hydrogens before pdb4amber. Ligands and other hetero "
-            "atoms keep their hydrogens. Recommended to avoid non-Amber H "
-            "(e.g. Schrödinger) breaking later tleap parametrization."
+            "Leave protein hydrogens out of the prepared PDB. Ligands and other "
+            "heteroatoms keep theirs. pdb4amber does not run --reduce, so Amber "
+            "hydrogens are not written back. Protonation stays in the residue "
+            "names (ASH, GLH, HIP)."
         ),
     )
     preserve_residue_numbers: bool = Field(
@@ -3105,6 +3109,15 @@ class PreparePDBRequest(BaseModel):
             "atoms from tleap residue templates, including the extra protons. Does "
             "not build missing loop residues. Ligands, water, and ions are left "
             "unchanged."
+        ),
+    )
+    keep_most_likely_altlocs: bool = Field(
+        True,
+        description=(
+            "Before protonation, keep the higher-occupancy alternate conformation "
+            "of each residue and drop the others. A tie keeps the earlier letter. "
+            "A file with no altLoc is copied unchanged. When this is off, "
+            "pdb4amber later keeps the first copy of each atom."
         ),
     )
     fill_short_gaps: bool = Field(
@@ -3291,6 +3304,20 @@ def prepare_pdb(payload: PreparePDBRequest) -> dict:
     )
     path = str(path_obj)
     loaded_path = path
+    alt_path = None
+    alt_info: dict = {}
+    if payload.keep_most_likely_altlocs:
+        fd_alt, alt_path = tempfile.mkstemp(suffix=".pdb")
+        os.close(fd_alt)
+        alt_info = keep_most_likely_altlocs(path, alt_path)
+        if int(alt_info.get("residues") or 0):
+            path = alt_path
+        else:
+            try:
+                os.unlink(alt_path)
+            except OSError:
+                pass
+            alt_path = None
     fill_path = None
     fill_info: dict = {}
     if payload.fill_short_gaps:
@@ -3342,16 +3369,13 @@ def prepare_pdb(payload: PreparePDBRequest) -> dict:
             complete_info = complete_missing_heavy_atoms(tmp_path, tmp_complete)
             shutil.copyfile(tmp_complete, tmp_path)
 
-        reduce_available = resolve_reduce_executable() is not None
         removed_h = 0
-        kept_tleap_hydrogens = False
+        # The checkbox is the prepared file, not a temporary strip. --reduce
+        # would write Amber hydrogens back after the strip.
+        add_amber_hydrogens = payload.add_hydrogens and not payload.remove_protein_hydrogens
         if payload.remove_protein_hydrogens:
-            if payload.add_hydrogens and not reduce_available:
-                # Do not strip tleap hydrogens if Amber reduce cannot put them back.
-                kept_tleap_hydrogens = True
-            else:
-                strip_result = strip_protein_hydrogens(tmp_path, tmp_path)
-                removed_h = int(strip_result.get("removed", 0))
+            strip_result = strip_protein_hydrogens(tmp_path, tmp_path)
+            removed_h = int(strip_result.get("removed", 0))
 
         cap_map = payload.cap_mapping_path
         if not cap_map:
@@ -3362,7 +3386,7 @@ def prepare_pdb(payload: PreparePDBRequest) -> dict:
             found_orig = discover_original_pdb(path)
             orig_pdb = str(found_orig) if found_orig else path
 
-        pdb4amber_options = {"reduce": True} if payload.add_hydrogens else None
+        pdb4amber_options = {"reduce": True} if add_amber_hydrogens else None
         result = manager.run_pdb4amber_with_cap_fix(
             input_pdb=tmp_path,
             output_pdb=str(output_path),
@@ -3382,12 +3406,24 @@ def prepare_pdb(payload: PreparePDBRequest) -> dict:
             )
             if not payload.fill_short_gaps:
                 note += " Missing loop residues were not built."
+        residues_kept = int(alt_info.get("residues") or 0)
+        if residues_kept:
+            note += (
+                f"\nKept the higher-occupancy alternate conformation for "
+                f"{residues_kept} residue(s) "
+                f"({int(alt_info.get('atoms_removed') or 0)} atoms dropped)."
+            )
         if payload.fill_short_gaps:
             built = fill_info.get("built") or []
             skipped = fill_info.get("skipped") or []
             note += f"\nShort gaps filled: {len(built)}. Gaps left open: {len(skipped)}."
-        if payload.remove_protein_hydrogens and not kept_tleap_hydrogens:
-            note += f"\nRemoved {removed_h} protein hydrogen atom(s) before pdb4amber."
+        if payload.remove_protein_hydrogens:
+            final_strip = strip_protein_hydrogens(str(output_path), str(output_path))
+            removed_h += int(final_strip.get("removed", 0))
+            note += (
+                f"\nRemoved {removed_h} protein hydrogen atom(s). "
+                "The prepared PDB has no protein hydrogens."
+            )
         removed_conect = int(result.get("conect_records_removed") or 0)
         if removed_conect:
             note += (
@@ -3398,14 +3434,14 @@ def prepare_pdb(payload: PreparePDBRequest) -> dict:
             note += (
                 "\nAmber reduce was not found; pdb4amber ran without --reduce."
             )
-            if payload.complete_missing_atoms or kept_tleap_hydrogens:
+            if payload.complete_missing_atoms:
                 note += " Protein hydrogens kept from tleap residue templates."
             else:
                 note += (
                     " Enable complete missing atoms (tleap adds template hydrogens) "
                     "or install AmberTools reduce."
                 )
-        elif payload.add_hydrogens:
+        elif add_amber_hydrogens:
             note += "\npdb4amber --reduce added Amber hydrogens."
         if result.get("residue_numbers_preserved"):
             note += "\nResidue numbers and chains restored from the input."
@@ -3447,7 +3483,7 @@ def prepare_pdb(payload: PreparePDBRequest) -> dict:
         tb_str = "".join(traceback.format_exception(type(ex), ex, ex.__traceback__))
         raise HTTPException(status_code=400, detail=str(ex) + "\n" + tb_str) from ex
     finally:
-        for tmp in (tmp_path, tmp_complete, fill_path):
+        for tmp in (tmp_path, tmp_complete, fill_path, alt_path):
             if not tmp:
                 continue
             try:
