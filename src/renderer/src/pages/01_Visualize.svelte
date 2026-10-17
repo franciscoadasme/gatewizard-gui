@@ -27,7 +27,8 @@
   } from '../components/viewer/CameraRig.svelte'
   import { mainViewerControls } from '../components/viewer/Canvas.svelte'
   import SaveIcon from '../components/icons/Save.svelte'
-  import ListOrdered from '../components/icons/ListOrdered.svelte'
+  import Sequence from '../components/icons/Sequence.svelte'
+  import ToolbarCornerButton from '../components/ToolbarCornerButton.svelte'
   import MinimizeIcon from '../components/icons/Minimize.svelte'
   import SequenceBar from '../components/SequenceBar.svelte'
   import { applyGapReport, buildSequenceChains, selectionFromKeys } from '../lib/viewer/sequenceBar.js'
@@ -9383,12 +9384,12 @@
           {@render toolbarBtn(
             sequenceBarOpen ? 'Hide sequence' : 'Show sequence',
             () => (sequenceBarOpen = !sequenceBarOpen),
-            ListOrdered,
-            `size-4 stroke-2 ${sequenceBarOpen ? 'stroke-sky-600 dark:stroke-sky-300' : 'stroke-neutral-800 dark:stroke-white'}`,
+            Sequence,
+            `size-6 ${sequenceBarOpen ? 'text-sky-600 dark:text-sky-300' : 'text-neutral-800 dark:text-white'}`,
             !structure
           )}
           <div
-            class="relative flex h-7 max-w-7 min-w-[1.15rem] flex-[1_1_1.4rem] items-center justify-center rounded-lg border border-neutral-200 bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-900"
+            class="relative flex h-7 max-w-7 min-w-[1.15rem] flex-[1_1_1.4rem] items-center justify-center overflow-hidden rounded-lg border border-neutral-200 bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-900"
           >
             <button
               type="button"
@@ -9400,16 +9401,13 @@
             >
               <MinimizeIcon className="size-4 stroke-2 stroke-neutral-800 dark:stroke-white" />
             </button>
-            <button
-              type="button"
-              class="absolute right-0 bottom-0 flex h-3.5 w-3.5 items-center justify-center disabled:pointer-events-none disabled:opacity-40"
-              aria-label="Minimization settings"
+            <ToolbarCornerButton
+              ariaLabel="Minimization settings"
               title="Change the step count, convergence, and RMSD limit. The next click uses these settings."
               onclick={openMinimizeSettings}
               disabled={!canMinimize || minimizeBusy}
-            >
-              <span class="h-1.5 w-1.5 rounded-full bg-neutral-500 dark:bg-neutral-400"></span>
-            </button>
+              active={Boolean(minimizeSettings)}
+            />
           </div>
           {@render toolbarBtn(
             axesVisible ? 'Hide axes gizmo' : 'Show axes gizmo',

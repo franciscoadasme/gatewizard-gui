@@ -1,5 +1,5 @@
 <script>
-  /** Lucide-style arrow-down-to-line icon. */
+  /** Arrow dropping into an energy well. */
   /** @type {{ className?: string, title?: string }} */
   let { className = '', title } = $props()
 </script>
@@ -17,7 +17,7 @@
   aria-hidden={title ? undefined : true}
 >
   {#if title}<title>{title}</title>{/if}
-  <path d="M12 3v12" />
-  <path d="m7 10 5 5 5-5" />
-  <path d="M5 21h14" />
+  <path d="M1.4 13.2H4.6C5.8 13.2 6.4 14.2 7.2 16L9.6 20.2c.5 1 1 1.4 1.7 1.4h1.4c.7 0 1.2-.4 1.7-1.4l2.4-4.2c.8-1.8 1.4-2.8 2.6-2.8h3.2" />
+  <path d="M12 2.2v6.4" />
+  <path d="m9.8 6.2 2.2 2.6 2.2-2.6" />
 </svg>
