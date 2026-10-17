@@ -69,6 +69,12 @@
   // ── Working directory (shared with pages) ──
   let workingDir = $state('')
 
+  async function applyLaunchWorkingDir() {
+    if (workingDir) return
+    const dir = await window.api?.getLaunchCwd?.()
+    if (typeof dir === 'string' && dir && !workingDir) workingDir = dir
+  }
+
   async function onBrowseDirectory() {
     const result = await window.api.openDirectoryDialog(
       'Select Working Directory',
@@ -397,6 +403,7 @@
 
     void runStartupUpdateCheck()
     void pollSystemRam()
+    void applyLaunchWorkingDir()
 
     return () => {
       removeBoundsListener?.()

@@ -46,6 +46,7 @@ const api = {
   saveClusterProfiles: (payload) => ipcRenderer.invoke('clusters:save', payload),
   listSshIdentityFiles: () => ipcRenderer.invoke('ssh:listIdentityFiles'),
 
+  getLaunchCwd: () => ipcRenderer.invoke('app:launchCwd'),
   isWindowFocused: () => ipcRenderer.invoke('window:isFocused'),
   captureWindowImage: () => ipcRenderer.invoke('window:capturePage'),
   getSystemMemoryInfo: () => ipcRenderer.invoke('system:memoryInfo'),

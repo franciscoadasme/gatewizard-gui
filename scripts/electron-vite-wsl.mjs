@@ -33,6 +33,9 @@ if (process.platform === 'linux') {
 
 const args = process.argv.slice(2)
 const env = { ...process.env }
+if (!env.GATEWIZARD_LAUNCH_CWD) {
+  env.GATEWIZARD_LAUNCH_CWD = process.env.INIT_CWD || process.cwd()
+}
 ensureSessionDbus(env)
 applyDisplayGpuEnv(env)
 if (process.platform === 'linux') {

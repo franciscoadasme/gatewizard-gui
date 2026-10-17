@@ -58,6 +58,7 @@ test('buildWrapperScript is a POSIX launcher that execs the real ELF', () => {
   assert.match(sh, /gatewizard-gui-linux\.bin/)
   assert.match(sh, /libasound\.so\.2/)
   assert.match(sh, /libasound2t64/)
+  assert.match(sh, /GATEWIZARD_LAUNCH_CWD/)
   assert.match(sh, /exec "\$bin" "\$@"/)
   assert.doesNotMatch(sh, /mkfifo/)
   assert.doesNotMatch(sh, /gw_err_fifo/)

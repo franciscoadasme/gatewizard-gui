@@ -300,6 +300,12 @@ See the terminal for the full list."
   exit 1
 fi
 ${buildDbusEnsureShell()}${buildDisplayGpuShell()}${buildGpuCacheShell()}${buildSingletonLockShell()}${buildInstanceLockShell()}
+# A terminal launch keeps that folder as the app working directory.
+# A desktop start has no tty, so the field stays empty.
+if [ -t 0 ] || [ -t 1 ]; then
+  GATEWIZARD_LAUNCH_CWD=\$(pwd)
+  export GATEWIZARD_LAUNCH_CWD
+fi
 # Start the ELF with the terminal stderr, the same way npm run dev does.
 ${buildChromiumStderrRunShell()}
 `

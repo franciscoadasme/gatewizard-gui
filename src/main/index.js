@@ -7,11 +7,15 @@ import { buildFfmpegEncodeArgs, formatFfmpegError } from './animationEncode.js'
 import { resolveWritableDir, sidecarFsCandidates, sidecarReadCandidates } from './wslPaths.js'
 import { readSystemMemoryKbAsync } from './systemMemory.js'
 import { collectInstallFootprint } from './install-footprint.js'
+import { resolveLaunchCwd } from './launch-cwd.js'
 
-/** Directory from which the process was started (terminal cwd). Captured early. */
+/** Directory of the console that started the app. Captured before later cwd changes. */
 const LAUNCH_CWD = (() => {
   try {
-    return process.cwd()
+    return resolveLaunchCwd({
+      cwd: process.cwd(),
+      execDir: path.dirname(process.execPath)
+    })
   } catch {
     return ''
   }
@@ -1869,6 +1873,8 @@ ipcMain.handle('zoom:setDefault', (_event, factor) => {
   defaultUiScale = clampUiScale(factor)
   return defaultUiScale
 })
+
+ipcMain.handle('app:launchCwd', () => LAUNCH_CWD)
 
 ipcMain.handle('window:isFocused', () => {
   if (!mainWindow || mainWindow.isDestroyed()) return false
