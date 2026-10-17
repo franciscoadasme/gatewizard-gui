@@ -89,27 +89,30 @@
   /**
    * Residue name plus a short chemical name. The closed field stays inside the sidebar.
    * The open list also shows the charge.
-   * @param {string | { name: string, full_name?: string, charge?: number }} lipid
+   * @param {string | { name: string, full_name?: string, charge?: number, note?: string }} lipid
    */
   function lipidChoice(lipid) {
     if (typeof lipid === 'string') {
-      return { name: lipid, fullName: '', charge: null, label: lipid, listLabel: lipid }
+      return { name: lipid, fullName: '', charge: null, note: '', lipidExt: false, label: lipid, listLabel: lipid }
     }
     const name = lipid.name
     const fullName = lipid.full_name ? String(lipid.full_name) : ''
+    const note = lipid.note ? String(lipid.note) : ''
+    const lipidExt = note === 'Parameters from PACKMOL-Memgen Lipid_ext'
     const charge = Number.isFinite(lipid.charge) ? lipid.charge : null
     const chargeText = charge === null ? '' : String(charge)
     const preview =
       fullName.length > LIPID_NAME_PREVIEW
         ? `${fullName.slice(0, LIPID_NAME_PREVIEW).trimEnd()}…`
         : fullName
-    const label = preview ? `${name} — ${preview}` : name
-    const listLabel = [name, chargeText, preview].filter(Boolean).join('  ')
-    return { name, fullName, charge, label, listLabel }
+    const extLabel = lipidExt ? 'Lipid_ext' : ''
+    const label = [preview ? `${name} — ${preview}` : name, extLabel].filter(Boolean).join(' · ')
+    const listLabel = [name, chargeText, preview, extLabel].filter(Boolean).join('  ')
+    return { name, fullName, charge, note, lipidExt, label, listLabel }
   }
 
   /**
-   * @param {{ name: string, fullName: string }} choice
+   * @param {{ name: string, fullName: string, note?: string, lipidExt?: boolean, charge?: number | null }} choice
    * @param {string} query
    */
   function lipidMatchesQuery(choice, query) {
@@ -118,6 +121,7 @@
     return (
       choice.name.toLowerCase().includes(q) ||
       choice.fullName.toLowerCase().includes(q) ||
+      (choice.note || '').toLowerCase().includes(q) ||
       (choice.charge !== null && String(choice.charge).includes(q))
     )
   }
@@ -1700,7 +1704,7 @@
           type="button"
           data-lipid-menu
           class="sidebar-control flex w-full min-w-0 items-center gap-1 p-1 text-left"
-          title={selected?.fullName || entry.lipid}
+          title={[selected?.fullName, selected?.note].filter(Boolean).join(' · ') || entry.lipid}
           onclick={(event) => toggleLipidMenu(menuId, event)}
         >
           <span class="min-w-0 flex-1 truncate">{selected?.label || entry.lipid}</span>
@@ -1745,11 +1749,12 @@
             </div>
             <div
               class="grid gap-x-2 border-b border-neutral-200 px-2 py-1 text-xs text-neutral-500 uppercase dark:border-neutral-800 [&>span]:text-[10px] [&>span]:tracking-wide"
-              style="grid-template-columns: 2.4rem {lipidNameCh}ch 3.25rem minmax(0, 1fr)"
+              style="grid-template-columns: 2.4rem {lipidNameCh}ch 3.25rem 4.6rem minmax(0, 1fr)"
             >
               <span class="text-right">#</span>
               <span>Lipid</span>
               <span class="text-right">Charge</span>
+              <span>Ext</span>
               <span>Name</span>
             </div>
             <div class="max-h-52 overflow-y-auto overscroll-contain">
@@ -1760,15 +1765,14 @@
                   entry.lipid
                     ? 'bg-neutral-100 dark:bg-neutral-800'
                     : ''}"
-                  style="grid-template-columns: 2.4rem {lipidNameCh}ch 3.25rem minmax(0, 1fr)"
-                  title={item.charge === null
-                    ? item.fullName || item.name
-                    : `${item.charge} · ${item.fullName || item.name}`}
+                  style="grid-template-columns: 2.4rem {lipidNameCh}ch 3.25rem 4.6rem minmax(0, 1fr)"
+                  title={[item.charge, item.fullName, item.note].filter((part) => part !== null && part !== '').join(' · ') || item.name}
                   onclick={() => chooseLipid(entry, item.name)}
                 >
                   <span class="text-right text-neutral-400 tabular-nums">{item.number}</span>
                   <span class="truncate">{item.name}</span>
                   <span class="text-right tabular-nums">{item.charge ?? ''}</span>
+                  <span class="truncate text-neutral-500">{item.lipidExt ? 'Lipid_ext' : ''}</span>
                   <span class="truncate text-neutral-500">{item.fullName}</span>
                 </button>
               {:else}
@@ -1782,7 +1786,7 @@
     <div class="space-y-2">
       <h2 class="sidebar-heading">Lipid Composition</h2>
       <p class="sidebar-hint">
-        GateWizard supports 4028 lipids. SIRAH and coarse-grained lipids are not supported.
+        GateWizard supports 4028 lipids. 3770 of them use PACKMOL-Memgen Lipid_ext parameters, which are not part of Amber lipid21. SIRAH and coarse-grained lipids are not supported.
       </p>
       <div class="sidebar-panel space-y-1.5 p-2">
         <div class="flex items-center justify-between">
