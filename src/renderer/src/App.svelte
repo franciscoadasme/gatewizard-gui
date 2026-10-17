@@ -345,6 +345,25 @@
     clearRamPoll()
   })
 
+  /** @param {'success'|'error'|'warning'|'info'|undefined} tone */
+  function toastToneClass(tone) {
+    switch (tone) {
+      case 'error':
+        return 'gw-toast-error'
+      case 'warning':
+        return 'gw-toast-warning'
+      case 'info':
+        return 'gw-toast-info'
+      case 'success':
+      case undefined:
+        return 'gw-toast-success'
+      default: {
+        const unexpected = tone
+        return unexpected
+      }
+    }
+  }
+
   /** @param {string|null} iso */
   function elapsed(iso) {
     if (!iso) return ''
@@ -1145,7 +1164,7 @@
   >
     {#each jobToastState.items as toast (toast.id)}
       <div
-        class="gw-toast gw-toast-success pointer-events-auto flex w-full items-start gap-2 p-3 text-left transition-opacity hover:opacity-90"
+        class="gw-toast {toastToneClass(toast.tone)} pointer-events-auto flex w-full items-start gap-2 p-3 text-left transition-opacity hover:opacity-90"
         role="status"
       >
         <button

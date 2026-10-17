@@ -163,6 +163,7 @@ Coordinate clip (use Update each frame on a trajectory):
    *   sourceResidues?: Residue[] | null,
    *   topology?: string | null,
    *   selected?: boolean,
+   *   selectedCount?: number,
    *   onRowSelect?: (e: MouseEvent) => void,
    *   onContextOpen?: (e: MouseEvent) => void,
    *   onCreateGroup?: () => void,
@@ -189,6 +190,7 @@ Coordinate clip (use Update each frame on a trajectory):
     sourceResidues = null,
     topology = null,
     selected = false,
+    selectedCount = 1,
     onRowSelect,
     onContextOpen,
     onCreateGroup,
@@ -1331,7 +1333,7 @@ Coordinate clip (use Update each frame on a trajectory):
             onremove()
           }}
         >
-          Remove
+          Remove{selectedCount > 1 ? ` ${selectedCount}` : ''}
         </button>
       </div>
     </div>
@@ -2226,7 +2228,7 @@ Coordinate clip (use Update each frame on a trajectory):
             onremove()
           }}
         >
-          Remove
+          Remove{selectedCount > 1 ? ` ${selectedCount}` : ''}
         </Button>
       </div>
     </div>

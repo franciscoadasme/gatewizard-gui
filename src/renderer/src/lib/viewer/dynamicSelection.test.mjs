@@ -121,6 +121,19 @@ test('filterByIndexSet drops bonds and residues', () => {
   assert.equal(out.residues.length, 1)
 })
 
+test('index selects 0-based atom indices', () => {
+  const atoms = [
+    atom({ index: 12, res_name: 'K', name: 'K', element: 'K' }),
+    atom({ index: 13, res_name: 'K', name: 'K', element: 'K' }),
+    atom({ index: 40 })
+  ]
+  assert.deepEqual([...(evaluateSelectionIndices(atoms, 'index 12') ?? [])], [12])
+  assert.deepEqual([...(evaluateSelectionIndices(atoms, 'index 12 40') ?? [])].sort((a, b) => a - b), [12, 40])
+  assert.deepEqual([...(evaluateSelectionIndices(atoms, 'index 12 to 13') ?? [])].sort((a, b) => a - b), [12, 13])
+  assert.equal(selectionLooksIncomplete('index'), true)
+  assert.equal(selectionLooksIncomplete('index 12'), false)
+})
+
 test('selectionLooksIncomplete detects mid-edit bonded drafts', () => {
   assert.equal(selectionLooksIncomplete(''), true)
   assert.equal(selectionLooksIncomplete('(not (protein or nucleic'), true)

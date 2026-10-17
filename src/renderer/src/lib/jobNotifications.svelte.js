@@ -9,7 +9,8 @@
 import { appSettings } from './appSettings.svelte.js'
 
 /**
- * @typedef {{ id: string, title: string, body: string, createdAt: number, sourcePage: string }} JobToast
+ * @typedef {'success'|'error'|'warning'|'info'} JobToastTone
+ * @typedef {{ id: string, title: string, body: string, createdAt: number, sourcePage: string, tone: JobToastTone }} JobToast
  * @typedef {'visualize'|'preparation'|'builder'|'equilibration'|'analysis'} AppPageId
  */
 
@@ -25,15 +26,16 @@ export const notificationNav = $state({
 })
 
 /**
- * @param {{ title: string, body: string, sourcePage?: string }} payload
+ * @param {{ title: string, body: string, sourcePage?: string, tone?: JobToastTone }} payload
  */
 export function pushJobToast(payload) {
   const title = typeof payload.title === 'string' ? payload.title : 'GateWizard'
   const body = typeof payload.body === 'string' ? payload.body : ''
   const sourcePage = typeof payload.sourcePage === 'string' ? payload.sourcePage : ''
+  const tone = payload.tone === 'error' || payload.tone === 'warning' || payload.tone === 'info' ? payload.tone : 'success'
   jobToastState.items = [
     ...jobToastState.items,
-    { id: crypto.randomUUID(), title, body, createdAt: Date.now(), sourcePage }
+    { id: crypto.randomUUID(), title, body, createdAt: Date.now(), sourcePage, tone }
   ]
 }
 

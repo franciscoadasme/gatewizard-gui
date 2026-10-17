@@ -123,6 +123,23 @@ def test_spilled_serial_does_not_become_chloride_name(tmp_path: Path):
     assert atom.resname.strip() == "CL"
 
 
+def test_hetatm_five_digit_serial_is_left_alone(tmp_path: Path):
+    """OpenMM writes HETATM16689 with no space. That serial is still decimal."""
+    pdb = tmp_path / "potassium.pdb"
+    pdb.write_text(
+        "HETATM16689  K     K A 302      -2.733 -36.878  25.575  1.00  0.00           K\n"
+        "END\n",
+        encoding="utf-8",
+    )
+    coordinates, topology = pdb_reader_sources(pdb)
+    assert coordinates == pdb
+    assert topology is None
+    universe = mda.Universe(str(pdb))
+    atom = universe.atoms[0]
+    assert atom.name.strip() == "K"
+    assert int(atom.resid) == 302
+
+
 def test_tiny_cif_becomes_pdb_mdanalysis_can_read(tmp_path: Path):
     cif = tmp_path / "tiny.cif"
     cif.write_text(TINY_CIF, encoding="utf-8")

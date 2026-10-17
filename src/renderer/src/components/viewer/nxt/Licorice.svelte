@@ -271,11 +271,7 @@
   function colorForAtom(atom, into = _tmpColor) {
     into.copy(getColor(atom))
     if (highlightIndices.size > 0 && atom.index != null && highlightIndices.has(atom.index)) {
-      into.setRGB(
-        Math.min(1, into.r * 1.5 + 0.4),
-        Math.min(1, into.g * 1.5 + 0.4),
-        Math.min(1, into.b * 1.5 + 0.4)
-      )
+      into.setHex(0xffdd00)
     }
     return into
   }

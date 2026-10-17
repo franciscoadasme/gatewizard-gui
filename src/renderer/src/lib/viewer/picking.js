@@ -145,8 +145,8 @@ export function pickRadiusPx(repr, atom, pxPerUnit, minThreshold) {
 }
 
 /**
- * Tie-break priority when depths are nearly equal — prefer discrete atom glyphs
- * over ribbon traces so ligands / sidechains win against nearby backbone.
+ * Tie-break within one drawing style. Points, VdW, ball-and-stick, and licorice
+ * beat cartoon and tube even when the ribbon is closer to the camera.
  * @param {string} repr
  */
 function representationPickPriority(repr) {
@@ -154,6 +154,16 @@ function representationPickPriority(repr) {
   if (repr === 'points') return 1
   if (repr === 'cartoon' || repr === 'tube') return 2
   return 3
+}
+
+/** @param {string} repr */
+function isAtomGlyph(repr) {
+  return repr === 'vdw' || repr === 'ball-stick' || repr === 'licorice' || repr === 'points'
+}
+
+/** @param {string} repr */
+function isRibbon(repr) {
+  return repr === 'cartoon' || repr === 'tube'
 }
 
 /**
@@ -182,7 +192,9 @@ export function worldToScreen(pos, camera, w, h) {
  *   far plane is huge, so NDC z collapses and a 0.002 epsilon treated the
  *   front and back of a protein as the same depth — the first screen hit
  *   (often the far residue) won.
- * - Near ties prefer atomistic reps.
+ * - A points, VdW, ball-and-stick, or licorice atom under the cursor wins over
+ *   cartoon or tube even when the ribbon is closer. Depth still ranks atoms of
+ *   the same kind.
  *
  * Residue / chain expansion after the pick is handled by the caller (edit mode).
  *
@@ -205,6 +217,7 @@ export function pickAtomFromViews(views, camera, w, h, cx, cy, minThreshold = 20
   let best = null
   let bestDepth = Infinity
   let bestPriority = Infinity
+  let bestRepr = ''
 
   if (typeof camera.updateMatrixWorld === 'function') {
     camera.updateMatrixWorld(true)
@@ -245,13 +258,16 @@ export function pickAtomFromViews(views, camera, w, h, cx, cy, minThreshold = 20
       const pickR = pickRadiusPx(repr, atom, pxPerUnit, minThreshold)
       if (d2 > pickR * pickR) continue
 
+      const glyphOverRibbon = isAtomGlyph(repr) && isRibbon(bestRepr)
+      const ribbonUnderGlyph = isRibbon(repr) && isAtomGlyph(bestRepr)
       const closer = best == null || depth < bestDepth - DEPTH_EPS
       const sameDepthBetter =
         best != null && Math.abs(depth - bestDepth) <= DEPTH_EPS && priority < bestPriority
-      if (!closer && !sameDepthBetter) continue
+      if (ribbonUnderGlyph || (!glyphOverRibbon && !closer && !sameDepthBetter)) continue
 
       bestDepth = depth
       bestPriority = priority
+      bestRepr = repr
       best =
         typeof view.structureId === 'string'
           ? { ...atom, structureId: view.structureId }

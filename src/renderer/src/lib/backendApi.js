@@ -824,6 +824,33 @@ export async function preparePDB(props) {
 }
 
 /**
+ * Numbering gaps of 1–6 residues that SEQRES can fill, and longer gaps that stay open.
+ * @param {string} filePath
+ * @param {string[]} [chains]
+ */
+export function previewShortGaps(filePath, chains = null) {
+  return backendJson('/short-gaps', { path: filePath, chains })
+}
+
+/**
+ * Build short gaps and write a PDB. Longer gaps are left open.
+ * @param {{ path: string, chains?: string[] | null, outputPath?: string | null, sequences?: object[] | null }} props
+ * @returns {Promise<{ output_file: string, built: object[], skipped: object[], gaps: object[] }>}
+ */
+export function fillShortGaps(props) {
+  return backendJson('/short-gaps/fill', props)
+}
+
+/**
+ * Minimize the selected atoms. Protein and ions use OpenMM. Other residues get a steric bump.
+ * @param {{ path: string, selection?: string | null, atomIndices?: number[] | null, maxIterations?: number, tolerance?: number | null, maxRmsd?: number | null, outputPath?: string | null }} props
+ * @returns {Promise<{ output_file: string, atoms_moved: number, movable: number, skipped: object[], relaxed: object[], max_iterations: number }>}
+ */
+export function minimizeSelection(props) {
+  return backendJson('/minimize-selection', props)
+}
+
+/**
  * Best-effort ghost H geometry for Preparation viewer (approximate; not pdb4amber).
  * @param {{ path: string, residues: Array<{ chain?: string, res_id: number, residue?: string, initial_state: string, current_state: string }> }} payload
  * @returns {Promise<{ ghost_atoms: object[], removed_markers: object[] }>}

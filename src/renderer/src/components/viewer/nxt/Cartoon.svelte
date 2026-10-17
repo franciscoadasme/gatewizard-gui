@@ -76,11 +76,7 @@
       : (atom) => {
           const c = getColor(atom)
           if (highlightIndices.has(atom.index)) {
-            return _tmpHL.setRGB(
-              Math.min(1, c.r * 1.5 + 0.4),
-              Math.min(1, c.g * 1.5 + 0.4),
-              Math.min(1, c.b * 1.5 + 0.4)
-            )
+            return _tmpHL.setHex(0xffdd00)
           }
           return c
         }

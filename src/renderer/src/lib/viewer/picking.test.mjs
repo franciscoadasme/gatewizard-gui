@@ -99,6 +99,43 @@ test('pickAtomFromViews skips cartoon sidechains and hidden water', async () => 
   assert.equal(mixed?.index, 50)
 })
 
+test('pickAtomFromViews prefers an ion glyph behind the cartoon', async () => {
+  const { OrthographicCamera } = await import('three')
+  const cam = new OrthographicCamera(-10, 10, 10, -10, 0.1, 100)
+  cam.position.set(0, 0, 20)
+  cam.lookAt(0, 0, 0)
+  cam.updateMatrixWorld(true)
+
+  const cartoon = {
+    visible: true,
+    representation: { type: 'cartoon' },
+    atoms: [{ x: 0, y: 0, z: 0, element: 'C', name: 'CA', index: 1 }]
+  }
+  const ion = {
+    visible: true,
+    representation: { type: 'vdw' },
+    atoms: [{ x: 0, y: 0, z: -2, element: 'K', name: 'K', index: 80 }]
+  }
+  const behind = pickAtomFromViews([cartoon, ion], cam, 200, 200, 100, 100, 30)
+  assert.equal(behind?.index, 80)
+
+  const points = {
+    visible: true,
+    representation: { type: 'points' },
+    atoms: ion.atoms
+  }
+  const asPoints = pickAtomFromViews([cartoon, points], cam, 200, 200, 100, 100, 30)
+  assert.equal(asPoints?.index, 80)
+
+  const aside = {
+    visible: true,
+    representation: { type: 'vdw' },
+    atoms: [{ x: 8, y: 8, z: -2, element: 'K', name: 'K', index: 81 }]
+  }
+  const ribbonOnly = pickAtomFromViews([cartoon, aside], cam, 200, 200, 100, 100, 30)
+  assert.equal(ribbonOnly?.index, 1)
+})
+
 test('pickAtomFromViews prefers the front face with the viewer far plane', async () => {
   const { OrthographicCamera } = await import('three')
   const cam = new OrthographicCamera(-40, 40, 40, -40, 0.05, 500000)

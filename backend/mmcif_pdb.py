@@ -113,6 +113,12 @@ def _pdb_coord_columns_overflow(path: Path) -> bool:
                 float(line[46:54])
             except ValueError:
                 return True
+            # Columns 7–11 are the serial. A 5-digit serial on HETATM has no
+            # space after the record name, so split() sees the atom name
+            # ("K") instead of the serial. That line is still a normal PDB.
+            serial = line[6:11]
+            if serial.strip().isdigit() and not (len(line) > 11 and line[11].isdigit()):
+                continue
             parts = line.split()
             if len(parts) < 2 or not parts[1].isdigit():
                 return True

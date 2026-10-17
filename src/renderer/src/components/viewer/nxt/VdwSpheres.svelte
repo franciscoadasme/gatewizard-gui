@@ -300,11 +300,7 @@
       const atom = arr[index]
       const color = getColor(atom)
       if (hi.size > 0 && hi.has(atom.index)) {
-        _tmpHL.setRGB(
-          Math.min(1, color.r * 1.5 + 0.4),
-          Math.min(1, color.g * 1.5 + 0.4),
-          Math.min(1, color.b * 1.5 + 0.4)
-        )
+        _tmpHL.setHex(0xffdd00)
         mesh.setColorAt(index, _tmpHL)
       } else {
         mesh.setColorAt(index, color)

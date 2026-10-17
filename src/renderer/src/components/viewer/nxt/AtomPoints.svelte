@@ -173,11 +173,7 @@
       const atom = arr[i]
       const c = getColor(atom)
       if (hi.size > 0 && atom.index != null && hi.has(atom.index)) {
-        _tmp.setRGB(
-          Math.min(1, c.r * 1.5 + 0.4),
-          Math.min(1, c.g * 1.5 + 0.4),
-          Math.min(1, c.b * 1.5 + 0.4)
-        )
+        _tmp.setHex(0xffdd00)
         colorAttr.setXYZ(i, _tmp.r, _tmp.g, _tmp.b)
       } else {
         colorAttr.setXYZ(i, c.r, c.g, c.b)

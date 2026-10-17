@@ -11,6 +11,7 @@
     detectTerminalCaps,
     preparePDB,
     previewProtonation,
+    previewShortGaps,
     runPropKa
   } from '../lib/backendApi'
   import {
@@ -35,6 +36,10 @@
   let removeProteinHydrogens = $state(true)
   /** Restore input residue numbers after pdb4amber. Default on. */
   let preserveResidueNumbers = $state(true)
+  /** Build numbering gaps of 1–6 residues during Prepare. */
+  let fillShortGaps = $state(false)
+  /** @type {{ filled?: object[], skipped?: object[], error?: string } | null} */
+  let gapReport = $state(null)
   let maxDisulfideDistance = $state(2.5)
   let targetPh = $state(7.0)
   let workingFile = $state('')
@@ -364,6 +369,7 @@
     }
     workingFile = filePath
     cappingWarning = ''
+    gapReport = null
     propKaEmptyMessage = ''
     propKaParsedCount = 0
     lastPropKaFile = ''
@@ -374,6 +380,19 @@
       outputFolderName = defaultPreparationFolderName(filePath)
     }
     await refreshTerminalCaps(filePath)
+    await refreshShortGaps(filePath)
+  }
+
+  async function refreshShortGaps(filePath) {
+    if (!filePath) {
+      gapReport = null
+      return
+    }
+    try {
+      gapReport = await previewShortGaps(filePath)
+    } catch (error) {
+      gapReport = { error: error instanceof Error ? error.message : String(error) }
+    }
   }
 
   async function onDetectDisulfideBonds() {
@@ -404,6 +423,7 @@
         disulfideBonds,
         removeProteinHydrogens,
         preserveResidueNumbers,
+        fillShortGaps,
         ...buildOutputOptions()
       })
       preparationOutput = data.output.trim()
@@ -426,6 +446,8 @@
     capProtein = false
     removeProteinHydrogens = true
     preserveResidueNumbers = true
+    fillShortGaps = false
+    gapReport = null
     maxDisulfideDistance = 2.5
     targetPh = 7.0
     workingFile = ''
@@ -634,6 +656,32 @@
           Keep original residue numbers and chains
         </label>
       </div>
+      <div class="flex items-center gap-1">
+        <Checkbox name="fill-short-gaps" bind:checked={fillShortGaps} />
+        <label
+          for="fill-short-gaps"
+          class="sidebar-label"
+          title="Build numbering gaps of 1 to 6 residues with PDBFixer when SEQRES has the sequence. Longer gaps stay open."
+        >
+          Fill short gaps (1–6 residues)
+        </label>
+      </div>
+      {#if gapReport?.error}
+        <p class="sidebar-hint text-amber-700 dark:text-amber-300">{gapReport.error}</p>
+      {:else if gapReport}
+        {#each gapReport.filled || [] as gap (`${gap.chain}-${gap.after_resid}`)}
+          <p class="sidebar-hint">
+            Chain {gap.chain} {gap.after_resid}–{gap.before_resid} ({gap.count}):
+            {fillShortGaps ? 'will be completed' : 'can be completed'}.
+          </p>
+        {/each}
+        {#each gapReport.skipped || [] as gap (`${gap.chain}-${gap.after_resid}-skip`)}
+          <p class="sidebar-hint text-amber-700 dark:text-amber-300">
+            Chain {gap.chain} {gap.after_resid}–{gap.before_resid} ({gap.count}) will not be completed.
+            {gap.reason}
+          </p>
+        {/each}
+      {/if}
       <Button className="w-full" onclick={onPreparePDB} disabled={!canRunPreparationSteps || preparingPDB}
         >{preparingPDB ? 'Preparing...' : 'Prepare'}</Button
       >

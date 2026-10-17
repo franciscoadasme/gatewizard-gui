@@ -3,7 +3,7 @@
  * trajectory frame (clip planes, byres, topology keywords).
  *
  * Supported: and/or/not, parentheses, byres / same residue as, prop [abs] x|y|z,
- * resname, resid, name, element, segid/chainID, and named keywords
+ * resname, resid, index, name, element, segid/chainID, and named keywords
  * (protein, lipid, water, ion, backbone, all, none, …).
  */
 
@@ -267,7 +267,7 @@ export function parseDynamicSelection(sel) {
     return names
   }
 
-  function parseResidList() {
+  function parseResidList(label = 'resid') {
     /** @type {Array<[number, number]>} */
     const ranges = []
     while (!atEnd() && (isNumberToken(peek()) || peek() === ':')) {
@@ -276,12 +276,12 @@ export function parseDynamicSelection(sel) {
       let hi = lo
       if (peek().toLowerCase() === 'to' || peek() === ':') {
         take()
-        if (!isNumberToken(peek())) throw new Error('Expected residue number')
+        if (!isNumberToken(peek())) throw new Error(`Expected ${label} number`)
         hi = Number(take())
       }
       ranges.push([Math.min(lo, hi), Math.max(lo, hi)])
     }
-    if (!ranges.length) throw new Error('resid needs numbers')
+    if (!ranges.length) throw new Error(`${label} needs numbers`)
     return ranges
   }
 
@@ -326,7 +326,10 @@ export function parseDynamicSelection(sel) {
       return { type: 'chain', ids }
     }
     if (key === 'resid') {
-      return { type: 'resid', ranges: parseResidList() }
+      return { type: 'resid', ranges: parseResidList('resid') }
+    }
+    if (key === 'index') {
+      return { type: 'index', ranges: parseResidList('index') }
     }
     if (
       key === 'protein' ||
@@ -425,6 +428,14 @@ function compile(ast, atoms, xyz) {
         const r = Number(atoms[i].res_id)
         if (!Number.isFinite(r)) return false
         return ranges.some(([lo, hi]) => r >= lo && r <= hi)
+      }
+    }
+    case 'index': {
+      const ranges = ast.ranges
+      return (i) => {
+        const idx = Number(atoms[i].index)
+        if (!Number.isFinite(idx)) return false
+        return ranges.some(([lo, hi]) => idx >= lo && idx <= hi)
       }
     }
     case 'keyword':
@@ -585,7 +596,7 @@ export function selectionLooksIncomplete(selection) {
     if (depth < 0) return true
   }
   if (depth !== 0) return true
-  if (/\b(and|or|not|bonded|element|resname|name|resid|segid|chainid|around|byres|prop|same|as|to)\s*$/i.test(s)) {
+  if (/\b(and|or|not|bonded|element|resname|name|resid|index|segid|chainid|around|byres|prop|same|as|to)\s*$/i.test(s)) {
     return true
   }
   return false

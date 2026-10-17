@@ -111,11 +111,7 @@
   function colorRgb(atom) {
     const c = getColor(atom)
     if (highlightIndices.size > 0 && typeof atom.index === 'number' && highlightIndices.has(atom.index)) {
-      _tmp.setRGB(
-        Math.min(1, c.r * 1.5 + 0.4),
-        Math.min(1, c.g * 1.5 + 0.4),
-        Math.min(1, c.b * 1.5 + 0.4)
-      )
+      _tmp.setHex(0xffdd00)
       return { r: _tmp.r, g: _tmp.g, b: _tmp.b }
     }
     return { r: c.r, g: c.g, b: c.b }

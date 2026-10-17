@@ -27,6 +27,10 @@
   } from '../components/viewer/CameraRig.svelte'
   import { mainViewerControls } from '../components/viewer/Canvas.svelte'
   import SaveIcon from '../components/icons/Save.svelte'
+  import ListOrdered from '../components/icons/ListOrdered.svelte'
+  import MinimizeIcon from '../components/icons/Minimize.svelte'
+  import SequenceBar from '../components/SequenceBar.svelte'
+  import { applyGapReport, buildSequenceChains, selectionFromKeys } from '../lib/viewer/sequenceBar.js'
   import LoadIcon from '../components/icons/Load.svelte'
   import Axes from '../components/icons/Axes.svelte'
   import AxesLinesIcon from '../components/icons/AxesLines.svelte'
@@ -72,6 +76,9 @@
     editDeleteByIndices,
     editSavePdb,
     saveTrajectoryFrame,
+    fillShortGaps,
+    previewShortGaps,
+    minimizeSelection,
     structureWriteCoords,
     transformCountSelection,
     transformCompute,
@@ -209,6 +216,8 @@
   import HydrationBoxManipulatorOverlay from '../components/viewer/HydrationBoxManipulatorOverlay.svelte'
   import LightGizmoOverlay from '../components/viewer/LightGizmoOverlay.svelte'
   import { visualizeStatus, logEvent } from '../lib/pageStatus.svelte.js'
+  import { showAppError } from '../lib/appDialog.svelte.js'
+  import { pushJobToast } from '../lib/jobNotifications.svelte.js'
   import { requestSidePanelExpand } from '../lib/pageSidePanelStore.svelte.js'
   import { syncGoodsellSceneLighting } from '../lib/goodsellSceneLighting.svelte.js'
   import { themeState } from '../lib/theme.svelte.js'
@@ -3438,7 +3447,266 @@
     }
   }
 
-  /** @param {Atom[] | undefined | null} atoms */
+  const SEQUENCE_REPRESENTATIONS = [
+    ['cartoon', 'Cartoon'],
+    ['licorice', 'Licorice'],
+    ['ball-stick', 'Ball and stick'],
+    ['vdw', 'VDW'],
+    ['tube', 'Tube'],
+    ['points', 'Points']
+  ]
+
+  let sequenceBarOpen = $state(false)
+  /** @type {Set<string>} */
+  let sequenceKeys = $state(new Set())
+  /** @type {string | null} */
+  let sequenceHighlightViewId = $state(null)
+  /** @type {{ x: number, y: number } | null} */
+  let sequenceMenu = $state(null)
+  let sequenceFillBusy = $state(false)
+  let sequenceFillNote = $state('')
+  /** @type {{ x: number, y: number } | null} */
+  let minimizeSettings = $state(null)
+  let minimizeSteps = $state(50)
+  let minimizeTolerance = $state('')
+  let minimizeRmsd = $state('')
+  let minimizeBusy = $state(false)
+  const minimizeDisclaimer =
+    'This is a raw minimization meant to fix clashes by hand. It is not a stable energy minimum.'
+  const sequenceSelectedAtomCount = $derived.by(() => {
+    if (!sequenceKeys.size || !sequenceHighlightViewId) return 0
+    const view = views.find((item) => item.id === sequenceHighlightViewId)
+    return view?.atoms?.length ?? 0
+  })
+  const panelStatusLine = $derived(
+    autoGeneratingViews
+      ? autoGeneratePhase || 'Generating representations…'
+      : minimizeBusy
+        ? 'Minimizing selection…'
+        : applyRepsBusy
+          ? applyRepsPhase || 'Applying…'
+          : ''
+  )
+  /** @type {{ gaps?: object[] } | null} */
+  let sequenceGapReport = $state(null)
+  const sequenceChains = $derived(applyGapReport(buildSequenceChains(structure?.atoms), sequenceGapReport))
+
+  $effect(() => {
+    const path = sequenceBarOpen ? structure?.path : ''
+    if (!path) return
+    let cancelled = false
+    previewShortGaps(path)
+      .then((report) => {
+        if (!cancelled) sequenceGapReport = report
+      })
+      .catch(() => {
+        if (!cancelled) sequenceGapReport = null
+      })
+    return () => {
+      cancelled = true
+    }
+  })
+
+  /**
+   * @param {Set<string>} keys
+   * @param {{ focus?: boolean }} [opts]
+   */
+  function applySequenceSelection(keys, opts = {}) {
+    sequenceKeys = keys
+    const selection = selectionFromKeys(keys)
+    if (!structure || !selection) {
+      if (sequenceHighlightViewId) {
+        const drop = sequenceHighlightViewId
+        sequenceHighlightViewId = null
+        views = views.filter((view) => view.id !== drop)
+      }
+      return
+    }
+    const subset = resolveViewAtomSubset(structure, selection, 'licorice')
+    if (!subset.atoms?.length) return
+    if (opts.focus !== false) centerCameraOnAtoms(atomsAtCurrentTraj(subset.atoms))
+    const patch = {
+      structureId: activeStructureId,
+      componentKey: componentKeyFromSelection(selection),
+      selection,
+      baseSelection: selection,
+      representation: { type: 'licorice' },
+      path: structure.path,
+      atoms: subset.atoms,
+      bonds: subset.bonds,
+      residues: subset.residues,
+      visible: true,
+      colorScheme: { name: 'cpk', resolver: cpkScheme({ carbonColor: '#38bdf8' }) }
+    }
+    if (sequenceHighlightViewId && views.some((view) => view.id === sequenceHighlightViewId)) {
+      views = views.map((view) => (view.id === sequenceHighlightViewId ? { ...view, ...patch } : view))
+    } else {
+      const id = crypto.randomUUID()
+      sequenceHighlightViewId = id
+      views = [
+        ...views,
+        {
+          id,
+          ...patch,
+          helixWidth: 1.0,
+          sheetWidth: 0.875,
+          coilWidth: 0.125,
+          ssColors: null,
+          tubeRadius: 0.9,
+          atomScale: 1.0,
+          bondScale: 1.0,
+          pointSize: 3,
+          quality: 3,
+          showMultipleBonds: true,
+          stickRoundness: 1.0,
+          bondColorMode: 'uniform',
+          bondColor: '#b8b8bc',
+          opacity: 1,
+          surfaceInflate: 0.25,
+          surfaceSource: 'atoms',
+          surfaceSubdivision: 0,
+          trajSmooth: 0,
+          trajSmoothRestoreH: true,
+          material: { ...DEFAULT_VIEW_MATERIAL }
+        }
+      ]
+    }
+  }
+
+  /** @param {string} type */
+  function addSequenceRepresentation(type) {
+    const selection = selectionFromKeys(sequenceKeys)
+    sequenceMenu = null
+    if (!selection) return
+    addView(selection, { type })
+  }
+
+  /** @param {MouseEvent} event */
+  function openSequenceMenu(event) {
+    sequenceMenu = { x: event.clientX, y: event.clientY }
+  }
+
+  async function fillShortGapsFromSequence(overrides) {
+    const path = structure?.path || filePath
+    if (!path || sequenceFillBusy || !overrides?.length) return
+    sequenceFillBusy = true
+    sequenceFillNote = ''
+    try {
+      const chains = sequenceChains.map((row) => row.chain).filter((chain) => chain && chain !== '_')
+      const sequences = overrides.map((gap) => ({
+        chain: gap.chain,
+        afterResid: gap.after,
+        beforeResid: gap.before,
+        sequence: gap.sequence
+      }))
+      const result = await fillShortGaps({ path, chains, sequences })
+      const built = result.built?.length ?? 0
+      const skipped = result.skipped?.length ?? 0
+      sequenceFillNote = `${built} short gap${built === 1 ? '' : 's'} filled. ${skipped} left open.`
+      if (result.output_file && built > 0) {
+        await appendStructure(result.output_file, { resetCamera: true, label: 'Short gaps' })
+      }
+    } catch (error) {
+      sequenceFillNote = error instanceof Error ? error.message : String(error)
+    } finally {
+      sequenceFillBusy = false
+    }
+  }
+
+  function minimizePayload() {
+    const path = structure?.path || filePath
+    if (!path) return null
+    if (sequenceKeys.size) {
+      const selection = selectionFromKeys(sequenceKeys)
+      if (selection) return { path, selection }
+    }
+    if (editMode && selectedGroupIndices.size) {
+      return { path, atomIndices: [...selectedGroupIndices] }
+    }
+    const chosen = panelViews.filter((view) => selectedViewIds.has(view.id))
+    if (chosen.length === 1) {
+      const selection = String(chosen[0].selection || '').trim()
+      if (selection && selection.toLowerCase() !== 'all') return { path, selection }
+    }
+    return null
+  }
+
+  const canMinimize = $derived(Boolean(minimizePayload()))
+
+  /** @param {MouseEvent} event */
+  function openMinimizeSettings(event) {
+    event.stopPropagation()
+    const rect = event.currentTarget.getBoundingClientRect()
+    minimizeSettings = minimizeSettings ? null : { x: rect.left, y: rect.bottom + 4 }
+  }
+
+  function minimizedPanelLabel(outputFile) {
+    const stem = String(outputFile || '').split(/[/\\]/).pop() || ''
+    const match = stem.match(/_min_(\d+)\.pdb$/i)
+    return match ? `minimized [${match[1]}]` : 'minimized'
+  }
+
+  function minimizeRequestOptions() {
+    const steps = Math.max(1, Math.min(2000, Math.round(Number(minimizeSteps) || 50)))
+    const toleranceText = String(minimizeTolerance).trim()
+    const rmsdText = String(minimizeRmsd).trim()
+    const tolerance = toleranceText === '' ? null : Number(toleranceText)
+    const maxRmsd = rmsdText === '' ? null : Number(rmsdText)
+    return {
+      maxIterations: steps,
+      tolerance: Number.isFinite(tolerance) ? tolerance : null,
+      maxRmsd: Number.isFinite(maxRmsd) ? maxRmsd : null
+    }
+  }
+
+  async function runMinimize() {
+    const payload = minimizePayload()
+    minimizeSettings = null
+    if (!payload || minimizeBusy) return
+    minimizeBusy = true
+    try {
+      const result = await minimizeSelection({ ...payload, ...minimizeRequestOptions() })
+      const relaxed = result.relaxed?.length ?? 0
+      const skipped = result.skipped?.length ?? 0
+      const moved = `${result.atoms_moved} atom${result.atoms_moved === 1 ? '' : 's'} moved.`
+      const relaxedText = relaxed
+        ? ` ${relaxed} unrecognized residue${relaxed === 1 ? ' was' : 's were'} relaxed sterically.`
+        : ''
+      const skippedText = skipped
+        ? ` ${skipped} residue${skipped === 1 ? '' : 's'} skipped.`
+        : ''
+      reportMinimize('Minimized', `${moved}${relaxedText}${skippedText} ${minimizeDisclaimer}`, 'info')
+      if (result.output_file) {
+        await appendStructure(result.output_file, {
+          resetCamera: false,
+          label: minimizedPanelLabel(result.output_file)
+        })
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      reportMinimize('Could not minimize', message, 'error')
+    } finally {
+      minimizeBusy = false
+    }
+  }
+
+  /**
+   * @param {string} title
+   * @param {string} message
+   * @param {'info'|'error'} level
+   */
+  function reportMinimize(title, message, level) {
+    showAppError(message, title)
+    const toastBody = message.length > 220 ? `${message.slice(0, 220)}…` : message
+    pushJobToast({
+      title,
+      body: toastBody,
+      tone: level === 'error' ? 'error' : 'success'
+    })
+    logEvent(level, 'view', title, message)
+  }
+
+  /** Center the camera on protein residues. */
   function centerCameraOnAtoms(atoms) {
     const next = getCameraForAtoms(atoms)
     if (!next) {
@@ -4191,20 +4459,36 @@
 
   /** @param {string} id */
   function removeView(id) {
-    if (animateMode && isTrackInAnimation(animProject, id)) {
-      const inKeyframes = animProject.keyframes.some((kf) =>
-        kf.views.some((v) => String(v.id) === id)
-      )
-      const msg = inKeyframes
-        ? 'This representation is used in animation keyframes.\n\nRemove it from all keyframes and delete the representation?'
-        : 'Remove this representation track from the animation?'
-      if (!confirm(msg)) return
-      removeViewTrackFromProject(animProject, id)
-      animProject = { ...animProject }
+    const ids =
+      selectedViewIds.has(id) && selectedViewIds.size > 1 ? [...selectedViewIds] : [id]
+    const present = ids.filter((viewId) => views.some((view) => view.id === viewId && !view._isSelHighlight))
+    if (!present.length) return
+    if (animateMode) {
+      const tracked = present.filter((viewId) => isTrackInAnimation(animProject, viewId))
+      if (tracked.length) {
+        const inKeyframes = tracked.some((viewId) =>
+          animProject.keyframes.some((kf) => kf.views.some((v) => String(v.id) === viewId))
+        )
+        const msg =
+          present.length > 1
+            ? `Remove ${present.length} representations${
+                inKeyframes ? ', including ones used in animation keyframes' : ''
+              }?`
+            : inKeyframes
+              ? 'This representation is used in animation keyframes.\n\nRemove it from all keyframes and delete the representation?'
+              : 'Remove this representation track from the animation?'
+        if (!confirm(msg)) return
+        for (const viewId of tracked) removeViewTrackFromProject(animProject, viewId)
+        animProject = { ...animProject }
+      }
     }
-    logEvent('detail', 'view', 'Removed representation', id)
-    views = views.filter((it) => it.id !== id)
-    viewAtomsCache.delete(id)
+    const drop = new Set(present)
+    for (const viewId of present) {
+      logEvent('detail', 'view', 'Removed representation', viewId)
+      viewAtomsCache.delete(viewId)
+    }
+    views = views.filter((it) => !drop.has(it.id))
+    selectedViewIds = new Set([...selectedViewIds].filter((viewId) => !drop.has(viewId)))
     visibilityGroups = pruneVisibilityGroups(
       visibilityGroups,
       structures.map((s) => s.id),
@@ -6365,7 +6649,7 @@
       bonds: selBonds,
       residues: null,
       visible: true,
-      colorScheme: { name: 'cpk', resolver: cpkScheme() },
+      colorScheme: { name: 'element', resolver: _outlineGetColor },
       helixWidth: 1.0,
       sheetWidth: 0.875,
       coilWidth: 0.125,
@@ -8450,7 +8734,7 @@
                 outlinesEnabled={view.material?.outlinesEnabled ?? GOODSELL_MATERIAL_DEFAULTS.outlinesEnabled}
                 outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
                 outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
-                highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, editHoverGroupIndices)}
+                highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, glowHighlightIndices)}
                 opacity={view.opacity ?? 1}
                 showMultipleBonds={view.showMultipleBonds !== false}
                 bondColorMode={view.bondColorMode === 'atoms' ? 'atoms' : 'uniform'}
@@ -8476,7 +8760,7 @@
                 outlinesEnabled={view.material?.outlinesEnabled ?? GOODSELL_MATERIAL_DEFAULTS.outlinesEnabled}
                 outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
                 outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
-                highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, editHoverGroupIndices)}
+                highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, glowHighlightIndices)}
                 opacity={view.opacity ?? 1}
                 showMultipleBonds={view.showMultipleBonds !== false}
               />
@@ -8501,7 +8785,7 @@
                 outlinesEnabled={view.material?.outlinesEnabled ?? GOODSELL_MATERIAL_DEFAULTS.outlinesEnabled}
                 outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
                 outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
-                highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, editHoverGroupIndices)}
+                highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, glowHighlightIndices)}
                 opacity={view.opacity ?? 1}
               />
             {:else if view.representation.type === 'tube'}
@@ -8523,7 +8807,7 @@
                 outlinesEnabled={view.material?.outlinesEnabled ?? GOODSELL_MATERIAL_DEFAULTS.outlinesEnabled}
                 outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
                 outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
-                highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, editHoverGroupIndices)}
+                highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, glowHighlightIndices)}
                 opacity={view.opacity ?? 1}
               />
             {:else if view.representation.type === 'vdw'}
@@ -8544,7 +8828,7 @@
                 outlinesEnabled={view.material?.outlinesEnabled ?? GOODSELL_MATERIAL_DEFAULTS.outlinesEnabled}
                 outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
                 outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
-                highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, editHoverGroupIndices)}
+                highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, glowHighlightIndices)}
                 opacity={view.opacity ?? 1}
               />
             {:else if view.representation.type === 'surface'}
@@ -8566,7 +8850,7 @@
                 outlinesEnabled={view.material?.outlinesEnabled ?? GOODSELL_MATERIAL_DEFAULTS.outlinesEnabled}
                 outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
                 outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
-                highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, editHoverGroupIndices)}
+                highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, glowHighlightIndices)}
                 opacity={view.opacity ?? 1}
               />
             {:else if view.representation.type === 'points'}
@@ -8579,7 +8863,7 @@
                 getColor={view.colorScheme.resolver}
                 pointSize={view.pointSize ?? 3}
                 atomScale={view.atomScale ?? 1.0}
-                highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, editHoverGroupIndices)}
+                highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, glowHighlightIndices)}
                 opacity={view.opacity ?? 1}
               />
             {/if}
@@ -8964,6 +9248,90 @@
           </p>
         </div>
       {/if}
+      {#if sequenceBarOpen && structure}
+        <SequenceBar
+          chains={sequenceChains}
+          selected={sequenceKeys}
+          busy={sequenceFillBusy}
+          note={sequenceFillNote}
+          onSelect={applySequenceSelection}
+          onContextMenu={openSequenceMenu}
+          onFill={fillShortGapsFromSequence}
+          onClose={() => (sequenceBarOpen = false)}
+        />
+      {/if}
+      {#if sequenceMenu}
+        <button
+          type="button"
+          class="fixed inset-0 z-40 cursor-default"
+          aria-label="Close representation menu"
+          onclick={() => (sequenceMenu = null)}
+        ></button>
+        <div
+          class="fixed z-50 min-w-36 rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-md dark:border-neutral-700 dark:bg-neutral-950"
+          style="left: {sequenceMenu.x}px; top: {sequenceMenu.y}px"
+        >
+          <p class="px-2 py-1 text-[10px] tracking-wide text-neutral-500 uppercase">Add representation</p>
+          {#each SEQUENCE_REPRESENTATIONS as [type, label] (type)}
+            <button
+              type="button"
+              class="block w-full px-2 py-1 text-left hover:bg-neutral-100 dark:hover:bg-neutral-800"
+              onclick={() => addSequenceRepresentation(type)}
+            >
+              {label}
+            </button>
+          {/each}
+        </div>
+      {/if}
+      {#if minimizeSettings}
+        <button
+          type="button"
+          class="fixed inset-0 z-40 cursor-default"
+          aria-label="Close minimize settings"
+          onclick={() => (minimizeSettings = null)}
+        ></button>
+        <div
+          class="fixed z-50 w-56 rounded-md border border-neutral-200 bg-white p-2 text-xs shadow-md dark:border-neutral-700 dark:bg-neutral-950"
+          style="left: {minimizeSettings.x}px; top: {minimizeSettings.y}px"
+        >
+          <p class="text-[10px] tracking-wide text-neutral-500 uppercase">Minimize settings</p>
+          <label class="mt-2 block text-neutral-600 dark:text-neutral-300">
+            Steps
+            <input
+              type="number"
+              min="1"
+              max="2000"
+              bind:value={minimizeSteps}
+              class="mt-0.5 w-full rounded border border-neutral-200 bg-white px-1.5 py-0.5 dark:border-neutral-700 dark:bg-neutral-900"
+            />
+          </label>
+          <label class="mt-2 block text-neutral-600 dark:text-neutral-300">
+            Convergence (kJ/mol/nm)
+            <input
+              type="number"
+              min="0"
+              step="any"
+              placeholder="default"
+              bind:value={minimizeTolerance}
+              class="mt-0.5 w-full rounded border border-neutral-200 bg-white px-1.5 py-0.5 dark:border-neutral-700 dark:bg-neutral-900"
+            />
+          </label>
+          <label class="mt-2 block text-neutral-600 dark:text-neutral-300">
+            Max RMSD (Å)
+            <input
+              type="number"
+              min="0"
+              step="any"
+              placeholder="no limit"
+              bind:value={minimizeRmsd}
+              class="mt-0.5 w-full rounded border border-neutral-200 bg-white px-1.5 py-0.5 dark:border-neutral-700 dark:bg-neutral-900"
+            />
+          </label>
+          <p class="mt-2 text-[10px] leading-snug text-neutral-500">
+            The next click uses these settings. {minimizeDisclaimer}
+          </p>
+        </div>
+      {/if}
     </div>
 
     <ResizableSidePanel
@@ -8978,7 +9346,9 @@
         Representations
         {#if structure?.atoms?.length}
           <span class="ml-1 font-normal text-neutral-500 tabular-nums dark:text-neutral-500"
-            >· {structure.atoms.length.toLocaleString()} atoms</span
+            >· {structure.atoms.length.toLocaleString()} atoms{#if sequenceKeys.size > 0}
+              · {sequenceSelectedAtomCount.toLocaleString()} selected{:else if selectedGroupIndices.size > 0}
+              · {selectedGroupIndices.size.toLocaleString()} selected{/if}</span
           >
         {/if}
       </h2>
@@ -9010,11 +9380,37 @@
             'size-4 stroke-2 stroke-neutral-800 dark:stroke-white',
             !filePath || autoGeneratingViews
           )}
-          {#if autoGeneratingViews}
-            <p class="w-full basis-full text-[11px] leading-snug text-amber-700 dark:text-amber-300">
-              {autoGeneratePhase || 'Generating representations…'}
-            </p>
-          {/if}
+          {@render toolbarBtn(
+            sequenceBarOpen ? 'Hide sequence' : 'Show sequence',
+            () => (sequenceBarOpen = !sequenceBarOpen),
+            ListOrdered,
+            `size-4 stroke-2 ${sequenceBarOpen ? 'stroke-sky-600 dark:stroke-sky-300' : 'stroke-neutral-800 dark:stroke-white'}`,
+            !structure
+          )}
+          <div
+            class="relative flex h-7 max-w-7 min-w-[1.15rem] flex-[1_1_1.4rem] items-center justify-center rounded-lg border border-neutral-200 bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-900"
+          >
+            <button
+              type="button"
+              class="flex h-full w-full items-center justify-center rounded-lg transition-colors hover:border-neutral-300 hover:bg-neutral-200 active:translate-y-0.5 disabled:pointer-events-none disabled:opacity-40 dark:hover:border-neutral-700 dark:hover:bg-neutral-800"
+              aria-label="Minimize selection"
+              title={minimizeDisclaimer}
+              onclick={() => runMinimize()}
+              disabled={!canMinimize || minimizeBusy}
+            >
+              <MinimizeIcon className="size-4 stroke-2 stroke-neutral-800 dark:stroke-white" />
+            </button>
+            <button
+              type="button"
+              class="absolute right-0 bottom-0 flex h-3.5 w-3.5 items-center justify-center disabled:pointer-events-none disabled:opacity-40"
+              aria-label="Minimization settings"
+              title="Change the step count, convergence, and RMSD limit. The next click uses these settings."
+              onclick={openMinimizeSettings}
+              disabled={!canMinimize || minimizeBusy}
+            >
+              <span class="h-1.5 w-1.5 rounded-full bg-neutral-500 dark:bg-neutral-400"></span>
+            </button>
+          </div>
           {@render toolbarBtn(
             axesVisible ? 'Hide axes gizmo' : 'Show axes gizmo',
             () => (axesVisible = !axesVisible),
@@ -9169,12 +9565,14 @@
           {@render measureBtn('Dihedral — click 4 atoms', 'dihedral')}
           </div>
         </div>
+        {#if panelStatusLine}
+          <p
+            class="shrink-0 border-b border-neutral-200 px-2 py-1.5 text-[11px] leading-snug text-amber-700 dark:border-neutral-800 dark:text-amber-300"
+          >
+            {panelStatusLine}
+          </p>
+        {/if}
         <div class="min-h-0 flex-1 overflow-y-auto">
-          {#if applyRepsBusy}
-            <div class="border-b border-neutral-200 px-2 py-1.5 text-[11px] text-neutral-500 dark:border-neutral-800">
-              {applyRepsPhase || 'Applying…'}
-            </div>
-          {/if}
 
           {#snippet groupNameEdit(g)}
             {#if editingGroupId === g.id}
@@ -9290,6 +9688,7 @@
                         persistAnimatedTrajSmoothRestoreH(view.id, enabled)
                       }
                       selected={selectedViewIds.has(view.id)}
+                      selectedCount={selectedViewIds.has(view.id) ? selectedViewIds.size : 1}
                       onRowSelect={(e) => onViewRowSelect(view.id, e)}
                       onContextOpen={() => ensureViewInSelection(view.id)}
                       onCreateGroup={onCreateGroupFromSelection}

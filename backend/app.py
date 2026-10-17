@@ -135,6 +135,8 @@ from gatewizard.core.preparation import (
     resolve_reduce_executable,
     strip_protein_hydrogens,
 )
+from gatewizard.core.short_gaps import classify_short_gaps, fill_short_gaps
+from gatewizard.core.minimize_selection import minimize_selection
 from gatewizard.utils.residue_restore import (
     discover_cap_mapping_path,
     discover_original_pdb,
@@ -3105,6 +3107,13 @@ class PreparePDBRequest(BaseModel):
             "unchanged."
         ),
     )
+    fill_short_gaps: bool = Field(
+        False,
+        description=(
+            "Before protonation, build numbering gaps of 1 to 6 residues with "
+            "PDBFixer when SEQRES has the sequence. Longer gaps are left open."
+        ),
+    )
     add_hydrogens: bool = Field(
         True,
         description="Run pdb4amber --reduce so Amber hydrogens are added after PropKa names.",
@@ -3165,6 +3174,103 @@ def _ensure_conda_tools_on_path() -> None:
         os.environ["PATH"] = bin_dir + (os.pathsep + path if path else "")
 
 
+@app.post("/short-gaps")
+def short_gaps_preview(payload: dict) -> dict:
+    path = os.path.abspath(os.path.expanduser(str(payload.get("path") or "")))
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    chains = payload.get("chains")
+    try:
+        return classify_short_gaps(path, chains)
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+class ShortGapsFillRequest(BaseModel):
+    path: str
+    chains: list[str] | None = None
+    output_path: str | None = None
+    sequences: list[dict] | None = None
+
+
+@app.post("/short-gaps/fill")
+def short_gaps_fill(payload: ShortGapsFillRequest) -> dict:
+    path = os.path.abspath(os.path.expanduser(payload.path))
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    output = payload.output_path
+    if not output:
+        stem, ext = os.path.splitext(path)
+        output = f"{stem}_shortgaps{ext or '.pdb'}"
+    output = os.path.abspath(os.path.expanduser(output))
+    try:
+        return fill_short_gaps(path, output, payload.chains, payload.sequences)
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
+class MinimizeSelectionRequest(BaseModel):
+    path: str
+    selection: str | None = None
+    atom_indices: list[int] | None = None
+    residues: list[dict] | None = None
+    max_iterations: int = 50
+    tolerance: float | None = None
+    max_rmsd: float | None = None
+    output_path: str | None = None
+
+
+_MINIMIZED_STEM = re.compile(r"^(?P<base>.+)_min_(?P<n>\d+)$")
+
+
+def _next_minimized_pdb(path: str) -> str:
+    """Next unused PDB in a ``minimized`` folder beside ``path``.
+
+    ``name.pdb`` becomes ``minimized/name_min_001.pdb``. A later run, including
+    one started from ``name_min_001.pdb``, becomes ``name_min_002.pdb`` in that
+    same folder.
+    """
+    src = Path(path)
+    parent = src.parent
+    folder = parent if parent.name == "minimized" else parent / "minimized"
+    folder.mkdir(parents=True, exist_ok=True)
+    stem = src.stem
+    numbered = _MINIMIZED_STEM.fullmatch(stem)
+    base = numbered.group("base") if numbered else stem
+    if base.endswith("_minimized"):
+        base = base[: -len("_minimized")]
+    number = 1
+    while True:
+        candidate = folder / f"{base}_min_{number:03d}.pdb"
+        if not candidate.exists():
+            return str(candidate)
+        number += 1
+
+
+@app.post("/minimize-selection")
+def minimize_selection_route(payload: MinimizeSelectionRequest) -> dict:
+    path = os.path.abspath(os.path.expanduser(payload.path))
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    output = payload.output_path
+    if not output:
+        output = _next_minimized_pdb(path)
+    output = os.path.abspath(os.path.expanduser(output))
+    try:
+        return minimize_selection(
+            path,
+            output,
+            selection=payload.selection,
+            atom_indices=payload.atom_indices,
+            residues=payload.residues,
+            max_iterations=payload.max_iterations,
+            tolerance=payload.tolerance,
+            max_rmsd=payload.max_rmsd,
+        )
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
 @app.post("/ensure-output-folder")
 def ensure_output_folder(payload: EnsureOutputFolderRequest) -> dict:
     out = _ensure_output_folder(payload.working_dir, payload.output_folder_name)
@@ -3184,6 +3290,14 @@ def prepare_pdb(payload: PreparePDBRequest) -> dict:
         path,
     )
     path = str(path_obj)
+    loaded_path = path
+    fill_path = None
+    fill_info: dict = {}
+    if payload.fill_short_gaps:
+        fd_fill, fill_path = tempfile.mkstemp(suffix=".pdb")
+        os.close(fd_fill)
+        fill_info = fill_short_gaps(path, fill_path)
+        path = fill_path
     if payload.working_dir:
         output_path = _protonated_output_path(job_dir, path_obj)
     else:
@@ -3264,9 +3378,14 @@ def prepare_pdb(payload: PreparePDBRequest) -> dict:
             note += (
                 f"\nCompleted missing protein atoms via tleap "
                 f"({complete_info.get('protein_atoms_in')} → "
-                f"{complete_info.get('protein_atoms_out')}, +{added} atoms). "
-                "Missing loop residues were not built."
+                f"{complete_info.get('protein_atoms_out')}, +{added} atoms)."
             )
+            if not payload.fill_short_gaps:
+                note += " Missing loop residues were not built."
+        if payload.fill_short_gaps:
+            built = fill_info.get("built") or []
+            skipped = fill_info.get("skipped") or []
+            note += f"\nShort gaps filled: {len(built)}. Gaps left open: {len(skipped)}."
         if payload.remove_protein_hydrogens and not kept_tleap_hydrogens:
             note += f"\nRemoved {removed_h} protein hydrogen atom(s) before pdb4amber."
         removed_conect = int(result.get("conect_records_removed") or 0)
@@ -3309,7 +3428,7 @@ def prepare_pdb(payload: PreparePDBRequest) -> dict:
             output=result["stdout"] + "\n" + result["stderr"] + note + amber_note,
             output_path=str(output_path),
             job_dir=str(job_dir),
-            working_path=path,
+            working_path=loaded_path,
             protein_hydrogens_removed=removed_h,
             amber_peptide_warnings=amber_warn_names,
             residue_numbers_preserved=bool(result.get("residue_numbers_preserved")),
@@ -3328,7 +3447,9 @@ def prepare_pdb(payload: PreparePDBRequest) -> dict:
         tb_str = "".join(traceback.format_exception(type(ex), ex, ex.__traceback__))
         raise HTTPException(status_code=400, detail=str(ex) + "\n" + tb_str) from ex
     finally:
-        for tmp in (tmp_path, tmp_complete):
+        for tmp in (tmp_path, tmp_complete, fill_path):
+            if not tmp:
+                continue
             try:
                 os.unlink(tmp)
             except OSError:
