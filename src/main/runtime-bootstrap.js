@@ -546,10 +546,60 @@ async function syncCondaFfmpegIfNeeded({
   return nextState
 }
 
+/** AmberTools 26 conda-forge builds omit bin/reduce. Bioconda ships the same program. */
+const AMBERTOOLS_CONDA_SPEC = 'ambertools=26'
+
+function amberReducePath(prefix) {
+  return path.join(path.resolve(prefix), 'bin', 'reduce')
+}
+
+async function condaMetaHas(prefix, stem) {
+  const meta = path.join(path.resolve(prefix), 'conda-meta')
+  try {
+    const names = await fs.readdir(meta)
+    return names.some((name) => name.startsWith(`${stem}-`))
+  } catch {
+    return false
+  }
+}
+
 function getCondaAmbertoolsPackages() {
   // AmberTools is not published for win-64 on conda-forge; use WSL/Linux for tleap workflows.
   if (process.platform === 'win32') return []
-  return ['ambertools']
+  return [AMBERTOOLS_CONDA_SPEC]
+}
+
+async function ensureAmbertools26(micromambaDest, runtimePrefix, mmEnv, onStatus) {
+  if (process.platform === 'win32') return
+  if (await condaMetaHas(runtimePrefix, 'ambertools-26')) return
+  onStatus('Installing AmberTools 26…')
+  await appendRuntimeLog(
+    `[ambertools] installing ${AMBERTOOLS_CONDA_SPEC} (prefix=${path.resolve(runtimePrefix)})\n`
+  )
+  await runProcess(
+    micromambaDest,
+    ['install', '-p', runtimePrefix, '-c', 'conda-forge', AMBERTOOLS_CONDA_SPEC, '-y'],
+    { env: mmEnv, lowPriority: true, label: 'ambertools' }
+  )
+}
+
+async function ensureAmberReduce(micromambaDest, runtimePrefix, mmEnv, onStatus) {
+  if (process.platform === 'win32') return
+  if (existsSync(amberReducePath(runtimePrefix))) return
+  onStatus('Installing Amber reduce from bioconda…')
+  await appendRuntimeLog(
+    `[ambertools] bin/reduce missing; installing bioconda reduce ` +
+      `(prefix=${path.resolve(runtimePrefix)})\n`
+  )
+  await runProcess(
+    micromambaDest,
+    ['install', '-p', runtimePrefix, '-c', 'conda-forge', '-c', 'bioconda', 'reduce', '-y'],
+    { env: mmEnv, lowPriority: true, label: 'reduce' }
+  )
+  if (!existsSync(amberReducePath(runtimePrefix))) {
+    throw new Error(`bioconda reduce was not found at ${amberReducePath(runtimePrefix)}`)
+  }
+  await appendRuntimeLog(`[ambertools] reduce ready at ${amberReducePath(runtimePrefix)}\n`)
 }
 
 /** Cap extract parallelism so WSL/desktop stay usable during huge conda installs. */
@@ -1271,7 +1321,12 @@ export async function ensureMambaRuntime(options) {
         process.platform !== 'win32' && state.openmmCondaRev !== OPENMM_CONDA_REV
       const needsGromacs =
         process.platform !== 'win32' && state.gromacsCondaRev !== GROMACS_CONDA_REV
-      if (needsFfmpeg || needsOpenmm || needsGromacs) {
+      const needsAmbertools =
+        process.platform !== 'win32' && !(await condaMetaHas(runtimePrefix, 'ambertools-26'))
+      const needsReduce =
+        process.platform !== 'win32' &&
+        (needsAmbertools || !existsSync(amberReducePath(runtimePrefix)))
+      if (needsFfmpeg || needsOpenmm || needsGromacs || needsAmbertools || needsReduce) {
         progress.begin('cached', 'Syncing conda packages…')
         const micromambaDest = await ensureMicromambaBinary((msg) => progress.note(msg))
         if (needsFfmpeg) {
@@ -1307,6 +1362,24 @@ export async function ensureMambaRuntime(options) {
             statePath
           })
         }
+        if (needsAmbertools) {
+          progress.enter('sync', 'Installing AmberTools 26…')
+          await ensureAmbertools26(
+            micromambaDest,
+            runtimePrefix,
+            mmEnv,
+            (msg) => progress.note(msg)
+          )
+        }
+        if (needsReduce) {
+          progress.enter('sync', 'Installing Amber reduce…')
+          await ensureAmberReduce(
+            micromambaDest,
+            runtimePrefix,
+            mmEnv,
+            (msg) => progress.note(msg)
+          )
+        }
       }
       cachedLaunchPython = pyPath
       process.env.CONDA_PREFIX = runtimePrefix
@@ -1341,6 +1414,12 @@ export async function ensureMambaRuntime(options) {
       const micromambaDest = await ensureMicromambaBinary((msg) => progress.note(msg))
       progress.enter('openmm')
       await restoreCondaOpenmmAfterPip(
+        micromambaDest,
+        runtimePrefix,
+        mmEnv,
+        (msg) => progress.note(msg)
+      )
+      await ensureAmberReduce(
         micromambaDest,
         runtimePrefix,
         mmEnv,
@@ -1476,6 +1555,7 @@ export async function ensureMambaRuntime(options) {
       mmEnv,
       (msg) => progress.note(msg)
     )
+    await ensureAmberReduce(micromambaDest, runtimePrefix, mmEnv, (msg) => progress.note(msg))
     progress.enter('gromacs')
     state = await syncCondaGromacsIfNeeded({
       micromambaDest,
@@ -1607,6 +1687,7 @@ export async function upgradeGatewizardPackage(options) {
         MAMBA_ROOT_PREFIX: getMambaRoot()
       }
       await restoreCondaOpenmmAfterPip(micromambaDest, runtimePrefix, mmEnv, onStatus)
+      await ensureAmberReduce(micromambaDest, runtimePrefix, mmEnv, onStatus)
     } catch (err) {
       onStatus(`Note: could not refresh conda OpenMM packages: ${err.message}`)
     }

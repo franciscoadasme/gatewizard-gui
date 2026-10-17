@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Preparation hydrogens:** the embedded environment pins AmberTools 26 and installs `reduce` from bioconda. **Remove protein hydrogens** leaves those atoms out of the prepared PDB. Uncheck it to let `pdb4amber --reduce` write Amber hydrogens. Ligands keep their hydrogens either way.
 - **Representations:** right-click Remove deletes every representation highlighted in the list, not only the row under the cursor.
 - **Minimize selection:** minimizing a water (HOH), or another molecule Amber cannot build, keeps its bond lengths and the H–O–H angle. The hydrogens sit slightly farther out than a strict covalent cutoff, so they were treated as clashes and pushed off the oxygen.
 - **Large membrane PDB:** a serial past 99,999 written against a chloride (`272291Cl-`) is read as `Cl-`. A digit-led atom name is kept only for hydrogens such as `1HG`. Builder jobs launched from the app use the same API rewrite before `pdb4amber`: residue columns stay aligned, disulfide bonds and the CRYST1 box are passed to tleap, and `system.pdb` stays readable for equilibration restraints.

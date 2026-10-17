@@ -162,7 +162,7 @@ function getCondaOpenmmGpuPackages() {
 function getCondaPackages() {
   const pkgs = [`python=${PYTHON_SPEC}`, "pip", "openssl"];
   if (process.platform !== "win32") {
-    pkgs.push("ambertools", "git");
+    pkgs.push("ambertools=26", "git");
   }
   pkgs.push(...getCondaOpenmmGpuPackages());
   return pkgs;
