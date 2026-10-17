@@ -4106,14 +4106,6 @@
     style={paneBackgroundStyle}
   >
     <div class="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 pt-4 pb-6">
-      <div class="gw-notice gw-notice-warning">
-        <p class="font-semibold">TESTING PROTOCOLS, NOT FOR PRODUCTION</p>
-        <p class="mt-1">
-          Equilibration thermalizes under NVT, scaffolds under NVT, then packs under NPgT (γ=0) for 50 ns of MD (Eq1–6).
-          Production is the first stage that uses the selected ensemble. Protocols are still under active testing. Use for
-          development and validation only.
-        </p>
-      </div>
       <button
         type="button"
         id="eq-protocol-panel"
