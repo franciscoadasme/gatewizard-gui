@@ -18,7 +18,7 @@ The app uses the **[GateWizard API](https://github.com/maurobedoya/gatewizard)**
 - **Visualize** — 3D representations with multi-structure workspace (append PDBs/CIFs; Maestro `.mae`/`.maegz` and multi-MODEL PDB entry picker), viewpoints/animation, Apply representation across structures, and multiple-bond sticks when bond orders are known
 - **Preparation** — clean structures, pKa (PROPKA), protonation, and termini capping
 - **Membrane builder** — orient protein, pack lipids and solvent, Amber parametrization (tleap). GateWizard supports **4028 lipid types** from packmol-memgen `--available_lipids_all` (version 2025.1.29), each with its residue name, charge, and chemical name. The catalog lists 4055 names; the 27 SIRAH lipids are coarse-grained and are not supported. See the [API builder reference](https://maurobedoya.github.io/gatewizard/api/builder/).
-- **Equilibration** — CHARMM-GUI-style protocols for NAMD, GROMACS, and OpenMM (NVT, NPT, NPAT, NPγT)
+- **Equilibration** — the same CHARMM-GUI-style protocols for four MD engines: NAMD, GROMACS, OpenMM, and Amber (NVT, NPT, NPAT, NPγT)
 - **Analysis** — trajectory metrics, structural analysis, and plotting helpers
 - **Force fields** — Amber protein models (e.g. ff14SB, ff19SB) and common water/lipid setups
 - **Cross-platform** — Linux (including WSL on Windows) and macOS installers
@@ -353,6 +353,7 @@ Same packages are in the API [`environment.yml`](https://github.com/maurobedoya/
 |------|------|
 | [NAMD](https://www.ks.uiuc.edu/Research/namd/) | Run NAMD equilibration — `namd3` / `namd2` on `PATH` |
 | [GROMACS](https://www.gromacs.org/) | Run GROMACS equilibration — `gmx` on `PATH` |
+| [Amber](https://ambermd.org/) | Run Amber equilibration — `pmemd` / `pmemd.cuda`, or `sander` from AmberTools |
 
 OpenMM needs no separate binary — provided by `gatewizard[full]` + conda above. Check platforms on **Equilibration → OpenMM** after install.
 
@@ -364,7 +365,7 @@ OpenMM needs no separate binary — provided by `gatewizard[full]` + conda above
 | Embedded Python + FastAPI backend | yes |
 | `gatewizard[full]` (pip) | yes — on first start / API update |
 | AmberTools, OpenMM, cudatoolkit (conda) | Linux/WSL/macOS only |
-| NAMD / GROMACS binaries | no — user install |
+| NAMD, GROMACS, and Amber `pmemd` binaries | no — user install (`sander` comes with AmberTools) |
 | Standalone API package source | no — [gatewizard](https://github.com/maurobedoya/gatewizard) |
 
 ### Platform notes
