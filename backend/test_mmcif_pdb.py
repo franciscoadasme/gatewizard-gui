@@ -154,3 +154,23 @@ def test_tiny_cif_becomes_pdb_mdanalysis_can_read(tmp_path: Path):
     assert atom.name.strip() == "CA"
     again = pdb_from_mmcif(cif)
     assert again == pdb
+
+
+def test_mmcif_writes_every_protein_and_ligand_altloc(tmp_path: Path):
+    cif = tmp_path / "altloc.cif"
+    cif.write_text(
+        TINY_CIF.replace(
+            "ATOM 1 C CA . ALA A 10 ? 1.500 2.250 -3.125 1.00 20.00 10 A 1\n",
+            "ATOM 1 C CA A ALA A 1 ? 0.000 0.000 0.000 0.70 10.00 1 A 1\n"
+            "ATOM 2 C CA B ALA A 1 ? 1.000 0.000 0.000 0.30 10.00 1 A 1\n"
+            "HETATM 3 C C1 A RET B 2 ? 5.000 0.000 0.000 0.20 10.00 2 B 1\n"
+            "HETATM 4 C C1 B RET B 2 ? 5.200 0.000 0.000 0.80 10.00 2 B 1\n",
+        ),
+        encoding="utf-8",
+    )
+    text = pdb_from_mmcif(cif).read_text(encoding="utf-8")
+    ala = [line for line in text.splitlines() if line.startswith("ATOM") and line[17:20].strip() == "ALA"]
+    ret = [line for line in text.splitlines() if line.startswith("HETATM") and line[17:20].strip() == "RET"]
+    assert sorted(line[16] for line in ala) == ["A", "B"]
+    assert sorted(line[16] for line in ret) == ["A", "B"]
+    assert len(ret) == 2

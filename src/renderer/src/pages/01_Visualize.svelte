@@ -32,6 +32,7 @@
   import MinimizeIcon from '../components/icons/Minimize.svelte'
   import SequenceBar from '../components/SequenceBar.svelte'
   import { applyGapReport, buildSequenceChains, selectionFromKeys } from '../lib/viewer/sequenceBar.js'
+import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/checkerPose.js'
   import LoadIcon from '../components/icons/Load.svelte'
   import Axes from '../components/icons/Axes.svelte'
   import AxesLinesIcon from '../components/icons/AxesLines.svelte'
@@ -8236,7 +8237,55 @@
     return { query, atoms: structure.atoms.filter((atom) => indices.has(atom.index)) }
   }
 
+  function restoreCheckerHiddenAtoms() {
+    const next = views.map((view) => {
+      if (!view._checkerHiddenAtoms) return view
+      const restored = {
+        ...view,
+        atoms: view._checkerHiddenAtoms,
+        bonds: view._checkerHiddenBonds ?? view.bonds
+      }
+      if (view._checkerHiddenResidues !== undefined) restored.residues = view._checkerHiddenResidues
+      delete restored._checkerHiddenAtoms
+      delete restored._checkerHiddenBonds
+      delete restored._checkerHiddenResidues
+      return restored
+    })
+    if (next.some((view, index) => view !== views[index])) views = next
+  }
+
+  /**
+   * The ligand van der Waals view draws every pose. Hide this residue there
+   * so the checker licorice is the only copy, and the ticked letter is the
+   * one on screen. Cartoon and tube stay, which is how a protein backbone
+   * remains while its side chain follows the tick.
+   * @param {Set<number>} indices
+   */
+  function hideCheckerSelectionFromOtherViews(indices) {
+    if (!indices?.size) return
+    views = views.map((view) => {
+      if (view._isCheckerPreview || view.structureId !== activeStructureId) return view
+      const repr = view.representation?.type
+      if (repr === 'cartoon' || repr === 'tube') return view
+      const source = view._checkerHiddenAtoms || view.atoms || []
+      if (!source.some((atom) => indices.has(atom.index))) return view
+      const bondSource = view._checkerHiddenBonds || view.bonds || []
+      return {
+        ...view,
+        _checkerHiddenAtoms: view._checkerHiddenAtoms || view.atoms,
+        _checkerHiddenBonds: view._checkerHiddenBonds || view.bonds,
+        _checkerHiddenResidues:
+          view._checkerHiddenResidues !== undefined ? view._checkerHiddenResidues : view.residues,
+        atoms: source.filter((atom) => !indices.has(atom.index)),
+        bonds: bondSource.filter(
+          (bond) => Array.isArray(bond) && !indices.has(bond[0]) && !indices.has(bond[1])
+        )
+      }
+    })
+  }
+
   function clearCheckerPreview() {
+    restoreCheckerHiddenAtoms()
     if (!checkerPreviewViewId) {
       checkerPreviewLabel = ''
       return
@@ -8254,7 +8303,7 @@
    * @param {string} [letters]
    * @param {string} [likely]
    */
-  function focusCheckerSelection(selection, label = '', letters = '', likely = '') {
+  function focusCheckerSelection(selection, label = '', letters = '', likely = '', group = null) {
     if (!structure) return
     clearCheckerPreview()
     const found = atomsForCheckerSelection(selection)
@@ -8264,32 +8313,28 @@
       .map((item) => item.trim().toUpperCase())
       .filter(Boolean)
     const likelyLetter = String(likely || '').trim().toUpperCase()
-    const visible = wanted.length
-      ? found.atoms.filter((atom) => {
-          const mark = String(atom.altloc || '').trim().toUpperCase()
-          return !mark || wanted.includes(mark)
-        })
-      : found.atoms
+    const pose = poseLetterByAtom(found.atoms, group)
+    const visible = atomsForTickedPoses(found.atoms, wanted, pose)
     const shown = visible.length ? visible : found.atoms
     const picked = new Set(shown.map((atom) => atom.index))
+    if (wanted.length) {
+      hideCheckerSelectionFromOtherViews(new Set(found.atoms.map((atom) => atom.index)))
+    }
     selectedGroupIndices = picked
     selectedAtom = shown[0] || null
     centerCameraOnAtoms(atomsAtCurrentTraj(shown))
     const owner = structure
     const subset = resolveViewAtomSubset(owner, found.query, 'licorice')
-    const byIndex = new Map(shown.map((atom) => [atom.index, atom]))
     const bonds = (subset.bonds || owner.bonds || []).filter((bond) => {
       if (!Array.isArray(bond) || !picked.has(bond[0]) || !picked.has(bond[1])) return false
-      const left = String(byIndex.get(bond[0])?.altloc || '').trim().toUpperCase()
-      const right = String(byIndex.get(bond[1])?.altloc || '').trim().toUpperCase()
-      return !left || !right || left === right
+      return bondJoinsOnePose(pose.get(bond[0]) || '', pose.get(bond[1]) || '')
     })
     const likelyColor = cpkScheme({ carbonColor: '#f5c518' })
     const otherColor = cpkScheme()
     const comparing = wanted.length > 1
     const onlyLikely = wanted.length === 1 && wanted[0] === likelyLetter
     const resolver = (atom) => {
-      const mark = String(atom.altloc || '').trim().toUpperCase()
+      const mark = pose.get(atom.index) || ''
       const highlight = comparing ? !mark || mark === likelyLetter : onlyLikely
       return (highlight ? likelyColor : otherColor)(atom)
     }
@@ -8356,6 +8401,7 @@
         chain: group.chain,
         resid: group.resid,
         icode: group.icode || '',
+        resname: group.resname || '',
         altloc: checkerChoices[group.id] || group.default
       }))
       const result = await structureApplyAltloc({

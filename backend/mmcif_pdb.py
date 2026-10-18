@@ -446,31 +446,44 @@ def _write_mmcif_as_pdb(cif_path: Path, dest: Path) -> None:
                     resname = f"{str(residue.resname).strip()[:3]:>3}"
                     record = "ATOM  " if residue.id[0] == " " else "HETATM"
                     for atom in residue:
-                        handle.write(
-                            _atom_line(
-                                record,
-                                serial,
-                                _atom_name(atom),
-                                _one_char(getattr(atom, "altloc", " "), " "),
-                                resname,
-                                chain_id,
-                                resseq,
-                                icode,
-                                float(atom.coord[0]),
-                                float(atom.coord[1]),
-                                float(atom.coord[2]),
-                                _float_or(getattr(atom, "occupancy", None), 1.0),
-                                _float_or(getattr(atom, "bfactor", None), 0.0),
-                                _element(atom),
+                        for alt_atom in _disordered_atoms(atom):
+                            handle.write(
+                                _atom_line(
+                                    record,
+                                    serial,
+                                    _atom_name(alt_atom),
+                                    _one_char(getattr(alt_atom, "altloc", " "), " "),
+                                    resname,
+                                    chain_id,
+                                    resseq,
+                                    icode,
+                                    float(alt_atom.coord[0]),
+                                    float(alt_atom.coord[1]),
+                                    float(alt_atom.coord[2]),
+                                    _float_or(getattr(alt_atom, "occupancy", None), 1.0),
+                                    _float_or(getattr(alt_atom, "bfactor", None), 0.0),
+                                    _element(alt_atom),
+                                )
                             )
-                        )
-                        serial += 1
-                        written += 1
+                            serial += 1
+                            written += 1
             if multi:
                 handle.write("ENDMDL\n")
         handle.write("END\n")
     if written == 0:
         raise StructureConvertError(f"No atoms in {cif_path.name}")
+
+
+def _disordered_atoms(atom):
+    """Every altLoc of one atom. A single conformation is returned as itself."""
+    try:
+        if atom.is_disordered():
+            children = list(atom.disordered_get_list())
+            if children:
+                return children
+    except Exception:
+        pass
+    return [atom]
 
 
 def _atom_line(

@@ -675,7 +675,7 @@
         <label
           for="most-likely-altloc"
           class="sidebar-label"
-          title="On: each residue with alternate locations keeps the conformation with the higher occupancy, and the others are dropped before protonation. A tie keeps the earlier letter. Off: Prepare does not choose, and pdb4amber later keeps the first copy of each atom, which may not be the more occupied one. Choose the conformations on the Visualize page when the assignment matters."
+          title="On: each residue with alternate locations keeps the conformation with the higher occupancy. That includes protein, ligands, waters, and other molecules, and the others are dropped before protonation. A tie keeps the earlier letter. Off: Prepare does not choose, and pdb4amber later keeps the first copy of each atom, which may not be the more occupied one. Choose the conformations on the Visualize page when the assignment matters."
         >
           Keep the most likely alternate conformations
         </label>

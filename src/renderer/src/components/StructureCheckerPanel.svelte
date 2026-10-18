@@ -9,7 +9,7 @@
    *   error: string
    *   trajectory: boolean
    *   previewLabel: string
-   *   onFocus: (selection: string, label: string, letters?: string, likely?: string) => void
+   *   onFocus: (selection: string, label: string, letters?: string, likely?: string, group?: Record<string, any> | null) => void
    *   onKeepPreview: () => void
    *   onChoose: (id: string, altloc: string) => void
    *   onShown: (id: string, letters: string[]) => void
@@ -62,9 +62,9 @@
    * @param {string} [letters]
    * @param {string} [likely]
    */
-  function focus(key, selection, label, letters = '', likely = '') {
+  function focus(key, selection, label, letters = '', likely = '', group = null) {
     active = key
-    onFocus(selection || '', label, letters, likely)
+    onFocus(selection || '', label, letters, likely, group)
   }
 
   /** @param {{ id: string, default: string, options: Array<{ altloc: string }> }} group */
@@ -88,7 +88,7 @@
     const kept = letters.includes(group.default) ? group.default : letters[0]
     onChoose(group.id, kept)
     const label = `${place(group.chain, group.resid, group.icode, group.resname)} ${letters.join('+')}`
-    focus(group.id, group.selection, label, letters.join(','), group.default)
+    focus(group.id, group.selection, label, letters.join(','), group.default, group)
   }
 
   /**
@@ -111,7 +111,8 @@
       group.selection,
       `${place(group.chain, group.resid, group.icode, group.resname)} ${letter}`,
       letter,
-      letter
+      letter,
+      group
     )
   }
 
@@ -221,7 +222,7 @@
           </button>
           {#if open.alt}
             <div class="space-y-2 border-t border-neutral-200 px-2 py-1.5 dark:border-neutral-700">
-              <p class="text-neutral-500">Each row is one residue. Check one letter or both. The most likely conformation is drawn with yellow carbons. The other stays gray.</p>
+              <p class="text-neutral-500">Each row is one residue. Check one letter or both. The most likely conformation is drawn with yellow carbons. The other stays gray. Atoms that overlap and have no altLoc letter are listed here too.</p>
               {#each altlocs as group}
                 {@const letters = shownLetters(group)}
                 <div class="relative rounded border border-neutral-200 px-2 py-1.5 dark:border-neutral-700 {active === group.id ? 'bg-yellow-500/15' : ''}">
@@ -229,11 +230,14 @@
                     type="button"
                     class="absolute inset-0 rounded"
                     aria-label="Show {place(group.chain, group.resid, group.icode, group.resname)}"
-                    onclick={() => focus(group.id, group.selection, `${place(group.chain, group.resid, group.icode, group.resname)} ${letters.join('+')}`, letters.join(','), group.default)}
+                    onclick={() => focus(group.id, group.selection, `${place(group.chain, group.resid, group.icode, group.resname)} ${letters.join('+')}`, letters.join(','), group.default, group)}
                   ></button>
                   <div class="pointer-events-none relative mb-1 font-medium">
-                    {place(group.chain, group.resid, group.icode, group.resname)}
+                    {group.label || place(group.chain, group.resid, group.icode, group.resname)}
                   </div>
+                  {#if group.inferred}
+                    <p class="pointer-events-none relative mb-1 text-neutral-500">These atoms overlap. No altLoc letter was set, so they are treated as alternate conformations.</p>
+                  {/if}
                   <div class="relative z-10 flex flex-wrap gap-2">
                     {#each group.options as option}
                       <label class="inline-flex items-center gap-1">
