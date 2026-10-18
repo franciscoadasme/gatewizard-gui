@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **MemPrO:** the Linux installer pins GitHub release `v0.2.0`.
 - **Working directory:** opening the app from a terminal fills the top-bar working directory with that console folder. `npm run dev` uses the folder where npm was started. A desktop launch leaves the field empty.
 - **Visualize toolbar:** the sequence button shows amino-acid letters in two short rows. The minimize button shows an arrow dropping into an energy well. Its settings control is a corner wedge that follows the button's rounded corner and turns blue on hover.
 - **Preparation alternate conformations:** Prepare can keep the higher-occupancy alternate conformation of each residue. The checkbox is on by default. Turning it off leaves the choice to pdb4amber, which keeps the first copy of each atom. The hover text recommends choosing conformations on the Visualize page when the assignment matters.
