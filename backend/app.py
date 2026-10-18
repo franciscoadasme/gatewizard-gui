@@ -1359,6 +1359,14 @@ class ParametrizeLigandRequest(BaseModel):
     ligand_name: str = Field(..., description="3-letter residue name of the ligand")
     charge: int = Field(0, description="Net charge of the ligand")
     multiplicity: int = Field(1, description="Spin multiplicity")
+    charge_method: str = Field(
+        "abcg2",
+        description="Antechamber charge model: abcg2 (ABCG2) or bcc (AM1-BCC).",
+    )
+    atom_type: str = Field(
+        "gaff2",
+        description="General Amber force field: gaff2 or gaff.",
+    )
     output_dir: str | None = Field(
         None,
         description=(
@@ -1718,6 +1726,7 @@ def detect_ligands_endpoint(payload: DetectLigandsRequest) -> dict:
                     "chain": lig.chain,
                     "res_id": lig.res_id,
                     "num_atoms": lig.num_atoms,
+                    "conformers": lig.conformers,
                     "pdb_lines": lig.pdb_lines,
                 }
                 for lig in ligands
@@ -1835,6 +1844,8 @@ def parametrize_ligand_endpoint(payload: ParametrizeLigandRequest) -> dict:
                 output_dir=lig_dir,
                 charge=payload.charge,
                 multiplicity=payload.multiplicity,
+                charge_method=payload.charge_method,
+                atom_type=payload.atom_type,
             )
         else:
             result = parametrize_ligand_from_system_pdb(
@@ -1843,6 +1854,8 @@ def parametrize_ligand_endpoint(payload: ParametrizeLigandRequest) -> dict:
                 output_dir=working_dir,
                 charge=payload.charge,
                 multiplicity=payload.multiplicity,
+                charge_method=payload.charge_method,
+                atom_type=payload.atom_type,
             )
         return result
     except Exception as ex:
@@ -7013,6 +7026,7 @@ class AltlocChoice(BaseModel):
     chain: str = ""
     resid: int
     icode: str = ""
+    resname: str = ""
     atom: str = ""
     altloc: str
 

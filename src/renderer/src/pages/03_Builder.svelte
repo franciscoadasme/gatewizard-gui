@@ -34,6 +34,22 @@
   import { themeState } from '../lib/theme.svelte.js'
   import { themeBackgroundHex } from '../lib/viewerSettings.svelte.js'
 
+  /**
+   * Amber 24 recommends GAFF with AM1-BCC and GAFF2 with ABCG2.
+   * @param {string | undefined} atomType
+   * @param {string | undefined} chargeMethod
+   * @returns {string}
+   */
+  function ligandComboWarning(atomType, chargeMethod) {
+    const ff = atomType === 'gaff' ? 'GAFF' : 'GAFF2'
+    const charge = chargeMethod === 'bcc' ? 'AM1-BCC' : 'ABCG2'
+    const mismatched =
+      (atomType === 'gaff2' && chargeMethod === 'bcc') ||
+      (atomType === 'gaff' && chargeMethod === 'abcg2')
+    if (!mismatched) return ''
+    return `${ff} with ${charge} is not a recommended Amber pairing. Use GAFF with AM1-BCC, or GAFF2 with ABCG2.`
+  }
+
   /** @type {{ workingDir?: string }} */
   let { workingDir = '' } = $props()
 
@@ -606,6 +622,8 @@
         name: l.name,
         charge: 0,
         multiplicity: 1,
+        atomType: 'gaff2',
+        chargeMethod: 'abcg2',
         status: 'not_parametrized',
         frcmod: '',
         lib: '',
@@ -708,7 +726,10 @@
         lig.name,
         lig.charge,
         lig.multiplicity,
-        builderOut
+        builderOut,
+        false,
+        lig.chargeMethod || 'abcg2',
+        lig.atomType || 'gaff2'
       )
       ligands[index] = {
         ...lig,
@@ -767,6 +788,8 @@
         name: '',
         charge: 0,
         multiplicity: 1,
+        atomType: 'gaff2',
+        chargeMethod: 'abcg2',
         status: 'manual',
         frcmod: '',
         lib: '',
@@ -788,6 +811,8 @@
       inMembrane: false,
       charge: 0,
       multiplicity: 1,
+      atomType: 'gaff2',
+      chargeMethod: 'abcg2',
       status: 'idle',
       frcmod: '',
       lib: '',
@@ -835,7 +860,9 @@
         solute.charge,
         solute.multiplicity,
         builderOut,
-        true
+        true,
+        solute.chargeMethod || 'abcg2',
+        solute.atomType || 'gaff2'
       )
       solutes[index] = {
         ...solute,
@@ -869,11 +896,21 @@
     const ligandFromProtein = includeProtein
       ? ligands
           .filter((l) => l.frcmod && l.lib && l.name)
-          .map((l) => ({ name: l.name, frcmod: l.frcmod, lib: l.lib }))
+          .map((l) => ({
+            name: l.name,
+            frcmod: l.frcmod,
+            lib: l.lib,
+            atomType: l.atomType || 'gaff2'
+          }))
       : []
     const ligandFromSolutes = soluteRows
       .filter((s) => s.frcmod && s.lib && s.name)
-      .map((s) => ({ name: s.name, frcmod: s.frcmod, lib: s.lib }))
+      .map((s) => ({
+        name: s.name,
+        frcmod: s.frcmod,
+        lib: s.lib,
+        atomType: s.atomType || 'gaff2'
+      }))
     const peptideCapParams = peptideCaps
       .filter((c) => c.frcmod && c.lib && c.name)
       .map((c) => ({
@@ -1345,7 +1382,7 @@
       {#if peptideCaps.length > 0}
         <div class="sidebar-panel space-y-1.5 p-2">
           <div class="flex items-center justify-between gap-2">
-            <span class="sidebar-hint">Polymer termini (GAFF libs for tleap)</span>
+            <span class="sidebar-hint">Polymer termini use GAFF2 with ABCG2</span>
             <Button
               variant="secondary"
               className="text-xs px-1.5 py-0.5"
@@ -1459,6 +1496,25 @@
               bind:value={lig.multiplicity}
             />
           </div>
+          <div class="flex items-center gap-1">
+            <span class="sidebar-label w-16 shrink-0">Force field</span>
+            <select class="sidebar-control flex-1 p-1" bind:value={lig.atomType}>
+              <option value="gaff2">GAFF2</option>
+              <option value="gaff">GAFF</option>
+            </select>
+          </div>
+          <div class="flex items-center gap-1">
+            <span class="sidebar-label w-16 shrink-0">Charges</span>
+            <select class="sidebar-control flex-1 p-1" bind:value={lig.chargeMethod}>
+              <option value="abcg2">ABCG2</option>
+              <option value="bcc">AM1-BCC</option>
+            </select>
+          </div>
+          {#if ligandComboWarning(lig.atomType, lig.chargeMethod)}
+            <p class="gw-notice gw-notice-warning text-[11px] leading-snug">
+              {ligandComboWarning(lig.atomType, lig.chargeMethod)}
+            </p>
+          {/if}
           <div class="flex items-center gap-1">
             <span class="sidebar-label w-12 shrink-0">frcmod</span>
             <input
@@ -1590,6 +1646,25 @@
               bind:value={solute.multiplicity}
             />
           </div>
+          <div class="flex items-center gap-1">
+            <span class="sidebar-label w-16 shrink-0">Force field</span>
+            <select class="sidebar-control flex-1 p-1" bind:value={solute.atomType}>
+              <option value="gaff2">GAFF2</option>
+              <option value="gaff">GAFF</option>
+            </select>
+          </div>
+          <div class="flex items-center gap-1">
+            <span class="sidebar-label w-16 shrink-0">Charges</span>
+            <select class="sidebar-control flex-1 p-1" bind:value={solute.chargeMethod}>
+              <option value="abcg2">ABCG2</option>
+              <option value="bcc">AM1-BCC</option>
+            </select>
+          </div>
+          {#if ligandComboWarning(solute.atomType, solute.chargeMethod)}
+            <p class="gw-notice gw-notice-warning text-[11px] leading-snug">
+              {ligandComboWarning(solute.atomType, solute.chargeMethod)}
+            </p>
+          {/if}
           {#if solute.status !== 'running'}
             <Button
               variant="outline"

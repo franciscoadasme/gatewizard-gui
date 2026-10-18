@@ -253,7 +253,9 @@ export function detectTerminalCaps(filePath) {
  * @param {number} multiplicity
  * @param {string | null} [outputDir] Builder output folder (ligand_params written under here)
  * @param {boolean} [fromLigandFile] When true, filePath is a standalone ligand PDB (not a system PDB)
- * @returns {Promise<{ success: boolean, message: string, frcmod: string, lib: string, mol2?: string }>}
+ * @param {string} [chargeMethod] Antechamber charge model: abcg2 or bcc
+ * @param {string} [atomType] General Amber force field: gaff2 or gaff
+ * @returns {Promise<{ success: boolean, message: string, frcmod: string, lib: string, mol2?: string, forcefield_warning?: string | null }>}
  */
 export function parametrizeLigand(
   filePath,
@@ -261,13 +263,17 @@ export function parametrizeLigand(
   charge = 0,
   multiplicity = 1,
   outputDir = null,
-  fromLigandFile = false
+  fromLigandFile = false,
+  chargeMethod = 'abcg2',
+  atomType = 'gaff2'
 ) {
   return backendJson('/parametrize-ligand', {
     path: filePath,
     ligandName,
     charge,
     multiplicity,
+    chargeMethod,
+    atomType,
     ...(outputDir ? { outputDir } : {}),
     fromLigandFile: Boolean(fromLigandFile)
   })
@@ -1843,7 +1849,7 @@ export function structureCheck(payload) {
 
 /**
  * Write a PDB that keeps one altLoc per disordered atom.
- * @param {{ path: string, choices?: Array<{ chain: string, resid: number, icode?: string, atom: string, altloc: string }>, outputPath?: string }} payload
+ * @param {{ path: string, choices?: Array<{ chain: string, resid: number, icode?: string, resname?: string, atom?: string, altloc: string }>, outputPath?: string }} payload
  */
 export function structureApplyAltloc(payload) {
   return backendJson('/structure/apply-altloc', {
