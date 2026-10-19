@@ -76,6 +76,8 @@ export const brandAssets = {
     ],
     files: {
       png: path.join(LOGOS_DIR, 'splash.png'),
+      // Black artwork, transparent background, for a white page (manual home).
+      light: path.join(LOGOS_DIR, 'splash-light.png'),
     },
   },
 
