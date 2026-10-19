@@ -77,20 +77,36 @@
     cam.updateProjectionMatrix()
   }
 
+  /** Extent last written into the ortho frustum. */
+  let frustumExtent = /** @type {number | null} */ (null)
+  /** Viewer size used for the frustum aspect. Export must keep this, not the drawing buffer. */
+  let frustumW = 0
+  let frustumH = 0
+
   /** Ortho frustum + aspect on resize / extent from props — does not move the camera or reset zoom. */
   $effect(() => {
     const ext = framing.extent
     const { width, height } = $size
-    // Export resizes the drawing buffer. Rebuilding the frustum here moves the focus.
-    if (isExportResizeActive()) return
+    const exporting = isExportResizeActive()
+    if (!exporting && width && height) {
+      frustumW = width
+      frustumH = height
+    }
+    const w = exporting ? frustumW : width
+    const h = exporting ? frustumH : height
+    // A drawing-buffer resize has the same extent. Rebuilding the frustum from that
+    // size shifts the focus. A keyframe that tightens `extent` is the zoom-in, and
+    // export still has to apply it or the video stays on the wide framing.
+    if (exporting && frustumExtent != null && Math.abs(ext - frustumExtent) <= 1e-6) return
 
     const cam = camera.current
-    if (!cam || !width || !height) {
+    if (!cam || !w || !h) {
       return
     }
 
     if (cam instanceof OrthographicCamera) {
-      applyOrthoFrustum(cam, ext, width, height)
+      applyOrthoFrustum(cam, ext, w, h)
+      frustumExtent = ext
     }
 
     invalidate()
