@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import { compareSemver, pickNewerManifest } from './update-check.js'
 
 assert.ok(compareSemver('1.0.11', '1.0.13') < 0)
+assert.ok(compareSemver('1.0.13', '1.0.14') < 0)
 assert.ok(compareSemver('1.0.53', '1.0.49') > 0)
+assert.ok(compareSemver('1.0.53', '1.0.54') < 0)
 
 const stale = {
   gui: { latest: '1.0.11' },
@@ -20,5 +22,16 @@ const apiBump = {
   gatewizard: { latest: '1.0.53' }
 }
 assert.equal(pickNewerManifest(fresh, apiBump), apiBump)
+
+const installed = {
+  gui: { latest: '1.0.13' },
+  gatewizard: { latest: '1.0.53' }
+}
+const release = {
+  gui: { latest: '1.0.14' },
+  gatewizard: { latest: '1.0.54' }
+}
+assert.equal(pickNewerManifest(installed, release), release)
+assert.equal(pickNewerManifest(release, installed), release)
 
 console.log('update-check.test.mjs: ok')

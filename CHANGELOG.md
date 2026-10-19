@@ -7,12 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.14] - 2026-10-19
+
 ### Changed
 
 - **License:** the repository is MIT. The copyright line names the people in `contributors.yml`.
 - **Dependencies:** the README lists gemmi, freud-analysis, PDBFixer, bioconda `reduce`, Paramiko, Biopython, SciPy, and Biotite. The embedded AmberTools pin is 26.
 - **Manual:** the README links to the GateWizard manual PDF in the API repository. `contributors.yml` lists the people included in that manual.
-- **MemPrO:** the Linux installer pins GitHub release `v0.2.0`.
+- **MemPrO:** the Linux installer and `releases/versions.json` pin GitHub release `v0.2.0`.
 - **Ligand charges:** each ligand and free molecule can use GAFF or GAFF2 with ABCG2 or AM1-BCC. The default is GAFF2 with ABCG2. GAFF2 with AM1-BCC, and GAFF with ABCG2, show Amber's warning before parametrization.
 - **Working directory:** opening the app from a terminal fills the top-bar working directory with that console folder. `npm run dev` uses the folder where npm was started. A desktop launch leaves the field empty.
 - **Visualize toolbar:** the sequence button shows amino-acid letters in two short rows. The minimize button shows an arrow dropping into an energy well. Its settings control is a corner wedge that follows the button's rounded corner and turns blue on hover.
@@ -269,6 +271,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Equilibration default protocol (`base.json`):** universal membrane packing for all engines — Minimization → NVT thermalization → NVT scaffold (Eq2) → NPgT packing (Eq3–6, 50 ns MD) → production uses the sidebar ensemble.
 - **Equilibration banner:** thermalize/scaffold under NVT, pack under NPgT for 50 ns of MD, then production in the selected ensemble.
 
+### Notes
+
+- Requires **gatewizard** API **>= 1.0.54**
 
 ## [1.0.13] - 2026-08-06
 
