@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **License:** the repository is MIT. The copyright line names the people in `contributors.yml`.
+- **Dependencies:** the README lists gemmi, freud-analysis, PDBFixer, bioconda `reduce`, Paramiko, Biopython, SciPy, and Biotite. The embedded AmberTools pin is 26.
 - **MemPrO:** the Linux installer pins GitHub release `v0.2.0`.
 - **Ligand charges:** each ligand and free molecule can use GAFF or GAFF2 with ABCG2 or AM1-BCC. The default is GAFF2 with ABCG2. GAFF2 with AM1-BCC, and GAFF with ABCG2, show Amber's warning before parametrization.
 - **Working directory:** opening the app from a terminal fills the top-bar working directory with that console folder. `npm run dev` uses the folder where npm was started. A desktop launch leaves the field empty.

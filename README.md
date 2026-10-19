@@ -9,14 +9,16 @@ The app uses the **[GateWizard API](https://github.com/maurobedoya/gatewizard)**
 
 💬 **Questions and community help** → [gatewizard Discussions](https://github.com/maurobedoya/gatewizard/discussions) (shared forum for API and GUI; use labels `gui` or `gui:installation` for app topics)
 
+**Manual (PDF):** [GateWizard-manual.pdf](https://github.com/maurobedoya/gatewizard/raw/main/docs/manual/GateWizard-manual.pdf) in the API repository. The cover lists the API and GUI versions.
+
 [<img src="./resources/readme/main_viewer.png" width="600" alt="GateWizard desktop application" align="left" />](./resources/readme/main_viewer.png)
 
 <br clear="left" />
 
 ## Features
 
-- **Visualize** — 3D representations with multi-structure workspace (append PDBs/CIFs; Maestro `.mae`/`.maegz` and multi-MODEL PDB entry picker), viewpoints/animation, Apply representation across structures, and multiple-bond sticks when bond orders are known
-- **Preparation** — clean structures, pKa (PROPKA), protonation, and termini capping
+- **Visualize** — 3D representations with multi-structure workspace (append PDBs/CIFs; Maestro `.mae`/`.maegz` and multi-MODEL PDB entry picker), viewpoints/animation, Apply representation across structures, and multiple-bond sticks when bond orders are known. The sequence bar fills a short loop (1–6 residues). The structure checker compares alternate conformations, including a ligand. Minimize relaxes the current selection and writes a new PDB.
+- **Preparation** — clean structures, pKa (PROPKA), protonation, termini capping, short-loop filling, and the higher-occupancy alternate conformation
 - **Membrane builder** — orient protein, pack lipids and solvent, Amber parametrization (tleap). GateWizard supports **4028 lipid types** from packmol-memgen `--available_lipids_all` (version 2025.1.29), each with its residue name, charge, and chemical name. The catalog lists 4055 names; the 27 SIRAH lipids are coarse-grained and are not supported. See the [API builder reference](https://maurobedoya.github.io/gatewizard/api/builder/).
 - **Equilibration** — the same CHARMM-GUI-style protocols for four MD engines: NAMD, GROMACS, OpenMM, and Amber (NVT, NPT, NPAT, NPγT)
 - **Analysis** — trajectory metrics, structural analysis, and plotting helpers
@@ -304,6 +306,8 @@ GateWizard is split across two repositories ([API](https://github.com/maurobedoy
 | RDKit | Ligand 2D structures |
 | Pillow | Image I/O |
 | psique | Structure / sequence tools |
+| gemmi | mmCIF and biological assembly |
+| freud-analysis | Voronoi area-per-lipid (EVAPL, GridMAT, VTMC) |
 | requests | HTTP helpers |
 
 ### Python — optional `[full]` · *API; installed via embedded runtime*
@@ -312,6 +316,7 @@ GateWizard is split across two repositories ([API](https://github.com/maurobedoy
 |---------|------|
 | ParmEd | Topology conversion (GROMACS, etc.) |
 | OpenMM | Equilibration / MD (Python; use with conda `cudatoolkit` for GPU) |
+| PDBFixer | Short loops of 1–6 residues |
 | MemPrO | Membrane orientation ([GitHub](https://github.com/pstansfeld/MemPrO)) |
 
 ### Python — GUI backend · *this repo (embedded runtime)*
@@ -321,15 +326,22 @@ GateWizard is split across two repositories ([API](https://github.com/maurobedoy
 | Python 3.12 | Embedded micromamba env |
 | FastAPI | Local HTTP API |
 | Uvicorn | ASGI server |
+| Paramiko | SSH for Run on cluster |
+| Biopython | Residue mutation |
+| SciPy | Numerical helpers |
+| Biotite | Chain superposition |
+| PDBFixer | Short loops (also in `gatewizard[full]`) |
 | gatewizard[full] | GateWizard API (pip, from `backend/requirements.txt`) |
 
 ### Conda (embedded runtime · automatic on first start)
 
 | Package | Linux / WSL | macOS | Native Windows |
 |---------|-------------|-------|----------------|
-| AmberTools 24 | yes | yes | no — use WSL |
+| AmberTools 26 | yes | yes | no — use WSL |
+| reduce (bioconda) | yes | yes | no — use WSL |
 | OpenMM (conda) | yes | yes | no |
 | cudatoolkit (OpenMM CUDA) | yes | no (Metal) | no |
+| GROMACS (CPU) | yes | yes | no — use WSL |
 
 After `pip install gatewizard[full]`, the app re-syncs conda OpenMM packages on Linux/WSL so GPU support is kept.
 
@@ -431,3 +443,9 @@ CI publishes **Linux and macOS only**. A native Windows `.exe` can be built loca
 | API docs and troubleshooting | [Documentation](https://maurobedoya.github.io/gatewizard/) |
 
 New to the project? Read the [welcome post](https://github.com/maurobedoya/gatewizard/discussions/36).
+
+## License
+
+GateWizard GUI is licensed under the [MIT License](LICENSE).
+
+Copyright (c) 2025-2026 Constanza González, Francisco Adasme, Mauricio González, Janin Riedelsberger, and Mauricio Bedoya
