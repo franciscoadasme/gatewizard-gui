@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **MemPrO:** the Linux and macOS installer uses the CPU package `mempro` ≥ 0.3.0 from `gatewizard[full]`. The orientation panel shows CPU count and seed with the existing fields, and the other 0.3.0 options under Advanced settings. GPU stays off until JAX can see a GPU. GPU install opens the installation page.
+- **API requirement:** the app requires gatewizard **>= 1.0.55**.
+
 ## [1.0.14] - 2026-10-19
 
 ### Changed

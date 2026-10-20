@@ -7449,8 +7449,79 @@ class MemProRunRequest(BaseModel):
     use_weights: bool = False
     flip: bool = False
     membrane_thickness: float | None = None
+    seed: int | None = None
+    device: str | None = None
+    single_precision: bool = False
+    rank: str | None = None
+    predict_pg: bool = False
+    pg_guess: float | None = None
+    charge: float | None = None
+    charge_outer: float | None = None
+    outer_membrane_thickness: float | None = None
+    optimize_thickness: bool = False
+    transmembrane_residues: str | None = None
+    write_bfactors: bool = False
+    curvature: bool = False
+    itp_file: str | None = None
+    insane_path: str | None = None
+    build_system: int | None = None
+    build_arguments: str | None = None
+    additional_residues: str | None = None
+    additional_residues_itp: str | None = None
+    residue_cg_file: str | None = None
     source_label: str | None = None
     structure_id: str | None = None
+
+
+def _mempro_run_kwargs(payload: MemProRunRequest) -> dict:
+    """Arguments for ``MemPrO.run``, stored on the job and sent to the worker."""
+
+    def _text(value: str | None) -> str | None:
+        text = (value or "").strip()
+        return text or None
+
+    return {
+        "n_cpus": payload.n_cpus,
+        "n_iters": payload.n_iters,
+        "grid_size": payload.grid_size,
+        "dual_membrane": payload.dual_membrane,
+        "peripheral": payload.peripheral,
+        "use_weights": payload.use_weights,
+        "flip": payload.flip,
+        "membrane_thickness": payload.membrane_thickness,
+        "seed": payload.seed,
+        "device": _text(payload.device),
+        "single_precision": payload.single_precision,
+        "rank": _text(payload.rank),
+        "predict_pg": payload.predict_pg,
+        "pg_guess": payload.pg_guess,
+        "charge": payload.charge,
+        "charge_outer": payload.charge_outer,
+        "outer_membrane_thickness": payload.outer_membrane_thickness,
+        "optimize_thickness": payload.optimize_thickness,
+        "transmembrane_residues": _text(payload.transmembrane_residues),
+        "write_bfactors": payload.write_bfactors,
+        "curvature": payload.curvature,
+        "itp_file": _text(payload.itp_file),
+        "insane_path": _text(payload.insane_path),
+        "build_system": payload.build_system,
+        "build_arguments": _text(payload.build_arguments),
+        "additional_residues": _text(payload.additional_residues),
+        "additional_residues_itp": _text(payload.additional_residues_itp),
+        "residue_cg_file": _text(payload.residue_cg_file),
+    }
+
+
+@app.get("/mempro/device")
+def mempro_device() -> dict:
+    """Whether the backend Python's JAX build can see a GPU."""
+    from gatewizard.core.mempro import jax_sees_gpu  # noqa: PLC0415
+
+    try:
+        gpu = bool(jax_sees_gpu())
+    except Exception:
+        gpu = False
+    return {"gpu": gpu}
 
 
 @app.post("/mempro/run")
@@ -7463,24 +7534,15 @@ def mempro_run(payload: MemProRunRequest) -> dict:
         raise HTTPException(
             503,
             "mempro executable not found. Install with: "
-            "pip install git+https://github.com/pstansfeld/MemPrO.git",
+            'pip install "gatewizard[full]"',
         )
 
     job_id = str(uuid.uuid4())
     start_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     source_path = os.path.abspath(os.path.expanduser(payload.path))
     source_label = (payload.source_label or "").strip() or Path(source_path).name
-    params = {
-        "path": source_path,
-        "n_cpus": payload.n_cpus,
-        "n_iters": payload.n_iters,
-        "grid_size": payload.grid_size,
-        "dual_membrane": payload.dual_membrane,
-        "peripheral": payload.peripheral,
-        "use_weights": payload.use_weights,
-        "flip": payload.flip,
-        "membrane_thickness": payload.membrane_thickness,
-    }
+    run_kwargs = _mempro_run_kwargs(payload)
+    params = {"path": source_path, **run_kwargs}
 
     state = {
         "job_id": job_id,
@@ -7518,17 +7580,7 @@ def mempro_run(payload: MemProRunRequest) -> dict:
         def _run() -> None:
             try:
                 mp = MemPrO()
-                results = mp.run(
-                    source_path,
-                    n_cpus=payload.n_cpus,
-                    n_iters=payload.n_iters,
-                    grid_size=payload.grid_size,
-                    dual_membrane=payload.dual_membrane,
-                    peripheral=payload.peripheral,
-                    use_weights=payload.use_weights,
-                    flip=payload.flip,
-                    membrane_thickness=payload.membrane_thickness,
-                )
+                results = mp.run(source_path, **run_kwargs)
                 _mempro_jobs[job_id]["results"] = [
                     {
                         "rank": r.rank,

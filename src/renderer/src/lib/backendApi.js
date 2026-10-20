@@ -1650,6 +1650,7 @@ export function transformApply(payload) {
  * @param {{
  *   path: string,
  *   workingDir?: string,
+ *   nCpus?: number|null,
  *   nIters?: number,
  *   gridSize?: number,
  *   dualMembrane?: boolean,
@@ -1657,6 +1658,26 @@ export function transformApply(payload) {
  *   useWeights?: boolean,
  *   flip?: boolean,
  *   membraneThickness?: number|null,
+ *   seed?: number|null,
+ *   device?: string|null,
+ *   singlePrecision?: boolean,
+ *   rank?: string|null,
+ *   predictPg?: boolean,
+ *   pgGuess?: number|null,
+ *   charge?: number|null,
+ *   chargeOuter?: number|null,
+ *   outerMembraneThickness?: number|null,
+ *   optimizeThickness?: boolean,
+ *   transmembraneResidues?: string|null,
+ *   writeBfactors?: boolean,
+ *   curvature?: boolean,
+ *   itpFile?: string|null,
+ *   insanePath?: string|null,
+ *   buildSystem?: number|null,
+ *   buildArguments?: string|null,
+ *   additionalResidues?: string|null,
+ *   additionalResiduesItp?: string|null,
+ *   residueCgFile?: string|null,
  *   sourceLabel?: string|null,
  *   structureId?: string|null
  * }} payload
@@ -1664,6 +1685,14 @@ export function transformApply(payload) {
  */
 export function memproRun(payload) {
   return backendJson('/mempro/run', payload)
+}
+
+/**
+ * Whether the backend JAX build can see a GPU.
+ * @returns {Promise<{ gpu: boolean }>}
+ */
+export function memproDevice() {
+  return backendJson('/mempro/device')
 }
 
 /**

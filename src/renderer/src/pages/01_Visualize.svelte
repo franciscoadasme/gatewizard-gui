@@ -85,6 +85,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
     transformCountSelection,
     transformCompute,
     memproRun,
+    memproDevice as fetchMemproDevice,
     memproStatus,
     memproScan,
     memproApply,
@@ -111,7 +112,17 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
     outputFolderPath
   } from '../lib/outputFolders.js'
   import { createEmptyProject, normalizeExportQuality, normalizeProject, sortKeyframes, serializeAnimationProject } from '../lib/animation/schema.js'
-  import { easingForCapturedKeyframe, previousKeyframeAtTime } from '../lib/animation/keyframeEasing.js'
+  import {
+    camerasApproximatelyEqual,
+    coordPatchesApproximatelyEqual,
+    previousKeyframeAtTime
+  } from '../lib/animation/keyframeEasing.js'
+  import { DEFAULT_EASING_KIND } from '../lib/animation/easing.js'
+  import {
+    upsertChannelKey,
+    findChannelSegment,
+    migrateKeyframesToChannelTracks
+  } from '../lib/animation/channelTracks.js'
   import {
     applySceneSettings,
     captureViewerSnapshot,
@@ -122,7 +133,12 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   import { remapSavedStructureId } from '../lib/animation/overlayAtoms.js'
   import { applyCameraPose, waitForMainViewerReady } from '../lib/animation/cameraPose.js'
   import { applyAnimationAtTime, startPlayback } from '../lib/animation/playback.js'
-  import { shouldApplyCoordPatch, shouldSeekTrajFrame } from '../lib/animation/timelinePlayhead.js'
+  import {
+    animExportFrameTime,
+    coordPatchSignature,
+    shouldApplyCoordPatch,
+    shouldSeekTrajFrame
+  } from '../lib/animation/timelinePlayhead.js'
   import {
     buildViewpoint,
     normalizeViewpoint,
@@ -238,7 +254,8 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
     inversePatchFromBefore,
     normalizeCoordPatch,
     positionsToCoordPatch,
-    snapshotAtomCoords
+    snapshotAtomCoords,
+    syncViewAtomsFromStructure
   } from '../lib/viewer/workingCoords.js'
   import {
     applyBlendToViewAtoms,
@@ -710,6 +727,8 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   let animateMode = $state(false)
   let animExpanded = $state(true)
   let animProject = $state(createEmptyProject())
+  /** @type {{ kind: 'camera' } | { kind: 'structure', structureId: string } | { kind: 'view', viewId: string } | null} */
+  let animActiveTrack = $state(null)
   let animPlayhead = $state(0)
   let animPlaying = $state(false)
   let animExporting = $state(false)
@@ -941,6 +960,29 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   let memproUseWeights = $state(false)
   let memproFlip = $state(false)
   let memproMembrane = $state('')
+  let memproNCpus = $state('')
+  let memproSeed = $state('')
+  let memproDevice = $state('cpu')
+  let memproGpuAvailable = $state(false)
+  const memproGpuInstallUrl = 'https://maurobedoya.github.io/gatewizard/installation/#mempro-on-a-gpu'
+  let memproSinglePrecision = $state(false)
+  let memproRank = $state('auto')
+  let memproPredictPg = $state(false)
+  let memproPgGuess = $state('')
+  let memproCharge = $state('')
+  let memproChargeOuter = $state('')
+  let memproOuterThickness = $state('')
+  let memproOptimizeThickness = $state(false)
+  let memproTransmembrane = $state('')
+  let memproWriteBfactors = $state(false)
+  let memproCurvature = $state(false)
+  let memproItp = $state('')
+  let memproInsane = $state('')
+  let memproBuildSystem = $state('')
+  let memproBuildArgs = $state('')
+  let memproAdditionalResidues = $state('')
+  let memproAdditionalResiduesItp = $state('')
+  let memproResidueCg = $state('')
   /** @type {object[]} persisted + in-session MemPro jobs (newest first) */
   let memproJobs = $state([])
   /** Which completed/running job is shown in the panel */
@@ -3266,7 +3308,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
 
   /** @param {string[]} viewIds @param {boolean} visible */
   function persistAnimatedViewVisibility(viewIds, visible) {
-    if (!animateMode || !animProject.keyframes.length) return
+    if (!animateMode || !animChannelKeyCount(animProject)) return
     let changed = false
     for (const id of viewIds) {
       if (persistViewVisibilityInKeyframes(animProject.keyframes, id, visible, animPlayhead)) {
@@ -3278,7 +3320,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
 
   /** @param {string} viewId @param {boolean} enabled */
   function persistAnimatedSelectionEachFrame(viewId, enabled) {
-    if (!animateMode || !animProject.keyframes.length) return
+    if (!animateMode || !animChannelKeyCount(animProject)) return
     if (persistViewSelectionEachFrameInKeyframes(animProject.keyframes, viewId, enabled, animPlayhead)) {
       animProject = { ...animProject }
     }
@@ -3286,7 +3328,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
 
   /** @param {string} viewId @param {boolean} enabled */
   function persistAnimatedTrajSmoothRestoreH(viewId, enabled) {
-    if (!animateMode || !animProject.keyframes.length) return
+    if (!animateMode || !animChannelKeyCount(animProject)) return
     if (persistViewTrajSmoothRestoreHInKeyframes(animProject.keyframes, viewId, enabled, animPlayhead)) {
       animProject = { ...animProject }
     }
@@ -6802,6 +6844,30 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
     memproDialogOpen = true
     memproShowNewRunForm = false
     refreshMemproJobs().catch(() => {})
+    refreshMemproDevice().catch(() => {})
+  }
+
+  async function refreshMemproDevice() {
+    try {
+      const info = await fetchMemproDevice()
+      memproGpuAvailable = Boolean(info?.gpu)
+    } catch {
+      memproGpuAvailable = false
+    }
+    if (!memproGpuAvailable && memproDevice === 'gpu') memproDevice = 'cpu'
+  }
+
+  /** @param {string} url */
+  async function openMemproGpuInstall(url) {
+    if (window.api?.openExternalUrl) {
+      try {
+        await window.api.openExternalUrl(url)
+        return
+      } catch {
+        /* fall through */
+      }
+    }
+    window.open(url, '_blank', 'noopener,noreferrer')
   }
 
   /** @param {string | null | undefined} pathStr */
@@ -6998,14 +7064,46 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
     if (changed) views = [...views]
   }
 
+  /**
+   * Keep representation atom XYZ in sync with the working structure after animation scrub.
+   * @param {string | null | undefined} structureId
+   * @param {Array<{ index?: number, x: number, y: number, z: number }>} newAtoms
+   */
+  function syncViewsAtomsFromStructure(structureId, newAtoms) {
+    if (!structureId || !newAtoms?.length) return
+    for (const v of views) {
+      if (v._isSelHighlight) continue
+      if (v.structureId !== structureId) continue
+      skipNextPathFetch.add(v.id)
+      skipNextAtomsFetch.add(v.id)
+    }
+    const { views: next, touched } = syncViewAtomsFromStructure(views, structureId, newAtoms)
+    if (touched) {
+      views = /** @type {View[]} */ (next)
+      coordsGeneration += 1
+    }
+  }
+
+  function hasAnimMotionKeys() {
+    if (animProject.structureTracks) {
+      for (const tr of Object.values(animProject.structureTracks)) {
+        if (tr?.keys?.length) return true
+      }
+    }
+    return (animProject.keyframes?.length ?? 0) > 0
+  }
+
   function applyAnimFrame(time_s) {
-    applyAnimationAtTime(animProject.keyframes, time_s, {
+    const primaryId = activeStructureId || animProject.structures?.[0]?.id || null
+    if (primaryId) ensureBaseAtomCoords(primaryId)
+    applyAnimationAtTime(animProject, time_s, {
       getViews: () => views,
       setViews: (nextViews) => {
         views = /** @type {View[]} */ (nextViews)
       },
       structureCtx: animStructureCtx(),
       baseCoords: baseAtomCoords,
+      primaryStructureId: primaryId,
       applyFraming: (framing) => {
         if (!camera) return
         camera = {
@@ -7033,11 +7131,12 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
         const { apply, signature } = shouldApplyCoordPatch(lastAnimCoordSig, patch ?? null)
         if (!apply) return
         lastAnimCoordSig = signature
-        if (animProject.keyframes.length > 0 && structure?.atoms?.length && baseAtomCoords.size) {
+        if (hasAnimMotionKeys() && structure?.atoms?.length && baseAtomCoords.size) {
           const atoms = atomsFromBaseAndPatch(structure.atoms, baseAtomCoords, patch ?? null)
           patchActiveStructure({ atoms })
           animCoordOverlay = null
           if (activeStructureId) animCoordOverlayByStructure.delete(activeStructureId)
+          syncViewsAtomsFromStructure(activeStructureId, atoms)
           coordUndoStack.clear()
           coordsDirty = !!diffFromBase(baseAtomCoords, atoms)
         } else {
@@ -7045,6 +7144,50 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
           if (activeStructureId && animCoordOverlay) {
             animCoordOverlayByStructure.set(activeStructureId, animCoordOverlay)
           }
+        }
+      },
+      setCoordOverlays: (patches) => {
+        previewPositions = null
+        _dragStartPositions = null
+        const map = patches && typeof patches === 'object' ? patches : {}
+        const sig =
+          Object.keys(map)
+            .sort()
+            .map((sid) => `${sid}:${coordPatchSignature(map[sid])}`)
+            .join('|') || '__base__'
+        if (sig === lastAnimCoordSig) return
+        lastAnimCoordSig = sig
+        /** @type {Set<string>} */
+        const ids = new Set([
+          ...structures.map((s) => s.id).filter(Boolean),
+          ...Object.keys(map),
+          ...baseAtomCoordsByStructure.keys()
+        ])
+        let nextStructures = structures
+        /** @type {Map<string, typeof structures[0]['atoms']>} */
+        const atomsBySid = new Map()
+        for (const sid of ids) {
+          const entry = findStructure(nextStructures, sid)
+          const base = ensureBaseAtomCoords(sid)
+          if (!entry?.atoms?.length || !base?.size) {
+            if (map[sid]) animCoordOverlayByStructure.set(sid, coordPatchToPreviewArray(map[sid]))
+            else animCoordOverlayByStructure.delete(sid)
+            continue
+          }
+          const patch = map[sid] ?? null
+          const atoms = atomsFromBaseAndPatch(entry.atoms, base, patch)
+          atomsBySid.set(sid, atoms)
+          nextStructures = nextStructures.map((s) => (s.id === sid ? { ...s, atoms } : s))
+          animCoordOverlayByStructure.delete(sid)
+        }
+        structures = nextStructures
+        animCoordOverlay = null
+        for (const [sid, atoms] of atomsBySid) {
+          syncViewsAtomsFromStructure(sid, atoms)
+        }
+        if (activeStructureId) {
+          coordsDirty = !!diffFromBase(baseAtomCoords, structure?.atoms ?? [])
+          coordUndoStack.clear()
         }
       },
       setTrajFrame: (frame) => {
@@ -7101,7 +7244,8 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
     }
     animProject = {
       ...animProject,
-      structure: { path: filePath ?? '', topology: topologyPath }
+      structure: { path: filePath ?? '', topology: topologyPath },
+      structures: structuresMetaForSave()
     }
   }
 
@@ -7122,9 +7266,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   async function onAnimCaptureKeyframe() {
     await tick()
     try {
-      // Commit live gizmo preview so the keyframe stores the pose on screen.
       commitGizmoPreviewIfAny()
-      // Select-tool hover/outline/temp ball-stick must never enter the keyframe.
       clearEphemeralEditSelection()
       await tick()
       const persistViews = views.filter((v) => !v._isSelHighlight)
@@ -7138,99 +7280,177 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
         getMeasurements: () => measurements
       })
       const time_s = Math.max(0, Math.min(animProject.duration_s, animPlayhead))
-      const existing = animProject.keyframes.find((k) => Math.abs(k.time_s - time_s) < 0.05)
-      ensureBaseAtomCoords(activeStructureId)
-      const coordPatch = diffFromBase(baseAtomCoords, structure?.atoms ?? [])
-      const prevKf = previousKeyframeAtTime(animProject.keyframes, time_s, existing?.id ?? null)
-      const capturedEasing = easingForCapturedKeyframe({
-        hasTrajectory: !!trajStructure,
-        hasPrevious: !!prevKf,
-        prevCamera: prevKf?.camera ?? null,
-        nextCamera: snap.camera
-      })
-      const keyframe = existing
-        ? {
-            ...existing,
-            camera: snap.camera,
-            views: snap.views,
-            scene: snap.scene,
-            viewport: snap.viewport,
-            labels: snap.labels,
-            measurements: snap.measurements,
-            ...(coordPatch ? { coordPatch } : { coordPatch: undefined }),
-            ...(trajStructure
-              ? { trajFrame: trajPlayhead }
-              : {}),
-            ...(capturedEasing
-              ? { easing: capturedEasing, easingBezier: undefined }
-              : {})
-          }
-        : {
+      const structureId = activeStructureId || animProject.structures?.[0]?.id || null
+      ensureBaseAtomCoords(structureId)
+      const captureAtoms =
+        (structureId && findStructure(structures, structureId)?.atoms) || structure?.atoms || []
+      const coordPatch = diffFromBase(baseAtomCoords, captureAtoms)
+
+      ensureChannelTracks()
+      const focus = animActiveTrack
+      const writeAll = !focus
+      const writeCamera = writeAll || focus?.kind === 'camera'
+      const writeStructure =
+        writeAll ||
+        focus?.kind === 'structure' ||
+        (focus?.kind === 'view' && !!coordPatch)
+      const writeViews = writeAll || focus?.kind === 'view'
+
+      let cameraTrack = { keys: [...(animProject.cameraTrack?.keys ?? [])] }
+      let structureTracks = { ...(animProject.structureTracks ?? {}) }
+      let viewKeyTracks = { ...(animProject.viewKeyTracks ?? {}) }
+
+      if (writeCamera) {
+        const prevCam = previousChannelKey(cameraTrack.keys, time_s)
+        const cameraChanged = !prevCam || !camerasApproximatelyEqual(prevCam.camera, snap.camera)
+        if (cameraChanged || focus?.kind === 'camera') {
+          cameraTrack.keys = upsertChannelKey(cameraTrack.keys, {
             id: crypto.randomUUID(),
-            name: `Keyframe ${animProject.keyframes.length + 1}`,
             time_s,
             camera: snap.camera,
-            views: snap.views,
+            cameraEasing: prevCam?.cameraEasing ?? DEFAULT_EASING_KIND,
             scene: snap.scene,
             viewport: snap.viewport,
             labels: snap.labels,
-            measurements: snap.measurements,
-            ...(coordPatch ? { coordPatch } : {}),
-            ...(trajStructure ? { trajFrame: trajPlayhead } : {}),
-            ...(capturedEasing
-              ? { easing: capturedEasing, easingBezier: undefined }
-              : {})
+            measurements: snap.measurements
+          })
+        }
+      }
+
+      if (writeStructure && structureId && (coordPatch || trajStructure || focus?.kind === 'structure')) {
+        const prevKeys = structureTracks[structureId]?.keys ?? []
+        const prevStruct = previousChannelKey(prevKeys, time_s)
+        const prevPatch = prevStruct?.coordPatch ?? null
+        const atomsChanged = !coordPatchesApproximatelyEqual(prevPatch, coordPatch)
+        const trajChanged =
+          !!trajStructure && (prevStruct?.trajFrame ?? null) !== trajPlayhead
+        if (atomsChanged || trajChanged || focus?.kind === 'structure') {
+          const motionEasing =
+            atomsChanged || trajChanged
+              ? trajChanged && !atomsChanged
+                ? 'linear'
+                : (prevStruct?.motionEasing ?? DEFAULT_EASING_KIND)
+              : (prevStruct?.motionEasing ?? DEFAULT_EASING_KIND)
+          structureTracks = {
+            ...structureTracks,
+            [structureId]: {
+              keys: upsertChannelKey(prevKeys, {
+                id: crypto.randomUUID(),
+                time_s,
+                ...(coordPatch ? { coordPatch } : {}),
+                ...(trajStructure ? { trajFrame: trajPlayhead } : {}),
+                motionEasing
+              })
+            }
           }
-      if (!coordPatch) delete keyframe.coordPatch
+        }
+      }
+
+      if (writeViews) {
+        const viewIds =
+          focus?.kind === 'view'
+            ? [focus.viewId]
+            : persistViews.map((v) => String(v.id))
+        for (const vid of viewIds) {
+          const sv = snap.views.find((v) => String(v.id) === vid)
+          if (!sv) continue
+          const prevKeys = viewKeyTracks[vid]?.keys ?? []
+          viewKeyTracks = {
+            ...viewKeyTracks,
+            [vid]: {
+              keys: upsertChannelKey(prevKeys, {
+                id: crypto.randomUUID(),
+                time_s,
+                view: JSON.parse(JSON.stringify(sv))
+              })
+            }
+          }
+        }
+      }
+
       const persistIds = persistViews.map((x) => String(x.id))
       for (const v of persistViews) {
         registerViewTrack(animProject, String(v.id), persistIds)
       }
       animProject = {
         ...animProject,
-        keyframes: existing
-          ? animProject.keyframes.map((k) => (k.id === existing.id ? keyframe : k))
-          : [...animProject.keyframes, keyframe]
+        structures: structuresMetaForSave(),
+        cameraTrack,
+        structureTracks,
+        viewKeyTracks
       }
-      sortKeyframes(animProject)
-      propagateNewViewsToLaterKeyframes(
-        animProject.keyframes,
-        keyframe.id,
-        animProject.viewTracks ?? []
-      )
       syncProjectViewTracks(animProject)
       animProject = { ...animProject }
       await applyAnimFrameLive(animPlayhead)
-      logEvent('info', 'view', 'Captured animation keyframe', keyframe.name)
+      logEvent('info', 'view', 'Captured animation key', `${time_s.toFixed(2)}s`)
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : String(ex))
     }
   }
 
-  function onAnimGoToKeyframe(id) {
-    const kf = animProject.keyframes.find((k) => k.id === id)
-    if (!kf) return
-    animPlayhead = kf.time_s
-    void applyAnimFrameLive(kf.time_s)
-  }
-
-  function onAnimDeleteKeyframe(id) {
-    animProject = {
-      ...animProject,
-      keyframes: animProject.keyframes.filter((k) => k.id !== id)
+  function ensureChannelTracks() {
+    if (
+      animProject.cameraTrack?.keys?.length ||
+      Object.keys(animProject.structureTracks || {}).length ||
+      Object.keys(animProject.viewKeyTracks || {}).length
+    ) {
+      return
+    }
+    if (animProject.keyframes?.length) {
+      const primaryId = activeStructureId || animProject.structures?.[0]?.id || null
+      const migrated = migrateKeyframesToChannelTracks(animProject.keyframes, primaryId)
+      animProject = { ...animProject, ...migrated }
+    } else {
+      animProject = {
+        ...animProject,
+        cameraTrack: animProject.cameraTrack ?? { keys: [] },
+        structureTracks: animProject.structureTracks ?? {},
+        viewKeyTracks: animProject.viewKeyTracks ?? {}
+      }
     }
   }
 
+  /** @template {{ time_s: number }} T @param {T[]} keys @param {number} time_s */
+  function previousChannelKey(keys, time_s) {
+    let best = null
+    for (const k of keys || []) {
+      if (k.time_s > time_s + 1e-6) continue
+      if (!best || k.time_s > best.time_s) best = k
+    }
+    return best
+  }
+
+  function onAnimGoToKeyframe(id) {
+    const hit = findChannelKeyById(id)
+    if (!hit) return
+    animPlayhead = hit.key.time_s
+    void applyAnimFrameLive(hit.key.time_s)
+  }
+
+  function onAnimDeleteKeyframe(id) {
+    const hit = findChannelKeyById(id)
+    if (!hit) return
+    animProject = removeChannelKeyById(animProject, id)
+  }
+
   function onAnimClearKeyframes() {
-    if (!animProject.keyframes.length) return
+    const n = animChannelKeyCount(animProject)
+    if (!n) return
     stopAnimPlayback()
     lastAnimCoordSig = undefined
-    animProject = { ...animProject, keyframes: [] }
-    logEvent('info', 'view', 'Cleared animation keyframes', 'Duration and FPS stayed. Capture to start over.')
+    animProject = {
+      ...animProject,
+      keyframes: [],
+      cameraTrack: { keys: [] },
+      structureTracks: {},
+      viewKeyTracks: {}
+    }
+    logEvent('info', 'view', 'Cleared animation keys', 'Duration and FPS stayed. Capture to start over.')
   }
 
   /** @param {string} id @param {string} name */
   function onAnimRenameKeyframe(id, name) {
+    // Channel keys have no display name; keep for legacy shared keyframes.
     animProject = {
       ...animProject,
       keyframes: animProject.keyframes.map((k) => (k.id === id ? { ...k, name } : k))
@@ -7239,67 +7459,203 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
 
   /** @param {string} id */
   function onAnimDuplicateKeyframe(id) {
-    const src = animProject.keyframes.find((k) => k.id === id)
-    if (!src) return
-    let time_s = Math.min(animProject.duration_s, src.time_s + 0.25)
-    const taken = new Set(animProject.keyframes.map((k) => k.time_s.toFixed(3)))
-    while (taken.has(time_s.toFixed(3)) && time_s < animProject.duration_s) {
-      time_s = Math.min(animProject.duration_s, time_s + 0.05)
-    }
-    const dup = JSON.parse(JSON.stringify(src))
-    dup.id = crypto.randomUUID()
-    dup.name = `${src.name || 'Keyframe'} copy`
-    dup.time_s = time_s
-    animProject = {
-      ...animProject,
-      keyframes: [...animProject.keyframes, dup]
-    }
-    sortKeyframes(animProject)
-    propagateNewViewsToLaterKeyframes(
-      animProject.keyframes,
-      dup.id,
-      animProject.viewTracks ?? []
-    )
-    animProject = { ...animProject }
+    const hit = findChannelKeyById(id)
+    if (!hit) return
+    let time_s = Math.min(animProject.duration_s, hit.key.time_s + 0.25)
+    const dup = { ...JSON.parse(JSON.stringify(hit.key)), id: crypto.randomUUID(), time_s }
+    animProject = upsertChannelKeyOnProject(animProject, hit.channel, dup)
     animPlayhead = time_s
     applyAnimFrame(time_s)
-    logEvent('info', 'view', 'Duplicated keyframe', dup.name)
+    logEvent('info', 'view', 'Duplicated animation key', `${time_s.toFixed(2)}s`)
   }
 
-  function onAnimMoveKeyframe(id, time_s) {
-    onAnimKeyframeTimeChange(id, time_s)
+  /**
+   * @param {string} id
+   * @param {number} time_s
+   * @param {{ kind: 'camera' } | { kind: 'structure', structureId: string } | { kind: 'view', viewId: string } | null} [channel]
+   */
+  function onAnimMoveKeyframe(id, time_s, channel = null) {
+    const t = Math.max(0, Math.min(animProject.duration_s, time_s))
+    const hit = findChannelKeyById(id) || (channel ? { channel, key: null } : null)
+    if (!hit) return
+    animProject = moveChannelKeyTime(animProject, id, t)
+    animPlayhead = t
+    applyAnimFrame(t)
   }
 
   /**
    * @param {string} toKeyframeId
    * @param {{ easing: import('../lib/animation/easing.js').AnimationEasingKind, easingBezier?: [number, number, number, number] }} next
+   * @param {'camera' | 'motion'} [channel]
+   * @param {string | null} [structureId]
    */
-  function onAnimEasingChange(toKeyframeId, next) {
-    animProject = {
-      ...animProject,
-      keyframes: animProject.keyframes.map((k) =>
-        k.id === toKeyframeId
-          ? {
-              ...k,
-              easing: next.easing,
-              easingBezier: next.easing === 'bezier' ? next.easingBezier : undefined
-            }
-          : k
-      )
+  function onAnimEasingChange(toKeyframeId, next, channel = 'camera', structureId = null) {
+    if (channel === 'motion' && structureId) {
+      const keys = [...(animProject.structureTracks?.[structureId]?.keys ?? [])]
+      const idx = keys.findIndex((k) => k.id === toKeyframeId)
+      if (idx < 0) return
+      keys[idx] = {
+        ...keys[idx],
+        motionEasing: next.easing,
+        motionEasingBezier: next.easing === 'bezier' ? next.easingBezier : undefined
+      }
+      animProject = {
+        ...animProject,
+        structureTracks: {
+          ...animProject.structureTracks,
+          [structureId]: { keys }
+        }
+      }
+    } else {
+      const keys = [...(animProject.cameraTrack?.keys ?? [])]
+      const idx = keys.findIndex((k) => k.id === toKeyframeId)
+      if (idx < 0) return
+      keys[idx] = {
+        ...keys[idx],
+        cameraEasing: next.easing,
+        cameraEasingBezier: next.easing === 'bezier' ? next.easingBezier : undefined
+      }
+      animProject = { ...animProject, cameraTrack: { keys } }
     }
     applyAnimFrame(animPlayhead)
   }
 
-  function onAnimKeyframeTimeChange(id, time_s) {
-    const t = Math.max(0, Math.min(animProject.duration_s, time_s))
+  /**
+   * @param {string} viewId
+   * @param {string} keyframeId
+   * @param {import('../lib/animation/fade.js').AnimationFadeSettings} next
+   */
+  function onAnimViewFadeChange(viewId, keyframeId, next) {
+    const keys = [...(animProject.viewKeyTracks?.[viewId]?.keys ?? [])]
+    const idx = keys.findIndex((k) => k.id === keyframeId)
+    if (idx < 0) return
+    keys[idx] = {
+      ...keys[idx],
+      view: { ...keys[idx].view, ...next }
+    }
     animProject = {
       ...animProject,
-      keyframes: animProject.keyframes.map((k) => (k.id === id ? { ...k, time_s: t } : k))
+      viewKeyTracks: {
+        ...animProject.viewKeyTracks,
+        [viewId]: { keys }
+      }
     }
-    sortKeyframes(animProject)
-    animProject = { ...animProject }
-    animPlayhead = t
-    applyAnimFrame(t)
+    applyAnimFrame(animPlayhead)
+  }
+
+  /** @param {string} id */
+  function findChannelKeyById(id) {
+    for (const k of animProject.cameraTrack?.keys ?? []) {
+      if (k.id === id) return { channel: /** @type {const} */ ({ kind: 'camera' }), key: k }
+    }
+    for (const [sid, track] of Object.entries(animProject.structureTracks ?? {})) {
+      for (const k of track.keys ?? []) {
+        if (k.id === id) return { channel: { kind: 'structure', structureId: sid }, key: k }
+      }
+    }
+    for (const [vid, track] of Object.entries(animProject.viewKeyTracks ?? {})) {
+      for (const k of track.keys ?? []) {
+        if (k.id === id) return { channel: { kind: 'view', viewId: vid }, key: k }
+      }
+    }
+    const legacy = animProject.keyframes?.find((k) => k.id === id)
+    if (legacy) return { channel: { kind: 'camera' }, key: { ...legacy, time_s: legacy.time_s } }
+    return null
+  }
+
+  /** @param {import('../lib/animation/schema.js').AnimationProject} project */
+  function animChannelKeyCount(project) {
+    let n = project.cameraTrack?.keys?.length ?? 0
+    for (const t of Object.values(project.structureTracks ?? {})) n += t.keys?.length ?? 0
+    for (const t of Object.values(project.viewKeyTracks ?? {})) n += t.keys?.length ?? 0
+    return n || (project.keyframes?.length ?? 0)
+  }
+
+  /**
+   * @param {import('../lib/animation/schema.js').AnimationProject} project
+   * @param {string} id
+   */
+  function removeChannelKeyById(project, id) {
+    return {
+      ...project,
+      cameraTrack: {
+        keys: (project.cameraTrack?.keys ?? []).filter((k) => k.id !== id)
+      },
+      structureTracks: Object.fromEntries(
+        Object.entries(project.structureTracks ?? {}).map(([sid, t]) => [
+          sid,
+          { keys: (t.keys ?? []).filter((k) => k.id !== id) }
+        ])
+      ),
+      viewKeyTracks: Object.fromEntries(
+        Object.entries(project.viewKeyTracks ?? {}).map(([vid, t]) => [
+          vid,
+          { keys: (t.keys ?? []).filter((k) => k.id !== id) }
+        ])
+      ),
+      keyframes: (project.keyframes ?? []).filter((k) => k.id !== id)
+    }
+  }
+
+  /**
+   * @param {import('../lib/animation/schema.js').AnimationProject} project
+   * @param {string} id
+   * @param {number} time_s
+   */
+  function moveChannelKeyTime(project, id, time_s) {
+    const mapKeys = (keys) =>
+      (keys ?? []).map((k) => (k.id === id ? { ...k, time_s } : k)).sort((a, b) => a.time_s - b.time_s)
+    return {
+      ...project,
+      cameraTrack: { keys: mapKeys(project.cameraTrack?.keys) },
+      structureTracks: Object.fromEntries(
+        Object.entries(project.structureTracks ?? {}).map(([sid, t]) => [
+          sid,
+          { keys: mapKeys(t.keys) }
+        ])
+      ),
+      viewKeyTracks: Object.fromEntries(
+        Object.entries(project.viewKeyTracks ?? {}).map(([vid, t]) => [
+          vid,
+          { keys: mapKeys(t.keys) }
+        ])
+      )
+    }
+  }
+
+  /**
+   * @param {import('../lib/animation/schema.js').AnimationProject} project
+   * @param {{ kind: string, structureId?: string, viewId?: string }} channel
+   * @param {any} key
+   */
+  function upsertChannelKeyOnProject(project, channel, key) {
+    if (channel.kind === 'camera') {
+      return {
+        ...project,
+        cameraTrack: { keys: upsertChannelKey(project.cameraTrack?.keys ?? [], key) }
+      }
+    }
+    if (channel.kind === 'structure' && channel.structureId) {
+      const sid = channel.structureId
+      return {
+        ...project,
+        structureTracks: {
+          ...project.structureTracks,
+          [sid]: { keys: upsertChannelKey(project.structureTracks?.[sid]?.keys ?? [], key) }
+        }
+      }
+    }
+    if (channel.kind === 'view' && channel.viewId) {
+      const vid = channel.viewId
+      return {
+        ...project,
+        viewKeyTracks: {
+          ...project.viewKeyTracks,
+          [vid]: { keys: upsertChannelKey(project.viewKeyTracks?.[vid]?.keys ?? [], key) }
+        }
+      }
+    }
+    return project
   }
 
   function onAnimPlayheadChange(time_s) {
@@ -7309,7 +7665,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   function onAnimScrub(time_s) {
     stopAnimPlayback()
     animPlayhead = Math.max(0, Math.min(animProject.duration_s, time_s))
-    if (animProject.keyframes.length) applyAnimFrame(animPlayhead)
+    if (animChannelKeyCount(animProject)) applyAnimFrame(animPlayhead)
   }
 
   function toggleAnimPlayPause() {
@@ -7317,7 +7673,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       stopAnimPlayback()
       return
     }
-    if (!animProject.keyframes.length) return
+    if (!animChannelKeyCount(animProject)) return
     animPlaying = true
     animStopPlayback = startPlayback({
       keyframes: animProject.keyframes,
@@ -7341,7 +7697,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   function onAnimStop() {
     stopAnimPlayback()
     animPlayhead = 0
-    if (animProject.keyframes.length) applyAnimFrame(0)
+    if (animChannelKeyCount(animProject)) applyAnimFrame(0)
   }
 
   function resolveAnimationOutputBase() {
@@ -7466,7 +7822,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       views = views.filter((v) => animatedTrackIds.has(String(v.id)))
       restoreVisibilityGroups(project.visibilityGroups)
       animPlayhead = 0
-      if (animProject.keyframes.length) {
+      if (animChannelKeyCount(animProject)) {
         sceneRestoringPhase = 'Restoring representations…'
         applyAnimFrame(0)
         await refreshAnimationViewAtoms()
@@ -7498,7 +7854,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   }
 
   async function onAnimExportVideo() {
-    if (!animProject.keyframes.length) return
+    if (!animChannelKeyCount(animProject)) return
     if (!confirmProceedWithoutWorkingDir('animation')) return
     let requested
     try {
@@ -7566,7 +7922,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       })
       for (let i = 0; i < frameCount; i++) {
         throwIfAnimExportCancelled()
-        const t = Math.min(animProject.duration_s, i / fps)
+        const t = animExportFrameTime(i, fps, animProject.duration_s)
         animPlayhead = t
         animExportFrame = i + 1
         animExportPhase = `Rendering frame ${i + 1} of ${frameCount}…`
@@ -7574,6 +7930,8 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
         throwIfAnimExportCancelled()
         applyAnimFrame(t)
         await trajSeekWaiter
+        throwIfAnimExportCancelled()
+        await waitForViewerIdle({ idleFrames: 2, timeoutMs: 20000, settleMs: 40 })
         throwIfAnimExportCancelled()
         await renderFrame(() => mainViewerInvalidate.fn())
         await tick()
@@ -7667,7 +8025,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       animExportFrame = 0
       animExportTotal = 0
       animPlayhead = savedPlayhead
-      if (animProject.keyframes.length) applyAnimFrame(savedPlayhead)
+      if (animChannelKeyCount(animProject)) applyAnimFrame(savedPlayhead)
     }
   }
 
@@ -7880,25 +8238,72 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
     }
   }
 
+  /** @param {string|number|null|undefined} value */
+  function optionalMemproNumber(value) {
+    if (value === '' || value == null) return null
+    const n = Number(value)
+    return Number.isFinite(n) ? n : null
+  }
+
+  /** @param {string|number|null|undefined} value */
+  function optionalMemproInt(value) {
+    const n = optionalMemproNumber(value)
+    return n == null ? null : Math.trunc(n)
+  }
+
+  function memproRunPayload(sourceLabel) {
+    const dual = memproDualMembrane && !memproPeripheral && !memproCurvature
+    const curvature =
+      memproCurvature && !memproDualMembrane && !memproOptimizeThickness && !memproWriteBfactors
+    const weights = memproUseWeights && !memproTransmembrane.trim()
+    const nCpus = optionalMemproInt(memproNCpus)
+    const seed = optionalMemproInt(memproSeed)
+    const buildSystem = optionalMemproInt(memproBuildSystem)
+    return {
+      path: filePath,
+      workingDir: workingDir || undefined,
+      nCpus: nCpus || null,
+      nIters: memproNIters,
+      gridSize: memproGridSize,
+      dualMembrane: dual,
+      peripheral: memproPeripheral && !memproDualMembrane,
+      useWeights: weights,
+      flip: memproFlip,
+      membraneThickness: optionalMemproNumber(memproMembrane),
+      seed,
+      device:
+        memproDevice === 'gpu' && !memproGpuAvailable ? 'cpu' : memproDevice || 'cpu',
+      singlePrecision: memproSinglePrecision,
+      rank: memproRank && memproRank !== 'auto' ? memproRank : null,
+      predictPg: memproPredictPg && dual,
+      pgGuess: dual ? optionalMemproNumber(memproPgGuess) : null,
+      charge: optionalMemproNumber(memproCharge),
+      chargeOuter: dual ? optionalMemproNumber(memproChargeOuter) : null,
+      outerMembraneThickness: dual ? optionalMemproNumber(memproOuterThickness) : null,
+      optimizeThickness: memproOptimizeThickness && !memproCurvature,
+      transmembraneResidues: weights ? null : memproTransmembrane.trim() || null,
+      writeBfactors: memproWriteBfactors && !memproCurvature,
+      curvature,
+      itpFile: memproItp.trim() || null,
+      insanePath: memproInsane.trim() || null,
+      buildSystem: buildSystem || null,
+      buildArguments: memproBuildArgs.trim() || null,
+      additionalResidues: memproAdditionalResidues.trim() || null,
+      additionalResiduesItp: memproAdditionalResiduesItp.trim() || null,
+      residueCgFile: memproResidueCg.trim() || null,
+      sourceLabel,
+      structureId: activeStructureId
+    }
+  }
+
   async function onMemproRun() {
     if (!filePath || !structure) return
     if (!confirmProceedWithoutWorkingDir('mempro')) return
     memproBusy = true
     try {
       const sourceLabel = structure.label || pathBasename(filePath) || 'structure'
-      const r = await memproRun({
-        path: filePath,
-        workingDir: workingDir || undefined,
-        nIters: memproNIters,
-        gridSize: memproGridSize,
-        dualMembrane: memproDualMembrane,
-        peripheral: memproPeripheral,
-        useWeights: memproUseWeights,
-        flip: memproFlip,
-        membraneThickness: memproMembrane ? parseFloat(memproMembrane) : null,
-        sourceLabel,
-        structureId: activeStructureId
-      })
+      const payload = memproRunPayload(sourceLabel)
+      const r = await memproRun(payload)
       const job = {
         job_id: r.job_id,
         status: 'running',
@@ -7910,8 +8315,34 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
         error: null,
         params: {
           path: filePath,
-          n_iters: memproNIters,
-          grid_size: memproGridSize
+          n_cpus: payload.nCpus,
+          n_iters: payload.nIters,
+          grid_size: payload.gridSize,
+          dual_membrane: payload.dualMembrane,
+          peripheral: payload.peripheral,
+          use_weights: payload.useWeights,
+          flip: payload.flip,
+          membrane_thickness: payload.membraneThickness,
+          seed: payload.seed,
+          device: payload.device,
+          single_precision: payload.singlePrecision,
+          rank: payload.rank,
+          predict_pg: payload.predictPg,
+          pg_guess: payload.pgGuess,
+          charge: payload.charge,
+          charge_outer: payload.chargeOuter,
+          outer_membrane_thickness: payload.outerMembraneThickness,
+          optimize_thickness: payload.optimizeThickness,
+          transmembrane_residues: payload.transmembraneResidues,
+          write_bfactors: payload.writeBfactors,
+          curvature: payload.curvature,
+          itp_file: payload.itpFile,
+          insane_path: payload.insanePath,
+          build_system: payload.buildSystem,
+          build_arguments: payload.buildArguments,
+          additional_residues: payload.additionalResidues,
+          additional_residues_itp: payload.additionalResiduesItp,
+          residue_cg_file: payload.residueCgFile
         }
       }
       memproJobs = [job, ...memproJobs.filter((j) => j.job_id !== r.job_id)]
@@ -11085,7 +11516,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
             }}
             playing={animPlaying}
             exporting={animExporting}
-            keyframeCount={animProject.keyframes.length}
+            keyframeCount={animChannelKeyCount(animProject)}
             expanded={animExpanded}
             onToggleExpanded={() => (animExpanded = !animExpanded)}
             onOutputFolderChange={(v) => {
@@ -11209,8 +11640,14 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       playing={animPlaying}
       exporting={animExporting}
       keyframes={animProject.keyframes}
+      cameraTrack={animProject.cameraTrack}
+      structureTracks={animProject.structureTracks}
+      viewKeyTracks={animProject.viewKeyTracks}
       viewTracks={animProject.viewTracks ?? []}
       liveViews={views}
+      structures={structures.length ? structures : (animProject.structures ?? [])}
+      activeTrack={animActiveTrack}
+      onActiveTrackChange={(t) => (animActiveTrack = t)}
       onPlayPause={toggleAnimPlayPause}
       onStop={onAnimStop}
       onScrub={onAnimScrub}
@@ -11221,6 +11658,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       onDeleteKeyframe={onAnimDeleteKeyframe}
       onClearKeyframes={onAnimClearKeyframes}
       onEasingChange={onAnimEasingChange}
+      onViewFadeChange={onAnimViewFadeChange}
       onCaptureKeyframe={onAnimCaptureKeyframe}
       onClose={toggleAnimateMode}
     />
@@ -12693,22 +13131,280 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
           placeholder="auto"
         />
       </div>
-      <div class="grid grid-cols-2 gap-x-4 gap-y-1.5 pt-1">
-        {#each [['memproDualMembrane', 'Dual membrane'], ['memproPeripheral', 'Peripheral protein'], ['memproUseWeights', 'Use weights'], ['memproFlip', 'Flip orientation']] as [field, label]}
-          <label class="flex cursor-pointer items-center gap-1.5 text-xs">
-            {#if field === 'memproDualMembrane'}
-              <input type="checkbox" bind:checked={memproDualMembrane} class="accent-yellow-400" />
-            {:else if field === 'memproPeripheral'}
-              <input type="checkbox" bind:checked={memproPeripheral} class="accent-yellow-400" />
-            {:else if field === 'memproUseWeights'}
-              <input type="checkbox" bind:checked={memproUseWeights} class="accent-yellow-400" />
-            {:else}
-              <input type="checkbox" bind:checked={memproFlip} class="accent-yellow-400" />
-            {/if}
-            {label}
-          </label>
-        {/each}
+      <div class="flex items-center gap-2">
+        <label for="mp-cpus" class="dialog-label w-36 shrink-0 text-xs">CPU count</label>
+        <input
+          id="mp-cpus"
+          type="number"
+          min="1"
+          class="w-20 field-input"
+          bind:value={memproNCpus}
+          placeholder="default"
+        />
       </div>
+      <div class="flex items-center gap-2">
+        <label for="mp-seed" class="dialog-label w-36 shrink-0 text-xs">Seed</label>
+        <input
+          id="mp-seed"
+          type="number"
+          class="w-20 field-input"
+          bind:value={memproSeed}
+          placeholder="unseeded"
+        />
+      </div>
+      <div class="grid grid-cols-2 gap-x-4 gap-y-1.5 pt-1">
+        <label
+          class="flex items-center gap-1.5 text-xs"
+          class:cursor-pointer={!memproPeripheral && !memproCurvature}
+          class:opacity-40={memproPeripheral || memproCurvature}
+        >
+          <input
+            type="checkbox"
+            bind:checked={memproDualMembrane}
+            disabled={memproPeripheral || memproCurvature}
+            class="accent-yellow-400"
+          />
+          Dual membrane
+        </label>
+        <label
+          class="flex items-center gap-1.5 text-xs"
+          class:cursor-pointer={!memproDualMembrane}
+          class:opacity-40={memproDualMembrane}
+        >
+          <input
+            type="checkbox"
+            bind:checked={memproPeripheral}
+            disabled={memproDualMembrane}
+            class="accent-yellow-400"
+          />
+          Peripheral protein
+        </label>
+        <label
+          class="flex items-center gap-1.5 text-xs"
+          class:cursor-pointer={!memproTransmembrane.trim()}
+          class:opacity-40={!!memproTransmembrane.trim()}
+        >
+          <input
+            type="checkbox"
+            bind:checked={memproUseWeights}
+            disabled={!!memproTransmembrane.trim()}
+            class="accent-yellow-400"
+          />
+          Use weights
+        </label>
+        <label class="flex cursor-pointer items-center gap-1.5 text-xs">
+          <input type="checkbox" bind:checked={memproFlip} class="accent-yellow-400" />
+          Flip orientation
+        </label>
+      </div>
+      <details class="group rounded border border-neutral-200 dark:border-neutral-800">
+        <summary
+          class="cursor-pointer list-none px-2 py-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-200 [&::-webkit-details-marker]:hidden"
+        >
+          <span class="flex items-center justify-between gap-2">
+            Advanced settings
+            <span class="text-neutral-500 group-open:rotate-180">▾</span>
+          </span>
+        </summary>
+        <div class="space-y-2 border-t border-neutral-200 px-2 py-2 dark:border-neutral-800">
+          <div class="flex items-center gap-2">
+            <label for="mp-dev" class="dialog-label w-36 shrink-0 text-xs">Device</label>
+            <select id="mp-dev" class="field-input w-28" bind:value={memproDevice}>
+              <option value="cpu">cpu</option>
+              <option value="auto">auto</option>
+              <option value="gpu" disabled={!memproGpuAvailable}>gpu</option>
+            </select>
+            <button
+              type="button"
+              class="text-[10px] text-sky-700 underline dark:text-sky-400"
+              onclick={() => openMemproGpuInstall(memproGpuInstallUrl)}
+              >GPU install</button
+            >
+          </div>
+          <div class="flex items-center gap-2">
+            <label for="mp-rank" class="dialog-label w-36 shrink-0 text-xs">Rank by</label>
+            <select id="mp-rank" class="field-input w-28" bind:value={memproRank}>
+              <option value="auto">auto</option>
+              <option value="h">hits</option>
+              <option value="p">potential</option>
+            </select>
+          </div>
+          <label class="flex cursor-pointer items-center gap-1.5 text-xs">
+            <input type="checkbox" bind:checked={memproSinglePrecision} class="accent-yellow-400" />
+            Single precision
+          </label>
+          <label
+            class="flex items-center gap-1.5 text-xs"
+            class:cursor-pointer={memproDualMembrane}
+            class:opacity-40={!memproDualMembrane}
+          >
+            <input
+              type="checkbox"
+              bind:checked={memproPredictPg}
+              disabled={!memproDualMembrane}
+              class="accent-yellow-400"
+            />
+            Peptidoglycan layer
+          </label>
+          <div class="flex items-center gap-2" class:opacity-40={!memproDualMembrane}>
+            <label for="mp-pg-guess" class="dialog-label w-36 shrink-0 text-xs">PG guess (Å)</label>
+            <input
+              id="mp-pg-guess"
+              type="number"
+              step="any"
+              class="w-20 field-input"
+              bind:value={memproPgGuess}
+              disabled={!memproDualMembrane}
+            />
+          </div>
+          <div class="flex items-center gap-2">
+            <label for="mp-charge" class="dialog-label w-36 shrink-0 text-xs">Membrane charge</label>
+            <input
+              id="mp-charge"
+              type="number"
+              step="any"
+              class="w-20 field-input"
+              bind:value={memproCharge}
+              placeholder="0"
+            />
+          </div>
+          <div class="flex items-center gap-2" class:opacity-40={!memproDualMembrane}>
+            <label for="mp-charge-o" class="dialog-label w-36 shrink-0 text-xs">Outer charge</label>
+            <input
+              id="mp-charge-o"
+              type="number"
+              step="any"
+              class="w-20 field-input"
+              bind:value={memproChargeOuter}
+              placeholder="0"
+              disabled={!memproDualMembrane}
+            />
+          </div>
+          <div class="flex items-center gap-2" class:opacity-40={!memproDualMembrane}>
+            <label for="mp-mt-o" class="dialog-label w-36 shrink-0 text-xs">Outer thickness (Å)</label>
+            <input
+              id="mp-mt-o"
+              type="number"
+              step="any"
+              class="w-20 field-input"
+              bind:value={memproOuterThickness}
+              placeholder="24"
+              disabled={!memproDualMembrane}
+            />
+          </div>
+          <label
+            class="flex items-center gap-1.5 text-xs"
+            class:cursor-pointer={!memproCurvature}
+            class:opacity-40={memproCurvature}
+          >
+            <input
+              type="checkbox"
+              bind:checked={memproOptimizeThickness}
+              disabled={memproCurvature}
+              class="accent-yellow-400"
+            />
+            Optimise thickness
+          </label>
+          <div class="flex items-center gap-2" class:opacity-40={memproUseWeights}>
+            <label for="mp-tm" class="dialog-label w-36 shrink-0 text-xs">Transmembrane</label>
+            <input
+              id="mp-tm"
+              type="text"
+              class="min-w-0 flex-1 field-input"
+              bind:value={memproTransmembrane}
+              placeholder="10-40,50-60"
+              disabled={memproUseWeights}
+            />
+          </div>
+          <label
+            class="flex items-center gap-1.5 text-xs"
+            class:cursor-pointer={!memproCurvature}
+            class:opacity-40={memproCurvature}
+          >
+            <input
+              type="checkbox"
+              bind:checked={memproWriteBfactors}
+              disabled={memproCurvature}
+              class="accent-yellow-400"
+            />
+            Write B-factors
+          </label>
+          <label
+            class="flex items-center gap-1.5 text-xs"
+            class:cursor-pointer={!memproDualMembrane && !memproOptimizeThickness && !memproWriteBfactors}
+            class:opacity-40={memproDualMembrane || memproOptimizeThickness || memproWriteBfactors}
+          >
+            <input
+              type="checkbox"
+              bind:checked={memproCurvature}
+              disabled={memproDualMembrane || memproOptimizeThickness || memproWriteBfactors}
+              class="accent-yellow-400"
+            />
+            Curvature
+          </label>
+          <div class="flex items-center gap-2">
+            <label for="mp-itp" class="dialog-label w-36 shrink-0 text-xs">Martini itp</label>
+            <input id="mp-itp" type="text" class="min-w-0 flex-1 field-input" bind:value={memproItp} />
+          </div>
+          <div class="flex items-center gap-2">
+            <label for="mp-insane" class="dialog-label w-36 shrink-0 text-xs">Insane path</label>
+            <input
+              id="mp-insane"
+              type="text"
+              class="min-w-0 flex-1 field-input"
+              bind:value={memproInsane}
+            />
+          </div>
+          <div class="flex items-center gap-2">
+            <label for="mp-bd" class="dialog-label w-36 shrink-0 text-xs">Build ranks below</label>
+            <input
+              id="mp-bd"
+              type="number"
+              min="0"
+              class="w-20 field-input"
+              bind:value={memproBuildSystem}
+              placeholder="0"
+            />
+          </div>
+          <div class="flex items-center gap-2">
+            <label for="mp-bd-args" class="dialog-label w-36 shrink-0 text-xs">Build arguments</label>
+            <input
+              id="mp-bd-args"
+              type="text"
+              class="min-w-0 flex-1 field-input"
+              bind:value={memproBuildArgs}
+            />
+          </div>
+          <div class="flex items-center gap-2">
+            <label for="mp-res" class="dialog-label w-36 shrink-0 text-xs">Extra residues</label>
+            <input
+              id="mp-res"
+              type="text"
+              class="min-w-0 flex-1 field-input"
+              bind:value={memproAdditionalResidues}
+              placeholder="RES1,RES2"
+            />
+          </div>
+          <div class="flex items-center gap-2">
+            <label for="mp-res-itp" class="dialog-label w-36 shrink-0 text-xs">Residue itp</label>
+            <input
+              id="mp-res-itp"
+              type="text"
+              class="min-w-0 flex-1 field-input"
+              bind:value={memproAdditionalResiduesItp}
+            />
+          </div>
+          <div class="flex items-center gap-2">
+            <label for="mp-res-cg" class="dialog-label w-36 shrink-0 text-xs">CG residue folder</label>
+            <input
+              id="mp-res-cg"
+              type="text"
+              class="min-w-0 flex-1 field-input"
+              bind:value={memproResidueCg}
+            />
+          </div>
+        </div>
+      </details>
       {#if memproJobStatus === 'error' && memproError}
         <p class="gw-notice gw-notice-error font-mono text-xs">{memproError}</p>
       {/if}
