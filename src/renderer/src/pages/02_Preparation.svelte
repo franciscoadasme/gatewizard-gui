@@ -189,6 +189,10 @@
   // output
   /** @type {[[ [string, number], [string, number] ]]} */
   let disulfideBonds = $state([])
+  /** PDB path the current disulfide list was detected on. */
+  let disulfideSourcePath = $state('')
+  /** Click in the bond list. `token` lets the same row frame the view again. */
+  let disulfideFocus = $state(/** @type {null | { index: number, token: number }} */ (null))
   let preparationOutput = $state('')
   /** @type {{residue: string, res_id: number, original_res_id?: number, chain: string, pka: number, atom: string, atom_type: string, model_pka: number, current_state: string, initial_state: string, all_states: string[]}[]} */
   let protonationStates = $state([])
@@ -205,6 +209,12 @@
   /** PDB shown in the embedded viewer (post-PropKa working path). */
   const viewerPdbPath = $derived(
     preparationStatus.propkaDone ? activeWorkingFile || workingFile : ''
+  )
+  /** Draw bridges only for the file currently on screen. */
+  const viewerDisulfideBonds = $derived(
+    viewerPdbPath && disulfideSourcePath && viewerPdbPath === disulfideSourcePath
+      ? disulfideBonds
+      : []
   )
 
   function residueKey(info) {
@@ -402,8 +412,10 @@
       const pdbPath = activeWorkingFile || workingFile
       const data = await detectDisulfideBonds(pdbPath, maxDisulfideDistance, buildOutputOptions())
       disulfideBonds = data.disulfide_bonds
+      disulfideFocus = null
       adoptJobDir(data.job_dir)
       if (data.working_path) activeWorkingFile = data.working_path
+      disulfideSourcePath = data.working_path || pdbPath
       preparationStatus.bondsChecked = true
       preparationStatus.bondsCount = disulfideBonds.length
     } catch (error) {
@@ -474,6 +486,8 @@
 
   function resetOutput() {
     disulfideBonds = []
+    disulfideSourcePath = ''
+    disulfideFocus = null
     preparationOutput = ''
     protonationStates = []
     propKaEmptyMessage = ''
@@ -610,11 +624,34 @@
       <div class="space-y-2">
         {#if disulfideBonds.length > 0}
           <p class="sidebar-label">Detected S-S bonds</p>
-          <ol class="list-inside list-decimal rounded-md border border-neutral-200 p-2 dark:border-neutral-800">
-            {#each disulfideBonds as bond}
-              <li>{bond[0][0]}{bond[0][1]} → {bond[1][0]}{bond[1][1]}</li>
+          <div class="space-y-1">
+            {#each disulfideBonds as bond, i}
+              {@const focused = disulfideFocus?.index === i && viewerDisulfideBonds.length > 0}
+              <button
+                type="button"
+                class="flex w-full items-center justify-between gap-2 rounded-md border px-2 py-1.5 text-left hover:bg-neutral-100 disabled:cursor-default disabled:opacity-60 dark:hover:bg-neutral-900 {focused
+                  ? 'border-sky-500/50 bg-sky-500/10'
+                  : 'border-neutral-200 dark:border-neutral-800'}"
+                disabled={viewerDisulfideBonds.length === 0}
+                title="Frame this disulfide"
+                onclick={() => {
+                  disulfideFocus = { index: i, token: (disulfideFocus?.token ?? 0) + 1 }
+                }}
+              >
+                <span>{bond[0][0]}{bond[0][1]} → {bond[1][0]}{bond[1][1]}</span>
+                <span class="shrink-0 text-[10px] font-medium text-neutral-500">Focus</span>
+              </button>
             {/each}
-          </ol>
+          </div>
+          {#if viewerDisulfideBonds.length === 0}
+            <p class="sidebar-hint">
+              {#if !viewerPdbPath}
+                Run PropKa to see these bonds on the structure.
+              {:else}
+                Detect bonds again to focus them on the loaded structure.
+              {/if}
+            </p>
+          {/if}
         {:else}
           <p class="sidebar-hint rounded-md border border-neutral-200 px-2 py-1.5 dark:border-neutral-800">
             No disulfide bonds detected
@@ -781,6 +818,9 @@
             selectedKeys={selectedResidueKeys}
             {ghostAtoms}
             {removedMarkers}
+            disulfideBonds={viewerDisulfideBonds}
+            {maxDisulfideDistance}
+            {disulfideFocus}
           />
         </div>
       {:else if preparationStatus.propkaDone && viewerPdbPath}
@@ -806,6 +846,9 @@
             selectedKeys={selectedResidueKeys}
             {ghostAtoms}
             {removedMarkers}
+            disulfideBonds={viewerDisulfideBonds}
+            {maxDisulfideDistance}
+            {disulfideFocus}
           />
         </div>
       {:else}

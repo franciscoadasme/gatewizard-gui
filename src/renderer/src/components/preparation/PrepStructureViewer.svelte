@@ -4,6 +4,7 @@
   import { BallStick, CameraRig, Canvas, Tube, VdwSpheres } from '../viewer'
   import { cpkScheme } from '../../lib/colorSchemes.js'
   import { getStructure } from '../../lib/backendApi'
+  import { disulfideHighlight } from '../../lib/preparation/disulfideHighlight.js'
   import { getCameraForAtoms } from '../../lib/viewer/base.js'
 
   /**
@@ -20,14 +21,20 @@
    *   pdbPath: string,
    *   selectedKeys?: ResidueKey[],
    *   ghostAtoms?: ViewerAtom[],
-   *   removedMarkers?: ViewerAtom[]
+   *   removedMarkers?: ViewerAtom[],
+   *   disulfideBonds?: [[string, number], [string, number]][],
+   *   maxDisulfideDistance?: number,
+   *   disulfideFocus?: { index: number, token: number } | null
    * }}
    */
   let {
     pdbPath = '',
     selectedKeys = [],
     ghostAtoms = [],
-    removedMarkers = []
+    removedMarkers = [],
+    disulfideBonds = [],
+    maxDisulfideDistance = 2.5,
+    disulfideFocus = null
   } = $props()
 
   /** @type {null | Awaited<ReturnType<typeof getStructure>>} */
@@ -59,6 +66,15 @@
     const idx = new Set(selectedAtoms.map((a) => a.index))
     return structure.bonds.filter(([a, b]) => idx.has(a) && idx.has(b))
   })
+
+  const disulfideLayer = $derived.by(() =>
+    disulfideHighlight(
+      structure?.atoms ?? [],
+      structure?.bonds ?? [],
+      disulfideBonds,
+      maxDisulfideDistance
+    )
+  )
 
   $effect(() => {
     const path = pdbPath
@@ -97,6 +113,32 @@
     })()
     return () => {
       cancelled = true
+    }
+  })
+
+  // Frame the camera on the disulfide chosen in the bond list.
+  $effect(() => {
+    const focus = disulfideFocus
+    if (!focus || !structure?.atoms?.length) return
+    void focus.token
+    const pair = disulfideBonds?.[focus.index]
+    if (!pair) return
+    const layer = disulfideHighlight(
+      structure.atoms,
+      structure.bonds ?? [],
+      [pair],
+      maxDisulfideDistance
+    )
+    if (!layer.atoms.length) return
+    const base = getCameraForAtoms(layer.atoms)
+    if (!base) return
+    const prevGen = untrack(() => framing?.framingGeneration ?? 0)
+    const prevPose = untrack(() => framing?.poseResetGeneration ?? 0)
+    framing = {
+      ...base,
+      framingZoom: 1.6,
+      framingGeneration: prevGen + 1,
+      poseResetGeneration: prevPose
     }
   })
 
@@ -161,6 +203,17 @@
             {getColor}
             atomScale={1.15}
             bondScale={1.0}
+            quality={3}
+          />
+        {/if}
+        {#if disulfideLayer.atoms.length > 0}
+          <BallStick
+            atoms={disulfideLayer.atoms}
+            bonds={disulfideLayer.bonds}
+            {getColor}
+            atomScale={1.15}
+            bondScale={1.15}
+            bondColorMode="atoms"
             quality={3}
           />
         {/if}
