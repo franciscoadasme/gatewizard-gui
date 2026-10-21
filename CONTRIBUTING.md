@@ -2,7 +2,7 @@
 
 Thanks for helping with the desktop app. The Python library lives in a separate repository: [gatewizard](https://github.com/maurobedoya/gatewizard).
 
-Please read the [Code of Conduct](https://github.com/maurobedoya/gatewizard/blob/main/CODE_OF_CONDUCT.md) before participating.
+Please read the [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
 
 ## Where to start
 
