@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Contributing:** `CONTRIBUTING.md` explains how to run the app, which tests to run, and where to report bugs. The README links to it.
 - **Visualize animation:** camera, structure motion, and representation style each have their own keys. Color, material, size, and a representation-type crossfade follow the style keys. Background, lights, shadows, depth of field, and depth cueing are saved on the camera key and follow its easing. Capture, save, load, and export sit on the timeline, and Ctrl+click selects several keys to move or delete together.
 
 ### Changed

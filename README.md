@@ -441,6 +441,7 @@ CI publishes **Linux and macOS only**. A native Windows `.exe` can be built loca
 | GUI bug or feature | [Issues](https://github.com/franciscoadasme/gatewizard-gui/issues/new/choose) in this repo |
 | API bug or feature | [Issues](https://github.com/maurobedoya/gatewizard/issues/new/choose) in gatewizard |
 | API docs and troubleshooting | [Documentation](https://maurobedoya.github.io/gatewizard/) |
+| Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
 
 New to the project? Read the [welcome post](https://github.com/maurobedoya/gatewizard/discussions/36).
 
