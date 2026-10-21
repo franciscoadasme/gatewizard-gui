@@ -44,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Linux install:** an already installed `libdrm2` with two dpkg records no longer blocks the `.deb` or the desktop icon. One installed record is enough, including a second version or another architecture.
 - **Preparation hydrogens:** the embedded environment pins AmberTools 26 and installs `reduce` from bioconda. **Remove protein hydrogens** leaves those atoms out of the prepared PDB. Uncheck it to let `pdb4amber --reduce` write Amber hydrogens. Ligands keep their hydrogens either way.
 - **Representations:** right-click Remove deletes every representation highlighted in the list, not only the row under the cursor.
 - **Minimize selection:** minimizing a water (HOH), or another molecule Amber cannot build, keeps its bond lengths and the H–O–H angle. The hydrogens sit slightly farther out than a strict covalent cutoff, so they were treated as clashes and pushed off the oxygen.

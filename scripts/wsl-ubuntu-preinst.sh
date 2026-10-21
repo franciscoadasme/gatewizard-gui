@@ -80,9 +80,18 @@ refuse_old_wsl_ubuntu() {
 }
 
 # One of these names counts as present. dpkg-query is absent on Fedora; skip there.
+# Two installed records (two versions, or amd64 and i386) print the status twice.
+# Any line that is "install ok installed" counts. "not-installed" does not.
 deb_pkg_installed() {
-  status=`dpkg-query -W -f '${Status}' "$1" 2>/dev/null || true`
-  [ "$status" = "install ok installed" ]
+  dpkg-query -W -f '${Status}
+' "$1" 2>/dev/null | {
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        *'install ok installed'*) exit 0 ;;
+      esac
+    done
+    exit 1
+  }
 }
 
 # Exit 1 before apt downloads Electron's libraries. A stale index otherwise

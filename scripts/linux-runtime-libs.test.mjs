@@ -298,3 +298,48 @@ printf '%s' 'install ok installed'
   assert.doesNotMatch(stderr, /Chromium needs them/)
   assert.doesNotMatch(stderr, /libasound2/)
 })
+
+test('preinst accepts libdrm2 when dpkg prints the installed status twice', async () => {
+  const { mkdtemp, writeFile, chmod, symlink } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { dirname, join } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const { execFileSync } = await import('node:child_process')
+
+  const dir = await mkdtemp(join(tmpdir(), 'gw-deb-drm-'))
+  const preinst = join(dirname(fileURLToPath(import.meta.url)), 'wsl-ubuntu-preinst.sh')
+  const query = join(dir, 'dpkg-query')
+  const procNative = join(dir, 'proc-native')
+  const osRelease = join(dir, 'os-release')
+  await writeFile(procNative, 'Linux version 6.8.0-generic\n')
+  await writeFile(osRelease, 'ID=linuxmint\nVERSION_ID="21.1"\n')
+  await writeFile(
+    query,
+    `#!/bin/sh
+pkg=
+for arg in "$@"; do
+  pkg=$arg
+done
+if [ "$pkg" = libdrm2 ]; then
+  printf '%s' 'install ok installedinstall ok installed'
+  exit 0
+fi
+printf '%s' 'install ok installed'
+`,
+    { mode: 0o755 }
+  )
+  await chmod(query, 0o755)
+  await writeFile(join(dir, 'cc'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+  await chmod(join(dir, 'cc'), 0o755)
+  await symlink('/bin/sh', join(dir, 'sh'))
+
+  const env = {
+    ...process.env,
+    PATH: dir,
+    GATEWIZARD_PROC_VERSION: procNative,
+    GATEWIZARD_WSL_INTEROP: join(dir, 'no-wsl-interop'),
+    GATEWIZARD_OS_RELEASE: osRelease
+  }
+  const result = execFileSync('sh', [preinst], { encoding: 'utf8', env })
+  assert.equal(result, '')
+})
