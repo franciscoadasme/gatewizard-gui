@@ -12,7 +12,8 @@ import {
   lerpPatches,
   normalizeCoordPatch,
   positionsToCoordPatch,
-  snapshotAtomCoords
+  snapshotAtomCoords,
+  syncViewAtomsFromStructure
 } from './workingCoords.js'
 
 test('diffFromBase returns only moved atoms', () => {
@@ -128,4 +129,30 @@ test('applyPreviewOverlayToAtoms writes sparse preview coords', () => {
   assert.equal(packed[7], 8)
   assert.equal(packed[8], 7)
   assert.equal(xyz[6], 2)
+})
+
+test('syncViewAtomsFromStructure updates matching view.atoms for redraw', () => {
+  const views = [
+    {
+      id: 'v1',
+      structureId: 's1',
+      atoms: [
+        { index: 0, x: 0, y: 0, z: 0 },
+        { index: 1, x: 1, y: 0, z: 0 }
+      ]
+    },
+    {
+      id: 'v2',
+      structureId: 's2',
+      atoms: [{ index: 0, x: 0, y: 0, z: 0 }]
+    }
+  ]
+  const { views: next, touched } = syncViewAtomsFromStructure(views, 's1', [
+    { index: 0, x: 5, y: 0, z: 0 },
+    { index: 1, x: 6, y: 0, z: 0 }
+  ])
+  assert.equal(touched, true)
+  assert.equal(next[0].atoms[0].x, 5)
+  assert.equal(next[0].atoms[1].x, 6)
+  assert.equal(next[1].atoms[0].x, 0)
 })

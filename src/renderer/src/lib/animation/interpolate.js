@@ -1,12 +1,15 @@
 import { DEFAULT_EASING } from './schema.js'
 import { applyEasing } from './easing.js'
+import { channelClock } from './channelClock.js'
+import { coordPatchForStructure } from './schema.js'
 import { computeOverlayOpacity } from './fade.js'
-import { interpolateCameraPose } from './cameraPose.js'
+import { interpolateCameraPose } from './cameraPoseMath.js'
 import { mergeTrackOrder, sortViewsByTracks, viewsById, cloneSerializedView, viewSnapshotAtOrBeforeTime, deriveViewTracks } from './tracks.js'
 import { interpolateLabelLift } from '../viewer/labelStyle.js'
 import { lerpPatches } from '../viewer/workingCoords.js'
 import { interpolateTrajFrame } from './trajFrame.js'
 import { normalizeClip } from '../viewer/viewClip.js'
+import { buildMaterialFromPreset, GOODSELL_MATERIAL_DEFAULTS, GLOWING_MATERIAL_DEFAULTS } from '../colorSchemes.js'
 
 /**
  * @param {import('./schema.js').AnimationCameraPose} cam
@@ -332,55 +335,157 @@ function interpolateSsColors(a, b, t) {
 }
 
 /**
- * @param {{ name: string, color?: string }} a
- * @param {{ name: string, color?: string }} b
+ * @param {unknown} value
+ * @returns {string | null} normalized #rrggbb or null
+ */
+function asHexColor(value) {
+  if (typeof value !== 'string') return null
+  const s = value.trim()
+  if (!s) return null
+  const withHash = s.startsWith('#') ? s : `#${s}`
+  if (/^#[0-9a-fA-F]{3}$/.test(withHash) || /^#[0-9a-fA-F]{6}$/.test(withHash)) {
+    return withHash
+  }
+  return null
+}
+
+/**
+ * @param {unknown} a
+ * @param {unknown} b
+ * @param {number} t
+ */
+function lerpColorValue(a, b, t) {
+  const ha = asHexColor(a)
+  const hb = asHexColor(b)
+  if (ha && hb) return lerpHex(ha, hb, t)
+  if (t < 0.5) return ha ?? hb ?? (typeof a === 'string' ? a : typeof b === 'string' ? b : undefined)
+  return hb ?? ha ?? (typeof b === 'string' ? b : typeof a === 'string' ? a : undefined)
+}
+
+/**
+ * @param {{ name?: string, color?: string } | null | undefined} a
+ * @param {{ name?: string, color?: string } | null | undefined} b
  * @param {number} t
  */
 function interpolateColorScheme(a, b, t) {
-  const name = a.name === b.name ? a.name : t < 0.5 ? a.name : b.name
-  let color = a.color ?? b.color
-  if (a.color?.startsWith('#') && b.color?.startsWith('#')) {
-    color = lerpHex(a.color, b.color, t)
-  } else if (t >= 0.5) {
-    color = b.color ?? a.color
-  }
+  const ca = a && typeof a === 'object' ? a : {}
+  const cb = b && typeof b === 'object' ? b : {}
+  const name =
+    ca.name === cb.name
+      ? (ca.name ?? cb.name ?? 'cpk')
+      : t < 0.5
+        ? (ca.name ?? cb.name ?? 'cpk')
+        : (cb.name ?? ca.name ?? 'cpk')
+  const color = lerpColorValue(ca.color, cb.color, t)
   return { name, ...(color ? { color } : {}) }
 }
 
 /**
- * @param {Record<string, unknown>} a
- * @param {Record<string, unknown>} b
+ * True when a material string field should be hex-lerped.
+ * @param {string} key
+ * @param {string} va
+ * @param {string} vb
+ */
+function isLerpableMaterialColorKey(key, va, vb) {
+  if (!asHexColor(va) || !asHexColor(vb)) return false
+  return (
+    key === 'color' ||
+    key === 'outlineColor' ||
+    key.endsWith('Color') ||
+    key.endsWith('Hex') ||
+    key.endsWith('colour')
+  )
+}
+
+/**
+ * @param {string | undefined} preset
+ */
+function shaderFamily(preset) {
+  if (preset === 'Goodsell') return 'goodsell'
+  if (preset === 'Glowing') return 'glowing'
+  return 'standard'
+}
+
+/**
+ * Fill omitted slider fields from the material preset so a Default key can
+ * ease into Goodsell/Glowing numbers.
+ * @param {Record<string, unknown>} material
+ */
+function materialWithDefaults(material) {
+  const preset = typeof material.preset === 'string' ? material.preset : 'Default'
+  const family = shaderFamily(preset)
+  const built = buildMaterialFromPreset(preset)
+  return {
+    outlineWidth: family === 'goodsell' ? GOODSELL_MATERIAL_DEFAULTS.outlineWidth : 0,
+    glowLightIntensity: family === 'glowing' ? GLOWING_MATERIAL_DEFAULTS.glowLightIntensity : 0,
+    glowLightDistance: built.glowLightDistance ?? GLOWING_MATERIAL_DEFAULTS.glowLightDistance,
+    glowLightDecay: built.glowLightDecay ?? GLOWING_MATERIAL_DEFAULTS.glowLightDecay,
+    ...built,
+    ...material,
+    preset
+  }
+}
+
+const MATERIAL_NUMERIC_KEYS = [
+  'metalness',
+  'roughness',
+  'emissiveIntensity',
+  'outlineWidth',
+  'glowLightIntensity',
+  'glowLightDistance',
+  'glowLightDecay',
+  'glowMaxLights'
+]
+
+/**
+ * @param {Record<string, unknown> | null | undefined} a
+ * @param {Record<string, unknown> | null | undefined} b
  * @param {number} t
  */
 function interpolateMaterial(a, b, t) {
-  const out = { ...(t < 0.5 ? a : b) }
-  for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
-    const va = a[key]
-    const vb = b[key]
-    if (typeof va === 'number' && typeof vb === 'number') {
-      out[key] = lerpNum(va, vb, t)
-    } else if (typeof va === 'boolean' && typeof vb === 'boolean') {
+  const ma = materialWithDefaults(a && typeof a === 'object' ? a : {})
+  const mb = materialWithDefaults(b && typeof b === 'object' ? b : {})
+  const familyA = shaderFamily(/** @type {string} */ (ma.preset))
+  const familyB = shaderFamily(/** @type {string} */ (mb.preset))
+  // Goodsell / Glowing shaders stay on the source until the destination key.
+  const preset =
+    familyA !== familyB
+      ? t >= 0.999
+        ? mb.preset
+        : ma.preset
+      : t < 0.5
+        ? ma.preset
+        : mb.preset
+  const out = { ...(t < 0.5 ? ma : mb), preset }
+  for (const key of MATERIAL_NUMERIC_KEYS) {
+    const va = ma[key]
+    const vb = mb[key]
+    if (typeof va === 'number' && typeof vb === 'number') out[key] = lerpNum(va, vb, t)
+  }
+  for (const key of new Set([...Object.keys(ma), ...Object.keys(mb)])) {
+    if (MATERIAL_NUMERIC_KEYS.includes(key) || key === 'preset') continue
+    const va = ma[key]
+    const vb = mb[key]
+    if (typeof va === 'boolean' && typeof vb === 'boolean') {
       out[key] = t < 0.5 ? va : vb
     } else if (typeof va === 'string' && typeof vb === 'string') {
-      if (
-        (key === 'outlineColor' || key.endsWith('Color') || key.endsWith('Hex')) &&
-        va.startsWith('#') &&
-        vb.startsWith('#')
-      ) {
-        out[key] = lerpHex(va, vb, t)
-      } else {
-        out[key] = t < 0.5 ? va : vb
-      }
+      if (isLerpableMaterialColorKey(key, va, vb)) out[key] = lerpColorValue(va, vb, t)
+      else out[key] = t < 0.5 ? va : vb
     } else if (t >= 0.5 && vb !== undefined) {
       out[key] = vb
     } else if (va !== undefined) {
       out[key] = va
     }
   }
-  if (a.preset !== b.preset) {
-    out.preset = t < 0.5 ? a.preset : b.preset
-  }
   return out
+}
+
+/**
+ * @param {{ name?: string } | null | undefined} scheme
+ */
+function schemeLabel(scheme) {
+  const name = scheme?.name ?? 'cpk'
+  return name === 'default' ? 'cpk' : name
 }
 
 /**
@@ -390,7 +495,7 @@ function interpolateMaterial(a, b, t) {
 export function findKeyframeSegment(keyframes, time_s) {
   if (!keyframes.length) return null
   if (keyframes.length === 1) {
-    return { from: keyframes[0], to: keyframes[0], localT: 0, rawT: 0, segmentDuration: 0 }
+    return { from: keyframes[0], to: keyframes[0], localT: 0, cameraT: 0, motionT: 0, rawT: 0, segmentDuration: 0 }
   }
   let from = keyframes[0]
   for (let i = 1; i < keyframes.length; i++) {
@@ -398,13 +503,13 @@ export function findKeyframeSegment(keyframes, time_s) {
     if (time_s <= to.time_s) {
       const segmentDuration = Math.max(0.001, to.time_s - from.time_s)
       const rawT = (time_s - from.time_s) / segmentDuration
-      const localT = applySegmentEasing(rawT, to.easing ?? DEFAULT_EASING, to.easingBezier)
-      return { from, to, localT, rawT, segmentDuration }
+      const { cameraT, motionT } = channelClock(rawT, to)
+      return { from, to, localT: cameraT, cameraT, motionT, rawT, segmentDuration }
     }
     from = to
   }
   const last = keyframes[keyframes.length - 1]
-  return { from: last, to: last, localT: 0, rawT: 0, segmentDuration: 0 }
+  return { from: last, to: last, localT: 0, cameraT: 0, motionT: 0, rawT: 0, segmentDuration: 0 }
 }
 
 /**
@@ -449,9 +554,20 @@ function interpolateClip(ca, cb, t) {
  * @param {import('./schema.js').SerializedView} b
  * @param {number} t
  */
-function interpolateView(a, b, t) {
-  const reprType = t < 0.5 ? a.representation.type : b.representation.type
-  const colorScheme = interpolateColorScheme(a.colorScheme, b.colorScheme, t)
+export function interpolateView(a, b, t) {
+  const fromType = a.representation?.type ?? 'points'
+  const toType = b.representation?.type ?? fromType
+  const typesDiffer = fromType !== toType
+  const reprType = typesDiffer ? (t >= 0.999 ? toType : fromType) : t < 0.5 ? fromType : toType
+  const namesDiffer = schemeLabel(a.colorScheme) !== schemeLabel(b.colorScheme)
+  const colorScheme = namesDiffer
+    ? {
+        name: schemeLabel(t < 0.5 ? a.colorScheme : b.colorScheme),
+        ...((t < 0.5 ? a.colorScheme?.color : b.colorScheme?.color)
+          ? { color: t < 0.5 ? a.colorScheme?.color : b.colorScheme?.color }
+          : {})
+      }
+    : interpolateColorScheme(a.colorScheme, b.colorScheme, t)
   const ssColors = interpolateSsColors(a.ssColors, b.ssColors, t)
   const material = interpolateMaterial(
     /** @type {Record<string, unknown>} */ (a.material),
@@ -465,10 +581,24 @@ function interpolateView(a, b, t) {
     selection: t < 0.5 ? a.selection : b.selection,
     baseSelection: t < 0.5 ? a.baseSelection : b.baseSelection,
     representation: { type: reprType },
+    ...(typesDiffer ? { reprBlend: { fromType, toType, t } } : {}),
+    ...(namesDiffer
+      ? {
+          colorBlend: {
+            from: a.colorScheme ?? { name: 'cpk' },
+            to: b.colorScheme ?? { name: 'cpk' },
+            fromSs: a.ssColors ?? null,
+            toSs: b.ssColors ?? null,
+            t
+          }
+        }
+      : {}),
     visible: t < 0.5 ? a.visible : b.visible,
     colorScheme,
     ssColors,
     material,
+    bondColorMode: t < 0.5 ? (a.bondColorMode ?? 'uniform') : (b.bondColorMode ?? a.bondColorMode ?? 'uniform'),
+    bondColor: lerpColorValue(a.bondColor ?? '#b8b8bc', b.bondColor ?? '#b8b8bc', t) ?? '#b8b8bc',
     helixWidth: lerpNum(a.helixWidth ?? 1, b.helixWidth ?? 1, t),
     sheetWidth: lerpNum(a.sheetWidth ?? 0.875, b.sheetWidth ?? 0.875, t),
     coilWidth: lerpNum(a.coilWidth ?? 0.125, b.coilWidth ?? 0.125, t),
@@ -502,16 +632,35 @@ function interpolateView(a, b, t) {
 }
 
 /**
+ * One layer, or two opacity-weighted copies when representation type changes.
+ * @param {{ representation?: { type?: string }, opacity?: number, reprBlend?: { fromType: string, toType: string, t: number } }} view
+ * @returns {{ key: string, type: string, opacity: number }[]}
+ */
+export function representationDrawLayers(view) {
+  const base = typeof view?.opacity === 'number' ? view.opacity : 1
+  const blend = view?.reprBlend
+  const singleType = view?.representation?.type ?? 'points'
+  if (!blend || blend.fromType === blend.toType || blend.t <= 0.001 || blend.t >= 0.999) {
+    return [{ key: 'single', type: blend && blend.t >= 0.999 ? blend.toType : singleType, opacity: base }]
+  }
+  return [
+    { key: 'from', type: blend.fromType, opacity: base * (1 - blend.t) },
+    { key: 'to', type: blend.toType, opacity: base * blend.t }
+  ].filter((layer) => layer.opacity > 0.001)
+}
+
+/**
  * @param {import('./schema.js').AnimationKeyframe[]} keyframes
  * @param {number} time_s
  * @param {import('./schema.js').AnimationKeyframe} from
  * @param {import('./schema.js').AnimationKeyframe} to
  * @param {number} localT
+ * @param {number} motionT
  * @param {number} rawT
  * @param {number} segmentDuration
  * @param {string[]} viewTracks
  */
-function interpolateViews(keyframes, time_s, from, to, localT, rawT, segmentDuration, viewTracks) {
+function interpolateViews(keyframes, time_s, from, to, localT, motionT, rawT, segmentDuration, viewTracks) {
   const fromMap = viewsById(from.views)
   const toMap = viewsById(to.views)
   const orderedIds = mergeTrackOrder(viewTracks, [
@@ -550,7 +699,7 @@ function interpolateViews(keyframes, time_s, from, to, localT, rawT, segmentDura
       0,
       Math.min(
         8,
-        lerpNum(fa?.trajSmooth ?? base.trajSmooth ?? 0, fb?.trajSmooth ?? fa?.trajSmooth ?? 0, localT)
+        lerpNum(fa?.trajSmooth ?? base.trajSmooth ?? 0, fb?.trajSmooth ?? fa?.trajSmooth ?? 0, motionT)
       )
     )
     const restoreSrc = localT < 0.5 ? (fa ?? stepped ?? base) : (fb ?? fa ?? stepped ?? base)
@@ -587,7 +736,7 @@ function isColorSceneKey(key) {
  * @param {Record<string, unknown>} b
  * @param {number} t
  */
-function interpolateScene(a, b, t) {
+export function interpolateScene(a, b, t) {
   const out = { ...a }
   for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
     const va = a[key]
@@ -651,15 +800,34 @@ function interpolateScene(a, b, t) {
         }
         return 140
       }
-      let near = lerpNum(fogNear(fa), fogNear(fb), t)
-      let far = lerpNum(fogFar(fa), fogFar(fb), t)
-      if (far <= near) far = near + 4
+      const nearA = fogNear(fa)
+      const farA = Math.max(fogFar(fa), nearA + 4)
+      const nearB = fogNear(fb)
+      const farB = Math.max(fogFar(fb), nearB + 4)
       const enA = fa.enabled === true
       const enB = fb.enabled === true
+      let near
+      let far
+      let enabled
+      if (enA === enB) {
+        near = lerpNum(nearA, nearB, t)
+        far = lerpNum(farA, farB, t)
+        enabled = enA
+      } else {
+        // Off has no cue. Linear fog has no opacity, so stretch far until the
+        // amount of fog at the enabled key's far distance equals the blend weight.
+        const onNear = enB ? nearB : nearA
+        const onFar = enB ? farB : farA
+        const strength = enB ? t : 1 - t
+        enabled = strength > 0.001
+        near = onNear
+        far = enabled ? onNear + (onFar - onNear) / strength : onFar
+      }
+      if (far <= near) far = near + 4
       const colorA = typeof fa.color === 'string' ? fa.color : '#0c0e12'
       const colorB = typeof fb.color === 'string' ? fb.color : '#0c0e12'
       out[key] = {
-        enabled: t < 0.5 ? enA : enB,
+        enabled,
         near,
         far,
         color:
@@ -750,19 +918,54 @@ function interpolateScene(a, b, t) {
 }
 
 /**
- * @param {import('./schema.js').AnimationKeyframe[]} keyframes
- * @param {number} time_s
- * @param {string[]} [viewTracks]
- */
-/**
  * @param {import('./schema.js').AnimationKeyframe} from
  * @param {import('./schema.js').AnimationKeyframe} to
  * @param {number} localT
  * @param {Map<number, [number, number, number]> | null} [baseCoords]
+ * @param {string | null} [structureId]
+ * @param {string | null} [primaryId]
  * @returns {{ indices: number[], xyz: number[] } | null}
  */
-export function interpolateCoordPatch(from, to, localT, baseCoords = null) {
-  return lerpPatches(from?.coordPatch ?? null, to?.coordPatch ?? null, localT, baseCoords)
+export function interpolateCoordPatch(
+  from,
+  to,
+  localT,
+  baseCoords = null,
+  structureId = null,
+  primaryId = null
+) {
+  const a = coordPatchForStructure(from, structureId, primaryId) ?? (!structureId ? from?.coordPatch : null)
+  const b = coordPatchForStructure(to, structureId, primaryId) ?? (!structureId ? to?.coordPatch : null)
+  return lerpPatches(a ?? null, b ?? null, localT, baseCoords)
+}
+
+/**
+ * @param {import('./schema.js').AnimationKeyframe} from
+ * @param {import('./schema.js').AnimationKeyframe} to
+ * @param {number} rawT
+ * @param {Map<number, [number, number, number]> | null} [baseCoords]
+ * @param {string | null} [primaryId]
+ * @returns {Record<string, { indices: number[], xyz: number[] }> | null}
+ */
+export function interpolateCoordPatches(from, to, rawT, baseCoords = null, primaryId = null) {
+  /** @type {Set<string>} */
+  const ids = new Set([
+    ...Object.keys(from?.coordPatches || {}),
+    ...Object.keys(to?.coordPatches || {})
+  ])
+  if (primaryId && (from?.coordPatch || to?.coordPatch)) ids.add(primaryId)
+  if (!ids.size && (from?.coordPatch || to?.coordPatch)) {
+    const patch = lerpPatches(from?.coordPatch ?? null, to?.coordPatch ?? null, channelClock(rawT, to).motionT, baseCoords)
+    return patch ? { _primary: patch } : null
+  }
+  /** @type {Record<string, { indices: number[], xyz: number[] }>} */
+  const out = {}
+  for (const sid of ids) {
+    const { motionT } = channelClock(rawT, to, sid)
+    const patch = interpolateCoordPatch(from, to, motionT, baseCoords, sid, primaryId)
+    if (patch) out[sid] = patch
+  }
+  return Object.keys(out).length ? out : null
 }
 
 /**
@@ -770,11 +973,18 @@ export function interpolateCoordPatch(from, to, localT, baseCoords = null) {
  * @param {number} time_s
  * @param {string[]} [viewTracks]
  * @param {Map<number, [number, number, number]> | null} [baseCoords]
+ * @param {string | null} [primaryStructureId]
  */
-export function interpolateAtTime(keyframes, time_s, viewTracks = [], baseCoords = null) {
+export function interpolateAtTime(
+  keyframes,
+  time_s,
+  viewTracks = [],
+  baseCoords = null,
+  primaryStructureId = null
+) {
   const seg = findKeyframeSegment(keyframes, time_s)
   if (!seg) return null
-  const { from, to, localT, rawT, segmentDuration } = seg
+  const { from, to, localT, motionT, rawT, segmentDuration } = seg
 
   const views = interpolateViews(
     keyframes,
@@ -782,6 +992,7 @@ export function interpolateAtTime(keyframes, time_s, viewTracks = [], baseCoords
     from,
     to,
     localT,
+    motionT,
     rawT,
     segmentDuration,
     viewTracks
@@ -794,7 +1005,15 @@ export function interpolateAtTime(keyframes, time_s, viewTracks = [], baseCoords
       ? interpolateScene(sceneFrom, sceneTo, localT)
       : sceneFrom
 
-  const trajFrame = interpolateTrajFrame(from, to, localT, keyframes)
+  const primaryMotionT = primaryStructureId
+    ? channelClock(rawT, to, primaryStructureId).motionT
+    : motionT
+  const trajFrame = interpolateTrajFrame(from, to, primaryMotionT, keyframes)
+  const coordPatches = interpolateCoordPatches(from, to, rawT, baseCoords, primaryStructureId)
+  const coordPatch =
+    (primaryStructureId && coordPatches?.[primaryStructureId]) ||
+    coordPatches?._primary ||
+    interpolateCoordPatch(from, to, primaryMotionT, baseCoords, primaryStructureId, primaryStructureId)
 
   return {
     camera: interpolateCameraState(from.camera, to.camera, localT),
@@ -809,7 +1028,14 @@ export function interpolateAtTime(keyframes, time_s, viewTracks = [], baseCoords
       rawT,
       segmentDuration
     ),
-    coordPatch: interpolateCoordPatch(from, to, localT, baseCoords),
+    coordPatch: coordPatch ?? null,
+    ...(coordPatches
+      ? {
+          coordPatches: Object.fromEntries(
+            Object.entries(coordPatches).filter(([k]) => k !== '_primary')
+          )
+        }
+      : {}),
     ...(trajFrame != null ? { trajFrame } : {})
   }
 }

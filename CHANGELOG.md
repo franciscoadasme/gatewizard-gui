@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Visualize animation:** camera, structure motion, and representation style each have their own keys. Color, material, size, and a representation-type crossfade follow the style keys. Background, lights, shadows, depth of field, and depth cueing are saved on the camera key and follow its easing. Capture, save, load, and export sit on the timeline, and Ctrl+click selects several keys to move or delete together.
+
 ### Changed
 
 - **MemPrO:** the Linux and macOS installer uses the CPU package `mempro` ≥ 0.3.0 from `gatewizard[full]`. The orientation panel shows CPU count and seed with the existing fields, and the other 0.3.0 options under Advanced settings. GPU stays off until JAX can see a GPU. GPU install opens the installation page.

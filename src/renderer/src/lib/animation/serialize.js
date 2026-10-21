@@ -1,13 +1,5 @@
-import {
-  chainScheme,
-  constantScheme,
-  cpkScheme,
-  defaultColorScheme,
-  goodsellChainScheme,
-  residueNatureScheme,
-  ssScheme,
-  DEFAULT_VIEW_MATERIAL
-} from '../colorSchemes.js'
+import { DEFAULT_VIEW_MATERIAL } from '../colorSchemes.js'
+import { installSchemeBlend, rebuildColorScheme } from './colorBlend.js'
 import { viewerSettings, normalizeFog, SHADOW_STRENGTH_MAX } from '../viewerSettings.svelte.js'
 import { themeState, setSessionTheme } from '../theme.svelte.js'
 import { captureCameraPose } from './cameraPose.js'
@@ -39,36 +31,7 @@ function assignJsonIf(obj, key, value) {
   if (JSON.stringify(obj[key]) !== JSON.stringify(value)) obj[key] = value
 }
 
-/**
- * @param {{ name: string, color?: string }} colorScheme
- * @param {{ residues?: unknown[], ssColors?: Record<string, string> | null }} view
- */
-export function rebuildColorScheme(colorScheme, view) {
-  const name = colorScheme?.name ?? 'cpk'
-  const color = colorScheme?.color
-  if (name === 'constant' && color) {
-    return { name, color, resolver: constantScheme(color) }
-  }
-  if (name === 'constant') {
-    return { name, color: '#00aaff', resolver: constantScheme('#00aaff') }
-  }
-  if (name === 'cpk-carbon' && color) {
-    return { name, color, resolver: cpkScheme({ carbonColor: color }) }
-  }
-  if (name === 'chain') return { name, resolver: chainScheme() }
-  if (name === 'goodsell') return { name, resolver: goodsellChainScheme() }
-  if (name === 'residue_nature') return { name, resolver: residueNatureScheme() }
-  if (name === 'ss') {
-    const residues = view.residues
-    const ssColors = view.ssColors
-    return {
-      name,
-      resolver: residues?.length ? ssScheme(residues, ssColors ?? {}) : cpkScheme()
-    }
-  }
-  if (name === 'cpk') return { name, resolver: cpkScheme() }
-  return { name: 'default', resolver: defaultColorScheme }
-}
+export { rebuildColorScheme } from './colorBlend.js'
 
 /**
  * @param {{ id: string, atom: { index?: number, structureId?: string }, text: string, structureId?: string, size?: number, color?: string, background?: string, backgroundOpacity?: number, padding?: number, radius?: number, offsetY?: number, liftDir?: string, visible?: boolean }} label
@@ -335,6 +298,26 @@ export function mergeSerializedViewInto(live, data) {
   if (live.representation?.type !== nextReprType) {
     live.representation = { type: nextReprType }
   }
+  const reprBlend = /** @type {{ fromType?: string, toType?: string, t?: number } | undefined} */ (
+    /** @type {any} */ (data).reprBlend
+  )
+  if (
+    reprBlend &&
+    reprBlend.fromType &&
+    reprBlend.toType &&
+    reprBlend.fromType !== reprBlend.toType &&
+    typeof reprBlend.t === 'number' &&
+    reprBlend.t > 0.001 &&
+    reprBlend.t < 0.999
+  ) {
+    assignJsonIf(live, 'reprBlend', {
+      fromType: reprBlend.fromType,
+      toType: reprBlend.toType,
+      t: reprBlend.t
+    })
+  } else if (live.reprBlend) {
+    live.reprBlend = undefined
+  }
   assignIf(live, 'visible', data.visible !== false)
   assignJsonIf(live, 'ssColors', data.ssColors ? { ...data.ssColors } : null)
   assignJsonIf(live, 'material', cloneMaterial(data.material))
@@ -385,18 +368,43 @@ export function mergeSerializedViewInto(live, data) {
   // Only rebuild (and hand out a new resolver reference) when the scheme inputs
   // actually changed.
   const residueCount = /** @type {unknown[] | undefined} */ (live.residues)?.length ?? 0
-  const schemeSig = JSON.stringify([
-    nextSchemeName,
-    data.colorScheme?.color ?? null,
-    data.ssColors ?? null,
-    residueCount
-  ])
-  if (live._colorSchemeSig !== schemeSig || !live.colorScheme) {
-    live.colorScheme = rebuildColorScheme(data.colorScheme, {
-      residues: /** @type {unknown[] | undefined} */ (live.residues),
-      ssColors: data.ssColors
-    })
-    live._colorSchemeSig = schemeSig
+  if (
+    installSchemeBlend(
+      live,
+      /** @type {any} */ (data).colorBlend
+    )
+  ) {
+    // Per-atom blend owns the resolver for this frame.
+  } else {
+    live._blendEndSig = undefined
+    const nextColor = data.colorScheme?.color ?? null
+    const schemeSig = JSON.stringify([
+      nextSchemeName,
+      nextColor,
+      data.ssColors ?? null,
+      residueCount
+    ])
+    const liveScheme = /** @type {{ name?: string, color?: string, resolver?: { update?: (hex: string) => void } } | undefined} */ (
+      live.colorScheme
+    )
+    const liveName = liveScheme?.name === 'default' ? 'cpk' : liveScheme?.name
+    const canUpdateConstant =
+      nextSchemeName === 'constant' &&
+      liveName === 'constant' &&
+      typeof nextColor === 'string' &&
+      typeof liveScheme?.resolver?.update === 'function'
+
+    if (canUpdateConstant && live._colorSchemeSig !== schemeSig) {
+      liveScheme.resolver.update(nextColor)
+      liveScheme.color = nextColor
+      live._colorSchemeSig = schemeSig
+    } else if (live._colorSchemeSig !== schemeSig || !live.colorScheme) {
+      live.colorScheme = rebuildColorScheme(data.colorScheme, {
+        residues: /** @type {unknown[] | undefined} */ (live.residues),
+        ssColors: data.ssColors
+      })
+      live._colorSchemeSig = schemeSig
+    }
   }
   const fade = normalizeFadeSettings(data)
   assignIf(live, 'fadeIn_s', fade.fadeIn_s)

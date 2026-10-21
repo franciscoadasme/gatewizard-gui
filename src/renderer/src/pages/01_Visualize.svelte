@@ -115,6 +115,8 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   import {
     camerasApproximatelyEqual,
     coordPatchesApproximatelyEqual,
+    scenesApproximatelyEqual,
+    viewsApproximatelyEqual,
     previousKeyframeAtTime
   } from '../lib/animation/keyframeEasing.js'
   import { DEFAULT_EASING_KIND } from '../lib/animation/easing.js'
@@ -133,6 +135,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   import { remapSavedStructureId } from '../lib/animation/overlayAtoms.js'
   import { applyCameraPose, waitForMainViewerReady } from '../lib/animation/cameraPose.js'
   import { applyAnimationAtTime, startPlayback } from '../lib/animation/playback.js'
+  import { representationDrawLayers } from '../lib/animation/interpolate.js'
   import {
     animExportFrameTime,
     coordPatchSignature,
@@ -210,7 +213,6 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
     endExportRendererSize,
     endTransparentCapture
   } from '../lib/viewer/exportCapture.js'
-  import AnimationPanel from '../components/animation/AnimationPanel.svelte'
   import AnimationTimeline from '../components/animation/AnimationTimeline.svelte'
   import AnimationFadeEditor from '../components/animation/AnimationFadeEditor.svelte'
   import AnimationSafeAreaOverlay from '../components/animation/AnimationSafeAreaOverlay.svelte'
@@ -725,7 +727,6 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
 
   // Animation mode
   let animateMode = $state(false)
-  let animExpanded = $state(true)
   let animProject = $state(createEmptyProject())
   /** @type {{ kind: 'camera' } | { kind: 'structure', structureId: string } | { kind: 'view', viewId: string } | null} */
   let animActiveTrack = $state(null)
@@ -7294,7 +7295,11 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
         writeAll ||
         focus?.kind === 'structure' ||
         (focus?.kind === 'view' && !!coordPatch)
-      const writeViews = writeAll || focus?.kind === 'view'
+      // Global / camera captures stamp every representation at the playhead so later
+      // style edits interpolate from this beat, not from an older key on that row.
+      // Structure-only focus does not touch representation keys.
+      const stampViewHolds = writeAll || focus?.kind === 'camera'
+      const writeViews = stampViewHolds || focus?.kind === 'view'
 
       let cameraTrack = { keys: [...(animProject.cameraTrack?.keys ?? [])] }
       let structureTracks = { ...(animProject.structureTracks ?? {}) }
@@ -7303,7 +7308,8 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       if (writeCamera) {
         const prevCam = previousChannelKey(cameraTrack.keys, time_s)
         const cameraChanged = !prevCam || !camerasApproximatelyEqual(prevCam.camera, snap.camera)
-        if (cameraChanged || focus?.kind === 'camera') {
+        const sceneChanged = !prevCam || !scenesApproximatelyEqual(prevCam.scene, snap.scene)
+        if (cameraChanged || sceneChanged || focus?.kind === 'camera') {
           cameraTrack.keys = upsertChannelKey(cameraTrack.keys, {
             id: crypto.randomUUID(),
             time_s,
@@ -7331,17 +7337,24 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
                 ? 'linear'
                 : (prevStruct?.motionEasing ?? DEFAULT_EASING_KIND)
               : (prevStruct?.motionEasing ?? DEFAULT_EASING_KIND)
+          let keys = upsertChannelKey(prevKeys, {
+            id: crypto.randomUUID(),
+            time_s,
+            ...(coordPatch ? { coordPatch } : {}),
+            ...(trajStructure ? { trajFrame: trajPlayhead } : {}),
+            motionEasing
+          })
+          // First non-empty motion key: also stamp rest at 0 so the move interpolates from base.
+          if (coordPatch && time_s > 0.05 && !prevKeys.some((k) => k.time_s < time_s - 1e-6)) {
+            keys = upsertChannelKey(keys, {
+              id: crypto.randomUUID(),
+              time_s: 0,
+              motionEasing: DEFAULT_EASING_KIND
+            })
+          }
           structureTracks = {
             ...structureTracks,
-            [structureId]: {
-              keys: upsertChannelKey(prevKeys, {
-                id: crypto.randomUUID(),
-                time_s,
-                ...(coordPatch ? { coordPatch } : {}),
-                ...(trajStructure ? { trajFrame: trajPlayhead } : {}),
-                motionEasing
-              })
-            }
+            [structureId]: { keys }
           }
         }
       }
@@ -7355,13 +7368,20 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
           const sv = snap.views.find((v) => String(v.id) === vid)
           if (!sv) continue
           const prevKeys = viewKeyTracks[vid]?.keys ?? []
+          const prevKey = previousChannelKey(prevKeys, time_s)
+          const prevView = prevKey?.view
+          const styleChanged = !prevView || !viewsApproximatelyEqual(prevView, sv)
           viewKeyTracks = {
             ...viewKeyTracks,
             [vid]: {
               keys: upsertChannelKey(prevKeys, {
                 id: crypto.randomUUID(),
                 time_s,
-                view: JSON.parse(JSON.stringify(sv))
+                view: JSON.parse(JSON.stringify(sv)),
+                // Unchanged holds stay linear; real style edits keep prior easing.
+                styleEasing: styleChanged
+                  ? (prevKey?.styleEasing ?? DEFAULT_EASING_KIND)
+                  : 'linear'
               })
             }
           }
@@ -7475,21 +7495,43 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
    * @param {{ kind: 'camera' } | { kind: 'structure', structureId: string } | { kind: 'view', viewId: string } | null} [channel]
    */
   function onAnimMoveKeyframe(id, time_s, channel = null) {
-    const t = Math.max(0, Math.min(animProject.duration_s, time_s))
-    const hit = findChannelKeyById(id) || (channel ? { channel, key: null } : null)
-    if (!hit) return
-    animProject = moveChannelKeyTime(animProject, id, t)
-    animPlayhead = t
-    applyAnimFrame(t)
+    onAnimMoveKeyframes([{ id, time_s }], channel)
+  }
+
+  /**
+   * @param {{ id: string, time_s: number }[]} moves
+   * @param {{ kind: 'camera' } | { kind: 'structure', structureId: string } | { kind: 'view', viewId: string } | null} [channel]
+   */
+  function onAnimMoveKeyframes(moves, channel = null) {
+    if (!moves.length) return
+    let project = animProject
+    let playAt = animPlayhead
+    for (const move of moves) {
+      const t = Math.max(0, Math.min(project.duration_s, move.time_s))
+      const hit = findChannelKeyById(move.id) || (channel ? { channel, key: null } : null)
+      if (!hit) continue
+      project = moveChannelKeyTime(project, move.id, t)
+      playAt = t
+    }
+    animProject = project
+    animPlayhead = playAt
+    applyAnimFrame(playAt)
   }
 
   /**
    * @param {string} toKeyframeId
    * @param {{ easing: import('../lib/animation/easing.js').AnimationEasingKind, easingBezier?: [number, number, number, number] }} next
-   * @param {'camera' | 'motion'} [channel]
+   * @param {'camera' | 'motion' | 'style'} [channel]
    * @param {string | null} [structureId]
+   * @param {string | null} [viewId]
    */
-  function onAnimEasingChange(toKeyframeId, next, channel = 'camera', structureId = null) {
+  function onAnimEasingChange(
+    toKeyframeId,
+    next,
+    channel = 'camera',
+    structureId = null,
+    viewId = null
+  ) {
     if (channel === 'motion' && structureId) {
       const keys = [...(animProject.structureTracks?.[structureId]?.keys ?? [])]
       const idx = keys.findIndex((k) => k.id === toKeyframeId)
@@ -7504,6 +7546,22 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
         structureTracks: {
           ...animProject.structureTracks,
           [structureId]: { keys }
+        }
+      }
+    } else if (channel === 'style' && viewId) {
+      const keys = [...(animProject.viewKeyTracks?.[viewId]?.keys ?? [])]
+      const idx = keys.findIndex((k) => k.id === toKeyframeId)
+      if (idx < 0) return
+      keys[idx] = {
+        ...keys[idx],
+        styleEasing: next.easing,
+        styleEasingBezier: next.easing === 'bezier' ? next.easingBezier : undefined
+      }
+      animProject = {
+        ...animProject,
+        viewKeyTracks: {
+          ...animProject.viewKeyTracks,
+          [viewId]: { keys }
         }
       }
     } else {
@@ -9190,9 +9248,11 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
           <CameraRig framing={camera} />
           {#each views.filter((v) => v.visible !== false && (v.opacity ?? 1) > 0.001) as view (view.id)}
             {@const draw = viewDraw(view)}
+            {@const layers = representationDrawLayers(view)}
             <ViewClipApply clip={view.clip} visible={isOwnerStructureVisible(view)}>
-            {#key `${view.representation.type}-${coordsGeneration}`}
-            {#if view.representation.type === 'ball-stick'}
+            {#each layers as layer (`${view.id}:${layer.key}`)}
+            {#key `${layer.type}-${layer.key}-${coordsGeneration}`}
+            {#if layer.type === 'ball-stick'}
               <BallStick
                 atoms={draw.atoms}
                 xyz={draw.xyz}
@@ -9201,6 +9261,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
                 trajSmoothRestoreH={trajSmoothRestoreHEnabled(view.trajSmoothRestoreH)}
                 bonds={draw.bonds}
                 getColor={view.colorScheme.resolver}
+                colorRevision={view._colorSchemeSig ?? view.colorScheme?.color ?? ''}
                 quality={view.quality ?? 3}
                 atomScale={view.atomScale ?? 1.0}
                 bondScale={view.bondScale ?? 1.0}
@@ -9213,12 +9274,12 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
                 outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
                 outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
                 highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, glowHighlightIndices)}
-                opacity={view.opacity ?? 1}
+                opacity={layer.opacity}
                 showMultipleBonds={view.showMultipleBonds !== false}
                 bondColorMode={view.bondColorMode === 'atoms' ? 'atoms' : 'uniform'}
                 bondColor={view.bondColor ?? '#b8b8bc'}
               />
-            {:else if view.representation.type === 'licorice'}
+            {:else if layer.type === 'licorice'}
               <Licorice
                 atoms={draw.atoms}
                 xyz={draw.xyz}
@@ -9227,6 +9288,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
                 trajSmoothRestoreH={trajSmoothRestoreHEnabled(view.trajSmoothRestoreH)}
                 bonds={draw.bonds}
                 getColor={view.colorScheme.resolver}
+                colorRevision={view._colorSchemeSig ?? view.colorScheme?.color ?? ''}
                 quality={view.quality ?? 3}
                 bondScale={view.bondScale ?? 1.0}
                 stickRoundness={view.stickRoundness ?? 1.0}
@@ -9239,10 +9301,10 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
                 outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
                 outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
                 highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, glowHighlightIndices)}
-                opacity={view.opacity ?? 1}
+                opacity={layer.opacity}
                 showMultipleBonds={view.showMultipleBonds !== false}
               />
-            {:else if view.representation.type === 'cartoon'}
+            {:else if layer.type === 'cartoon'}
               <Cartoon
                 atoms={draw.atoms}
                 xyz={draw.xyz}
@@ -9251,6 +9313,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
                 trajSmoothRestoreH={trajSmoothRestoreHEnabled(view.trajSmoothRestoreH)}
                 residues={draw.residues ?? []}
                 getColor={view.colorScheme.resolver}
+                colorRevision={view._colorSchemeSig ?? ''}
                 helixWidth={view.helixWidth ?? 1.0}
                 sheetWidth={view.sheetWidth ?? 0.875}
                 coilWidth={view.coilWidth ?? 0.125}
@@ -9264,9 +9327,9 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
                 outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
                 outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
                 highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, glowHighlightIndices)}
-                opacity={view.opacity ?? 1}
+                opacity={layer.opacity}
               />
-            {:else if view.representation.type === 'tube'}
+            {:else if layer.type === 'tube'}
               <Tube
                 atoms={draw.atoms}
                 xyz={draw.xyz}
@@ -9275,6 +9338,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
                 trajSmoothRestoreH={trajSmoothRestoreHEnabled(view.trajSmoothRestoreH)}
                 residues={draw.residues ?? []}
                 getColor={view.colorScheme.resolver}
+                colorRevision={view._colorSchemeSig ?? ''}
                 tubeRadius={view.tubeRadius ?? 0.9}
                 ssColors={view.ssColors}
                 quality={view.quality ?? 3}
@@ -9286,9 +9350,9 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
                 outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
                 outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
                 highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, glowHighlightIndices)}
-                opacity={view.opacity ?? 1}
+                opacity={layer.opacity}
               />
-            {:else if view.representation.type === 'vdw'}
+            {:else if layer.type === 'vdw'}
               <VdwSpheres
                 atoms={draw.atoms}
                 xyz={draw.xyz}
@@ -9296,6 +9360,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
                 trajSmooth={clampTrajSmooth(view.trajSmooth)}
                 trajSmoothRestoreH={trajSmoothRestoreHEnabled(view.trajSmoothRestoreH)}
                 getColor={view.colorScheme.resolver}
+                colorRevision={view._colorSchemeSig ?? view.colorScheme?.color ?? ''}
                 quality={view.quality ?? 3}
                 atomScale={view.atomScale ?? 1.0}
                 metalness={view.material?.metalness ?? 0.12}
@@ -9307,15 +9372,16 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
                 outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
                 outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
                 highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, glowHighlightIndices)}
-                opacity={view.opacity ?? 1}
+                opacity={layer.opacity}
               />
-            {:else if view.representation.type === 'surface'}
+            {:else if layer.type === 'surface'}
               <OrganicSurface
                 atoms={draw.atoms}
                 xyzEpoch={trajPlayhead + trajXyzEpoch + previewGen}
                 deferRemesh={!view.selectionEachFrame && (trajScrubbing || trajPlaying) && !animExporting}
                 residues={draw.residues ?? []}
                 getColor={view.colorScheme.resolver}
+                colorRevision={view._colorSchemeSig ?? ''}
                 quality={view.quality ?? 3}
                 surfaceInflate={view.surfaceInflate ?? 0.25}
                 surfaceSource={view.surfaceSource === 'backbone' ? 'backbone' : 'atoms'}
@@ -9329,9 +9395,9 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
                 outlineColor={view.material?.outlineColor ?? GOODSELL_MATERIAL_DEFAULTS.outlineColor}
                 outlineWidth={view.material?.outlineWidth ?? GOODSELL_MATERIAL_DEFAULTS.outlineWidth}
                 highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, glowHighlightIndices)}
-                opacity={view.opacity ?? 1}
+                opacity={layer.opacity}
               />
-            {:else if view.representation.type === 'points'}
+            {:else if layer.type === 'points'}
               <AtomPoints
                 atoms={draw.atoms}
                 xyz={draw.xyz}
@@ -9339,17 +9405,20 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
                 trajSmooth={clampTrajSmooth(view.trajSmooth)}
                 trajSmoothRestoreH={trajSmoothRestoreHEnabled(view.trajSmoothRestoreH)}
                 getColor={view.colorScheme.resolver}
+                colorRevision={view._colorSchemeSig ?? view.colorScheme?.color ?? ''}
                 pointSize={view.pointSize ?? 3}
                 atomScale={view.atomScale ?? 1.0}
                 highlightIndices={highlightIndicesForStructure(view.structureId, activeStructureId, glowHighlightIndices)}
-                opacity={view.opacity ?? 1}
+                opacity={layer.opacity}
               />
             {/if}
             {/key}
+            {/each}
             {#if isGlowingMaterial(view.material) && resolveGlowingMaterial(view.material).glowEmitLight !== false && (view.opacity ?? 1) > 0.001}
               <AtomGlowLights
                 atoms={draw.atoms}
                 getColor={view.colorScheme.resolver}
+                colorRevision={view._colorSchemeSig ?? ''}
                 intensity={(resolveGlowingMaterial(view.material).glowLightIntensity ?? GLOWING_MATERIAL_DEFAULTS.glowLightIntensity) * Math.min(1, view.opacity ?? 1)}
                 distance={resolveGlowingMaterial(view.material).glowLightDistance ?? GLOWING_MATERIAL_DEFAULTS.glowLightDistance}
                 decay={resolveGlowingMaterial(view.material).glowLightDecay ?? GLOWING_MATERIAL_DEFAULTS.glowLightDecay}
@@ -11500,57 +11569,6 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
           {/if}
         </div>
 
-        {#if animateMode}
-          <AnimationPanel
-            {workingDir}
-            outputFolder={animProject.outputFolder}
-            projectName={animProject.name}
-            fps={animProject.fps}
-            duration_s={animProject.duration_s}
-            exportFrame={animProject.exportFrame ?? {
-              aspectPreset: '16:9',
-              width: 1920,
-              height: 1080,
-              showGuide: true,
-              exportFormat: 'mp4'
-            }}
-            playing={animPlaying}
-            exporting={animExporting}
-            keyframeCount={animChannelKeyCount(animProject)}
-            expanded={animExpanded}
-            onToggleExpanded={() => (animExpanded = !animExpanded)}
-            onOutputFolderChange={(v) => {
-              animProject = { ...animProject, outputFolder: v }
-            }}
-            onProjectNameChange={(v) => {
-              animProject = { ...animProject, name: v }
-            }}
-            onFpsChange={(v) => {
-              animProject = { ...animProject, fps: v }
-            }}
-            onDurationChange={(v) => {
-              animProject = { ...animProject, duration_s: v }
-              animPlayhead = Math.min(animPlayhead, v)
-            }}
-            onExportFrameChange={(frame) => {
-              animProject = { ...animProject, exportFrame: frame }
-              if (frame?.width > 0 && frame?.height > 0) {
-                figureDefaultWidth = Math.round(frame.width)
-                figureDefaultHeight = Math.round(frame.height)
-                lastFigureQuality = normalizeExportQuality(frame.quality)
-                if (typeof frame.transparentBg === 'boolean') {
-                  lastFigureTransparent = frame.transparentBg
-                }
-                figureSizeSet = true
-              }
-            }}
-            onCaptureKeyframe={onAnimCaptureKeyframe}
-            onClearKeyframes={onAnimClearKeyframes}
-            onSaveProject={onAnimSaveProject}
-            onLoadProject={onAnimLoadProject}
-            onExportVideo={onAnimExportVideo}
-          />
-        {/if}
         </div>
         </div>
       {:else}
@@ -11653,6 +11671,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       onScrub={onAnimScrub}
       onGoToKeyframe={onAnimGoToKeyframe}
       onMoveKeyframe={onAnimMoveKeyframe}
+      onMoveKeyframes={onAnimMoveKeyframes}
       onRenameKeyframe={onAnimRenameKeyframe}
       onDuplicateKeyframe={onAnimDuplicateKeyframe}
       onDeleteKeyframe={onAnimDeleteKeyframe}
@@ -11660,6 +11679,44 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       onEasingChange={onAnimEasingChange}
       onViewFadeChange={onAnimViewFadeChange}
       onCaptureKeyframe={onAnimCaptureKeyframe}
+      workingDir={workingDir}
+      outputFolder={animProject.outputFolder}
+      projectName={animProject.name}
+      exportFrame={animProject.exportFrame ?? {
+        aspectPreset: '16:9',
+        width: 1920,
+        height: 1080,
+        showGuide: true,
+        exportFormat: 'mp4'
+      }}
+      onOutputFolderChange={(v) => {
+        animProject = { ...animProject, outputFolder: v }
+      }}
+      onProjectNameChange={(v) => {
+        animProject = { ...animProject, name: v }
+      }}
+      onFpsChange={(v) => {
+        animProject = { ...animProject, fps: v }
+      }}
+      onDurationChange={(v) => {
+        animProject = { ...animProject, duration_s: v }
+        animPlayhead = Math.min(animPlayhead, v)
+      }}
+      onExportFrameChange={(frame) => {
+        animProject = { ...animProject, exportFrame: frame }
+        if (frame?.width > 0 && frame?.height > 0) {
+          figureDefaultWidth = Math.round(frame.width)
+          figureDefaultHeight = Math.round(frame.height)
+          lastFigureQuality = normalizeExportQuality(frame.quality)
+          if (typeof frame.transparentBg === 'boolean') {
+            lastFigureTransparent = frame.transparentBg
+          }
+          figureSizeSet = true
+        }
+      }}
+      onSaveProject={onAnimSaveProject}
+      onLoadProject={onAnimLoadProject}
+      onExportVideo={onAnimExportVideo}
       onClose={toggleAnimateMode}
     />
   {/if}

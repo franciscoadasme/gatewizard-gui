@@ -104,3 +104,17 @@ export function shouldSeekTrajFrame(requested, currentDisplay) {
   const have = Math.round(Number(currentDisplay) || 0)
   return want !== have
 }
+
+/**
+ * Export sample time for frame index `i`. Wall-clock draw time does not move this.
+ * @param {number} index
+ * @param {number} fps
+ * @param {number} duration_s
+ */
+export function animExportFrameTime(index, fps, duration_s) {
+  const rate = Math.max(1, Number(fps) || 1)
+  const t = Math.max(0, Number(index) || 0) / rate
+  const dur = Number(duration_s)
+  if (!Number.isFinite(dur)) return t
+  return Math.min(dur, t)
+}

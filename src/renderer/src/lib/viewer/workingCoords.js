@@ -347,6 +347,37 @@ export function applyPreviewOverlayToPackedXyz(xyz, preview) {
 }
 
 /**
+ * Copy XYZ from a structure atom list onto matching view.atoms (same index).
+ * Used after animation scrub so canvas redraw (viewDraw → view.atoms) shows motion.
+ *
+ * @template {{ structureId?: string | null, atoms?: Array<{ index?: number, x: number, y: number, z: number }>, _isSelHighlight?: boolean }} V
+ * @param {V[]} views
+ * @param {string | null | undefined} structureId
+ * @param {Array<{ index?: number, x: number, y: number, z: number }>} newAtoms
+ * @returns {{ views: V[], touched: boolean }}
+ */
+export function syncViewAtomsFromStructure(views, structureId, newAtoms) {
+  if (!structureId || !newAtoms?.length || !views?.length) {
+    return { views: views ?? [], touched: false }
+  }
+  const byIndex = new Map(newAtoms.map((a) => [a.index, a]))
+  let touched = false
+  const next = views.map((v) => {
+    if (v._isSelHighlight) return v
+    if (v.structureId !== structureId) return v
+    touched = true
+    return {
+      ...v,
+      atoms: (v.atoms ?? []).map((a) => {
+        const src = byIndex.get(a.index)
+        return src ? { ...a, x: src.x, y: src.y, z: src.z } : a
+      })
+    }
+  })
+  return { views: touched ? next : views, touched }
+}
+
+/**
  * Simple undo stack of inverse CoordPatches.
  */
 export function createCoordUndoStack(max = 32) {

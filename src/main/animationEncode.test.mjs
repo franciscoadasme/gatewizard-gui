@@ -41,6 +41,8 @@ test('mp4 encode starts at frame 1', () => {
     format: 'mp4'
   })
   assert.equal(args[args.indexOf('-start_number') + 1], '1')
+  assert.equal(args[args.indexOf('-framerate') + 1], '30')
+  assert.ok(args.some((arg) => arg.endsWith('frame_%06d.png')))
   assert.ok(args.includes('libx264'))
 })
 

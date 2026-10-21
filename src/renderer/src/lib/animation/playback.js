@@ -1,6 +1,7 @@
 import { applyCameraPose } from './cameraPose.js'
 import { mainViewerFramingAnchor } from '../../components/viewer/CameraRig.svelte'
 import { interpolateAtTime } from './interpolate.js'
+import { interpolateChannelsAtTime, projectHasChannelTracks } from './channelTracks.js'
 import {
   applySceneSettings,
   deserializeAtomLabels,
@@ -26,6 +27,13 @@ export { startPlayback } from './playbackClock.js'
  */
 function applyViewVisibilityFromState(live, stateView, template, hasSnapshotAtOrBeforeTime) {
   if (stateView) {
+    // Hidden representations are created with opacity 1. Honor the visible flag
+    // so playback does not turn them back on and invent a style segment.
+    if (stateView.visible === false) {
+      live.visible = false
+      live.opacity = 0
+      return
+    }
     const opacity = typeof stateView.opacity === 'number' ? stateView.opacity : 1
     live.visible = opacity > 0.001
     live.opacity = opacity
@@ -147,7 +155,7 @@ function applyViewsFromAnimation(keyframes, time_s, ctx, state, viewTracks) {
 }
 
 /**
- * @param {import('./schema.js').AnimationKeyframe[]} keyframes
+ * @param {import('./schema.js').AnimationProject | import('./schema.js').AnimationKeyframe[]} projectOrKeyframes
  * @param {number} time_s
  * @param {{
  *   getViews: () => Record<string, unknown>[]
@@ -158,13 +166,35 @@ function applyViewsFromAnimation(keyframes, time_s, ctx, state, viewTracks) {
  *   setLabels?: (labels: Record<string, unknown>[]) => void
  *   setMeasurements?: (measurements: Record<string, unknown>[]) => void
  *   setCoordOverlay?: (patch: { indices: number[], xyz: number[] } | null) => void
+ *   setCoordOverlays?: (patches: Record<string, { indices: number[], xyz: number[] }> | null) => void
  *   setTrajFrame?: (frame: number) => void
  *   baseCoords?: Map<number, [number, number, number]> | null
+ *   primaryStructureId?: string | null
  * }} ctx
  * @param {string[]} [viewTracks]
  */
-export function applyAnimationAtTime(keyframes, time_s, ctx, viewTracks = []) {
-  const state = interpolateAtTime(keyframes, time_s, viewTracks, ctx.baseCoords ?? null)
+export function applyAnimationAtTime(projectOrKeyframes, time_s, ctx, viewTracks = []) {
+  const primaryId = ctx.primaryStructureId ?? null
+  const project = Array.isArray(projectOrKeyframes)
+    ? {
+        keyframes: projectOrKeyframes,
+        viewTracks,
+        cameraTrack: { keys: [] },
+        structureTracks: {},
+        viewKeyTracks: {}
+      }
+    : projectOrKeyframes
+  const tracks = viewTracks.length ? viewTracks : project.viewTracks ?? []
+
+  const state = projectHasChannelTracks(project)
+    ? interpolateChannelsAtTime(project, time_s, ctx.baseCoords ?? null, primaryId)
+    : interpolateAtTime(
+        project.keyframes ?? [],
+        time_s,
+        tracks,
+        ctx.baseCoords ?? null,
+        primaryId
+      )
   if (!state) return
 
   if (state.camera.framing) {
@@ -177,9 +207,20 @@ export function applyAnimationAtTime(keyframes, time_s, ctx, viewTracks = []) {
   applySceneSettings(state.scene)
   if (state.viewport) ctx.applyViewport?.(state.viewport)
 
-  applyViewsFromAnimation(keyframes, time_s, ctx, state, viewTracks)
+  if (projectHasChannelTracks(project)) {
+    applyViewsFromChannelState(ctx, state)
+  } else {
+    applyViewsFromAnimation(project.keyframes ?? [], time_s, ctx, state, tracks)
+  }
 
-  ctx.setCoordOverlay?.(state.coordPatch ?? null)
+  if (ctx.setCoordOverlays) {
+    // Always call (including {}) so empty samples restore the base pose.
+    ctx.setCoordOverlays(
+      state.coordPatches && Object.keys(state.coordPatches).length ? state.coordPatches : {}
+    )
+  } else {
+    ctx.setCoordOverlay?.(state.coordPatch ?? null)
+  }
   if (typeof state.trajFrame === 'number' && Number.isFinite(state.trajFrame)) {
     ctx.setTrajFrame?.(state.trajFrame)
   }
@@ -193,6 +234,60 @@ export function applyAnimationAtTime(keyframes, time_s, ctx, viewTracks = []) {
   }
   if (ctx.setMeasurements) {
     ctx.setMeasurements(deserializeMeasurements(state.measurements ?? [], atomsForOverlays))
+  }
+}
+
+/**
+ * @param {{
+ *   getViews: () => Record<string, unknown>[]
+ *   setViews: (views: Record<string, unknown>[]) => void
+ *   structureCtx: { path: string | null, atoms?: unknown[], bonds?: unknown[], residues?: unknown[] }
+ * }} ctx
+ * @param {{ views?: import('./schema.js').SerializedView[] }} state
+ */
+function applyViewsFromChannelState(ctx, state) {
+  const liveViews = ctx.getViews()
+  const nextViews = state.views ?? []
+  if (!nextViews.length) return
+  const byId = new Map(liveViews.map((v) => [String(v.id), v]))
+  /** @type {Record<string, unknown>[]} */
+  const result = []
+  let styleTouched = false
+  for (const sv of nextViews) {
+    const id = String(sv.id)
+    const live = byId.get(id)
+    if (live) {
+      const prevSchemeSig = live._colorSchemeSig
+      const prevBond = live.bondColor
+      const prevMat = JSON.stringify(live.material ?? null)
+      mergeSerializedViewInto(live, sv)
+      applyViewVisibilityFromState(live, sv, null, true)
+      if (
+        live._colorSchemeSig !== prevSchemeSig ||
+        live.bondColor !== prevBond ||
+        JSON.stringify(live.material ?? null) !== prevMat
+      ) {
+        styleTouched = true
+      }
+      result.push(live)
+    } else {
+      styleTouched = true
+      result.push(deserializeView(sv, ctx.structureCtx))
+    }
+  }
+  // Keep live views that are not in the animation track set
+  for (const live of liveViews) {
+    if (live._isSelHighlight) {
+      result.push(live)
+      continue
+    }
+    if (!nextViews.some((v) => String(v.id) === String(live.id))) {
+      result.push(live)
+    }
+  }
+  // Always publish a new array so canvas props (getColor / colorRevision) refresh each sample.
+  if (styleTouched || viewListNeedsReplace(liveViews, result) || nextViews.length) {
+    ctx.setViews([...result])
   }
 }
 

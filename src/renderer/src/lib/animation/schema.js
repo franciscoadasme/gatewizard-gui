@@ -6,6 +6,13 @@ import { normalizeFadeSettings } from './fade.js'
 import { DEFAULT_ANIMATION_EXPORT_FORMAT, coerceExportFormat } from './exportFormats.js'
 import { normalizeStructuresMeta } from '../visualizeStructures.js'
 import { normalizeVisibilityGroups } from '../visualizeGroups.js'
+import {
+  migrateKeyframesToChannelTracks,
+  normalizeCameraTrack,
+  normalizeStructureTracks,
+  normalizeViewKeyTracks,
+  projectHasChannelTracks
+} from './channelTracks.js'
 
 /**
  * @typedef {Object} AnimationCameraFraming
@@ -138,6 +145,12 @@ import { normalizeVisibilityGroups } from '../visualizeGroups.js'
  * @property {number} [hold_s]
  * @property {AnimationEasingKind} [easing]
  * @property {[number, number, number, number]} [easingBezier]
+ * @property {AnimationEasingKind} [cameraEasing]
+ * @property {[number, number, number, number]} [cameraEasingBezier]
+ * @property {AnimationEasingKind} [motionEasing]
+ * @property {[number, number, number, number]} [motionEasingBezier]
+ * @property {Record<string, { easing: AnimationEasingKind, easingBezier?: [number, number, number, number] }>} [motionEasings]
+ *   Per-structureId molecule motion curve into this keyframe.
  * @property {AnimationCameraPose} camera
  * @property {SerializedView[]} views
  * @property {Record<string, unknown>} scene
@@ -184,6 +197,10 @@ import { normalizeVisibilityGroups } from '../visualizeGroups.js'
  * @property {number} fps
  * @property {number} duration_s
  * @property {AnimationKeyframe[]} keyframes
+ *   Legacy shared-time keyframes (migrated into channel tracks on load).
+ * @property {{ keys: import('./channelTracks.js').CameraChannelKey[] }} [cameraTrack]
+ * @property {Record<string, { keys: import('./channelTracks.js').StructureChannelKey[] }>} [structureTracks]
+ * @property {Record<string, { keys: import('./channelTracks.js').ViewChannelKey[] }>} [viewKeyTracks]
  * @property {string[]} [viewTracks]
  * @property {AnimationExportFrame} [exportFrame]
  * @property {string} [outputFolder]
@@ -196,8 +213,9 @@ export const ANIMATION_FORMAT = 'gatewizard-animation'
  * v5: multi-structure ``structures[]``, ``structureId`` on views, per-structure ``coordPatches``.
  * v6: ordered ``visibilityGroups`` for the Representations panel.
  * v7: keyframe ``trajFrame`` + per-view ``trajSmooth``; structures may include ``trajectory``.
+ * v8: independent channel tracks (cameraTrack, structureTracks, viewKeyTracks).
  */
-export const ANIMATION_VERSION = 7
+export const ANIMATION_VERSION = 8
 export const DEFAULT_FPS = 30
 export const DEFAULT_EASING = DEFAULT_EASING_KIND
 
@@ -280,6 +298,9 @@ export function createEmptyProject(overrides = {}) {
     fps: DEFAULT_FPS,
     duration_s: 10,
     keyframes: [],
+    cameraTrack: { keys: [] },
+    structureTracks: {},
+    viewKeyTracks: {},
     viewTracks: [],
     exportFrame: defaultExportFrame(),
     outputFolder: '',
@@ -331,9 +352,60 @@ export function normalizeProject(data) {
       kf.views = (kf.views || []).map((v) =>
         v.structureId ? v : { ...v, structureId: primaryId }
       )
+      // Lift legacy single-structure motion onto per-structure maps.
+      if (!kf.coordPatches?.[primaryId] && kf.coordPatch) {
+        kf.coordPatches = { ...(kf.coordPatches || {}), [primaryId]: kf.coordPatch }
+      }
+      if ((!kf.motionEasings || !Object.keys(kf.motionEasings).length) && kf.motionEasing) {
+        kf.motionEasings = {
+          [primaryId]: {
+            easing: kf.motionEasing,
+            ...(kf.motionEasing === 'bezier' && kf.motionEasingBezier
+              ? { easingBezier: kf.motionEasingBezier }
+              : {})
+          }
+        }
+      }
     }
   }
-  project.viewTracks = reconcileViewTracks(project.viewTracks, project.keyframes)
+  const hasChannels =
+    projectHasChannelTracks({
+      cameraTrack: raw.cameraTrack,
+      structureTracks: raw.structureTracks,
+      viewKeyTracks: raw.viewKeyTracks
+    }) ||
+    (Array.isArray(/** @type {any} */ (raw.cameraTrack)?.keys) &&
+      /** @type {any} */ (raw.cameraTrack).keys.length > 0)
+
+  if (hasChannels || raw.cameraTrack || raw.structureTracks || raw.viewKeyTracks) {
+    project.cameraTrack = normalizeCameraTrack(raw.cameraTrack)
+    project.structureTracks = normalizeStructureTracks(raw.structureTracks)
+    project.viewKeyTracks = normalizeViewKeyTracks(raw.viewKeyTracks)
+  }
+  if (!projectHasChannelTracks(project) && project.keyframes.length) {
+    const migrated = migrateKeyframesToChannelTracks(project.keyframes, primaryId ?? null)
+    project.cameraTrack = migrated.cameraTrack
+    project.structureTracks = migrated.structureTracks
+    project.viewKeyTracks = migrated.viewKeyTracks
+  }
+  if (!project.cameraTrack) project.cameraTrack = { keys: [] }
+  if (!project.structureTracks) project.structureTracks = {}
+  if (!project.viewKeyTracks) project.viewKeyTracks = {}
+  project.viewTracks = reconcileViewTracks(
+    project.viewTracks,
+    project.keyframes,
+    project.viewKeyTracks
+  )
+
+  const channelTimes = [
+    ...(project.cameraTrack.keys || []).map((k) => k.time_s),
+    ...Object.values(project.structureTracks).flatMap((t) => (t.keys || []).map((k) => k.time_s)),
+    ...Object.values(project.viewKeyTracks).flatMap((t) => (t.keys || []).map((k) => k.time_s))
+  ]
+  if (channelTimes.length && !(typeof raw.duration_s === 'number' && raw.duration_s > 0)) {
+    project.duration_s = Math.max(10, ...channelTimes)
+  }
+
   return project
 }
 
@@ -464,11 +536,75 @@ export function normalizeCoordPatches(raw) {
   return Object.keys(out).length ? out : null
 }
 
+/**
+ * @param {unknown} raw
+ * @returns {Record<string, { easing: AnimationEasingKind, easingBezier?: [number, number, number, number] }> | undefined}
+ */
+export function normalizeMotionEasings(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  /** @type {Record<string, { easing: AnimationEasingKind, easingBezier?: [number, number, number, number] }>} */
+  const out = {}
+  for (const [sid, entry] of Object.entries(/** @type {Record<string, unknown>} */ (raw))) {
+    if (!sid || !entry || typeof entry !== 'object') continue
+    const e = /** @type {Record<string, unknown>} */ (entry)
+    const easing = normalizeEasingKind(e.easing)
+    out[sid] = {
+      easing,
+      ...(easing === 'bezier'
+        ? { easingBezier: normalizeBezier(e.easingBezier, easing) }
+        : {})
+    }
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
+/**
+ * Prefer ``coordPatches[structureId]``; fall back to legacy ``coordPatch`` for the primary id.
+ * @param {AnimationKeyframe | null | undefined} kf
+ * @param {string | null | undefined} structureId
+ * @param {string | null | undefined} [primaryId]
+ */
+export function coordPatchForStructure(kf, structureId, primaryId = null) {
+  if (!kf) return null
+  const sid = structureId || primaryId
+  if (sid && kf.coordPatches?.[sid]) return kf.coordPatches[sid]
+  if (sid && primaryId && sid === primaryId && kf.coordPatch) return kf.coordPatch
+  if (!sid && kf.coordPatch) return kf.coordPatch
+  return null
+}
+
+/**
+ * @param {AnimationKeyframe | null | undefined} kf
+ * @param {string | null | undefined} structureId
+ * @returns {{ easing: AnimationEasingKind, easingBezier?: [number, number, number, number] }}
+ */
+export function motionEasingForStructure(kf, structureId) {
+  const entry = structureId && kf?.motionEasings?.[structureId]
+  if (entry?.easing) {
+    return {
+      easing: entry.easing,
+      ...(entry.easing === 'bezier' && entry.easingBezier
+        ? { easingBezier: entry.easingBezier }
+        : {})
+    }
+  }
+  const easing = normalizeEasingKind(kf?.motionEasing)
+  return {
+    easing,
+    ...(easing === 'bezier' && kf?.motionEasingBezier
+      ? { easingBezier: kf.motionEasingBezier }
+      : {})
+  }
+}
+
 function normalizeKeyframe(raw, index) {
   const k = /** @type {Record<string, unknown>} */ (raw ?? {})
   const camera = normalizeCamera(k.camera)
   const viewportRaw = /** @type {Record<string, unknown>} */ (k.viewport ?? {})
   const easing = normalizeEasingKind(k.easing)
+  const cameraEasing = normalizeEasingKind(k.cameraEasing)
+  const motionEasing = normalizeEasingKind(k.motionEasing)
+  const motionEasings = normalizeMotionEasings(k.motionEasings)
   const coordPatch = normalizeCoordPatch(k.coordPatch)
   const coordPatches = normalizeCoordPatches(k.coordPatches)
   return {
@@ -478,6 +614,13 @@ function normalizeKeyframe(raw, index) {
     hold_s: typeof k.hold_s === 'number' ? k.hold_s : 0,
     easing,
     easingBezier: easing === 'bezier' ? normalizeBezier(k.easingBezier, easing) : undefined,
+    cameraEasing,
+    cameraEasingBezier:
+      cameraEasing === 'bezier' ? normalizeBezier(k.cameraEasingBezier, cameraEasing) : undefined,
+    motionEasing,
+    motionEasingBezier:
+      motionEasing === 'bezier' ? normalizeBezier(k.motionEasingBezier, motionEasing) : undefined,
+    ...(motionEasings ? { motionEasings } : {}),
     camera,
     views: Array.isArray(k.views) ? /** @type {SerializedView[]} */ (k.views) : [],
     scene:
@@ -536,6 +679,65 @@ export function serializeAnimationProject(project, structure) {
     duration_s: project.duration_s,
     viewTracks: [...(project.viewTracks ?? [])],
     exportFrame: { ...(project.exportFrame ?? defaultExportFrame()) },
+    cameraTrack: {
+      keys: (project.cameraTrack?.keys ?? []).map((k) => ({
+        id: k.id,
+        time_s: k.time_s,
+        camera: {
+          position: [...k.camera.position],
+          target: [...k.camera.target],
+          up: [...k.camera.up],
+          zoom: k.camera.zoom,
+          framing: k.camera.framing
+            ? {
+                center: [...k.camera.framing.center],
+                extent: k.camera.framing.extent,
+                framingZoom: k.camera.framing.framingZoom
+              }
+            : undefined
+        },
+        cameraEasing: k.cameraEasing,
+        cameraEasingBezier: k.cameraEasingBezier ? [...k.cameraEasingBezier] : undefined,
+        scene: k.scene ? { ...k.scene } : {},
+        viewport: k.viewport ? { ...k.viewport } : undefined,
+        labels: (k.labels ?? []).map((l) => ({ ...l })),
+        measurements: (k.measurements ?? []).map((m) => ({
+          ...m,
+          atomIndices: [...(m.atomIndices ?? [])]
+        }))
+      }))
+    },
+    structureTracks: Object.fromEntries(
+      Object.entries(project.structureTracks ?? {}).map(([sid, track]) => [
+        sid,
+        {
+          keys: (track.keys ?? []).map((k) => ({
+            id: k.id,
+            time_s: k.time_s,
+            ...(k.coordPatch?.indices?.length
+              ? { coordPatch: { indices: [...k.coordPatch.indices], xyz: [...k.coordPatch.xyz] } }
+              : {}),
+            ...(typeof k.trajFrame === 'number' ? { trajFrame: k.trajFrame } : {}),
+            motionEasing: k.motionEasing,
+            motionEasingBezier: k.motionEasingBezier ? [...k.motionEasingBezier] : undefined
+          }))
+        }
+      ])
+    ),
+    viewKeyTracks: Object.fromEntries(
+      Object.entries(project.viewKeyTracks ?? {}).map(([vid, track]) => [
+        vid,
+        {
+          keys: (track.keys ?? []).map((k) => ({
+            id: k.id,
+            time_s: k.time_s,
+            view: { ...k.view, ...normalizeFadeSettings(k.view) },
+            styleEasing: k.styleEasing,
+            styleEasingBezier: k.styleEasingBezier ? [...k.styleEasingBezier] : undefined
+          }))
+        }
+      ])
+    ),
     keyframes: project.keyframes.map((k) => ({
       id: k.id,
       name: k.name,
@@ -543,6 +745,23 @@ export function serializeAnimationProject(project, structure) {
       hold_s: k.hold_s,
       easing: k.easing,
       easingBezier: k.easingBezier ? [...k.easingBezier] : undefined,
+      cameraEasing: k.cameraEasing,
+      cameraEasingBezier: k.cameraEasingBezier ? [...k.cameraEasingBezier] : undefined,
+      motionEasing: k.motionEasing,
+      motionEasingBezier: k.motionEasingBezier ? [...k.motionEasingBezier] : undefined,
+      ...(k.motionEasings && Object.keys(k.motionEasings).length
+        ? {
+            motionEasings: Object.fromEntries(
+              Object.entries(k.motionEasings).map(([sid, entry]) => [
+                sid,
+                {
+                  easing: entry.easing,
+                  ...(entry.easingBezier ? { easingBezier: [...entry.easingBezier] } : {})
+                }
+              ])
+            )
+          }
+        : {}),
       camera: {
         position: [...k.camera.position],
         target: [...k.camera.target],

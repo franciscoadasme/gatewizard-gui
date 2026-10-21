@@ -31,13 +31,28 @@ export function deriveViewTracks(keyframes) {
 }
 
 /**
- * Keep saved track order for ids still present in keyframes; drop orphaned ids; append new ones.
- * @param {string[] | undefined} saved
- * @param {AnimationKeyframe[]} keyframes
+ * Stable track order from channel view keys (first appearance by track id order).
+ * @param {Record<string, { keys?: unknown[] }> | undefined} viewKeyTracks
  * @returns {string[]}
  */
-export function reconcileViewTracks(saved, keyframes) {
-  const derived = deriveViewTracks(keyframes)
+export function deriveViewTracksFromChannelKeys(viewKeyTracks) {
+  if (!viewKeyTracks || typeof viewKeyTracks !== 'object') return []
+  return Object.keys(viewKeyTracks).filter((id) => (viewKeyTracks[id]?.keys?.length ?? 0) > 0)
+}
+
+/**
+ * Keep saved track order for ids still present; drop orphaned ids; append new ones.
+ * Valid ids come from legacy keyframes and/or channel viewKeyTracks.
+ * @param {string[] | undefined} saved
+ * @param {AnimationKeyframe[]} keyframes
+ * @param {Record<string, { keys?: unknown[] }> | undefined} [viewKeyTracks]
+ * @returns {string[]}
+ */
+export function reconcileViewTracks(saved, keyframes, viewKeyTracks = undefined) {
+  const derived = [
+    ...deriveViewTracks(keyframes),
+    ...deriveViewTracksFromChannelKeys(viewKeyTracks)
+  ]
   const derivedSet = new Set(derived)
   const ordered = []
   const seen = new Set()
@@ -60,7 +75,11 @@ export function reconcileViewTracks(saved, keyframes) {
  * @param {AnimationProject} project
  */
 export function syncProjectViewTracks(project) {
-  project.viewTracks = reconcileViewTracks(project.viewTracks, project.keyframes)
+  project.viewTracks = reconcileViewTracks(
+    project.viewTracks,
+    project.keyframes ?? [],
+    project.viewKeyTracks
+  )
 }
 
 /**
