@@ -26,6 +26,7 @@
    *   sheetWidth?: number,
    *   coilWidth?: number,
    *   getColor?: (atom: any) => import('three').Color,
+   *   colorRevision?: string | number,
    *   ssColors?: Record<string, string> | null,
    *   quality?: number,
    *   metalness?: number,
@@ -54,6 +55,7 @@
     sheetWidth = 0.875,
     coilWidth = 0.125,
     getColor = defaultColorScheme,
+    colorRevision = '',
     ssColors = null,
     quality = 3,
     metalness = 0.08,
@@ -110,6 +112,7 @@
   let outlineSkin = []
 
   $effect(() => {
+    void colorRevision
     if (!atoms?.length || !residues?.length) {
       surfaceSkin = []
       outlineSkin = []

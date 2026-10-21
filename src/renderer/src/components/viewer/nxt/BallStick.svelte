@@ -126,6 +126,7 @@
    *   xyzEpoch?: number
    *   trajSmooth?: number
    *   trajSmoothRestoreH?: boolean
+   *   colorRevision?: string | number
    * }}
    */
   let {
@@ -136,6 +137,8 @@
     trajSmoothRestoreH = true,
     bonds = [],
     getColor = defaultColorScheme,
+    /** Bumps when scheme color lerps so instance colors refresh during animation. */
+    colorRevision = '',
     quality = 3,
     atomScale = 1.0,
     bondScale = 1.0,
@@ -699,6 +702,7 @@
     const arr = untrack(() => atoms)
     const hi = highlightIndices
     void getColor
+    void colorRevision
     const n = arr.length
     for (let index = 0; index < n; index++) {
       const atom = arr[index]

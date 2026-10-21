@@ -230,12 +230,41 @@ export function cpkScheme({ carbonColor = undefined } = {}) {
 }
 
 /**
+ * Uniform color resolver. Mutate via ``resolver.update(hex)`` during animation
+ * so instance meshes can refresh without replacing the function identity.
  * @param {string | number} hexColor — e.g. `'#4488ff'` or `0x4488ff`
- * @returns {(atom: AtomLike) => Color}
+ * @returns {((atom: AtomLike) => Color) & { update?: (hex: string | number) => void }}
  */
 export function constantScheme(hexColor) {
   const color = parseColor(hexColor)
-  return () => color
+  /** @type {((atom?: AtomLike) => Color) & { update: (hex: string | number) => void }} */
+  const resolve = () => color
+  resolve.update = (hex) => {
+    color.copy(parseColor(hex))
+  }
+  return resolve
+}
+
+/**
+ * Per-atom blend between two scheme resolvers. ``setBlendT`` keeps the function
+ * identity so instance meshes can refresh from ``colorRevision`` alone.
+ * @param {(atom: AtomLike) => Color} fromResolver
+ * @param {(atom: AtomLike) => Color} toResolver
+ * @param {number} t0
+ */
+export function blendSchemeResolvers(fromResolver, toResolver, t0 = 0) {
+  let t = t0
+  /** @type {((atom: AtomLike) => Color) & { setBlendT?: (next: number) => void, isBlend?: boolean }} */
+  const resolve = (atom) => {
+    const a = fromResolver(atom)
+    const b = toResolver(atom)
+    return a.clone().lerp(b, t)
+  }
+  resolve.setBlendT = (next) => {
+    t = next
+  }
+  resolve.isBlend = true
+  return resolve
 }
 
 /**

@@ -69,7 +69,7 @@
   }
 
   /**
-   * @type {{atoms: Atom[], xyz?: Float32Array | null, xyzEpoch?: number, trajSmooth?: number, trajSmoothRestoreH?: boolean, getColor?: ColorScheme, quality?: number, atomScale?: number, metalness?: number, roughness?: number, emissiveIntensity?: number, renderOrder?: number, depthTest?: boolean, opacity?: number, outline?: boolean, goodsell?: boolean, outlinesEnabled?: boolean, outlineColor?: string, outlineWidth?: number, glowBulb?: boolean}}
+   * @type {{atoms: Atom[], xyz?: Float32Array | null, xyzEpoch?: number, trajSmooth?: number, trajSmoothRestoreH?: boolean, getColor?: ColorScheme, colorRevision?: string | number, quality?: number, atomScale?: number, metalness?: number, roughness?: number, emissiveIntensity?: number, renderOrder?: number, depthTest?: boolean, opacity?: number, outline?: boolean, goodsell?: boolean, outlinesEnabled?: boolean, outlineColor?: string, outlineWidth?: number, glowBulb?: boolean}}
    */
   let {
     atoms = [],
@@ -78,6 +78,7 @@
     trajSmooth = 0,
     trajSmoothRestoreH = true,
     getColor = defaultColorScheme,
+    colorRevision = '',
     quality = 3,
     atomScale = 1.0,
     metalness = 0.12,
@@ -295,6 +296,8 @@
 
     const arr = untrack(() => atoms)
     const hi = highlightIndices
+    void getColor
+    void colorRevision
     const n = arr.length
     for (let index = 0; index < n; index++) {
       const atom = arr[index]

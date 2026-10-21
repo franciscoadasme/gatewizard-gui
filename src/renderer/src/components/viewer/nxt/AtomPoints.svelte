@@ -29,6 +29,7 @@
    *   xyzEpoch?: number
    *   trajSmooth?: number
    *   trajSmoothRestoreH?: boolean
+   *   colorRevision?: string | number
    * }}
    */
   let {
@@ -38,6 +39,7 @@
     trajSmooth = 0,
     trajSmoothRestoreH = true,
     getColor = defaultColorScheme,
+    colorRevision = '',
     pointSize = 3,
     atomScale = 1.0,
     renderOrder = 0,
@@ -166,6 +168,7 @@
     const arr = untrack(() => atoms)
     const hi = highlightIndices
     void getColor
+    void colorRevision
     const colorAttr = pts.geometry.getAttribute('color')
     if (!colorAttr || arr.length !== colorAttr.count) return
     const _tmp = new Color()

@@ -88,6 +88,7 @@
    *   xyzEpoch?: number
    *   trajSmooth?: number
    *   trajSmoothRestoreH?: boolean
+   *   colorRevision?: string | number
    * }}
    */
   let {
@@ -98,6 +99,7 @@
     trajSmoothRestoreH = true,
     bonds = [],
     getColor = defaultColorScheme,
+    colorRevision = '',
     quality = 3,
     bondScale = 1.0,
     stickRoundness = 1.0,
@@ -988,6 +990,7 @@
 
   $effect(() => {
     void getColor
+    void colorRevision
     void highlightIndices
     if (!bondMeshRef) return
     updateColorsOnly()

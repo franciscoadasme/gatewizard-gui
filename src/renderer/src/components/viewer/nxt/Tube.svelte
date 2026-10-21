@@ -23,6 +23,7 @@
    *     sec?: string
    *   }>,
    *   getColor?: (atom: any) => import('three').Color,
+   *   colorRevision?: string | number,
    *   tubeRadius?: number,
    *   ssColors?: Record<string, string> | null,
    *   quality?: number,
@@ -49,6 +50,7 @@
     trajSmoothRestoreH = true,
     residues = [],
     getColor = defaultColorScheme,
+    colorRevision = '',
     tubeRadius = 0.9,
     ssColors = null,
     quality = 3,
@@ -106,6 +108,7 @@
   let outlineSkin = []
 
   $effect(() => {
+    void colorRevision
     if (!atoms?.length || !residues?.length) {
       surfaceSkin = []
       outlineSkin = []

@@ -495,7 +495,8 @@ Coordinate clip (use Update each frame on a trajectory):
     if (cs.color) constantColorHex = cs.color
   })
 
-  $effect(() => {
+  /** Apply the panel color scheme controls onto the live view. */
+  function applyPanelColorScheme() {
     const name = colorSchemeName
     const color = constantColorHex
     let colorScheme = { name }
@@ -522,7 +523,17 @@ Coordinate clip (use Update each frame on a trajectory):
       colorScheme.name = 'default'
       colorScheme.resolver = defaultColorScheme
     }
-    untrack(() => (view.colorScheme = colorScheme))
+    view.colorScheme = colorScheme
+  }
+
+  // Outside animate mode, keep view.colorScheme mirrored from the panel.
+  // During animate mode this write-back fights playback lerps (snaps color to the
+  // panel hex), so user edits call applyPanelColorScheme() explicitly instead.
+  $effect(() => {
+    if (animateMode) return
+    void colorSchemeName
+    void constantColorHex
+    applyPanelColorScheme()
   })
 
   // ── API ──────────────────────────────────────────────────────────────────
@@ -1154,6 +1165,7 @@ Coordinate clip (use Update each frame on a trajectory):
                 : 'bg-neutral-200 text-neutral-700 hover:bg-neutral-300 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700'}"
               onclick={() => {
                 colorSchemeName = opt.v
+                if (animateMode) applyPanelColorScheme()
               }}
             >
               {opt.l}
@@ -1162,15 +1174,32 @@ Coordinate clip (use Update each frame on a trajectory):
         </div>
         {#if ['constant', 'cpk-carbon'].includes(colorSchemeName)}
           <div class="flex items-center gap-1">
-            <ColorInput size="sm" bind:value={constantColorHex} />
-            <Input type="text" size="sm" className="flex-1" bind:value={constantColorHex} />
+            <ColorInput
+              size="sm"
+              bind:value={constantColorHex}
+              oninput={() => {
+                if (animateMode) applyPanelColorScheme()
+              }}
+            />
+            <Input
+              type="text"
+              size="sm"
+              className="flex-1"
+              bind:value={constantColorHex}
+              oninput={() => {
+                if (animateMode) applyPanelColorScheme()
+              }}
+            />
           </div>
           <div class="grid grid-cols-8 gap-1">
             {#each COLOR_PALETTE as color (color.getHexString())}
               <button
                 class="aspect-square w-full rounded-sm border border-neutral-200 bg-white p-0.5 hover:border-neutral-400 active:translate-y-0.5 dark:border-neutral-800 dark:bg-neutral-950 dark:hover:border-neutral-600"
                 aria-label="Select color #{color.getHexString()}"
-                onclick={() => (constantColorHex = `#${color.getHexString()}`)}
+                onclick={() => {
+                  constantColorHex = `#${color.getHexString()}`
+                  if (animateMode) applyPanelColorScheme()
+                }}
               >
                 <div
                   class="size-full rounded-sm"

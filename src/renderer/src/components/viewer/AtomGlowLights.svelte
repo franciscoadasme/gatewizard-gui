@@ -24,6 +24,7 @@
    * @type {{
    *   atoms?: Atom[],
    *   getColor?: ColorScheme,
+   *   colorRevision?: string | number,
    *   enabled?: boolean,
    *   intensity?: number,
    *   distance?: number,
@@ -36,6 +37,7 @@
   let {
     atoms = [],
     getColor,
+    colorRevision = '',
     enabled = true,
     intensity = 18,
     distance = 24,
@@ -221,6 +223,7 @@
   /** Live-tune bulb color when the scheme changes (no rebuild). */
   $effect(() => {
     const colorFn = getColor
+    void colorRevision
     if (!colorFn || !lights.length || pickedAtoms.length !== lights.length) return
     for (let i = 0; i < lights.length; i++) {
       lights[i].color.copy(colorFn(pickedAtoms[i]))

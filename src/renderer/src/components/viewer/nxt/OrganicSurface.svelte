@@ -26,6 +26,7 @@
    *   atoms: Atom[],
    *   residues?: any[],
    *   getColor?: ColorScheme,
+   *   colorRevision?: string | number,
    *   quality?: number,
    *   surfaceInflate?: number,
    *   surfaceSource?: 'atoms' | 'backbone',
@@ -52,6 +53,7 @@
     deferRemesh = false,
     residues = [],
     getColor = defaultColorScheme,
+    colorRevision = '',
     quality = 3,
     surfaceInflate = 0.25,
     surfaceSource = 'atoms',
@@ -131,6 +133,7 @@
     const source = appliedSource
     const subdiv = appliedSubdivision
     void getColor
+    void colorRevision
     void highlightIndices
 
     if (!atomList?.length) {
