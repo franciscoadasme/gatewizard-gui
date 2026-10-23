@@ -10,6 +10,7 @@
   import Button from '../components/ui/Button.svelte'
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Divider from '../components/ui/Divider.svelte'
+  import SectionHelp from '../components/SectionHelp.svelte'
   import { analysisStatus, logEvent, preparationStatus } from '../lib/pageStatus.svelte.js'
   import TitrationFigure from '../components/TitrationFigure.svelte'
   import {
@@ -8348,7 +8349,13 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
     className="space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs select-none"
   >
     <div class="space-y-2">
-      <h2 class="sidebar-heading">Analysis</h2>
+      <div class="flex items-center justify-between gap-2">
+        <h2 class="sidebar-heading">Analysis</h2>
+        <SectionHelp
+          docsId="analysis"
+          text="Structural analysis reads a topology and trajectories. Energetic analysis reads an MD log. Empty states and errors stay on this page."
+        />
+      </div>
       <div class="relative">
         <Input
           size="sm"
@@ -8697,7 +8704,13 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
       {#if structuralType !== 'titration'}
       <!-- Structural Input -->
       <div class="space-y-2">
-        <h2 class="sidebar-heading">Structural Input <span class="font-normal text-neutral-500">(active set)</span></h2>
+        <div class="flex items-center justify-between gap-2">
+          <h2 class="sidebar-heading">Structural Input <span class="font-normal text-neutral-500">(active set)</span></h2>
+          <SectionHelp
+            docsId="structural"
+            text="The active set is the topology and trajectories for RMSD, RMSF, distances, and membrane geometry."
+          />
+        </div>
         <div class="space-y-1">
           <p class="sidebar-label">Topology file</p>
           <div class="flex gap-1">
@@ -8838,6 +8851,10 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
       <div class="space-y-2">
         <div class="flex items-center justify-between gap-2">
           <h2 class="sidebar-heading">Structural Options</h2>
+          <SectionHelp
+            docsId="structural"
+            text="Panel A is the pKa comparison, B is the protonated fraction, and C is the titration curve. Uncheck a residue type to hide it from A and B. A/B includes a residue in the pKa and fraction plots. C draws its titration curve. Cysteines in a disulfide bond are left out of A and B. Uncheck A/B for any other residue to leave it out of those panels."
+          />
           {#if structuralTypeChanging || headgroupDetecting}
             <span class="flex shrink-0 items-center gap-1.5 text-[11px] text-neutral-500 dark:text-neutral-400">
               <Spinner className="size-3.5" />
@@ -8970,7 +8987,6 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
             {#if titrationResult}
               <div class="space-y-1">
                 <p class="sidebar-label">Residue types in A and B</p>
-                <p class="sidebar-hint">Uncheck a type to hide it. Leave every box checked to show all types.</p>
                 <div class="max-h-28 space-y-0.5 overflow-y-auto">
                   {#each titrationView?.allTypes || [] as name (name)}
                     {@const on = titrationTypeFilter.length === 0 || titrationTypeFilter.includes(name)}
@@ -8995,7 +9011,6 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
               </div>
               <div class="space-y-1">
                 <p class="sidebar-label">Residues</p>
-                <p class="sidebar-hint">A/B includes the residue in the pKa and fraction plots. C draws its titration curve. Cysteines in a disulfide bond are left out of A and B. Uncheck A/B for any other residue to leave it out of those panels.</p>
                 <Input
                   size="sm"
                   placeholder="Filter residues"
@@ -9761,7 +9776,13 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
     {:else}
       <!-- Energetic Input -->
       <div class="space-y-2">
-        <h2 class="sidebar-heading">Energetic Input <span class="font-normal text-neutral-500">(active set)</span></h2>
+        <div class="flex items-center justify-between gap-2">
+          <h2 class="sidebar-heading">Energetic Input <span class="font-normal text-neutral-500">(active set)</span></h2>
+          <SectionHelp
+            docsId="energetic"
+            text="Choose the engine that wrote the log. The parser follows that engine."
+          />
+        </div>
         <div class="space-y-1">
           <p class="sidebar-label">MD Engine</p>
           <Select size="sm" className="w-full" bind:value={energeticEngine}>
@@ -9945,7 +9966,13 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
 
       <!-- Energetic Options -->
       <div class="space-y-2">
-        <h2 class="sidebar-heading">Energetic Options <span class="font-normal text-neutral-500">(active set)</span></h2>
+        <div class="flex items-center justify-between gap-2">
+          <h2 class="sidebar-heading">Energetic Options <span class="font-normal text-neutral-500">(active set)</span></h2>
+          <SectionHelp
+            docsId="energetic"
+            text="Time, energy terms, and the plotted window apply to the active log."
+          />
+        </div>
         <div class="grid grid-cols-2 gap-x-2 gap-y-1.5">
           <div>
             <p class="sidebar-label mb-0.5">Time</p>

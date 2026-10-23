@@ -4,6 +4,7 @@
   import { equilibrationPageStatus, logEvent } from '../lib/pageStatus.svelte.js'
   import ConstraintEditor from '../components/ConstraintEditor.svelte'
   import Divider from '../components/ui/Divider.svelte'
+  import SectionHelp from '../components/SectionHelp.svelte'
   import Empty from '../components/ui/Empty.svelte'
   import EquilibrationStage from '../components/EquilibrationStage.svelte'
   import EquilibrationStageStatus from '../components/EquilibrationStageStatus.svelte'
@@ -3670,7 +3671,13 @@
     className="space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs"
   >
     <div class="space-y-2">
-      <h2 class="sidebar-heading">Input</h2>
+      <div class="flex items-center justify-between gap-2">
+        <h2 class="sidebar-heading">Input</h2>
+        <SectionHelp
+          docsId="equilibration"
+          text="Point at the Builder job folder. System size and a missing protein stay on this page."
+        />
+      </div>
       <div class="space-y-1">
         <p class="sidebar-label">Input directory</p>
         <p class="sidebar-hint">
@@ -3709,7 +3716,13 @@
     </div>
     <Divider />
     <div class="space-y-2">
-      <h2 class="sidebar-heading">Molecular Dynamics</h2>
+      <div class="flex items-center justify-between gap-2">
+        <h2 class="sidebar-heading">Molecular Dynamics</h2>
+        <SectionHelp
+          docsId="equilibration"
+          text="NAMD with the OPC water model adds waterModel tip4 from the builder job, so tleap writes a FlexibleWater prmtop."
+        />
+      </div>
       <div class="space-y-1" id="eq-engine-select">
         <p class="sidebar-label">Engine</p>
         {#key engine}
@@ -3732,12 +3745,6 @@
             {/each}
           </Select>
         {/key}
-        {#if engine === 'namd'}
-          <p class="sidebar-hint">
-            NAMD + OPC builds: waterModel tip4 is added automatically from the builder
-            job (FlexibleWater prmtop).
-          </p>
-        {/if}
       </div>
       <div class="space-y-1">
         <p class="sidebar-label">Executable</p>
@@ -3817,13 +3824,10 @@
         <div class="space-y-1 pt-0.5">
           <p class="sidebar-label flex items-center gap-1">
             Compute target
-            <span
-              class="inline-flex size-3.5 shrink-0 cursor-help items-center justify-center rounded-full border border-neutral-400 text-[9px] leading-none text-neutral-500 dark:border-neutral-500 dark:text-neutral-400"
-              title="Written into the generated run scripts (GPU flags / OpenMM PLATFORM). A green dot means the currently selected executable supports that target. You can still choose CUDA/OpenCL for scripts even if this binary does not — pick a matching build from Executable, or run later on another machine."
-              aria-label="About compute target: based on selected executable; scripts may still target unsupported options"
-              role="img"
-              >i</span
-            >
+            <SectionHelp
+              docsId="computeTarget"
+              text="Written into the generated run scripts (GPU flags, or the OpenMM platform). A green dot means this executable supports that target. You can still choose CUDA or OpenCL for the script when this binary does not: pick a matching build from Executable, or run the folder later on another machine."
+            />
           </p>
           <div class="flex flex-wrap gap-1">
             {#each computeTargetsForEngine as target (target)}
@@ -3978,7 +3982,13 @@
     <Divider />
 
     <div class="grid grid-cols-[1fr_--spacing(15)] items-center gap-2">
-      <h2 class="sidebar-heading col-span-2">Default compute resources</h2>
+      <div class="col-span-2 flex items-center justify-between gap-2">
+        <h2 class="sidebar-heading">Default compute resources</h2>
+        <SectionHelp
+          docsId="computeResources"
+          text="CPU cores, GPU id, and GPU count are the defaults for new stages. Apply defaults copies them onto the MD stage cards. A remote machine is Settings → Clusters, then Run on cluster."
+        />
+      </div>
       <label for="cpu-cores" class="sidebar-label flex-1">CPU Cores</label>
       <Input id="cpu-cores" type="number" size="sm" bind:value={totalCpus} />
 
@@ -4243,7 +4253,13 @@
       <div
         class="flex flex-col gap-2 border-t border-neutral-200 pt-4 text-xs dark:border-neutral-800"
       >
-        <h3 class="font-semibold uppercase">Progress</h3>
+        <div class="flex items-center justify-between gap-2">
+          <h3 class="font-semibold uppercase">Progress</h3>
+          <SectionHelp
+            docsId="jobs"
+            text="Each card is one equilibration run. Watch reads local logs. Pull syncs a remote job. Cancel stops a running stage."
+          />
+        </div>
         <div class="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-xs">
           <Checkbox name="auto-monitor" size="sm" bind:checked={autoMonitor} />
           <label for="auto-monitor" class="text-neutral-600 dark:text-neutral-400" title="Auto-update watched jobs"

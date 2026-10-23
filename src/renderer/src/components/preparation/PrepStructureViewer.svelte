@@ -4,6 +4,7 @@
   import { BallStick, CameraRig, Canvas, Tube, VdwSpheres } from '../viewer'
   import { cpkScheme } from '../../lib/colorSchemes.js'
   import { getStructure } from '../../lib/backendApi'
+  import SectionHelp from '../SectionHelp.svelte'
   import { disulfideHighlight } from '../../lib/preparation/disulfideHighlight.js'
   import { getCameraForAtoms } from '../../lib/viewer/base.js'
 
@@ -186,6 +187,13 @@
       {loadError}
     </div>
   {:else if structure && framing}
+    <div class="flex shrink-0 items-center justify-between gap-2 border-b border-neutral-200 px-2 py-1 dark:border-neutral-800">
+      <p class="text-[11px] font-medium text-neutral-700 dark:text-neutral-200">Structure</p>
+      <SectionHelp
+        docsId="preparation"
+        text="The tube is the protein. Table clicks draw ball-and-stick. Cyan ghosts are hydrogens added by a state change, and magenta ghosts are hydrogens that would be removed. Prepare writes missing protein heavy atoms and hydrogens."
+      />
+    </div>
     <div class="relative min-h-0 flex-1">
       <Canvas registerAsMain={false}>
         <CameraRig {framing} registerAsMain={false} />
@@ -248,10 +256,5 @@
         </div>
       {/if}
     </div>
-    <p class="shrink-0 border-t border-neutral-200 px-2 py-1.5 text-[10px] leading-snug text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
-      Tube = protein. Click / Ctrl+click table rows for ball-and-stick (CPK). Cyan ghosts = H
-      added by state change, magenta = H that would be removed. Approximate preview. Prepare
-      completes missing protein heavy atoms (Amber templates) and hydrogens (pdb4amber --reduce).
-    </p>
   {/if}
 </div>

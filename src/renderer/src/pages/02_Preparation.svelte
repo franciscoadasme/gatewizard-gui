@@ -6,6 +6,7 @@
   import OutputPathFields from '../components/OutputPathFields.svelte'
   import PrepStructureViewer from '../components/preparation/PrepStructureViewer.svelte'
   import ResizableSidePanel from '../components/ResizableSidePanel.svelte'
+  import SectionHelp from '../components/SectionHelp.svelte'
   import {
     detectDisulfideBonds,
     detectTerminalCaps,
@@ -529,7 +530,13 @@
     className="space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs"
   >
     <div class="space-y-2">
-      <h2 class="sidebar-heading">Input</h2>
+      <div class="flex items-center justify-between gap-2">
+        <h2 class="sidebar-heading">Input</h2>
+        <SectionHelp
+          docsId="preparation"
+          text="Choose the PDB that PropKa and Prepare read. Output is written under the working directory."
+        />
+      </div>
       <div class="space-y-1">
         <p class="sidebar-label">PDB file</p>
         {#if workingFile}
@@ -557,7 +564,13 @@
         onRunPropKa()
       }}
     >
-      <h2 class="sidebar-heading">PropKa Analysis</h2>
+      <div class="flex items-center justify-between gap-2">
+        <h2 class="sidebar-heading">PropKa Analysis</h2>
+        <SectionHelp
+          docsId="propka"
+          text="PropKa lists each residue’s pKa and the state at the target pH. Change the pH or the termini cap and run the analysis again."
+        />
+      </div>
       <div class="flex items-center gap-1">
         <label for="target-ph" class="sidebar-label flex-1">Target pH</label>
         <Input
@@ -574,7 +587,11 @@
       </div>
       <div class="flex items-center gap-1">
         <Checkbox name="protein-cap" bind:checked={capProtein} />
-        <label for="protein-cap" class="sidebar-label">Cap protein termini (ACE/NME)</label>
+        <label for="protein-cap" class="sidebar-label flex-1">Cap protein termini (ACE/NME)</label>
+        <SectionHelp
+          docsId="preparation"
+          text="Caps are for fragments and termini that should not stay charged. ACE is written one residue before the N-terminus (residue 0 when the chain starts at 1) and NME one after the C-terminus."
+        />
       </div>
       {#if capRecapWarning}
         <p class="gw-notice gw-notice-warning text-[11px] leading-snug">
@@ -602,7 +619,13 @@
         onDetectDisulfideBonds()
       }}
     >
-      <h2 class="sidebar-heading">Disulfide Bonding</h2>
+      <div class="flex items-center justify-between gap-2">
+        <h2 class="sidebar-heading">Disulfide Bonding</h2>
+        <SectionHelp
+          docsId="disulfideBonds"
+          text="Detect pairs of cysteines within the distance cutoff. After PropKa, each pair is drawn on the structure. Focus frames that sulfur–sulfur bond."
+        />
+      </div>
       <div class="flex items-center gap-1">
         <label for="max-ss-distance" class="sidebar-label flex-1">Max S-S distance (Å)</label>
         <Input
@@ -679,43 +702,43 @@
       {/if}
       <div class="flex items-center gap-1">
         <Checkbox name="remove-protein-h" bind:checked={removeProteinHydrogens} />
-        <label
-          for="remove-protein-h"
-          class="sidebar-label"
-          title="The prepared PDB has no protein hydrogens. Ligands and other heteroatoms keep theirs. Protonation stays in the residue names (ASH, GLH, HIP). Uncheck to let pdb4amber --reduce write Amber hydrogens."
-        >
+        <label for="remove-protein-h" class="sidebar-label flex-1">
           Remove protein hydrogens
         </label>
+        <SectionHelp
+          docsId="preparation"
+          text="The prepared PDB has no protein hydrogens. Ligands and other heteroatoms keep theirs. Protonation stays in the residue names (ASH, GLH, HIP). Uncheck to let pdb4amber --reduce write Amber hydrogens."
+        />
       </div>
       <div class="flex items-center gap-1">
         <Checkbox name="preserve-resids" bind:checked={preserveResidueNumbers} />
-        <label
-          for="preserve-resids"
-          class="sidebar-label"
-          title="PropKa and AmberTools still add hydrogens and missing atoms. Residue numbers and chain IDs stay as in the input (gaps such as 200 then 205 are kept). Uncheck for sequential Amber numbering used by tleap / MD. If you cap and the chain starts at 1, ACE is written as residue 0."
-        >
+        <label for="preserve-resids" class="sidebar-label flex-1">
           Keep original residue numbers and chains
         </label>
+        <SectionHelp
+          docsId="preparation"
+          text="PropKa and AmberTools still add hydrogens and missing atoms. Residue numbers and chain IDs stay as in the input (gaps such as 200 then 205 are kept). Uncheck for sequential Amber numbering used by tleap / MD. If you cap and the chain starts at 1, ACE is written as residue 0."
+        />
       </div>
       <div class="flex items-center gap-1">
         <Checkbox name="fill-short-gaps" bind:checked={fillShortGaps} />
-        <label
-          for="fill-short-gaps"
-          class="sidebar-label"
-          title="Build numbering gaps of 1 to 6 residues with PDBFixer when SEQRES has the sequence. Longer gaps stay open."
-        >
+        <label for="fill-short-gaps" class="sidebar-label flex-1">
           Fill short gaps (1–6 residues)
         </label>
+        <SectionHelp
+          docsId="preparation"
+          text="Build numbering gaps of 1 to 6 residues with PDBFixer when SEQRES has the sequence. Longer gaps stay open."
+        />
       </div>
       <div class="flex items-center gap-1">
         <Checkbox name="most-likely-altloc" bind:checked={keepMostLikelyAltlocs} />
-        <label
-          for="most-likely-altloc"
-          class="sidebar-label"
-          title="On: each residue with alternate locations keeps the conformation with the higher occupancy. That includes protein, ligands, waters, and other molecules, and the others are dropped before protonation. A tie keeps the earlier letter. Off: Prepare does not choose, and pdb4amber later keeps the first copy of each atom, which may not be the more occupied one. Choose the conformations on the Visualize page when the assignment matters."
-        >
+        <label for="most-likely-altloc" class="sidebar-label flex-1">
           Keep the most likely alternate conformations
         </label>
+        <SectionHelp
+          docsId="preparation"
+          text="On: each residue with alternate locations keeps the conformation with the higher occupancy. That includes protein, ligands, waters, and other molecules, and the others are dropped before protonation. A tie keeps the earlier letter. Off: Prepare does not choose, and pdb4amber later keeps the first copy of each atom, which may not be the more occupied one. Choose the conformations on the Visualize page when the assignment matters."
+        />
       </div>
       {#if gapReport?.error}
         <p class="sidebar-hint text-amber-700 dark:text-amber-300">{gapReport.error}</p>
@@ -861,13 +884,13 @@
     </div>
     {#if preparationOutput}
       <div class="max-h-2/5 overflow-y-auto border-t border-neutral-200 p-4 text-xs select-text dark:border-neutral-800">
-        <p class="mb-1 font-semibold text-neutral-700 dark:text-neutral-300">pdb4amber log</p>
-        <p class="mb-2 text-[11px] leading-snug text-neutral-500 dark:text-neutral-400">
-          “Gaps (Renumbered Residues!)” lines come from AmberTools pdb4amber: they flag places where
-          sequential residues are farther than ~2&nbsp;Å (missing residues or chain breaks) after its
-          own renumbering. They are informational and unrelated to ACE/NME capping renumbering (Old
-          ID / New ID above).
-        </p>
+        <div class="mb-2 flex items-center justify-between gap-2">
+          <p class="font-semibold text-neutral-700 dark:text-neutral-300">pdb4amber log</p>
+          <SectionHelp
+            docsId="preparation"
+            text="“Gaps (Renumbered Residues!)” lines come from AmberTools pdb4amber: they flag places where sequential residues are farther than about 2 Å (missing residues or chain breaks) after its own renumbering. They are informational and unrelated to ACE/NME capping renumbering (Old ID / New ID above)."
+          />
+        </div>
         <pre>{preparationOutput}</pre>
       </div>
     {/if}

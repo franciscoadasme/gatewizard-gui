@@ -754,11 +754,6 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   let openMenuOpen = $state(false)
   let editMenuOpen = $state(false)
   let editBusy = $state(false)
-  /** Hover-open timers for dropdown menus */
-  let _openHoverTimer = null
-  let _selectHoverTimer = null
-  let _editMenuHoverTimer = null
-  let _toolsMenuHoverTimer = null
   /** @type {HTMLElement | null} */
   let openMenuBtnEl = $state(null)
   /** @type {HTMLElement | null} */
@@ -781,6 +776,26 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
     editMenuOpen = false
     toolsMenuOpen = false
   }
+
+  $effect(() => {
+    if (!openMenuOpen && !selectMenuOpen && !editMenuOpen && !toolsMenuOpen) return
+    /** @param {KeyboardEvent} event */
+    const onKey = (event) => {
+      if (event.key === 'Escape') closeAllToolbarMenus()
+    }
+    /** @param {PointerEvent} event */
+    const onPointer = (event) => {
+      const target = event.target
+      if (target instanceof Element && target.closest('[data-viz-toolbar-menu]')) return
+      closeAllToolbarMenus()
+    }
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('pointerdown', onPointer)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('pointerdown', onPointer)
+    }
+  })
   /** @type {HTMLElement | null} */
   let viewerEl = $state(null)
 
@@ -11754,19 +11769,12 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
     onscroll={closeAllToolbarMenus}
   >
     <!-- Open ▾ (structure / topology / animation / view) -->
-    <div class="relative shrink-0">
+    <div class="relative shrink-0" data-viz-toolbar-menu>
       <button
         type="button"
         bind:this={openMenuBtnEl}
         class="flex h-[22px] items-center gap-1 whitespace-nowrap rounded border border-neutral-300 bg-neutral-100 px-2 py-0 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
         disabled={loadingPDB}
-        onpointerenter={() => {
-          clearTimeout(_openHoverTimer)
-          if (!loadingPDB) openMenuOpen = true
-        }}
-        onpointerleave={() => {
-          _openHoverTimer = setTimeout(() => (openMenuOpen = false), 280)
-        }}
         onclick={() => {
           selectMenuOpen = false
           editMenuOpen = false
@@ -11797,14 +11805,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       </button>
       {#if openMenuOpen}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div
-          class="viz-toolbar-menu"
-          style={toolbarMenuFixedStyle(openMenuBtnEl)}
-          onpointerenter={() => clearTimeout(_openHoverTimer)}
-          onpointerleave={() => {
-            _openHoverTimer = setTimeout(() => (openMenuOpen = false), 280)
-          }}
-        >
+        <div class="viz-toolbar-menu" style={toolbarMenuFixedStyle(openMenuBtnEl)}>
           <button
             type="button"
             class="viz-toolbar-menu-item"
@@ -12015,8 +12016,8 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
 
     <div class="h-4 w-px shrink-0 bg-neutral-300 dark:bg-neutral-700"></div>
 
-    <!-- Edit Mode: Select dropdown (hover to open, no backdrop) -->
-    <div class="relative shrink-0">
+    <!-- Edit Mode: Select dropdown -->
+    <div class="relative shrink-0" data-viz-toolbar-menu>
       <button
         type="button"
         bind:this={selectMenuBtnEl}
@@ -12024,13 +12025,6 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
           {editMode
           ? 'border-orange-500/60 bg-orange-500/15 text-orange-300 hover:bg-orange-500/25'
           : 'border-neutral-300 bg-neutral-100 text-neutral-600 hover:border-neutral-400 hover:bg-neutral-200 hover:text-neutral-800 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:border-neutral-600 dark:hover:bg-neutral-800 dark:hover:text-neutral-200'}"
-        onpointerenter={() => {
-          clearTimeout(_selectHoverTimer)
-          if (filePath) selectMenuOpen = true
-        }}
-        onpointerleave={() => {
-          _selectHoverTimer = setTimeout(() => (selectMenuOpen = false), 280)
-        }}
         onclick={() => {
           openMenuOpen = false
           editMenuOpen = false
@@ -12049,14 +12043,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       </button>
       {#if selectMenuOpen}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div
-          class="viz-toolbar-menu"
-          style={toolbarMenuFixedStyle(selectMenuBtnEl)}
-          onpointerenter={() => clearTimeout(_selectHoverTimer)}
-          onpointerleave={() => {
-            _selectHoverTimer = setTimeout(() => (selectMenuOpen = false), 280)
-          }}
-        >
+        <div class="viz-toolbar-menu" style={toolbarMenuFixedStyle(selectMenuBtnEl)}>
           {#each [['atom', 'Atom'], ['residue', 'Residue'], ['chain', 'Chain'], ['molecule', 'Molecule']] as [key, label]}
             <button
               type="button"
@@ -12121,19 +12108,12 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       {/if}
     </div>
 
-    <!-- Transform ▾ (includes Edit structure operations, hover to open) -->
-    <div class="relative shrink-0">
+    <!-- Transform ▾ (includes Edit structure operations) -->
+    <div class="relative shrink-0" data-viz-toolbar-menu>
       <button
         type="button"
         bind:this={editMenuBtnEl}
         class="flex h-[22px] items-center gap-0.5 whitespace-nowrap rounded border border-neutral-300 bg-neutral-100 px-2 py-0 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
-        onpointerenter={() => {
-          clearTimeout(_editMenuHoverTimer)
-          if (filePath && !editBusy) editMenuOpen = true
-        }}
-        onpointerleave={() => {
-          _editMenuHoverTimer = setTimeout(() => (editMenuOpen = false), 280)
-        }}
         onclick={() => {
           openMenuOpen = false
           selectMenuOpen = false
@@ -12145,14 +12125,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       >
       {#if editMenuOpen}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div
-          class="viz-toolbar-menu"
-          style={toolbarMenuFixedStyle(editMenuBtnEl)}
-          onpointerenter={() => clearTimeout(_editMenuHoverTimer)}
-          onpointerleave={() => {
-            _editMenuHoverTimer = setTimeout(() => (editMenuOpen = false), 280)
-          }}
-        >
+        <div class="viz-toolbar-menu" style={toolbarMenuFixedStyle(editMenuBtnEl)}>
           <!-- Transform dialog -->
           <button
             type="button"
@@ -12209,19 +12182,12 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
     </div>
 
     <!-- Tools dropdown (MemPro + Packmol) -->
-    <div class="relative shrink-0">
+    <div class="relative shrink-0" data-viz-toolbar-menu>
       <button
         type="button"
         bind:this={toolsMenuBtnEl}
         class="flex h-[22px] items-center whitespace-nowrap rounded border border-neutral-300 bg-neutral-100 px-2 py-0 text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:bg-neutral-800"
         disabled={!filePath || editBusy}
-        onpointerenter={() => {
-          clearTimeout(_toolsMenuHoverTimer)
-          if (filePath && !editBusy) toolsMenuOpen = true
-        }}
-        onpointerleave={() => {
-          _toolsMenuHoverTimer = setTimeout(() => (toolsMenuOpen = false), 280)
-        }}
         onclick={() => {
           openMenuOpen = false
           selectMenuOpen = false
@@ -12232,14 +12198,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       >
       {#if toolsMenuOpen}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div
-          class="viz-toolbar-menu"
-          style={toolbarMenuFixedStyle(toolsMenuBtnEl)}
-          onpointerenter={() => clearTimeout(_toolsMenuHoverTimer)}
-          onpointerleave={() => {
-            _toolsMenuHoverTimer = setTimeout(() => (toolsMenuOpen = false), 280)
-          }}
-        >
+        <div class="viz-toolbar-menu" style={toolbarMenuFixedStyle(toolsMenuBtnEl)}>
           <button type="button" class="viz-toolbar-menu-item" onclick={openMemproDialog}
             >MemPro orientation</button
           >

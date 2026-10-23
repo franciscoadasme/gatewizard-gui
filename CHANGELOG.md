@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Section help:** Preparation, Builder, Equilibration, Tools, and Analysis explain a choice from an info button and open the matching user-guide heading. Equilibration’s compute target uses those same buttons. Builder checks the structure when the PDB is loaded and no longer asks for Validate Inputs.
 - **Contributing:** `CONTRIBUTING.md` explains how to run the app, which tests to run, and where to report bugs. The README links to it.
 - **Code of conduct:** `CODE_OF_CONDUCT.md` is the Contributor Covenant. Reports go to gatewizard.project@gmail.com.
 - **Pull requests:** `.github/pull_request_template.md` asks for a summary, the related issue, and the test checklist.
@@ -19,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **MemPrO:** the Linux and macOS installer uses the CPU package `mempro` ≥ 0.3.0 from `gatewizard[full]`. The orientation panel shows CPU count and seed with the existing fields, and the other 0.3.0 options under Advanced settings. GPU stays off until JAX can see a GPU. GPU install opens the installation page.
 - **API requirement:** the app requires gatewizard **>= 1.0.55**.
+- **Documentation and Visualize menus:** the book icon lists the user guide and the matching API pages. Open, Select, Transform, and Tools on Visualize open on a click and close the menu that was already open.
 
 ## [1.0.14] - 2026-10-19
 

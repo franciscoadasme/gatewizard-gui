@@ -6,6 +6,7 @@
   import FollowLog from '../components/FollowLog.svelte'
   import OutputPathFields from '../components/OutputPathFields.svelte'
   import ResizableSidePanel from '../components/ResizableSidePanel.svelte'
+  import SectionHelp from '../components/SectionHelp.svelte'
   import { builderStatus, logEvent } from '../lib/pageStatus.svelte.js'
   import {
     getAvailableLipids,
@@ -23,8 +24,10 @@
     getJobStatus,
     getJobLog,
     scanJobs,
-    getProteinHydrogenStatus
+    getProteinHydrogenStatus,
+    structureCheck
   } from '../lib/backendApi'
+  import { builderBlockers, structureNoticeFromReport } from '../lib/builderChecks.js'
   import {
     defaultBuildFolderName,
     outputFolderPath,
@@ -145,8 +148,16 @@
   /** @type {string | null} */
   let openLipidMenu = $state(null)
   let lipidMenuQuery = $state('')
+  /** True until the open menu has painted a spinner and can mount its rows. */
+  let lipidListReady = $state(false)
+  let lipidMenuScroll = $state(0)
+  /** @type {HTMLDivElement | null} */
+  let lipidListEl = $state(null)
   /** @type {{ top: number, left: number, width: number } | null} */
   let lipidMenuAnchor = $state(null)
+  const LIPID_ROW = 28
+  const LIPID_VIEW = 208
+  const LIPID_OVERSCAN = 8
 
   /** @param {HTMLElement} node */
   function focusOnMount(node) {
@@ -173,13 +184,24 @@
       spaceBelow < menuHeight && rect.top > menuHeight ? rect.top - menuHeight - 2 : rect.bottom + 2
     lipidMenuAnchor = { top, left, width }
     lipidMenuQuery = ''
+    lipidMenuScroll = 0
+    lipidListReady = false
     openLipidMenu = menuId
+    const opened = menuId
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (openLipidMenu === opened) lipidListReady = true
+      })
+    })
   }
 
   function closeLipidMenu() {
     openLipidMenu = null
     lipidMenuQuery = ''
     lipidMenuAnchor = null
+    lipidListReady = false
+    lipidMenuScroll = 0
+    lipidListEl = null
   }
 
   /**
@@ -305,17 +327,14 @@
   let validating = $state(false)
   /** @type {{ valid: boolean, warning: boolean, message: string } | null} */
   let validationResult = $state(null)
+  /** @type {{ level: 'error' | 'warning', message: string } | null} */
+  let ffCheck = $state(null)
+  let structureNotice = $state('')
+  let startBlockMessage = $state('')
 
   /** Ref to the poll interval so we can clear it */
   let pollIntervalId = $state(null)
 
-  const canGenerateInput = $derived(
-    resolvedOutputParent !== '' &&
-      (!includeProtein || workingFile !== '') &&
-      validationResult?.valid === true &&
-      !generatingInputFiles &&
-      !launching
-  )
   /** Newest not_started job (sidebar Start Preparation target). */
   const pendingJob = $derived(jobs.find((j) => j.status === 'not_started'))
   const pendingJobCount = $derived(jobs.filter((j) => j.status === 'not_started').length)
@@ -1094,6 +1113,12 @@
     if (index < 0) return
     const job = jobs[index]
     if (!job || job.status !== 'not_started' || job.starting) return
+    startBlockMessage = ''
+    await onValidate()
+    if (!validationResult?.valid) {
+      startBlockMessage = validationResult?.message || 'Inputs are not valid.'
+      return
+    }
     try {
       jobs[index] = { ...job, starting: true }
       jobs = [...jobs]
@@ -1255,6 +1280,84 @@
   /** @type {{ lipid: string, ratio: number }[]} */
   let lowerLeaflet = $state([{ lipid: 'POPC', ratio: 1.0 }])
 
+  /** @param {{ status?: string } | null | undefined} item */
+  function itemNeedsParameters(item) {
+    return Boolean(item) && item.status !== 'completed' && item.status !== 'manual'
+  }
+
+  const pendingParameters = $derived(
+    parametrize &&
+      (ligands.some(itemNeedsParameters) ||
+        peptideCaps.some(itemNeedsParameters) ||
+        solutes.some(itemNeedsParameters))
+  )
+
+  const lipidCount = $derived(
+    [...upperLeaflet, ...lowerLeaflet].filter((entry) => String(entry.lipid || '').trim()).length
+  )
+
+  const generateProblems = $derived(
+    builderBlockers({
+      includeProtein,
+      workingFile,
+      lipidCount,
+      needsMembraneSize: !includeProtein && boxSizingMode === 'water_layer',
+      membraneSize: parseFloat(String(distxyFix)),
+      addSalt,
+      saltConcentration: parseFloat(String(saltConcentration)),
+      forceFieldError: ffCheck?.level === 'error' ? ffCheck.message : '',
+      pendingParameters
+    })
+  )
+
+  const canGenerateInput = $derived(
+    resolvedOutputParent !== '' && generateProblems.length === 0 && !generatingInputFiles && !launching
+  )
+
+  const ffRing = $derived(
+    ffCheck?.level === 'error'
+      ? 'ring-2 ring-red-500'
+      : ffCheck?.level === 'warning'
+        ? 'ring-2 ring-amber-500'
+        : ''
+  )
+
+  $effect(() => {
+    const water = waterModel
+    const protein = proteinFf
+    const lipid = lipidFf
+    const file = workingFile
+    const timer = setTimeout(() => {
+      void refreshForceFieldCheck(water, protein, lipid, file)
+    }, 400)
+    return () => clearTimeout(timer)
+  })
+
+  /**
+   * Unknown names block Generate. An untested combination is only a warning.
+   * @param {string} water
+   * @param {string} protein
+   * @param {string} lipid
+   * @param {string} file
+   */
+  async function refreshForceFieldCheck(water, protein, lipid, file) {
+    if (water !== waterModel || protein !== proteinFf || lipid !== lipidFf || file !== workingFile) return
+    try {
+      const result = await validateBuilder(buildParams())
+      const message = String(result.message ?? result.error ?? '')
+      const unknown = /Unknown (water model|protein force field|lipid force field)/i.test(message)
+      if (!result.valid && unknown) {
+        ffCheck = { level: 'error', message: message.split('\n')[0] }
+      } else if (result.valid && result.warning) {
+        ffCheck = { level: 'warning', message: message.split('\n')[0] }
+      } else {
+        ffCheck = null
+      }
+    } catch {
+      /* Leave the last mark. Start Preparation reports a dead backend. */
+    }
+  }
+
   function addLipid(/** @type {'upper' | 'lower'} */ leaflet) {
     closeLipidMenu()
     const entry = { lipid: 'POPC', ratio: 1.0 }
@@ -1295,24 +1398,28 @@
     includeProtein && proteinHCount > 0 && !removeProteinH
   )
 
+  /** @param {string} filePath */
+  async function refreshStructureNotice(filePath) {
+    try {
+      structureNotice = structureNoticeFromReport(await structureCheck({ path: filePath }))
+    } catch (error) {
+      structureNotice = ''
+      console.error('Structure check error:', error)
+    }
+  }
+
   async function onBrowse() {
     const result = await window.api.openPdbDialog(workingDir || undefined)
     if (!result.canceled) {
       workingFile = result.filePath
       outputFolderName = defaultBuildFolderName(result.filePath)
       ligands = []
+      structureNotice = ''
       await Promise.all([
         refreshProteinHydrogenStatus(result.filePath),
-        scanPeptideCapsForPdb(result.filePath)
+        onDetectLigands(),
+        refreshStructureNotice(result.filePath)
       ])
-      if (peptideCaps.length > 0) {
-        logEvent(
-          'detail',
-          'build',
-          'Detected peptide caps',
-          peptideCaps.map((c) => `${c.name} (${c.role})`).join(', ')
-        )
-      }
     }
   }
 </script>
@@ -1325,7 +1432,13 @@
   >
     <!-- Input -->
     <div class="space-y-2">
-      <h2 class="sidebar-heading">Input</h2>
+      <div class="flex items-center justify-between gap-2">
+        <h2 class="sidebar-heading">Input</h2>
+        <SectionHelp
+          docsId="builder"
+          text="Include a protein, or build a bilayer only. A bilayer without a protein needs a membrane XY size under System Options. Packmol-Memgen still builds the bilayer. Optional free molecules can be added below."
+        />
+      </div>
       <div class="flex items-center gap-2">
         <Checkbox name="include-protein" bind:checked={includeProtein} />
         <span class="sidebar-label">Include protein</span>
@@ -1333,6 +1446,9 @@
       {#if includeProtein}
         <div class="space-y-1">
           <span class="sidebar-label">PDB file</span>
+          {#if includeProtein && !workingFile}
+            <p class="text-[11px] text-amber-700 dark:text-amber-300">Choose a PDB file.</p>
+          {/if}
           {#if workingFile}
             <p
               class="w-full rounded-md border border-neutral-200 p-2 wrap-break-word sidebar-label dark:border-neutral-800"
@@ -1340,9 +1456,20 @@
             >
               {workingFile}
             </p>
-            <Button variant="outline" className="w-full" onclick={onBrowse}>Select another PDB…</Button>
+            <Button
+              variant="outline"
+              className="w-full {includeProtein && !workingFile ? 'ring-2 ring-amber-500' : ''}"
+              onclick={onBrowse}>Select another PDB…</Button
+            >
           {:else}
-            <Button variant="outline" className="w-full" onclick={onBrowse}>Select a PDB file…</Button>
+            <Button
+              variant="outline"
+              className="w-full ring-2 ring-amber-500"
+              onclick={onBrowse}>Select a PDB file…</Button
+            >
+          {/if}
+          {#if structureNotice}
+            <p class="gw-notice gw-notice-warning text-[11px] leading-snug">{structureNotice}</p>
           {/if}
           {#if showProteinHWarning}
             <div class="gw-notice gw-notice-warning text-[11px] leading-snug">
@@ -1360,11 +1487,6 @@
             </div>
           {/if}
         </div>
-      {:else}
-        <p class="sidebar-hint">
-          Bilayer only: set membrane XY size under System Options. Optional free molecules can be
-          added below.
-        </p>
       {/if}
     </div>
     <Divider />
@@ -1373,7 +1495,13 @@
     <!-- Peptide caps: auto-scanned on PDB select (not behind ligand Detect) -->
     {#if workingFile && (peptideCaps.length > 0 || peptideAmberWarning)}
     <div class="space-y-2">
-      <h2 class="sidebar-heading">Peptide caps</h2>
+      <div class="flex items-center justify-between gap-2">
+        <h2 class="sidebar-heading">Peptide caps</h2>
+        <SectionHelp
+          docsId="ligandCharges"
+          text="Polymer termini use GAFF2 with ABCG2. Parametrize them before generating, or tleap will fail."
+        />
+      </div>
       {#if peptideAmberWarning}
         <p class="gw-notice gw-notice-warning text-[11px] leading-snug">
           {peptideAmberWarning}
@@ -1382,7 +1510,7 @@
       {#if peptideCaps.length > 0}
         <div class="sidebar-panel space-y-1.5 p-2">
           <div class="flex items-center justify-between gap-2">
-            <span class="sidebar-hint">Polymer termini use GAFF2 with ABCG2</span>
+            <span class="sidebar-hint">Caps in this PDB</span>
             <Button
               variant="secondary"
               className="text-xs px-1.5 py-0.5"
@@ -1423,8 +1551,14 @@
 
     <!-- Ligand Parametrization (free ligands; Detect still required) -->
     <div class="space-y-2">
-      <div class="flex items-center justify-between">
-        <h2 class="sidebar-heading">Ligand Parametrization</h2>
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex min-w-0 items-center gap-2">
+          <h2 class="sidebar-heading">Ligand Parametrization</h2>
+          <SectionHelp
+            docsId="ligandCharges"
+            text="GAFF, GAFF2, ABCG2, and AM1-BCC are Amber ligand parameters. Amber pairs GAFF with AM1-BCC and GAFF2 with ABCG2. A mismatched pair is marked on the two menus. Parametrize before generating, or tleap will fail."
+          />
+        </div>
         <div class="flex gap-1">
           <Button
             variant="outline"
@@ -1441,8 +1575,11 @@
         </div>
       </div>
       {#if ligands.length === 0}
-        <p class="sidebar-hint">
-          No free ligands. Click "Detect" after selecting a PDB, or add manually.
+        <p class="sidebar-hint">No free ligands in this PDB.</p>
+      {/if}
+      {#if parametrize && pendingParameters}
+        <p class="text-[11px] text-amber-700 dark:text-amber-300">
+          Parametrize before generating, or tleap will fail.
         </p>
       {/if}
       {#each ligands as lig, i (i)}
@@ -1498,23 +1635,24 @@
           </div>
           <div class="flex items-center gap-1">
             <span class="sidebar-label w-16 shrink-0">Force field</span>
-            <select class="sidebar-control flex-1 p-1" bind:value={lig.atomType}>
+            <select
+              class="sidebar-control flex-1 p-1 {ligandComboWarning(lig.atomType, lig.chargeMethod) ? 'ring-2 ring-amber-500' : ''}"
+              bind:value={lig.atomType}
+            >
               <option value="gaff2">GAFF2</option>
               <option value="gaff">GAFF</option>
             </select>
           </div>
           <div class="flex items-center gap-1">
             <span class="sidebar-label w-16 shrink-0">Charges</span>
-            <select class="sidebar-control flex-1 p-1" bind:value={lig.chargeMethod}>
+            <select
+              class="sidebar-control flex-1 p-1 {ligandComboWarning(lig.atomType, lig.chargeMethod) ? 'ring-2 ring-amber-500' : ''}"
+              bind:value={lig.chargeMethod}
+            >
               <option value="abcg2">ABCG2</option>
               <option value="bcc">AM1-BCC</option>
             </select>
           </div>
-          {#if ligandComboWarning(lig.atomType, lig.chargeMethod)}
-            <p class="gw-notice gw-notice-warning text-[11px] leading-snug">
-              {ligandComboWarning(lig.atomType, lig.chargeMethod)}
-            </p>
-          {/if}
           <div class="flex items-center gap-1">
             <span class="sidebar-label w-12 shrink-0">frcmod</span>
             <input
@@ -1569,18 +1707,20 @@
 
     <!-- Free molecules (packmol-memgen --solute) -->
     <div class="space-y-2">
-      <div class="flex items-center justify-between">
-        <h2 class="sidebar-heading">Free molecules</h2>
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex min-w-0 items-center gap-2">
+          <h2 class="sidebar-heading">Free molecules</h2>
+          <SectionHelp
+            docsId="freeMolecules"
+            text="Extra copies are packed into the water, or into the membrane when that box is checked. Parametrize each molecule before tleap."
+          />
+        </div>
         <button class="dark:text-neutral-500 dark:hover:text-neutral-300" onclick={addSolute}
           >+ Add</button
         >
       </div>
-      <p class="sidebar-hint">
-        Extra copies packed into water (default) or the membrane. Parametrize each molecule (GAFF2)
-        before generating inputs if you will run tleap.
-      </p>
       {#if solutes.length === 0}
-        <p class="sidebar-hint">No free molecules. Optional for protein+membrane builds.</p>
+        <p class="sidebar-hint">No free molecules.</p>
       {/if}
       {#each solutes as solute, i (i)}
         <div class="sidebar-panel space-y-1.5 p-2">
@@ -1648,23 +1788,24 @@
           </div>
           <div class="flex items-center gap-1">
             <span class="sidebar-label w-16 shrink-0">Force field</span>
-            <select class="sidebar-control flex-1 p-1" bind:value={solute.atomType}>
+            <select
+              class="sidebar-control flex-1 p-1 {ligandComboWarning(solute.atomType, solute.chargeMethod) ? 'ring-2 ring-amber-500' : ''}"
+              bind:value={solute.atomType}
+            >
               <option value="gaff2">GAFF2</option>
               <option value="gaff">GAFF</option>
             </select>
           </div>
           <div class="flex items-center gap-1">
             <span class="sidebar-label w-16 shrink-0">Charges</span>
-            <select class="sidebar-control flex-1 p-1" bind:value={solute.chargeMethod}>
+            <select
+              class="sidebar-control flex-1 p-1 {ligandComboWarning(solute.atomType, solute.chargeMethod) ? 'ring-2 ring-amber-500' : ''}"
+              bind:value={solute.chargeMethod}
+            >
               <option value="abcg2">ABCG2</option>
               <option value="bcc">AM1-BCC</option>
             </select>
           </div>
-          {#if ligandComboWarning(solute.atomType, solute.chargeMethod)}
-            <p class="gw-notice gw-notice-warning text-[11px] leading-snug">
-              {ligandComboWarning(solute.atomType, solute.chargeMethod)}
-            </p>
-          {/if}
           {#if solute.status !== 'running'}
             <Button
               variant="outline"
@@ -1702,12 +1843,18 @@
 
     <!-- Membrane & Force Fields -->
     <div class="space-y-2">
-      <h2 class="sidebar-heading">Force Fields</h2>
+      <div class="flex items-center justify-between gap-2">
+        <h2 class="sidebar-heading">Force Fields</h2>
+        <SectionHelp
+          docsId="forceFields"
+          text="A 4-site water model (OPC, TIP4P-D, TIP4P-Ew) needs a target MD engine. NAMD makes tleap use FlexibleWater, and equilibration can use waterModel tip4. GROMACS, OpenMM, and Amber keep the standard Amber water parameters. An unknown name is marked in red. A combination that has not been tested is a warning and still allows Generate."
+        />
+      </div>
       {#await ffPromise then ff}
         <div class="flex items-center gap-1">
           <span class="sidebar-label w-20 shrink-0">Water</span>
           <select
-            class="sidebar-control flex-1 p-2"
+            class="sidebar-control flex-1 p-2 {ffRing}"
             bind:value={waterModel}
           >
             {#each ff.water_models as wm (wm)}
@@ -1728,23 +1875,16 @@
               <option value="amber">amber</option>
             </select>
           </div>
-          <p class="sidebar-hint">
-            4-site water ({waterModel}) needs a target MD engine. Choose
-            <strong>namd</strong> so tleap uses FlexibleWater (and equilibration can use
-            waterModel tip4). For <strong>gromacs</strong> / <strong>openmm</strong> /
-            <strong>amber</strong>, parametrization stays the standard Amber path — same as
-            other water models.
+        {/if}
+        {#if ffCheck}
+          <p class="text-[11px] leading-snug {ffCheck.level === 'error' ? 'text-red-600 dark:text-red-400' : 'text-amber-700 dark:text-amber-300'}">
+            {ffCheck.message}
           </p>
-          {#if mdEngine === 'namd'}
-            <p class="sidebar-hint">
-              NAMD selected: FlexibleWater will be applied in tleap for this water model.
-            </p>
-          {/if}
         {/if}
         <div class="flex items-center gap-1">
           <span class="sidebar-label w-20 shrink-0">Protein FF</span>
           <select
-            class="sidebar-control flex-1 p-2"
+            class="sidebar-control flex-1 p-2 {ffRing}"
             bind:value={proteinFf}
           >
             {#each ff.protein_ffs as pff (pff)}
@@ -1755,7 +1895,7 @@
         <div class="flex items-center gap-1">
           <span class="sidebar-label w-20 shrink-0">Lipid FF</span>
           <select
-            class="sidebar-control flex-1 p-2"
+            class="sidebar-control flex-1 p-2 {ffRing}"
             bind:value={lipidFf}
           >
             {#each ff.lipid_ffs as lff (lff)}
@@ -1788,7 +1928,6 @@
           </svg>
         </button>
         {#if openLipidMenu === menuId && lipidMenuAnchor}
-          {@const shown = lipids.filter((item) => lipidMatchesQuery(item, lipidMenuQuery))}
           <div
             data-lipid-menu
             class="fixed z-50 overflow-hidden rounded-md border border-neutral-300 bg-white shadow-md dark:border-neutral-700 dark:bg-neutral-950"
@@ -1812,58 +1951,89 @@
                 placeholder="Search"
                 bind:value={lipidMenuQuery}
                 use:focusOnMount
+                oninput={() => {
+                  lipidMenuScroll = 0
+                  if (lipidListEl) lipidListEl.scrollTop = 0
+                }}
               />
             </div>
-            <div
-              class="flex items-center justify-between border-b border-neutral-200 bg-neutral-50 px-2 py-1 dark:border-neutral-800 dark:bg-neutral-900"
-            >
-              <span class="text-[10px] font-medium tracking-wide text-neutral-500 uppercase">Lipids</span>
-              <span class="font-mono text-[10px] text-neutral-500 tabular-nums">
-                {lipidMenuQuery.trim() ? `${shown.length} of ${lipids.length}` : `1–${lipids.length}`}
-              </span>
-            </div>
-            <div
-              class="grid gap-x-2 border-b border-neutral-200 px-2 py-1 text-xs text-neutral-500 uppercase dark:border-neutral-800 [&>span]:text-[10px] [&>span]:tracking-wide"
-              style="grid-template-columns: 2.4rem {lipidNameCh}ch 3.25rem 4.6rem minmax(0, 1fr)"
-            >
-              <span class="text-right">#</span>
-              <span>Lipid</span>
-              <span class="text-right">Charge</span>
-              <span>Ext</span>
-              <span>Name</span>
-            </div>
-            <div class="max-h-52 overflow-y-auto overscroll-contain">
-              {#each shown as item (item.name)}
-                <button
-                  type="button"
-                  class="grid w-full gap-x-2 px-2 py-1 text-left text-xs hover:bg-neutral-100 dark:hover:bg-neutral-800 {item.name ===
-                  entry.lipid
-                    ? 'bg-neutral-100 dark:bg-neutral-800'
-                    : ''}"
-                  style="grid-template-columns: 2.4rem {lipidNameCh}ch 3.25rem 4.6rem minmax(0, 1fr)"
-                  title={[item.charge, item.fullName, item.note].filter((part) => part !== null && part !== '').join(' · ') || item.name}
-                  onclick={() => chooseLipid(entry, item.name)}
-                >
-                  <span class="text-right text-neutral-400 tabular-nums">{item.number}</span>
-                  <span class="truncate">{item.name}</span>
-                  <span class="text-right tabular-nums">{item.charge ?? ''}</span>
-                  <span class="truncate text-neutral-500">{item.lipidExt ? 'Lipid_ext' : ''}</span>
-                  <span class="truncate text-neutral-500">{item.fullName}</span>
-                </button>
-              {:else}
-                <p class="px-2 py-1 text-neutral-500">No matching lipids.</p>
-              {/each}
-            </div>
+            {#if !lipidListReady}
+              <div class="flex h-52 items-center justify-center gap-2 text-xs text-neutral-500">
+                <Spinner />
+                Loading lipids…
+              </div>
+            {:else}
+              {@const shown = lipids.filter((item) => lipidMatchesQuery(item, lipidMenuQuery))}
+              {@const start = Math.max(0, Math.floor(lipidMenuScroll / LIPID_ROW) - LIPID_OVERSCAN)}
+              {@const end = Math.min(
+                shown.length,
+                start + Math.ceil(LIPID_VIEW / LIPID_ROW) + LIPID_OVERSCAN * 2
+              )}
+              <div
+                class="flex items-center justify-between border-b border-neutral-200 bg-neutral-50 px-2 py-1 dark:border-neutral-800 dark:bg-neutral-900"
+              >
+                <span class="text-[10px] font-medium tracking-wide text-neutral-500 uppercase">Lipids</span>
+                <span class="font-mono text-[10px] text-neutral-500 tabular-nums">
+                  {lipidMenuQuery.trim() ? `${shown.length} of ${lipids.length}` : `1–${lipids.length}`}
+                </span>
+              </div>
+              <div
+                class="grid gap-x-2 border-b border-neutral-200 px-2 py-1 text-xs text-neutral-500 uppercase dark:border-neutral-800 [&>span]:text-[10px] [&>span]:tracking-wide"
+                style="grid-template-columns: 2.4rem {lipidNameCh}ch 3.25rem 4.6rem minmax(0, 1fr)"
+              >
+                <span class="text-right">#</span>
+                <span>Lipid</span>
+                <span class="text-right">Charge</span>
+                <span>Ext</span>
+                <span>Name</span>
+              </div>
+              <div
+                bind:this={lipidListEl}
+                class="max-h-52 overflow-y-auto overscroll-contain"
+                onscroll={(event) => (lipidMenuScroll = event.currentTarget.scrollTop)}
+              >
+                {#if shown.length === 0}
+                  <p class="px-2 py-1 text-neutral-500">No matching lipids.</p>
+                {:else}
+                  <div class="relative" style="height: {shown.length * LIPID_ROW}px">
+                    {#each shown.slice(start, end) as item, offset (item.name)}
+                      <button
+                        type="button"
+                        class="absolute right-0 left-0 grid h-7 items-center gap-x-2 px-2 text-left text-xs hover:bg-neutral-100 dark:hover:bg-neutral-800 {item.name ===
+                        entry.lipid
+                          ? 'bg-neutral-100 dark:bg-neutral-800'
+                          : ''}"
+                        style="top: {(start + offset) * LIPID_ROW}px; grid-template-columns: 2.4rem {lipidNameCh}ch 3.25rem 4.6rem minmax(0, 1fr)"
+                        title={[item.charge, item.fullName, item.note].filter((part) => part !== null && part !== '').join(' · ') || item.name}
+                        onclick={() => chooseLipid(entry, item.name)}
+                      >
+                        <span class="text-right text-neutral-400 tabular-nums">{item.number}</span>
+                        <span class="truncate">{item.name}</span>
+                        <span class="text-right tabular-nums">{item.charge ?? ''}</span>
+                        <span class="truncate text-neutral-500">{item.lipidExt ? 'Lipid_ext' : ''}</span>
+                        <span class="truncate text-neutral-500">{item.fullName}</span>
+                      </button>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            {/if}
           </div>
         {/if}
       </div>
     {/snippet}
     <div class="space-y-2">
-      <h2 class="sidebar-heading">Lipid Composition</h2>
-      <p class="sidebar-hint">
-        GateWizard supports 4028 lipids. 3770 of them use PACKMOL-Memgen Lipid_ext parameters, which are not part of Amber lipid21. SIRAH and coarse-grained lipids are not supported.
-      </p>
-      <div class="sidebar-panel space-y-1.5 p-2">
+      <div class="flex items-center justify-between gap-2">
+        <h2 class="sidebar-heading">Lipid Composition</h2>
+        <SectionHelp
+          docsId="lipidCatalog"
+          text="GateWizard supports 4028 lipids. 3770 of them use PACKMOL-Memgen Lipid_ext parameters, which are not part of Amber lipid21. SIRAH and coarse-grained lipids are not supported."
+        />
+      </div>
+      {#if lipidCount < 1}
+        <p class="text-[11px] text-amber-700 dark:text-amber-300">Add at least one lipid.</p>
+      {/if}
+      <div class="sidebar-panel space-y-1.5 p-2 {lipidCount < 1 ? 'ring-2 ring-amber-500' : ''}">
         <div class="flex items-center justify-between">
           <span class="sidebar-subheading">Upper Leaflet</span>
           <button
@@ -1948,10 +2118,15 @@
           <input
             type="text"
             inputmode="decimal"
-            class="sidebar-control w-14 p-1"
+            class="sidebar-control w-14 p-1 {addSalt && generateProblems.some((line) => line.startsWith('Salt')) ? 'ring-2 ring-amber-500' : ''}"
             bind:value={saltConcentration}
           />
           <span class="sidebar-label">M</span>
+          {#if addSalt && generateProblems.some((line) => line.startsWith('Salt'))}
+            <p class="basis-full text-[11px] text-amber-700 dark:text-amber-300">
+              Salt concentration must be between 0 and 2 M.
+            </p>
+          {/if}
         </div>
       {/if}
       <div class="pl-0 space-y-1">
@@ -1997,9 +2172,12 @@
               type="number"
               min="1"
               step="1"
-              class="sidebar-control w-16 p-1"
+              class="sidebar-control w-16 p-1 {!includeProtein && boxSizingMode === 'water_layer' && !(parseFloat(String(distxyFix)) > 0) ? 'ring-2 ring-amber-500' : ''}"
               bind:value={distxyFix}
             />
+            {#if !includeProtein && boxSizingMode === 'water_layer' && !(parseFloat(String(distxyFix)) > 0)}
+              <p class="text-[11px] text-amber-700 dark:text-amber-300">Set a membrane XY size.</p>
+            {/if}
             <span class="sidebar-label">Å</span>
           </div>
         {/if}
@@ -2152,47 +2330,6 @@
         folderPlaceholder={suggestedOutputFolderName}
         resolvedFolderName={resolveOutputFolderName()}
       />
-      <Button
-        className="w-full"
-        variant="outline"
-        onclick={onValidate}
-        disabled={validating || launching || generatingInputFiles}
-      >
-        {validating ? 'Validating…' : 'Validate Inputs'}
-      </Button>
-      {#if validationResult !== null}
-        <div
-          class="gw-notice {validationResult.valid
-            ? validationResult.warning
-              ? 'gw-notice-warning'
-              : 'gw-notice-success'
-            : 'gw-notice-error'}"
-        >
-          {#if validationResult.valid && !validationResult.warning}
-            <p>✓ All inputs are valid.</p>
-            {#if pendingJob}
-              <p class="mt-1">
-                Click <strong>Start Preparation</strong>
-                {#if pendingJobCount > 1}
-                  (newest pending) or <strong>Start</strong> on a job card
-                {/if}
-                to proceed.
-              </p>
-            {/if}
-          {:else}
-            <p class="whitespace-pre-wrap">{validationResult.message}</p>
-            {#if validationResult.warning && showProteinHWarning}
-              <button
-                type="button"
-                class="mt-2 font-medium text-neutral-900 underline underline-offset-2 hover:text-yellow-700 dark:text-neutral-100 dark:hover:text-yellow-400"
-                onclick={openAdvancedRemoveProteinH}
-              >
-                Open Advanced settings → Remove protein hydrogens
-              </button>
-            {/if}
-          {/if}
-        </div>
-      {/if}
       <div role="group" aria-label="Generate preparation input files action">
         <Button
           className="w-full"
@@ -2207,6 +2344,9 @@
             Generate Input Files
           {/if}
         </Button>
+        {#if generateProblems.length > 0}
+          <p class="mt-1 text-[11px] text-amber-700 dark:text-amber-300">{generateProblems[0]}</p>
+        {/if}
       </div>
       <div role="group" aria-label="Run preparation action">
         <Button className="w-full" onclick={onStartPreparation} disabled={!canStartPreparation}>
@@ -2226,17 +2366,10 @@
             generated folder.
           </p>
         {/if}
+        {#if startBlockMessage}
+          <p class="gw-notice gw-notice-error mt-1 whitespace-pre-wrap">{startBlockMessage}</p>
+        {/if}
       </div>
-      {#if validationResult === null && (workingFile || !includeProtein)}
-        <p class="gw-notice gw-notice-warning">
-          Inputs have not been validated. Click <strong>Validate Inputs</strong> before generating.
-        </p>
-      {/if}
-      {#if validationResult?.valid && !hasGeneratedInputFiles}
-        <p class="gw-notice gw-notice-warning">
-          Input files have not been generated yet. Click <strong>Generate Input Files</strong> first.
-        </p>
-      {/if}
       {#if resolvedOutputParent === '' && (workingFile || !includeProtein)}
         <p class="gw-notice gw-notice-warning">
           Set a <strong>Working Directory</strong> in the top bar, or browse an output path, to

@@ -9,6 +9,7 @@
   import Button from '../components/ui/Button.svelte'
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Divider from '../components/ui/Divider.svelte'
+  import SectionHelp from '../components/SectionHelp.svelte'
   import FollowLog from '../components/FollowLog.svelte'
   import Input from '../components/ui/Input.svelte'
   import Select from '../components/ui/Select.svelte'
@@ -1171,7 +1172,13 @@
     className="space-y-4 overflow-x-clip overflow-y-auto p-4 text-xs"
   >
     <div class="space-y-2">
-      <h2 class="sidebar-heading">Tools</h2>
+      <div class="flex items-center justify-between gap-2">
+        <h2 class="sidebar-heading">Tools</h2>
+        <SectionHelp
+          docsId="tools"
+          text="Fix PBC unwraps and centers a trajectory for analysis or Visualize. Other tools on this page stay marked coming soon."
+        />
+      </div>
       <div class="flex items-center gap-1" role="tablist" aria-label="Tool categories">
         {#each TOOL_CATEGORIES as cat (cat.id)}
           {@const Icon = cat.Icon}
@@ -1209,7 +1216,13 @@
 
     {#if tool === 'fix_pbc'}
       <div class="space-y-2">
-        <h2 class="sidebar-heading">Engine</h2>
+        <div class="flex items-center justify-between gap-2">
+          <h2 class="sidebar-heading">Engine</h2>
+          <SectionHelp
+            docsId="tools"
+            text="GROMACS uses gmx trjconv. Amber, NAMD, and OpenMM use cpptraj autoimage. The detected-engine line stays under the menu."
+          />
+        </div>
         <Select size="sm" className="w-full" bind:value={fixPbc.engine}>
           <option value="auto">Auto-detect</option>
           <option value="gromacs">GROMACS (gmx trjconv)</option>
@@ -1225,17 +1238,19 @@
           {#each fixPbc.detectInfo.warnings || [] as w (w)}
             <p class="gw-notice gw-notice-warning">{w}</p>
           {/each}
-        {:else}
-          <p class="sidebar-hint">
-            GROMACS uses gmx trjconv; Amber/NAMD/OpenMM use cpptraj autoimage.
-          </p>
         {/if}
       </div>
 
       <Divider />
 
       <div class="space-y-2">
-        <h2 class="sidebar-heading">Input</h2>
+        <div class="flex items-center justify-between gap-2">
+          <h2 class="sidebar-heading">Input</h2>
+          <SectionHelp
+            docsId="tools"
+            text="Add the topology and the trajectory files to unwrap. Stride writes a smaller file."
+          />
+        </div>
         <div class="space-y-1">
           <p class="sidebar-label">{isGromacs ? 'Topology / TPR' : 'Topology file'}</p>
           <div class="flex gap-1">
@@ -1370,7 +1385,13 @@
       <Divider />
 
       <div class="space-y-2">
-        <h2 class="sidebar-heading">Options</h2>
+        <div class="flex items-center justify-between gap-2">
+          <h2 class="sidebar-heading">Options</h2>
+          <SectionHelp
+            docsId="tools"
+            text="Center, output, and image choices are passed to the selected engine. A missing working directory or a failed run stays on this page."
+          />
+        </div>
         {#if isGromacs}
           <div class="space-y-2">
             <div class="space-y-1">
