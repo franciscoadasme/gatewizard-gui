@@ -2,7 +2,7 @@
   import { onDestroy, untrack } from 'svelte'
   import { T, useTask, useThrelte } from '@threlte/core'
   import { Color, DoubleSide, Mesh, MeshStandardMaterial } from 'three'
-  import { createCartoonSkin, updateRibbonSkins } from '../../../lib/viewer/cartoon.js'
+  import { createCartoonSkin, recolorRibbonSkins, updateRibbonSkins } from '../../../lib/viewer/cartoon.js'
   import { collectAtomIndices } from '../../../lib/viewer/trajectoryFrames.js'
   import { blendPlayXyz, trajPlayClock } from '../../../lib/viewer/trajPlayClock.js'
   import { defaultColorScheme } from '../../../lib/colorSchemes.js'
@@ -72,17 +72,21 @@
   const { invalidate } = useThrelte()
 
   const _tmpHL = new Color()
-  const _effectiveGetColor = $derived(
-    highlightIndices.size === 0
-      ? getColor
-      : (atom) => {
-          const c = getColor(atom)
-          if (highlightIndices.has(atom.index)) {
-            return _tmpHL.setHex(0xffdd00)
-          }
-          return c
-        }
-  )
+
+  /**
+   * Base ribbon color, plus yellow for the selection highlight.
+   * @param {{ index?: number }} atom
+   */
+  function ribbonColor(atom) {
+    const c = getColor(atom)
+    if (highlightIndices.size > 0 && highlightIndices.has(atom.index)) return _tmpHL.setHex(0xffdd00)
+    return c
+  }
+
+  /** @param {import('../../../lib/viewer/cartoon.js').RibbonSkin[]} skins @param {typeof atoms} arr */
+  function paintRibbon(skins, arr) {
+    recolorRibbonSkins(skins, arr, ribbonColor)
+  }
 
   const material = new MeshStandardMaterial({
     vertexColors: true,
@@ -133,7 +137,7 @@
     let nextOutline = []
 
     try {
-      nextSurface = createCartoonSkin(atoms, residues, _effectiveGetColor, {
+      nextSurface = createCartoonSkin(atoms, residues, getColor, {
         helixWidth,
         sheetWidth,
         coilWidth,
@@ -179,6 +183,7 @@
     surfaceSkin = nextSurface
     outlineSkin = nextOutline
     meshes = nextMeshes
+    untrack(() => paintRibbon(nextSurface, atoms))
     invalidate()
 
     return () => {
@@ -189,6 +194,16 @@
       if (surfaceSkin === nextSurface) surfaceSkin = []
       if (outlineSkin === nextOutline) outlineSkin = []
     }
+  })
+
+  $effect(() => {
+    void highlightIndices
+    void getColor
+    const skins = untrack(() => surfaceSkin)
+    const arr = untrack(() => atoms)
+    if (!skins.length) return
+    paintRibbon(skins, arr)
+    invalidate()
   })
 
   /** @type {typeof atoms | null} */

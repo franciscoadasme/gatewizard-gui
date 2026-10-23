@@ -4,6 +4,7 @@ import { Color } from 'three'
 import {
   buildCartoonGeometries,
   createCartoonSkin,
+  recolorRibbonSkins,
   ribbonSamplingForResidues,
   updateRibbonSkins
 } from './cartoon.js'
@@ -97,4 +98,17 @@ test('updateRibbonSkins refreshes face-averaged normals with the ribbon', () => 
     if (Math.abs(nrm.array[i] - before[i]) > 1e-4) changed += 1
   }
   assert.ok(changed > 10, 'normals must follow the bent backbone for lighting')
+})
+
+test('recolorRibbonSkins paints a residue without replacing the mesh', () => {
+  const { atoms, residues } = toyProtein()
+  const skins = createCartoonSkin(atoms, residues, colorFn, { quality: 1 })
+  const geom = skins[0].geometry
+  const before = geom.getAttribute('color').array[0]
+  recolorRibbonSkins(skins, atoms, (atom) =>
+    atom.index === 0 ? new Color(1, 0, 0) : new Color(0.5, 0.4, 0.8)
+  )
+  assert.equal(skins[0].geometry, geom)
+  assert.ok(Math.abs(geom.getAttribute('color').array[0] - 1) < 1e-5)
+  assert.ok(Math.abs(before - 0.5) < 1e-5)
 })

@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Selection mode:** hovering a chain or residue keeps the same highlight while the pointer stays on that group, and atom picking skips atoms far from the pointer. A cartoon or tube turns yellow by recoloring the ribbon, and a long chain does not add a second ball-and-stick model. Deleting the selection asks in the page instead of a system dialog.
 - **Runtime startup:** AmberTools 26.0 already in the environment is recognized, so a later launch says it is verifying AmberTools and Amber reduce. Installing is shown only when a package is missing.
 
 ## [1.0.14] - 2026-10-19

@@ -182,6 +182,39 @@ export function worldToScreen(pos, camera, w, h) {
   }
 }
 
+/** Same-plane tie-break in Å (view-space). */
+const DEPTH_EPS = 0.35
+const _origin = new Vector3()
+const _dir = new Vector3()
+const _ndc = new Vector3()
+const _world = new Vector3()
+const _view = new Vector3()
+const _clip = new Vector3()
+
+/**
+ * Pointer ray in world space. An orthographic ray starts on the near plane.
+ * @param {import('three').Camera} camera
+ * @param {number} w
+ * @param {number} h
+ * @param {number} cx
+ * @param {number} cy
+ */
+function pointerRay(camera, w, h, cx, cy) {
+  const ndcX = (cx / Math.max(1, w)) * 2 - 1
+  const ndcY = -((cy / Math.max(1, h)) * 2 - 1)
+  if (camera.isOrthographicCamera) {
+    _ndc.set(ndcX, ndcY, -1).unproject(camera)
+    _origin.copy(_ndc)
+    camera.getWorldDirection(_dir)
+  } else {
+    _origin.setFromMatrixPosition(camera.matrixWorld)
+    _ndc.set(ndcX, ndcY, 0.5).unproject(camera)
+    _dir.copy(_ndc).sub(_origin)
+  }
+  if (_dir.lengthSq() < 1e-12) _dir.set(0, 0, -1)
+  else _dir.normalize()
+}
+
 /**
  * Find the nearest drawn atom to a canvas-local pointer position.
  *
@@ -223,15 +256,17 @@ export function pickAtomFromViews(views, camera, w, h, cx, cy, minThreshold = 20
     camera.updateMatrixWorld(true)
   }
 
+  if (typeof camera.updateProjectionMatrix === 'function') camera.updateProjectionMatrix()
   const zoom = typeof camera.zoom === 'number' && camera.zoom > 0 ? camera.zoom : 1
   const worldW = ((camera.right ?? 1) - (camera.left ?? -1)) / zoom
   const pxPerUnit = worldW > 0 ? w / worldW : 1
-
-  const _world = new Vector3()
-  const _view = new Vector3()
-  const _clip = new Vector3()
-  /** Same-plane tie-break in Å (view-space). */
-  const DEPTH_EPS = 0.35
+  pointerRay(camera, w, h, cx, cy)
+  const ox = _origin.x
+  const oy = _origin.y
+  const oz = _origin.z
+  const dx = _dir.x
+  const dy = _dir.y
+  const dz = _dir.z
 
   for (const view of views) {
     if (!isViewPickable(view)) continue
@@ -243,6 +278,17 @@ export function pickAtomFromViews(views, camera, w, h, cx, cy, minThreshold = 20
       if (!isAtomPickableInView(view, atom)) continue
 
       const p = readAtomXyz(atom, xyz)
+      const vx = p.x - ox
+      const vy = p.y - oy
+      const vz = p.z - oz
+      const along = vx * dx + vy * dy + vz * dz
+      if (along < -0.5) continue
+      const qx = vx - along * dx
+      const qy = vy - along * dy
+      const qz = vz - along * dz
+      const worldR = pickRadiusPx(repr, atom, pxPerUnit, minThreshold) / pxPerUnit
+      if (qx * qx + qy * qy + qz * qz > worldR * worldR) continue
+
       _world.set(p.x, p.y, p.z)
       _view.copy(_world).applyMatrix4(camera.matrixWorldInverse)
       // Three.js cameras look down local -Z; behind the camera is +viewZ.

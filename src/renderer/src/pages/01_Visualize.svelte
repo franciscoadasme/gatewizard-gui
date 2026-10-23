@@ -39,6 +39,11 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   import { COLOR_PALETTE, cpkScheme, defaultColorScheme, ssScheme, DEFAULT_VIEW_MATERIAL, isGoodsellMaterial, isGlowingMaterial, resolveGlowingMaterial, GOODSELL_MATERIAL_DEFAULTS, GLOWING_MATERIAL_DEFAULTS } from '../lib/colorSchemes.js'
   import { getCameraForAtoms } from '../lib/viewer/base.js'
   import { pickAtomFromViews } from '../lib/viewer/picking.js'
+  import {
+    buildSelectionGroups,
+    selectionGroupIndices,
+    selectionGroupKey
+  } from '../lib/viewer/selectionGroups.js'
   import { boundsFromAtomsWithVdw } from '../lib/viewer/hydrationBoxManipulator.js'
   import { PADDING_FIELD_STYLE, VIEWER_AXES, axisInputStyle } from '../lib/viewer/axisColors.js'
   import { measureDistance, measureAngle, measureDihedral } from '../lib/viewer/measure.js'
@@ -50,7 +55,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
     trySubsetBySelection
   } from '../lib/viewer/dynamicSelection.js'
   import { Color } from 'three'
-  import { tick, untrack } from 'svelte'
+  import { onDestroy, tick, untrack } from 'svelte'
 
   /** Reused Color instance for edit mode selection outline. */
   const OUTLINE_COLOR = new Color(0xffdd00) // yellow → BackSide outline for selected group
@@ -829,6 +834,17 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   let editHoverGroupIndices = $state(new Set())
   /** @type {{ clientX:number, clientY:number } | null} */
   let editTooltip = $state(null)
+  /** Chain and residue index lists for the active structure. Rebuilt when atoms change. */
+  const selectionGroups = $derived(buildSelectionGroups(structure?.atoms))
+  /** Last hover group, so sliding along one chain does not rebuild the highlight. */
+  let hoverGroupKey = ''
+  /** @type {{ x: number, y: number, w: number, h: number } | null} */
+  let hoverPending = null
+  let hoverFrame = 0
+  let hoverPendingX = -1e9
+  let hoverPendingY = -1e9
+  /** @type {{ indices: number[] } | null} */
+  let pendingAtomDelete = $state(null)
   /** @type {Set<number>} — persistent selection locked by left-click */
   let selectedGroupIndices = $state(new Set())
   /** @type {{ name:string, element:string, index:number, res_name:string, res_id:number, chain_id:string } | null} */
@@ -836,11 +852,26 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   /** Atom index for DOF focus so the target follows trajectory xyz. */
   let dofFocusAtomIndex = $state(/** @type {number | null} */ (null))
 
-  /** Atoms that receive bulb lights when Glowing material filter is “highlighted”. */
+  const EMPTY_GLOW = new Set()
+
+  /**
+   * Highlight indices for the viewer. Returns an existing set when the click
+   * locks the group already under the pointer, so the ribbon is not recolored.
+   */
   const glowHighlightIndices = $derived.by(() => {
-    const indices = new Set(selectedGroupIndices)
-    for (const i of editHoverGroupIndices) indices.add(i)
-    return indices
+    const selected = selectedGroupIndices
+    const hover = editHoverGroupIndices
+    if (selected.size === 0 && hover.size === 0) return EMPTY_GLOW
+    if (selected.size === 0) return hover
+    if (hover.size === 0 || hover === selected) return selected
+    for (const index of hover) {
+      if (!selected.has(index)) {
+        const union = new Set(selected)
+        for (const extra of hover) union.add(extra)
+        return union
+      }
+    }
+    return selected
   })
 
   const editSelectedAtoms = $derived(
@@ -856,6 +887,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   $effect(() => {
     const level = editSelectionLevel
     const atom = untrack(() => editHoveredAtom)
+    hoverGroupKey = hoverGroupKeyFor(atom, level)
     editHoverGroupIndices = atom ? new Set(_editGroupIndices(atom, level)) : new Set()
     selectedGroupIndices = new Set()
     selectedAtom = null
@@ -867,6 +899,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       editHoveredAtom = null
       editHoverGroupIndices = new Set()
       editTooltip = null
+      hoverGroupKey = ''
       selectedGroupIndices = new Set()
       selectedAtom = null
       showGizmo = false
@@ -885,6 +918,8 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   let dlgRenumberRes = $state(null)
   /** @type {HTMLDialogElement | null} */
   let dlgDeleteAtoms = $state(null)
+  /** @type {HTMLDivElement | null} */
+  let deleteConfirmEl = $state(null)
   /** @type {HTMLDialogElement | null} */
   let dlgTransform = $state(null)
   // Rename chain form fields
@@ -4193,34 +4228,78 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
    * @param {string} level
    * @returns {number[]}
    */
-  function _editGroupIndices(atom, level) {
-    if (!structure) return []
-    if (level === 'atom') return [atom.index]
-    if (level === 'residue')
-      return structure.atoms
-        .filter((a) => a.chain_id === atom.chain_id && a.res_id === atom.res_id)
-        .map((a) => a.index)
-    if (level === 'chain')
-      return structure.atoms.filter((a) => a.chain_id === atom.chain_id).map((a) => a.index)
-    // molecule — the representation of this structure that contains the atom
-    const v = views.find(
+  /**
+   * Representation that owns this atom, used for molecule-level selection.
+   * @param {{ index: number }} atom
+   */
+  function viewForEditAtom(atom) {
+    return views.find(
       (view) =>
         view.structureId === activeStructureId &&
         !view._isSelHighlight &&
         view.atoms?.some((a) => a.index === atom.index)
     )
-    return v?.atoms?.map((a) => a.index) ?? []
   }
 
-  function handleCanvasHover({ x, y, w, h, clientX, clientY }) {
-    if (!editMode || measureMode) return
-    const cam = mainViewerCamera.current
-    if (!cam) return
-    const atom = pickAtomFromViews(viewsForPicking(), cam, w, h, x, y, 22)
-    editHoveredAtom = atom
-    editTooltip = atom ? { clientX, clientY } : null
-    editHoverGroupIndices = atom ? new Set(_editGroupIndices(atom, editSelectionLevel)) : new Set()
+  /**
+   * @param {{ index?: number, chain_id?: string, res_id?: number, structureId?: string } | null | undefined} atom
+   * @param {string} level
+   */
+  function hoverGroupKeyFor(atom, level) {
+    if (!atom) return ''
+    if (level === 'molecule') {
+      const view = viewForEditAtom(atom)
+      return view ? `v:${view.id}` : ''
+    }
+    return selectionGroupKey(atom, level)
   }
+
+  function _editGroupIndices(atom, level) {
+    if (!structure) return []
+    const indexed = selectionGroupIndices(selectionGroups, atom, level)
+    if (indexed) return indexed
+    return viewForEditAtom(atom)?.atoms?.map((a) => a.index) ?? []
+  }
+
+  /**
+   * Keep the highlight set when the pointer stays on the same chain, residue, or molecule.
+   * @param {object | null} atom
+   */
+  function applyCanvasHover(atom) {
+    const key = hoverGroupKeyFor(atom, editSelectionLevel)
+    if (key === hoverGroupKey) {
+      if (!atom || atom.index === editHoveredAtom?.index) return
+      editHoveredAtom = atom
+      return
+    }
+    hoverGroupKey = key
+    editHoveredAtom = atom
+    editTooltip = null
+    editHoverGroupIndices = new Set(atom ? _editGroupIndices(atom, editSelectionLevel) : [])
+  }
+
+  function handleCanvasHover({ x, y, w, h }) {
+    if (!editMode || measureMode) return
+    hoverPending = { x, y, w, h }
+    if (hoverFrame) return
+    hoverFrame = requestAnimationFrame(() => {
+      hoverFrame = 0
+      const pending = hoverPending
+      hoverPending = null
+      if (!pending || !editMode || measureMode) return
+      const cam = mainViewerCamera.current
+      if (!cam) return
+      hoverPendingX = pending.x
+      hoverPendingY = pending.y
+      applyCanvasHover(
+        pickAtomFromViews(viewsForPicking(), cam, pending.w, pending.h, pending.x, pending.y, 22)
+      )
+    })
+  }
+
+  onDestroy(() => {
+    if (hoverFrame) cancelAnimationFrame(hoverFrame)
+  })
 
   function onEditModeCenterView() {
     const atoms = atomsAtCurrentTraj(
@@ -4277,20 +4356,27 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
     dlgRenumberRes?.showModal()
   }
 
-  async function onEditModeDelete() {
+  function onEditModeDelete() {
     const targetIndices =
       selectedGroupIndices.size > 0 ? [...selectedGroupIndices] : [...editHoverGroupIndices]
-    if (!filePath || targetIndices.length === 0) return
-    if (!confirm(`Delete ${targetIndices.length} atom(s) from the structure?`)) return
+    if (!filePath || targetIndices.length === 0 || editBusy) return
+    pendingAtomDelete = { indices: targetIndices }
+  }
+
+  async function confirmAtomDelete() {
+    const pending = pendingAtomDelete
+    pendingAtomDelete = null
+    if (!pending || !filePath) return
     editBusy = true
     try {
-      const res = await editDeleteByIndices({ path: filePath, indices: targetIndices })
-      logEvent('info', 'view', `Deleted ${targetIndices.length} atom(s)`, filePath)
+      const res = await editDeleteByIndices({ path: filePath, indices: pending.indices })
+      logEvent('info', 'view', `Deleted ${pending.indices.length} atom(s)`, filePath)
       selectedGroupIndices = new Set()
       selectedAtom = null
       editHoverGroupIndices = new Set()
       editHoveredAtom = null
       editTooltip = null
+      hoverGroupKey = ''
       await applyEditResult(res)
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : String(ex))
@@ -4298,6 +4384,11 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       editBusy = false
     }
   }
+
+  $effect(() => {
+    if (!pendingAtomDelete) return
+    void tick().then(() => deleteConfirmEl?.focus())
+  })
 
   function handleCanvasClick({ x, y, w, h, ctrlKey = false }) {
     ctxMenu = null
@@ -4309,9 +4400,17 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       // Keep in-memory moves if the gizmo is dismissed / selection changes
       // before pointer-up commit (or after a sub-threshold drag).
       if (showGizmo) commitGizmoPreviewIfAny()
-      const atom = pickAtomFromViews(viewsForPicking(), cam, w, h, x, y)
+      const atom =
+        hoverGroupKey &&
+        Math.hypot(x - hoverPendingX, y - hoverPendingY) < 6
+          ? editHoveredAtom
+          : pickAtomFromViews(viewsForPicking(), cam, w, h, x, y)
       if (atom) {
-        const groupIndices = new Set(_editGroupIndices(atom, editSelectionLevel))
+        const key = hoverGroupKeyFor(atom, editSelectionLevel)
+        const groupIndices =
+          key === hoverGroupKey && editHoverGroupIndices.size > 0
+            ? editHoverGroupIndices
+            : new Set(_editGroupIndices(atom, editSelectionLevel))
         if (ctrlKey) {
           // Toggle the clicked group in/out of the current selection
           const allSelected = [...groupIndices].every((i) => selectedGroupIndices.has(i))
@@ -6571,21 +6670,11 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
         color: '#f87171',
         bgColor: 'rgba(60,20,20,0.96)',
         icon: '<path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z"/><path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4zM2.5 3h11V2h-11z"/>',
-        action: async () => {
+        action: () => {
           const indices = [...ctxGroupIndices]
-          if (!confirm(`Delete ${indices.length} atom(s)?`)) return
           ctxMenu = null
-          editBusy = true
-          try {
-            const res = await editDeleteByIndices({ path: filePath, indices })
-            editHoverGroupIndices = new Set()
-            editHoveredAtom = null
-            await applyEditResult(res)
-          } catch (ex) {
-            alert(ex instanceof Error ? ex.message : String(ex))
-          } finally {
-            editBusy = false
-          }
+          if (!filePath || indices.length === 0 || editBusy) return
+          pendingAtomDelete = { indices }
         }
       })
 
@@ -6668,16 +6757,25 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
 
   /**
    * When a selection exists and any visible view is cartoon/tube, add a temporary
-   * ball-stick view for the selected atoms in the left panel.
-   * Removes the previous one first.
+   * ball-stick view for a small selected group in the left panel.
+   * A whole chain stays on the yellow ribbon; a second model of thousands of atoms
+   * stalls the click.
    */
+  const SEL_STICK_ATOM_LIMIT = 400
+
   function _syncSelHighlightView() {
     // Remove previous highlight view
     if (selHighlightViewId) {
       views = views.filter((v) => v.id !== selHighlightViewId)
       selHighlightViewId = null
     }
-    if (!editMode || selectedGroupIndices.size === 0 || !structure) return
+    if (
+      !editMode ||
+      selectedGroupIndices.size === 0 ||
+      selectedGroupIndices.size > SEL_STICK_ATOM_LIMIT ||
+      !structure
+    )
+      return
 
     // Only add when at least one visible view is cartoon or tube
     const hasCartoonOrTube = views.some(
@@ -12349,6 +12447,51 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   />
 {/if}
 <!-- Edit dialogs -->
+{#if pendingAtomDelete}
+  <div
+    class="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4"
+    role="presentation"
+    onclick={() => (pendingAtomDelete = null)}
+    onkeydown={(e) => {
+      if (e.key === 'Escape') pendingAtomDelete = null
+    }}
+  >
+    <div
+      bind:this={deleteConfirmEl}
+      class="w-full max-w-sm rounded-lg border border-neutral-300 bg-white p-4 text-neutral-900 shadow-2xl dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="delete-atoms-title"
+      tabindex="-1"
+      onclick={(e) => e.stopPropagation()}
+      onkeydown={(e) => {
+        if (e.key === 'Escape') pendingAtomDelete = null
+      }}
+    >
+      <p id="delete-atoms-title" class="text-sm">
+        Delete {pendingAtomDelete.indices.length} atom{pendingAtomDelete.indices.length === 1
+          ? ''
+          : 's'} from the structure?
+      </p>
+      <div class="mt-4 flex justify-end gap-2">
+        <button
+          type="button"
+          class="rounded-md px-3 py-1.5 text-sm text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
+          onclick={() => (pendingAtomDelete = null)}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          class="rounded-md bg-red-600 px-3 py-1.5 text-sm text-white hover:bg-red-500"
+          onclick={confirmAtomDelete}
+        >
+          Delete
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <ViewerSettingsDialog
   bind:open={sceneSettingsOpen}

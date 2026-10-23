@@ -339,7 +339,8 @@ function buildRibbonGeometry(pts, nms, widths, thicknesses, colors, csSides = CS
  *   nrm: Float32Array,
  *   smP: Float32Array,
  *   smN: Float32Array,
- *   fastNormals?: boolean
+ *   fastNormals?: boolean,
+ *   secs?: string[]
  * }} RibbonSkin
  */
 
@@ -735,6 +736,7 @@ function buildSegmentTube(atomByIndex, segResidues, colorFn, opts) {
   if (!geom) return null
   const skin = allocRibbonSkin(geom, segResidues, atomByIndex, radii, radii, smoothFactor, csSides)
   skin.fastNormals = !!opts.fastNormals
+  skin.secs = ssPerPt
   return skin
 }
 
@@ -1151,6 +1153,114 @@ function writeRibbonPositions(pos, nrmOut, smP, smN, widths, thicknesses, nSm, S
  * @param {Float32Array | null | undefined} xyz
  * @param {Array<{ index?: number, x: number, y: number, z: number }> | null | undefined} [atoms]
  */
+/**
+ * Blend tube colors across secondary-structure boundaries, matching the mesh build.
+ * @param {Float32Array} base
+ * @param {string[]} secs
+ * @param {number} nSm
+ * @param {number} smoothFactor
+ */
+function blendSsBoundaryColors(base, secs, nSm, smoothFactor) {
+  /** @type {{ e: number }[]} */
+  const segments = []
+  for (let j = 1; j < nSm; j++) {
+    if (secs[j] !== secs[j - 1]) segments.push({ e: j - 1 })
+  }
+  segments.push({ e: nSm - 1 })
+  const smooth = new Float32Array(base)
+  const transition = Math.max(3, smoothFactor)
+  for (let si = 0; si < segments.length - 1; si++) {
+    const bnd = segments[si].e + 1
+    const before = (bnd - 1) * 3
+    const after = Math.min(bnd, nSm - 1) * 3
+    const br = base[before]
+    const bg = base[before + 1]
+    const bb = base[before + 2]
+    const ar = base[after]
+    const ag = base[after + 1]
+    const ab = base[after + 2]
+    for (let d = 0; d < transition; d++) {
+      const blend = (1 - d / transition) * 0.7
+      const ib = bnd - 1 - d
+      const ia = bnd + d
+      if (ib >= 0 && ib < nSm) {
+        const o = ib * 3
+        smooth[o] = base[o] + (ar - base[o]) * blend
+        smooth[o + 1] = base[o + 1] + (ag - base[o + 1]) * blend
+        smooth[o + 2] = base[o + 2] + (ab - base[o + 2]) * blend
+      }
+      if (ia >= 0 && ia < nSm) {
+        const o = ia * 3
+        smooth[o] = base[o] + (br - base[o]) * blend
+        smooth[o + 1] = base[o + 1] + (bg - base[o + 1]) * blend
+        smooth[o + 2] = base[o + 2] + (bb - base[o + 2]) * blend
+      }
+    }
+  }
+  return smooth
+}
+
+const _recolorFallback = { r: 0.75, g: 0.75, b: 0.75 }
+
+/**
+ * Write ribbon vertex colors without rebuilding the mesh.
+ * @param {RibbonSkin[]} skins
+ * @param {Array<{ index?: number }> | null | undefined} atoms
+ * @param {(atom: { index?: number }) => { r: number, g: number, b: number }} colorFn
+ */
+export function recolorRibbonSkins(skins, atoms, colorFn) {
+  if (!skins?.length || typeof colorFn !== 'function') return
+  /** @type {Map<number, { index?: number }>} */
+  const byIndex = new Map()
+  if (atoms) {
+    for (const atom of atoms) {
+      if (typeof atom?.index === 'number') byIndex.set(atom.index, atom)
+    }
+  }
+  for (const skin of skins) {
+    const attr = skin.geometry.getAttribute('color')
+    if (!attr || !(attr.array instanceof Float32Array)) continue
+    const col = attr.array
+    const nSm = skin.nSm
+    const nr = skin.nRes
+    const sf = skin.smoothFactor
+    const sides = skin.csSides
+    const base = new Float32Array(nSm * 3)
+    let pt = 0
+    for (let ri = 0; ri < nr; ri++) {
+      const count = ri < nr - 1 ? sf : 1
+      const atom = byIndex.get(skin.caIndex[ri])
+      const c = atom ? colorFn(atom) : _recolorFallback
+      const r = c.r
+      const g = c.g
+      const b = c.b
+      for (let k = 0; k < count && pt < nSm; k++, pt++) {
+        const o = pt * 3
+        base[o] = r
+        base[o + 1] = g
+        base[o + 2] = b
+      }
+    }
+    const rgb =
+      skin.secs && skin.secs.length === nSm
+        ? blendSsBoundaryColors(base, skin.secs, nSm, sf)
+        : base
+    for (let i = 0; i < nSm; i++) {
+      const r = rgb[i * 3]
+      const g = rgb[i * 3 + 1]
+      const b = rgb[i * 3 + 2]
+      const vertBase = i * sides * 3
+      for (let k = 0; k < sides; k++) {
+        const off = vertBase + k * 3
+        col[off] = r
+        col[off + 1] = g
+        col[off + 2] = b
+      }
+    }
+    attr.needsUpdate = true
+  }
+}
+
 export function updateRibbonSkins(skins, xyz, atoms) {
   if (!skins?.length) return
   for (const skin of skins) {

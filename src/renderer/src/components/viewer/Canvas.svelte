@@ -32,6 +32,16 @@
   let wrapEl = $state(null)
   let controls = $state(null)
   let resizeFrame = 0
+  const pointerBox = { left: 0, top: 0, width: 0, height: 0 }
+
+  function refreshPointerBox() {
+    if (!wrapEl) return
+    const r = wrapEl.getBoundingClientRect()
+    pointerBox.left = r.left
+    pointerBox.top = r.top
+    pointerBox.width = r.width
+    pointerBox.height = r.height
+  }
 
   const ZOOM_SPEED = 3.5
   const FINE_ZOOM_SPEED = 0.4
@@ -74,10 +84,12 @@
       if (resizeFrame) cancelAnimationFrame(resizeFrame)
       resizeFrame = requestAnimationFrame(() => {
         resizeFrame = 0
+        refreshPointerBox()
         refreshControlsSize()
       })
     })
     observer.observe(wrapEl)
+    refreshPointerBox()
     refreshControlsSize()
     return () => {
       observer.disconnect()
@@ -92,8 +104,12 @@
   let dragStart = { x: 0, y: 0 }
 
   function _coords(e) {
-    const r = wrapEl.getBoundingClientRect()
-    return { x: e.clientX - r.left, y: e.clientY - r.top, w: r.width, h: r.height }
+    return {
+      x: e.clientX - pointerBox.left,
+      y: e.clientY - pointerBox.top,
+      w: pointerBox.width,
+      h: pointerBox.height
+    }
   }
 </script>
 
@@ -101,11 +117,13 @@
   bind:this={wrapEl}
   class="h-full w-full"
   role="presentation"
+  onpointerenter={refreshPointerBox}
   onpointermove={(e) => {
     if (!onAtomHover || !wrapEl) return
     onAtomHover({ ..._coords(e), clientX: e.clientX, clientY: e.clientY })
   }}
   onpointerdown={(e) => {
+    refreshPointerBox()
     refreshControlsSize()
     dragStart = { x: e.clientX, y: e.clientY }
   }}
