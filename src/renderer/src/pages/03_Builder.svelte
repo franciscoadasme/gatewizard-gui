@@ -2166,12 +2166,18 @@
     <div class="space-y-2">
       <h2 class="sidebar-heading">System Options</h2>
       {#if includeProtein}
-        <div class="flex items-center gap-2">
+        <div
+          class="flex items-center gap-2"
+          title="On: the protein is already oriented in the membrane, so MEMEMBED is skipped. Off: MEMEMBED orients it before packing."
+        >
           <Checkbox name="preoriented" bind:checked={preoriented} />
           <span class="sidebar-label">Pre-oriented in membrane</span>
         </div>
       {/if}
-      <div class="flex items-center gap-2">
+      <div
+        class="flex items-center gap-2"
+        title="On: packmol adds salt at this concentration, in addition to the ions that neutralize the system. Off: only those neutralizing ions are added."
+      >
         <Checkbox name="add-salt" bind:checked={addSalt} />
         <span class="sidebar-label">Add bulk salt</span>
       </div>
@@ -2181,12 +2187,13 @@
             type="text"
             inputmode="decimal"
             class="sidebar-control w-14 p-1 {addSalt && generateProblems.some((line) => line.startsWith('Salt')) ? 'ring-2 ring-amber-500' : ''}"
+            title="Salt concentration in mol/L, passed to packmol-memgen as --saltcon. 0.15 is the physiological starting point."
             bind:value={saltConcentration}
           />
           <span class="sidebar-label">M</span>
           {#if addSalt && generateProblems.some((line) => line.startsWith('Salt'))}
             <p class="basis-full text-[11px] text-amber-700 dark:text-amber-300">
-              Salt concentration must be between 0 and 2 M.
+              Salt concentration cannot be negative.
             </p>
           {/if}
         </div>
@@ -2315,7 +2322,10 @@
         </span>
       </summary>
       <div class="space-y-3 border-t border-neutral-200 px-3 py-3 dark:border-neutral-800">
-        <div class="flex items-center gap-2">
+        <div
+          class="flex items-center gap-2"
+          title="On: tleap builds the topology after packing. Ligands, caps, and free molecules must already be parametrized. Off: the job stops after packing."
+        >
           <Checkbox name="parametrize" bind:checked={parametrize} />
           <span class="sidebar-label">Parametrize with tleap</span>
         </div>

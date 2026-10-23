@@ -46,8 +46,8 @@ export function builderBlockers(input) {
   }
   if (input.addSalt) {
     const conc = input.saltConcentration
-    if (!Number.isFinite(conc) || conc < 0 || conc > 2) {
-      problems.push('Salt concentration must be between 0 and 2 M.')
+    if (!Number.isFinite(conc) || conc < 0) {
+      problems.push('Salt concentration cannot be negative.')
     }
   }
   if (input.forceFieldError) problems.push(input.forceFieldError)

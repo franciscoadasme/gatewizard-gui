@@ -64,14 +64,14 @@ test('missing pdb, lipids, membrane size, salt, and pending parameters block gen
       workingFile: '',
       lipidCount: 0,
       addSalt: true,
-      saltConcentration: 3,
+      saltConcentration: -1,
       pendingParameters: true,
       forceFieldError: 'Unknown water model: no-such'
     }),
     [
       'Choose a PDB file.',
       'Add at least one lipid.',
-      'Salt concentration must be between 0 and 2 M.',
+      'Salt concentration cannot be negative.',
       'Unknown water model: no-such',
       'Parametrize before generating, or tleap will fail.'
     ]

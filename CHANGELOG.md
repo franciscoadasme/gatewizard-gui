@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Builder tooltips:** Pre-oriented, Add bulk salt, the salt concentration, and Parametrize with tleap explain the choice on hover.
 - **Ligand timeout:** each ligand and free molecule can limit antechamber. The box starts unchecked, so parametrization waits until antechamber finishes. The request omits that limit when the installed GateWizard package has no `timeout` argument.
 - **Section help:** Preparation, Builder, Equilibration, Tools, and Analysis explain a choice from an info button and open the matching user-guide heading. Equilibration’s compute target uses those same buttons. Builder checks the structure when the PDB is loaded and no longer asks for Validate Inputs.
 - **Contributing:** `CONTRIBUTING.md` explains how to run the app, which tests to run, and where to report bugs. The README links to it.
@@ -19,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Builder salt:** Add bulk salt no longer rejects concentrations above 2 M. Packmol-memgen `--saltcon` has no such cap. A negative value is still rejected.
 - **Builder:** the button that launches a generated job is **Build system**. The Builder page no longer calls that step preparation.
 - **MemPrO:** the Linux and macOS installer uses the CPU package `mempro` ≥ 0.3.1 from `gatewizard[full]`. The orientation panel shows CPU count and seed with the existing fields, and the other 0.3 options under Advanced settings. GPU stays off until JAX can see a GPU. GPU install opens the installation page.
 - **API requirement:** the app requires gatewizard **>= 1.0.55**.
