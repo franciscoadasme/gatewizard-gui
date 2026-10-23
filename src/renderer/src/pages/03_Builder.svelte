@@ -643,6 +643,8 @@
         multiplicity: 1,
         atomType: 'gaff2',
         chargeMethod: 'abcg2',
+        useTimeout: false,
+        timeoutMinutes: 60,
         status: 'not_parametrized',
         frcmod: '',
         lib: '',
@@ -735,8 +737,21 @@
     }
   }
 
+  /** @param {{ useTimeout?: boolean, timeoutMinutes?: number }} entry */
+  function ligandTimeoutSeconds(entry) {
+    if (!entry?.useTimeout) return null
+    const minutes = Number(entry.timeoutMinutes)
+    if (!Number.isFinite(minutes) || minutes < 1) return null
+    return Math.round(minutes * 60)
+  }
+
   async function onParametrizeLigand(/** @type {number} */ index) {
     const lig = ligands[index]
+    const timeoutSeconds = ligandTimeoutSeconds(lig)
+    if (lig.useTimeout && timeoutSeconds == null) {
+      alert('Set the antechamber timeout to at least 1 minute, or leave Timeout unchecked.')
+      return
+    }
     try {
       const builderOut = requireBuilderOutputDir()
       ligands[index] = { ...lig, status: 'running' }
@@ -748,7 +763,8 @@
         builderOut,
         false,
         lig.chargeMethod || 'abcg2',
-        lig.atomType || 'gaff2'
+        lig.atomType || 'gaff2',
+        timeoutSeconds
       )
       ligands[index] = {
         ...lig,
@@ -809,6 +825,8 @@
         multiplicity: 1,
         atomType: 'gaff2',
         chargeMethod: 'abcg2',
+        useTimeout: false,
+        timeoutMinutes: 60,
         status: 'manual',
         frcmod: '',
         lib: '',
@@ -832,6 +850,8 @@
       multiplicity: 1,
       atomType: 'gaff2',
       chargeMethod: 'abcg2',
+      useTimeout: false,
+      timeoutMinutes: 60,
       status: 'idle',
       frcmod: '',
       lib: '',
@@ -869,6 +889,11 @@
       alert('Set a residue name (must match the PDB residue name).')
       return
     }
+    const timeoutSeconds = ligandTimeoutSeconds(solute)
+    if (solute.useTimeout && timeoutSeconds == null) {
+      alert('Set the antechamber timeout to at least 1 minute, or leave Timeout unchecked.')
+      return
+    }
     try {
       const builderOut = requireBuilderOutputDir()
       solutes[index] = { ...solute, status: 'running' }
@@ -881,7 +906,8 @@
         builderOut,
         true,
         solute.chargeMethod || 'abcg2',
-        solute.atomType || 'gaff2'
+        solute.atomType || 'gaff2',
+        timeoutSeconds
       )
       solutes[index] = {
         ...solute,
@@ -1681,6 +1707,24 @@
               onclick={() => onBrowseLib(i)}>Browse</button
             >
           </div>
+          <div class="flex items-center gap-2">
+            <Checkbox name="lig-timeout-{i}" bind:checked={lig.useTimeout} />
+            <span
+              class="sidebar-label shrink-0"
+              title="Stop antechamber after this many minutes. Leave unchecked to wait until it finishes."
+            >
+              Timeout
+            </span>
+            <input
+              type="number"
+              min="1"
+              step="1"
+              class="sidebar-control w-16 p-1"
+              bind:value={lig.timeoutMinutes}
+              disabled={!lig.useTimeout}
+            />
+            <span class="sidebar-label">min</span>
+          </div>
           {#if lig.status !== 'running'}
             <Button
               variant="outline"
@@ -1805,6 +1849,24 @@
               <option value="abcg2">ABCG2</option>
               <option value="bcc">AM1-BCC</option>
             </select>
+          </div>
+          <div class="flex items-center gap-2">
+            <Checkbox name="solute-timeout-{i}" bind:checked={solute.useTimeout} />
+            <span
+              class="sidebar-label shrink-0"
+              title="Stop antechamber after this many minutes. Leave unchecked to wait until it finishes."
+            >
+              Timeout
+            </span>
+            <input
+              type="number"
+              min="1"
+              step="1"
+              class="sidebar-control w-16 p-1"
+              bind:value={solute.timeoutMinutes}
+              disabled={!solute.useTimeout}
+            />
+            <span class="sidebar-label">min</span>
           </div>
           {#if solute.status !== 'running'}
             <Button

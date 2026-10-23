@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Ligand timeout:** each ligand and free molecule can limit antechamber. The box starts unchecked, so parametrization waits until antechamber finishes. The request omits that limit when the installed GateWizard package has no `timeout` argument.
 - **Section help:** Preparation, Builder, Equilibration, Tools, and Analysis explain a choice from an info button and open the matching user-guide heading. Equilibration’s compute target uses those same buttons. Builder checks the structure when the PDB is loaded and no longer asks for Validate Inputs.
 - **Contributing:** `CONTRIBUTING.md` explains how to run the app, which tests to run, and where to report bugs. The README links to it.
 - **Code of conduct:** `CODE_OF_CONDUCT.md` is the Contributor Covenant. Reports go to gatewizard.project@gmail.com.

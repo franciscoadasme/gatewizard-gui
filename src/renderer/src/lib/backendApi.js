@@ -255,6 +255,7 @@ export function detectTerminalCaps(filePath) {
  * @param {boolean} [fromLigandFile] When true, filePath is a standalone ligand PDB (not a system PDB)
  * @param {string} [chargeMethod] Antechamber charge model: abcg2 or bcc
  * @param {string} [atomType] General Amber force field: gaff2 or gaff
+ * @param {number | null} [timeoutSeconds] Antechamber limit in seconds. Omit to wait until it exits.
  * @returns {Promise<{ success: boolean, message: string, frcmod: string, lib: string, mol2?: string, forcefield_warning?: string | null }>}
  */
 export function parametrizeLigand(
@@ -265,7 +266,8 @@ export function parametrizeLigand(
   outputDir = null,
   fromLigandFile = false,
   chargeMethod = 'abcg2',
-  atomType = 'gaff2'
+  atomType = 'gaff2',
+  timeoutSeconds = null
 ) {
   return backendJson('/parametrize-ligand', {
     path: filePath,
@@ -275,7 +277,8 @@ export function parametrizeLigand(
     chargeMethod,
     atomType,
     ...(outputDir ? { outputDir } : {}),
-    fromLigandFile: Boolean(fromLigandFile)
+    fromLigandFile: Boolean(fromLigandFile),
+    ...(timeoutSeconds != null ? { timeoutSeconds } : {})
   })
 }
 

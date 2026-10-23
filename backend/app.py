@@ -1,6 +1,7 @@
 """HTTP API for the GateWizard desktop app (spawned by Electron main process)."""
 
 import base64
+import inspect
 import json
 import os
 import re
@@ -1381,6 +1382,11 @@ class ParametrizeLigandRequest(BaseModel):
             "When False (default), extract ligand_name from a system PDB."
         ),
     )
+    timeout_seconds: int | None = Field(
+        None,
+        ge=1,
+        description="Antechamber wall-clock limit in seconds. Omit to wait until it exits.",
+    )
 
 
 class ValidateBuilderRequest(BaseModel):
@@ -1825,6 +1831,21 @@ def protein_hydrogen_status(payload: DetectLigandsRequest) -> dict:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
 
 
+def _ligand_timeout_kwargs(fn: Any, timeout_seconds: int | None) -> dict[str, int | None]:
+    """Pass the antechamber limit only when this GateWizard build accepts it."""
+    if "timeout" not in inspect.signature(fn).parameters:
+        if timeout_seconds is not None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "This GateWizard install cannot limit antechamber. "
+                    "Update the gatewizard package, or leave Timeout unchecked."
+                ),
+            )
+        return {}
+    return {"timeout": timeout_seconds}
+
+
 @app.post("/parametrize-ligand")
 def parametrize_ligand_endpoint(payload: ParametrizeLigandRequest) -> dict:
     path = os.path.abspath(os.path.expanduser(payload.path))
@@ -1846,6 +1867,7 @@ def parametrize_ligand_endpoint(payload: ParametrizeLigandRequest) -> dict:
                 multiplicity=payload.multiplicity,
                 charge_method=payload.charge_method,
                 atom_type=payload.atom_type,
+                **_ligand_timeout_kwargs(parametrize_ligand, payload.timeout_seconds),
             )
         else:
             result = parametrize_ligand_from_system_pdb(
@@ -1856,6 +1878,9 @@ def parametrize_ligand_endpoint(payload: ParametrizeLigandRequest) -> dict:
                 multiplicity=payload.multiplicity,
                 charge_method=payload.charge_method,
                 atom_type=payload.atom_type,
+                **_ligand_timeout_kwargs(
+                    parametrize_ligand_from_system_pdb, payload.timeout_seconds
+                ),
             )
         return result
     except Exception as ex:
