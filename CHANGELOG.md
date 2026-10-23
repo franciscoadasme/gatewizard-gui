@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Documentation and Visualize menus:** the book icon lists the user guide and the matching API pages. Open, Select, Transform, and Tools on Visualize open on a click and close the menu that was already open.
 - **Animation timeline:** − and + change the timeline width, and the top edge sets how many representation rows stay visible. Each easing type has its own bar color. The easing and fade cards open on the right and can be dragged.
 
+- **Runtime startup:** AmberTools 26.0 already in the environment is recognized, so a later launch says it is verifying AmberTools and Amber reduce. Installing is shown only when a package is missing.
+
 ## [1.0.14] - 2026-10-19
 
 ### Changed

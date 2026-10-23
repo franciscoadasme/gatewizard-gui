@@ -15,6 +15,7 @@ import { existsSync, readFileSync, rmSync } from 'fs'
 import fs from 'fs/promises'
 import os from 'os'
 import path from 'path'
+import { condaMetaNameMatches } from './conda-meta.js'
 import { createInstallProgress } from './runtime-progress.js'
 
 const PYTHON_SPEC = '3.12'
@@ -553,11 +554,11 @@ function amberReducePath(prefix) {
   return path.join(path.resolve(prefix), 'bin', 'reduce')
 }
 
-async function condaMetaHas(prefix, stem) {
+async function condaMetaHas(prefix, packageName, versionPrefix) {
   const meta = path.join(path.resolve(prefix), 'conda-meta')
   try {
     const names = await fs.readdir(meta)
-    return names.some((name) => name.startsWith(`${stem}-`))
+    return names.some((name) => condaMetaNameMatches(name, packageName, versionPrefix))
   } catch {
     return false
   }
@@ -571,7 +572,7 @@ function getCondaAmbertoolsPackages() {
 
 async function ensureAmbertools26(micromambaDest, runtimePrefix, mmEnv, onStatus) {
   if (process.platform === 'win32') return
-  if (await condaMetaHas(runtimePrefix, 'ambertools-26')) return
+  if (await condaMetaHas(runtimePrefix, 'ambertools', '26')) return
   onStatus('Installing AmberTools 26…')
   await appendRuntimeLog(
     `[ambertools] installing ${AMBERTOOLS_CONDA_SPEC} (prefix=${path.resolve(runtimePrefix)})\n`
@@ -1322,10 +1323,15 @@ export async function ensureMambaRuntime(options) {
       const needsGromacs =
         process.platform !== 'win32' && state.gromacsCondaRev !== GROMACS_CONDA_REV
       const needsAmbertools =
-        process.platform !== 'win32' && !(await condaMetaHas(runtimePrefix, 'ambertools-26'))
+        process.platform !== 'win32' && !(await condaMetaHas(runtimePrefix, 'ambertools', '26'))
       const needsReduce =
-        process.platform !== 'win32' &&
-        (needsAmbertools || !existsSync(amberReducePath(runtimePrefix)))
+        process.platform !== 'win32' && !existsSync(amberReducePath(runtimePrefix))
+      if (process.platform !== 'win32' && !needsAmbertools) {
+        progress.note('Verifying AmberTools 26…')
+      }
+      if (process.platform !== 'win32' && !needsReduce) {
+        progress.note('Verifying Amber reduce…')
+      }
       if (needsFfmpeg || needsOpenmm || needsGromacs || needsAmbertools || needsReduce) {
         progress.begin('cached', 'Syncing conda packages…')
         const micromambaDest = await ensureMicromambaBinary((msg) => progress.note(msg))
