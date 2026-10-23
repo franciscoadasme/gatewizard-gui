@@ -1494,6 +1494,13 @@ class StartPreparationRequest(BaseModel):
     tolerance: float = Field(
         2.0, description="PACKMOL clash tolerance, radius1+radius2 (--tolerance)"
     )
+    overwrite: bool = Field(
+        False,
+        description=(
+            "Reuse a build folder that already has run_preparation.sh or status.json. "
+            "Otherwise generation refuses that folder."
+        ),
+    )
 
 
 @app.get("/health")
@@ -2979,6 +2986,7 @@ def _configure_builder(payload: StartPreparationRequest) -> Builder:
         nloop=payload.nloop,
         nloop_all=payload.nloop_all,
         tolerance=payload.tolerance,
+        overwrite=payload.overwrite,
     )
     return builder
 

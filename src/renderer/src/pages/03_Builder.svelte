@@ -30,6 +30,8 @@
   import { builderBlockers, structureNoticeFromReport } from '../lib/builderChecks.js'
   import {
     defaultBuildFolderName,
+    dirsEqual,
+    nextBuildFolderName,
     outputFolderPath,
     parentDirPath,
     uniqueDirList
@@ -87,6 +89,8 @@
       ? defaultBuildFolderName(workingFile)
       : '02_build_bilayer'
   )
+  /** Folder name the user chose to regenerate. Cleared when the name changes. */
+  let reuseFolderName = $state('')
 
   const LIPID_NAME_PREVIEW = 28
 
@@ -322,6 +326,39 @@
    */
   /** @type {Job[]} */
   let jobs = $state([])
+  const BUILD_JOB_STATUSES = new Set([
+    'not_started',
+    'running',
+    'completed',
+    'error',
+    'cancelled'
+  ])
+  const takenBuildJob = $derived(
+    jobs.find(
+      (job) => dirsEqual(job.jobDir, outputDir) && BUILD_JOB_STATUSES.has(job.status)
+    )
+  )
+  const reuseAllowed = $derived(
+    reuseFolderName !== '' && reuseFolderName === resolveOutputFolderName()
+  )
+  const folderBlocksGenerate = $derived(Boolean(takenBuildJob) && !reuseAllowed)
+  const siblingFolderNames = $derived(
+    jobs
+      .filter((job) => dirsEqual(parentDirPath(job.jobDir), resolvedOutputParent))
+      .map((job) => job.name)
+  )
+  const nextFolderName = $derived(
+    nextBuildFolderName(resolveOutputFolderName(), siblingFolderNames)
+  )
+
+  function onReuseFolder() {
+    reuseFolderName = resolveOutputFolderName()
+  }
+
+  function onUseNextFolder() {
+    outputFolderName = nextFolderName
+    reuseFolderName = ''
+  }
   let launching = $state(false)
   let generatingInputFiles = $state(false)
   let validating = $state(false)
@@ -1089,7 +1126,7 @@
     if (includeProtein && !workingFile) return
     try {
       generatingInputFiles = true
-      const params = buildParams()
+      const params = { ...buildParams(), overwrite: reuseAllowed }
       const result = await generatePreparation(params)
       if (result.success && result.job_dir) {
         const dirName = result.job_dir.split(/[/\\]/).pop() || result.job_dir
@@ -1111,7 +1148,8 @@
           logLines: [],
           showLog: false
         }
-        jobs = [newJob, ...jobs]
+        jobs = [newJob, ...jobs.filter((job) => !dirsEqual(job.jobDir, newJob.jobDir))]
+        reuseFolderName = ''
         logEvent(
           'info',
           'build',
@@ -1337,7 +1375,11 @@
   )
 
   const canGenerateInput = $derived(
-    resolvedOutputParent !== '' && generateProblems.length === 0 && !generatingInputFiles && !launching
+    resolvedOutputParent !== '' &&
+      generateProblems.length === 0 &&
+      !folderBlocksGenerate &&
+      !generatingInputFiles &&
+      !launching
   )
 
   const ffRing = $derived(
@@ -2402,6 +2444,25 @@
         folderPlaceholder={suggestedOutputFolderName}
         resolvedFolderName={resolveOutputFolderName()}
       />
+      {#if folderBlocksGenerate}
+        <p class="wrap-break-word text-[11px] text-amber-700 dark:text-amber-300">
+          {resolveOutputFolderName()} already has a build. Re-run it, or use {nextFolderName}.
+        </p>
+        <div class="space-y-1">
+          <Button size="sm" variant="outline" className="w-full" onclick={onReuseFolder}>
+            Re-run
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="w-full min-w-0 whitespace-normal"
+            title={nextFolderName}
+            onclick={onUseNextFolder}
+          >
+            <span class="w-full min-w-0 break-all text-center">Use {nextFolderName}</span>
+          </Button>
+        </div>
+      {/if}
       <div role="group" aria-label="Generate input files action">
         <Button
           className="w-full"

@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Builder output folder:** a folder that already has a build is not renamed. Generate stays off until Re-run or the next numbered name (`02_build_name_2`).
 - **Builder salt:** Add bulk salt no longer rejects concentrations above 2 M. Packmol-memgen `--saltcon` has no such cap. A negative value is still rejected.
 - **Builder:** the button that launches a generated job is **Build system**. The Builder page no longer calls that step preparation.
 - **MemPrO:** the Linux and macOS installer uses the CPU package `mempro` ≥ 0.3.1 from `gatewizard[full]`. The orientation panel shows CPU count and seed with the existing fields, and the other 0.3 options under Advanced settings. GPU stays off until JAX can see a GPU. GPU install opens the installation page.

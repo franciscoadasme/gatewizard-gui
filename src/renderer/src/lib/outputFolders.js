@@ -92,6 +92,22 @@ export function defaultBuildFolderName(workingFile) {
   return `02_build_${pdbStem(workingFile)}`
 }
 
+/**
+ * Next free numbered build folder. `02_build_6rv2` becomes `02_build_6rv2_2`.
+ * A name that already ends in `_2` becomes `_3`, not `_2_2`.
+ * @param {string} folderName
+ * @param {string[]} [takenNames]
+ */
+export function nextBuildFolderName(folderName, takenNames = []) {
+  const name = String(folderName || '').trim()
+  const match = name.match(/^(.*)_(\d+)$/)
+  const base = match ? match[1] : name
+  let n = match ? Math.max(2, Number(match[2]) + 1) : 2
+  const taken = new Set(takenNames.map((entry) => String(entry || '').trim()).filter(Boolean))
+  while (taken.has(`${base}_${n}`)) n += 1
+  return `${base}_${n}`
+}
+
 /** @param {string} [inputDir] */
 export function defaultEquilibrationFolderName(inputDir = '') {
   if (!inputDir) return '03_equilibration'
