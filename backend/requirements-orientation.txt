@@ -1,3 +1,3 @@
 # Optional CPU MemPrO. Installed on Linux/macOS after the API extra.
 # A failure here must not block the GUI. Do not install mempro[gpu].
-mempro>=0.3.0
+mempro>=0.3.1
