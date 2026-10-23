@@ -24,8 +24,8 @@
   import { themeState } from '../lib/theme.svelte.js'
   import { themeBackgroundHex } from '../lib/viewerSettings.svelte.js'
 
-  /** @type {{ workingDir?: string }} */
-  let { workingDir = '' } = $props()
+  /** @type {{ workingDir?: string, pageActive?: boolean }} */
+  let { workingDir = '', pageActive = true } = $props()
 
   const paneBackgroundStyle = $derived(
     `background-color: ${themeBackgroundHex(themeState.current)}`
@@ -844,6 +844,7 @@
             disulfideBonds={viewerDisulfideBonds}
             {maxDisulfideDistance}
             {disulfideFocus}
+            active={pageActive}
           />
         </div>
       {:else if preparationStatus.propkaDone && viewerPdbPath}
@@ -872,6 +873,7 @@
             disulfideBonds={viewerDisulfideBonds}
             {maxDisulfideDistance}
             {disulfideFocus}
+            active={pageActive}
           />
         </div>
       {:else}

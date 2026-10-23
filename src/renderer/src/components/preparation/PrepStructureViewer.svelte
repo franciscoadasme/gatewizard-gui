@@ -25,7 +25,8 @@
    *   removedMarkers?: ViewerAtom[],
    *   disulfideBonds?: [[string, number], [string, number]][],
    *   maxDisulfideDistance?: number,
-   *   disulfideFocus?: { index: number, token: number } | null
+   *   disulfideFocus?: { index: number, token: number } | null,
+   *   active?: boolean
    * }}
    */
   let {
@@ -35,7 +36,8 @@
     removedMarkers = [],
     disulfideBonds = [],
     maxDisulfideDistance = 2.5,
-    disulfideFocus = null
+    disulfideFocus = null,
+    active = true
   } = $props()
 
   /** @type {null | Awaited<ReturnType<typeof getStructure>>} */
@@ -44,6 +46,12 @@
   let loadError = $state(/** @type {string | null} */ (null))
   /** @type {null | (ReturnType<typeof getCameraForAtoms> & { framingZoom: number, framingGeneration: number, poseResetGeneration: number })} */
   let framing = $state(null)
+  /** True after a residue click has narrowed the camera, so clearing the click frames the protein once. */
+  let selectionFramed = false
+
+  const caResidueCount = $derived(
+    (structure?.residues ?? []).filter((residue) => typeof residue.ca_index === 'number').length
+  )
 
   const getColor = cpkScheme()
   const _ghostAdd = new Color(0.35, 0.85, 1.0)
@@ -83,8 +91,10 @@
       structure = null
       framing = null
       loadError = null
+      selectionFramed = false
       return
     }
+    selectionFramed = false
     let cancelled = false
     ;(async () => {
       loading = true
@@ -143,22 +153,37 @@
     }
   })
 
-  // Reframe when selection keys change (union of selected residues).
+  // Frame a clicked residue. An empty selection restores the protein once.
   $effect(() => {
-    if (!structure) return
+    if (!structure?.atoms?.length) return
     const keys = selectedKeySet
-    const sel =
-      keys.size === 0
-        ? []
-        : structure.atoms.filter((a) => keys.has(`${a.chain_id || ''}:${a.res_id}`))
-    const atoms = sel.length ? sel : structure.atoms
-    const base = getCameraForAtoms(atoms)
+    if (keys.size === 0) {
+      if (!selectionFramed) return
+      selectionFramed = false
+      const base = getCameraForAtoms(structure.atoms)
+      if (!base) return
+      const prevGen = untrack(() => framing?.framingGeneration ?? 0)
+      const prevPose = untrack(() => framing?.poseResetGeneration ?? 0)
+      framing = {
+        ...base,
+        framingZoom: 1,
+        framingGeneration: prevGen + 1,
+        poseResetGeneration: prevPose
+      }
+      return
+    }
+    const sel = structure.atoms.filter((atom) =>
+      keys.has(`${atom.chain_id || ''}:${atom.res_id}`)
+    )
+    if (!sel.length) return
+    selectionFramed = true
+    const base = getCameraForAtoms(sel)
     if (!base) return
     const prevGen = untrack(() => framing?.framingGeneration ?? 0)
     const prevPose = untrack(() => framing?.poseResetGeneration ?? 0)
     framing = {
       ...base,
-      framingZoom: sel.length ? 1.15 : 1,
+      framingZoom: 1.15,
       framingGeneration: prevGen + 1,
       poseResetGeneration: prevPose
     }
@@ -186,6 +211,18 @@
     >
       {loadError}
     </div>
+  {:else if structure && !(structure.atoms?.length)}
+    <div
+      class="flex flex-1 items-center justify-center p-4 text-center text-xs text-neutral-500 dark:text-neutral-600"
+    >
+      This file has no protein to draw.
+    </div>
+  {:else if structure && caResidueCount < 2}
+    <div
+      class="flex flex-1 items-center justify-center p-4 text-center text-xs text-neutral-500 dark:text-neutral-600"
+    >
+      This protein has no Cα trace to draw.
+    </div>
   {:else if structure && framing}
     <div class="flex shrink-0 items-center justify-between gap-2 border-b border-neutral-200 px-2 py-1 dark:border-neutral-800">
       <p class="text-[11px] font-medium text-neutral-700 dark:text-neutral-200">Structure</p>
@@ -195,6 +232,7 @@
       />
     </div>
     <div class="relative min-h-0 flex-1">
+      {#if active}
       <Canvas registerAsMain={false}>
         <CameraRig {framing} registerAsMain={false} />
         <Tube
@@ -202,7 +240,7 @@
           residues={structure.residues ?? []}
           {getColor}
           tubeRadius={0.7}
-          quality={3}
+          quality={2}
         />
         {#if selectedAtoms.length > 0}
           <BallStick
@@ -248,6 +286,7 @@
           />
         {/if}
       </Canvas>
+      {/if}
       {#if loading}
         <div
           class="pointer-events-none absolute top-2 right-2 rounded bg-neutral-900/70 px-2 py-1 text-[10px] text-white"
