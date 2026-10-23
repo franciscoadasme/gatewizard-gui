@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **macOS working directory:** a launch folder of `/` leaves the working directory empty. Run PropKa asks for a folder you can write in instead of creating `01_preparation_*` at the filesystem root.
 - **Equilibration production card:** NPAT shows that the surface area is held constant. NPgT keeps the surface-tension target in dyn/cm. Switching the sidebar ensemble between those two updates the Production card.
 - **Selection mode:** hovering a chain or residue keeps the same highlight while the pointer stays on that group, and atom picking skips atoms far from the pointer. A cartoon or tube turns yellow by recoloring the ribbon, and a long chain does not add a second ball-and-stick model. Deleting the selection asks in the page instead of a system dialog.
 - **Hidden 3D views:** leaving Preparation removes the PropKa 3D view. Visualize keeps its camera, zoom, and representations. The PropKa tube is a lighter preview. An empty PropKa view says when the file has no protein tube.

@@ -18,6 +18,7 @@
   import { getAppWindowIconUrl, getWordmarkUrl } from '../../shared/brand.js'
   import { installAppAlertOverride } from './lib/appDialog.svelte.js'
   import { themeState } from './lib/theme.svelte.js'
+  import { usableWorkingDir } from './lib/workingDir.js'
   import {
     analysisStatus,
     builderStatus,
@@ -71,8 +72,8 @@
 
   async function applyLaunchWorkingDir() {
     if (workingDir) return
-    const dir = await window.api?.getLaunchCwd?.()
-    if (typeof dir === 'string' && dir && !workingDir) workingDir = dir
+    const dir = usableWorkingDir(await window.api?.getLaunchCwd?.())
+    if (dir && !workingDir) workingDir = dir
   }
 
   async function onBrowseDirectory() {
@@ -81,7 +82,12 @@
       workingDir || undefined
     )
     if (!result.canceled) {
-      workingDir = result.dirPath
+      const dir = usableWorkingDir(result.dirPath)
+      if (!dir) {
+        alert('Choose a folder you can write in. The filesystem root cannot hold project output.')
+        return
+      }
+      workingDir = dir
     }
   }
 

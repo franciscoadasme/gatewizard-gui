@@ -20,6 +20,7 @@
     outputFolderPath,
     parentDirPath
   } from '../lib/outputFolders.js'
+  import { usableWorkingDir } from '../lib/workingDir.js'
   import { logEvent, preparationStatus } from '../lib/pageStatus.svelte.js'
   import { themeState } from '../lib/theme.svelte.js'
   import { themeBackgroundHex } from '../lib/viewerSettings.svelte.js'
@@ -130,7 +131,9 @@
     syncOutputFolderName()
   }
 
-  const resolvedOutputParent = $derived((outputParentDir.trim() || workingDir).trim())
+  const resolvedOutputParent = $derived(
+    (outputParentDir.trim() || usableWorkingDir(workingDir)).trim()
+  )
   const outputDir = $derived(outputFolderPath(resolvedOutputParent, resolveOutputFolderName()))
   const suggestedOutputFolderName = $derived(
     defaultPreparationFolderName(workingFile) || '01_preparation_structure'
@@ -314,6 +317,10 @@
   }
 
   async function onRunPropKa() {
+    if (!resolvedOutputParent) {
+      alert('Set a working directory you can write in before Run PropKa.')
+      return
+    }
     try {
       runningPropKa = true
       preparationStatus.propkaRunning = true

@@ -5943,12 +5943,47 @@ def render_titration_plot(payload: TitrationRenderRequest):
         raise HTTPException(status_code=400, detail=str(ex)) from ex
 
 
+def _is_filesystem_root(directory: Path) -> bool:
+    """True for `/` and for a drive root such as `C:\\`."""
+    resolved = directory.resolve()
+    return resolved == Path(resolved.anchor)
+
+
+def _require_project_directory(working_dir: str) -> Path:
+    """Directory that can hold a job folder. The filesystem root is refused."""
+    raw = (working_dir or "").strip()
+    if not raw:
+        raise HTTPException(
+            status_code=400,
+            detail="Set a working directory you can write in before continuing.",
+        )
+    base = Path(os.path.abspath(os.path.expanduser(raw)))
+    if _is_filesystem_root(base):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Set a working directory you can write in before continuing. "
+                "The filesystem root cannot hold preparation output."
+            ),
+        )
+    probe = base if base.exists() else base.parent
+    if _is_filesystem_root(probe) or not os.access(probe, os.W_OK):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot write to {base}. Set a working directory you can write in, "
+                "or choose a folder next to the PDB when that folder is writable."
+            ),
+        )
+    return base
+
+
 def _ensure_output_folder(working_dir: str, output_folder_name: str) -> Path:
     """Create (if needed) an output folder under the project working directory."""
-    base = Path(os.path.abspath(os.path.expanduser(working_dir)))
     folder_name = output_folder_name.strip()
     if not folder_name:
         raise HTTPException(status_code=400, detail="Output folder name cannot be empty")
+    base = _require_project_directory(working_dir)
     out = base / folder_name
     try:
         out.mkdir(parents=True, exist_ok=True)
@@ -5983,18 +6018,44 @@ def _resolve_preparation_workspace(
     if not source.is_file():
         raise HTTPException(status_code=404, detail=f"File not found: {source}")
 
-    if not working_dir:
-        return source.parent, source
+    if not (working_dir or "").strip():
+        parent = source.parent
+        if _is_filesystem_root(parent) or not os.access(parent, os.W_OK):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Set a working directory you can write in before Run PropKa. "
+                    "The folder next to this PDB is not writable."
+                ),
+            )
+        return parent, source
 
-    base = Path(os.path.abspath(os.path.expanduser(working_dir)))
-    base.mkdir(parents=True, exist_ok=True)
+    base = _require_project_directory(working_dir)
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+    except OSError as ex:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot create a preparation folder in {base}. "
+                "Set a working directory you can write in."
+            ),
+        ) from ex
 
-    if output_folder_name and output_folder_name.strip():
-        job_dir = base / output_folder_name.strip()
-    else:
-        job_dir = base / f"{default_prefix}_{source.stem}"
-
-    job_dir.mkdir(parents=True, exist_ok=True)
+    job_dir = base / (
+        output_folder_name.strip()
+        if output_folder_name and output_folder_name.strip()
+        else f"{default_prefix}_{source.stem}"
+    )
+    try:
+        job_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as ex:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot create {job_dir}. Set a working directory you can write in."
+            ),
+        ) from ex
     local_pdb = job_dir / source.name
     if source.resolve() != local_pdb.resolve():
         if force_refresh or not local_pdb.exists():

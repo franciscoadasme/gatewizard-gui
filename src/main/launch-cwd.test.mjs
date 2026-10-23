@@ -11,7 +11,8 @@ test('prefers the launcher pwd over npm INIT_CWD', () => {
       env: { GATEWIZARD_LAUNCH_CWD: '/data/project', INIT_CWD: '/tmp/npm' },
       cwd: '/opt/app',
       execDir: '/opt/app',
-      isDirectory: yes
+      isDirectory: yes,
+      isWritable: yes
     }),
     path.resolve('/data/project')
   )
@@ -23,7 +24,8 @@ test('uses the console folder npm recorded when the script cwd is the package ro
       env: { INIT_CWD: '/data/project' },
       cwd: '/src/gatewizard-gui',
       execDir: '/src/gatewizard-gui/node_modules/electron/dist',
-      isDirectory: yes
+      isDirectory: yes,
+      isWritable: yes
     }),
     path.resolve('/data/project')
   )
@@ -35,7 +37,8 @@ test('uses the process cwd when it is not the executable folder', () => {
       env: {},
       cwd: '/data/project',
       execDir: '/opt/GateWizard',
-      isDirectory: yes
+      isDirectory: yes,
+      isWritable: yes
     }),
     path.resolve('/data/project')
   )
@@ -47,7 +50,34 @@ test('leaves a desktop launch unset when cwd is the executable folder', () => {
       env: {},
       cwd: '/opt/GateWizard',
       execDir: '/opt/GateWizard',
-      isDirectory: yes
+      isDirectory: yes,
+      isWritable: yes
+    }),
+    ''
+  )
+})
+
+test('leaves the filesystem root unset', () => {
+  assert.equal(
+    resolveLaunchCwd({
+      env: {},
+      cwd: path.parse(process.cwd()).root,
+      execDir: path.join(path.parse(process.cwd()).root, 'GateWizard'),
+      isDirectory: yes,
+      isWritable: yes
+    }),
+    ''
+  )
+})
+
+test('leaves a read-only launch folder unset', () => {
+  assert.equal(
+    resolveLaunchCwd({
+      env: { GATEWIZARD_LAUNCH_CWD: '/private/var/folders/AppTranslocation/gatewizard' },
+      cwd: path.parse(process.cwd()).root,
+      execDir: '/opt/GateWizard',
+      isDirectory: yes,
+      isWritable: () => false
     }),
     ''
   )
@@ -59,7 +89,8 @@ test('skips a launch path that is not a directory', () => {
       env: { GATEWIZARD_LAUNCH_CWD: '/missing', INIT_CWD: '/data/project' },
       cwd: '/opt/GateWizard',
       execDir: '/opt/GateWizard',
-      isDirectory: (dir) => dir === '/data/project'
+      isDirectory: (dir) => dir === '/data/project',
+      isWritable: yes
     }),
     path.resolve('/data/project')
   )
