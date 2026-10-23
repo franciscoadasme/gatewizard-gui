@@ -162,7 +162,11 @@ export function normalizeEasingKind(kind) {
  */
 export function normalizeBezier(raw, kind) {
   const preset = EASING_PRESETS[kind] ?? EASING_PRESETS[DEFAULT_EASING_KIND]
-  if (Array.isArray(raw) && raw.length === 4 && raw.every((n) => typeof n === 'number' && Number.isFinite(n))) {
+  if (
+    Array.isArray(raw) &&
+    raw.length === 4 &&
+    raw.every((n) => typeof n === 'number' && Number.isFinite(n))
+  ) {
     return [
       clamp(0, 1, raw[0]),
       clamp(-0.5, 1.5, raw[1]),
@@ -206,6 +210,26 @@ export function easingLabel(kind, bezier) {
   const k = normalizeEasingKind(kind)
   if (k === 'bezier') return 'Custom curve'
   return EASING_PRESETS[k].label
+}
+
+/** One bar color per easing kind. Selection keeps the fill and adds a ring. */
+const EASING_BAR_CLASS = {
+  linear: 'border-neutral-500/50 bg-neutral-500/25',
+  easeIn: 'border-sky-500/60 bg-sky-500/30',
+  easeOut: 'border-orange-500/60 bg-orange-500/30',
+  easeInOut: 'border-teal-500/60 bg-teal-500/30',
+  easeInOutCubic: 'border-violet-500/60 bg-violet-500/30',
+  bezier: 'border-rose-500/60 bg-rose-500/30'
+}
+
+/**
+ * @param {unknown} kind
+ * @param {boolean} [selected]
+ */
+export function easingBarClass(kind, selected = false) {
+  const k = normalizeEasingKind(kind)
+  const base = EASING_BAR_CLASS[k] ?? EASING_BAR_CLASS.easeInOutCubic
+  return selected ? `${base} ring-2 ring-white/90` : base
 }
 
 /**

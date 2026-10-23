@@ -1,5 +1,5 @@
 <script>
-  import { onDestroy } from 'svelte'
+  import { onDestroy, tick } from 'svelte'
   import Button from '../ui/Button.svelte'
   import Spinner from '../ui/Spinner.svelte'
   import Play from '../icons/Play.svelte'
@@ -11,7 +11,8 @@
   import ExportVideo from '../icons/ExportVideo.svelte'
   import AnimationEasingEditor from './AnimationEasingEditor.svelte'
   import AnimationFadeEditor from './AnimationFadeEditor.svelte'
-  import { easingLabel } from '../../lib/animation/easing.js'
+  import { easingBarClass, easingLabel } from '../../lib/animation/easing.js'
+  import { nextTimelineZoom, timelineZoomMax } from '../../lib/animation/timelineZoom.js'
   import { viewsApproximatelyEqual } from '../../lib/animation/keyframeEasing.js'
   import { EXPORT_ASPECT_PRESETS } from '../../lib/animation/schema.js'
   import {
@@ -26,6 +27,7 @@
   } from '../../lib/animation/timelinePlayhead.js'
   import { isTrajHotkeyBlocked } from '../../lib/viewer/trajectoryFrames.js'
   import ConfirmPrompt from './ConfirmPrompt.svelte'
+  import SectionHelp from '../SectionHelp.svelte'
 
   /**
    * @type {{
@@ -140,6 +142,12 @@
   const cameraKeys = $derived([...(cameraTrack?.keys ?? [])].sort((a, b) => a.time_s - b.time_s))
   let trackEl = $state(/** @type {HTMLDivElement | null} */ (null))
   let rulerEl = $state(/** @type {HTMLDivElement | null} */ (null))
+  let rulerScrollEl = $state(/** @type {HTMLDivElement | null} */ (null))
+  let trackScrollEl = $state(/** @type {HTMLDivElement | null} */ (null))
+  let zoom = $state(1)
+  let trackListHeight = $state(160)
+  const zoomMax = $derived(timelineZoomMax(safeDuration))
+  const laneLabelClass = 'sticky left-0 z-20 shrink-0 bg-neutral-100 dark:bg-neutral-900'
   let draggingId = $state(/** @type {string | null} */ (null))
   let draggingPlayhead = $state(false)
   let displayPlayhead = $state(/** @type {number | null} */ (null))
@@ -169,7 +177,9 @@
     const size = EXPORT_ASPECT_PRESETS[/** @type {keyof typeof EXPORT_ASPECT_PRESETS} */ (preset)]
     onExportFrameChange({
       ...exportFrame,
-      aspectPreset: /** @type {import('../../lib/animation/schema.js').AnimationAspectPreset} */ (preset),
+      aspectPreset: /** @type {import('../../lib/animation/schema.js').AnimationAspectPreset} */ (
+        preset
+      ),
       ...(preset !== 'custom' && size ? { width: size.width, height: size.height } : {})
     })
   }
@@ -280,7 +290,9 @@
 
   /** @param {string} id */
   function keySelectedClass(id) {
-    return selectedKeyIds.includes(id) ? 'ring-2 ring-white ring-offset-1 ring-offset-neutral-900' : ''
+    return selectedKeyIds.includes(id)
+      ? 'ring-2 ring-white ring-offset-1 ring-offset-neutral-900'
+      : ''
   }
 
   /** @param {string} id */
@@ -507,15 +519,25 @@
     window.addEventListener('pointerup', onUp)
   }
 
+  const visibleSpan = $derived(safeDuration / Math.max(1, zoom))
+
   const rulerTicks = $derived.by(() => {
     /** @type {{ time: number, label?: string, major: boolean }[]} */
     const ticks = []
     const majorStep =
-      safeDuration <= 8 ? 1 : safeDuration <= 30 ? 2 : safeDuration <= 90 ? 5 : safeDuration <= 240 ? 10 : 30
+      visibleSpan <= 8
+        ? 1
+        : visibleSpan <= 30
+          ? 2
+          : visibleSpan <= 90
+            ? 5
+            : visibleSpan <= 240
+              ? 10
+              : 30
     for (let t = 0; t <= safeDuration + 1e-6; t += majorStep) {
       ticks.push({ time: t, label: formatRulerTime(t), major: true })
     }
-    if (safeDuration <= 12 && frameStep <= 0.5) {
+    if (visibleSpan <= 12 && frameStep <= 0.5) {
       for (let t = 0; t <= safeDuration + 1e-6; t += frameStep) {
         const onMajor = ticks.some((tick) => Math.abs(tick.time - t) < 1e-6)
         if (!onMajor) ticks.push({ time: t, major: false })
@@ -524,6 +546,70 @@
     }
     return ticks
   })
+
+  $effect(() => {
+    const max = zoomMax
+    if (zoom > max) zoom = max
+  })
+
+  let syncingScroll = false
+
+  /** @param {HTMLDivElement | null} from @param {HTMLDivElement | null} to */
+  function syncScroll(from, to) {
+    if (syncingScroll || !from || !to) return
+    syncingScroll = true
+    to.scrollLeft = from.scrollLeft
+    syncingScroll = false
+  }
+
+  /** @param {number} next */
+  async function setZoom(next) {
+    const anchor = shownPlayhead / safeDuration
+    zoom = next
+    await tick()
+    const el = rulerScrollEl
+    if (!el) return
+    el.scrollLeft = Math.max(0, anchor * el.scrollWidth - el.clientWidth / 2)
+    if (trackScrollEl) trackScrollEl.scrollLeft = el.scrollLeft
+  }
+
+  function zoomIn() {
+    void setZoom(nextTimelineZoom(zoom, 1, safeDuration))
+  }
+
+  function zoomOut() {
+    void setZoom(nextTimelineZoom(zoom, -1, safeDuration))
+  }
+
+  /**
+   * @param {unknown} kind
+   * @param {boolean} selected
+   */
+  function segmentClass(kind, selected) {
+    return `absolute top-1/2 h-2 -translate-y-1/2 rounded-full border ${
+      exporting ? 'pointer-events-none opacity-60' : 'cursor-pointer'
+    } ${easingBarClass(kind, selected)}`
+  }
+
+  /** @param {PointerEvent} event */
+  function onTrackListResize(event) {
+    if (event.button !== 0) return
+    event.preventDefault()
+    const startY = event.clientY
+    const startH = trackListHeight
+    const maxH = Math.round(window.innerHeight * 0.7)
+    /** @param {PointerEvent} ev */
+    const onMove = (ev) => {
+      const next = startH + (startY - ev.clientY)
+      trackListHeight = Math.max(64, Math.min(maxH, next))
+    }
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
 
   /** @param {string} trackId */
   function trackLabel(trackId) {
@@ -602,7 +688,7 @@
     trackContextMenu = {
       x: e.clientX,
       y: e.clientY,
-      time_s: snapTime(time_s ?? timeFromClientX(e.clientX)),
+      time_s: snapTime(time_s ?? timeFromClientX(e.clientX))
     }
   }
 
@@ -679,7 +765,7 @@
     }
     for (const sid of Object.keys(structureTracks || {})) ids.add(sid)
     for (const v of liveViews) {
-      if (v.structureId && !/** @type {any} */ (v)._isSelHighlight) ids.add(v.structureId)
+      if (v.structureId && !(/** @type {any} */ (v)._isSelHighlight)) ids.add(v.structureId)
     }
     return [...ids]
   })
@@ -691,7 +777,9 @@
     for (const vid of viewTracks) {
       const live = liveViews.find((v) => String(v.id) === vid)
       if (live?.structureId === structureId) ids.add(vid)
-      else if ((viewKeyTracks?.[vid]?.keys ?? []).some((k) => k.view?.structureId === structureId)) {
+      else if (
+        (viewKeyTracks?.[vid]?.keys ?? []).some((k) => k.view?.structureId === structureId)
+      ) {
         ids.add(vid)
       }
     }
@@ -965,7 +1053,8 @@
   function menuDelete() {
     if (!contextMenu) return
     const id = contextMenu.keyframeId
-    const ids = selectedKeyIds.includes(id) && selectedKeyIds.length > 1 ? [...selectedKeyIds] : [id]
+    const ids =
+      selectedKeyIds.includes(id) && selectedKeyIds.length > 1 ? [...selectedKeyIds] : [id]
     closeContextMenu()
     requestDelete(ids)
   }
@@ -1062,7 +1151,19 @@
 <div
   class="flex shrink-0 flex-col border-t border-neutral-300 bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-900"
 >
+  <div
+    class="h-1.5 shrink-0 cursor-ns-resize bg-neutral-300/80 hover:bg-sky-500/70 dark:bg-neutral-700 dark:hover:bg-sky-400/70"
+    role="separator"
+    aria-orientation="horizontal"
+    aria-label="Resize track list"
+    title="Drag to resize the track list"
+    onpointerdown={onTrackListResize}
+  ></div>
   <div class="flex items-center gap-2 px-3 py-2">
+    <SectionHelp
+      docsId="animation"
+      text="Capture writes a key on the active track. Camera, structure, and representation each keep their own keys. Ctrl+click selects several keys."
+    />
     <button
       type="button"
       class={transportBtnClass}
@@ -1088,10 +1189,16 @@
       <Stop className="size-3.5" />
     </button>
 
-    <span class="shrink-0 tabular-nums text-[11px] text-neutral-500" title="Snaps to {safeFps} FPS frames">
+    <span
+      class="shrink-0 text-[11px] text-neutral-500 tabular-nums"
+      title="Snaps to {safeFps} FPS frames"
+    >
       {formatTime(shownPlayhead)} / {formatTime(duration_s)}
     </span>
-    <label class="flex shrink-0 items-center gap-1 text-[11px] text-neutral-500" title="Jump to animation time (seconds)">
+    <label
+      class="flex shrink-0 items-center gap-1 text-[11px] text-neutral-500"
+      title="Jump to animation time (seconds)"
+    >
       Time
       <input
         class="field-input w-14 rounded px-1 py-0.5 text-right font-mono text-[10px] tabular-nums"
@@ -1111,7 +1218,10 @@
         onchange={(e) => commitJumpTime(e.currentTarget.value)}
       />
     </label>
-    <label class="flex shrink-0 items-center gap-1 text-[11px] text-neutral-500" title="Jump to animation frame (timeline FPS, not MD)">
+    <label
+      class="flex shrink-0 items-center gap-1 text-[11px] text-neutral-500"
+      title="Jump to animation frame (timeline FPS, not MD)"
+    >
       Frame
       <input
         class="field-input w-12 rounded px-1 py-0.5 text-right font-mono text-[10px] tabular-nums"
@@ -1143,8 +1253,19 @@
           : 'Move the playhead onto a keyframe to delete it'}
       aria-label="Delete keyframe at playhead"
     >
-      <svg viewBox="0 0 16 16" class="size-3.5" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-        <path d="M3 4h10M6 4V3h4v1M5 4l.5 9h5L11 4" stroke-linecap="round" stroke-linejoin="round" />
+      <svg
+        viewBox="0 0 16 16"
+        class="size-3.5"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.5"
+        aria-hidden="true"
+      >
+        <path
+          d="M3 4h10M6 4V3h4v1M5 4l.5 9h5L11 4"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
       </svg>
     </button>
     <button
@@ -1206,7 +1327,13 @@
           </Button>
         {/if}
         {#if onClose}
-          <Button variant="outline" size="sm" onclick={onClose} disabled={exporting} title="Close timeline (Esc)">
+          <Button
+            variant="outline"
+            size="sm"
+            onclick={onClose}
+            disabled={exporting}
+            title="Close timeline (Esc)"
+          >
             Close
           </Button>
         {/if}
@@ -1214,155 +1341,182 @@
     {/if}
   </div>
 
-  <div class="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 pb-1 text-[11px] text-neutral-500">
-    <label class="flex min-w-0 items-center gap-1">
-      <span class="shrink-0">Project</span>
-      <input
-        class="{fieldClass} w-28"
-        value={projectName}
-        disabled={exporting || !onProjectNameChange}
-        oninput={(e) => onProjectNameChange?.(e.currentTarget.value)}
-      />
-    </label>
-    <label class="flex min-w-0 items-center gap-1">
-      <span class="shrink-0">Output</span>
-      <input
-        class="{fieldClass} w-36 font-mono text-[10px]"
-        value={outputFolder}
-        disabled={exporting || !onOutputFolderChange}
-        oninput={(e) => onOutputFolderChange?.(e.currentTarget.value)}
-      />
-    </label>
-    <label class="flex items-center gap-1">
-      FPS
-      <input
-        class={numClass}
-        type="number"
-        min="1"
-        max="120"
-        step="1"
-        value={fps}
-        disabled={exporting || !onFpsChange}
-        onchange={(e) => onFpsChange && commitNum(e, onFpsChange, 1, 120, 1)}
-      />
-    </label>
-    <label class="flex items-center gap-1">
-      Duration
-      <input
-        class={numClass}
-        type="number"
-        min="0.5"
-        max="600"
-        step="0.1"
-        value={duration_s}
-        disabled={exporting || !onDurationChange}
-        onchange={(e) => onDurationChange && commitNum(e, onDurationChange, 0.5, 600, 0.1)}
-      />
-    </label>
-    <select
-      class="field-input w-[4.25rem] shrink-0 rounded px-1 py-0.5 text-[10px]"
-      value={exportFrame.aspectPreset}
-      disabled={exporting || !onExportFrameChange}
-      title="Aspect ratio"
-      onchange={(e) => onAspectPresetChange(e.currentTarget.value)}
-    >
-      {#each aspectOptions as opt}
-        <option value={opt}>{opt}</option>
-      {/each}
-    </select>
-    <input
-      class={numClass}
-      type="number"
-      min="64"
-      step="1"
-      value={exportFrame.width}
-      disabled={exporting || !onExportFrameChange || exportFrame.aspectPreset !== 'custom'}
-      title="Export width"
-      onchange={(e) =>
-        onExportFrameChange?.({
-          ...exportFrame,
-          aspectPreset: 'custom',
-          width: Math.max(64, Number(e.currentTarget.value) || exportFrame.width)
-        })}
-    />
-    <span class="text-neutral-600">×</span>
-    <input
-      class={numClass}
-      type="number"
-      min="64"
-      step="1"
-      value={exportFrame.height}
-      disabled={exporting || !onExportFrameChange || exportFrame.aspectPreset !== 'custom'}
-      title="Export height"
-      onchange={(e) =>
-        onExportFrameChange?.({
-          ...exportFrame,
-          aspectPreset: 'custom',
-          height: Math.max(64, Number(e.currentTarget.value) || exportFrame.height)
-        })}
-    />
-    <label class="flex items-center gap-1">
-      Quality
+  <div class="flex items-start gap-x-2 px-3 pb-1 text-[11px] text-neutral-500">
+    <div class="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+      <label class="flex min-w-0 items-center gap-1">
+        <span class="shrink-0">Project</span>
+        <input
+          class="{fieldClass} w-28"
+          value={projectName}
+          disabled={exporting || !onProjectNameChange}
+          oninput={(e) => onProjectNameChange?.(e.currentTarget.value)}
+        />
+      </label>
+      <label class="flex min-w-0 items-center gap-1">
+        <span class="shrink-0">Output</span>
+        <input
+          class="{fieldClass} w-36 font-mono text-[10px]"
+          value={outputFolder}
+          disabled={exporting || !onOutputFolderChange}
+          oninput={(e) => onOutputFolderChange?.(e.currentTarget.value)}
+        />
+      </label>
+      <label class="flex items-center gap-1">
+        FPS
+        <input
+          class={numClass}
+          type="number"
+          min="1"
+          max="120"
+          step="1"
+          value={fps}
+          disabled={exporting || !onFpsChange}
+          onchange={(e) => onFpsChange && commitNum(e, onFpsChange, 1, 120, 1)}
+        />
+      </label>
+      <label class="flex items-center gap-1">
+        Duration
+        <input
+          class={numClass}
+          type="number"
+          min="0.5"
+          max="600"
+          step="0.1"
+          value={duration_s}
+          disabled={exporting || !onDurationChange}
+          onchange={(e) => onDurationChange && commitNum(e, onDurationChange, 0.5, 600, 0.1)}
+        />
+      </label>
       <select
-        class="field-input w-12 shrink-0 rounded px-1 py-0.5 text-[10px]"
-        value={String(exportFrame.quality ?? 2)}
+        class="field-input w-[4.25rem] shrink-0 rounded px-1 py-0.5 text-[10px]"
+        value={exportFrame.aspectPreset}
         disabled={exporting || !onExportFrameChange}
-        onchange={(e) =>
-          onExportFrameChange?.({
-            ...exportFrame,
-            quality: Number(e.currentTarget.value) || 2
-          })}
+        title="Aspect ratio"
+        onchange={(e) => onAspectPresetChange(e.currentTarget.value)}
       >
-        <option value="1">1×</option>
-        <option value="2">2×</option>
-        <option value="3">3×</option>
-        <option value="4">4×</option>
-        <option value="5">5×</option>
-      </select>
-    </label>
-    <label class="flex items-center gap-1">
-      Format
-      <select
-        class="field-input w-28 shrink-0 rounded px-1 py-0.5 text-[10px]"
-        value={selectedFormat}
-        disabled={exporting || !onExportFrameChange}
-        title="Export format"
-        onchange={(e) =>
-          onExportFrameChange?.({
-            ...exportFrame,
-            exportFormat: coerceExportFormat(e.currentTarget.value, exportFrame.transparentBg === true)
-          })}
-      >
-        {#each formatOptions as fmt}
-          <option value={fmt.id}>{fmt.label}</option>
+        {#each aspectOptions as opt}
+          <option value={opt}>{opt}</option>
         {/each}
       </select>
-    </label>
-    <label class="flex items-center gap-1">
       <input
-        type="checkbox"
-        checked={exportFrame.showGuide}
-        disabled={exporting || !onExportFrameChange}
-        onchange={(e) => onExportFrameChange?.({ ...exportFrame, showGuide: e.currentTarget.checked })}
-      />
-      Safe area
-    </label>
-    <label class="flex items-center gap-1" title="Transparent movies are GIF, WebM, or PNG frames. MP4 and MOV stay opaque.">
-      <input
-        type="checkbox"
-        checked={exportFrame.transparentBg === true}
-        disabled={exporting || !onExportFrameChange}
-        onchange={(e) => {
-          const transparentBg = e.currentTarget.checked
+        class={numClass}
+        type="number"
+        min="64"
+        step="1"
+        value={exportFrame.width}
+        disabled={exporting || !onExportFrameChange || exportFrame.aspectPreset !== 'custom'}
+        title="Export width"
+        onchange={(e) =>
           onExportFrameChange?.({
             ...exportFrame,
-            transparentBg,
-            exportFormat: coerceExportFormat(exportFrame.exportFormat, transparentBg)
-          })
-        }}
+            aspectPreset: 'custom',
+            width: Math.max(64, Number(e.currentTarget.value) || exportFrame.width)
+          })}
       />
-      Transparent
-    </label>
+      <span class="text-neutral-600">×</span>
+      <input
+        class={numClass}
+        type="number"
+        min="64"
+        step="1"
+        value={exportFrame.height}
+        disabled={exporting || !onExportFrameChange || exportFrame.aspectPreset !== 'custom'}
+        title="Export height"
+        onchange={(e) =>
+          onExportFrameChange?.({
+            ...exportFrame,
+            aspectPreset: 'custom',
+            height: Math.max(64, Number(e.currentTarget.value) || exportFrame.height)
+          })}
+      />
+      <label class="flex items-center gap-1">
+        Quality
+        <select
+          class="field-input w-12 shrink-0 rounded px-1 py-0.5 text-[10px]"
+          value={String(exportFrame.quality ?? 2)}
+          disabled={exporting || !onExportFrameChange}
+          onchange={(e) =>
+            onExportFrameChange?.({
+              ...exportFrame,
+              quality: Number(e.currentTarget.value) || 2
+            })}
+        >
+          <option value="1">1×</option>
+          <option value="2">2×</option>
+          <option value="3">3×</option>
+          <option value="4">4×</option>
+          <option value="5">5×</option>
+        </select>
+      </label>
+      <label class="flex items-center gap-1">
+        Format
+        <select
+          class="field-input w-28 shrink-0 rounded px-1 py-0.5 text-[10px]"
+          value={selectedFormat}
+          disabled={exporting || !onExportFrameChange}
+          title="Export format"
+          onchange={(e) =>
+            onExportFrameChange?.({
+              ...exportFrame,
+              exportFormat: coerceExportFormat(
+                e.currentTarget.value,
+                exportFrame.transparentBg === true
+              )
+            })}
+        >
+          {#each formatOptions as fmt}
+            <option value={fmt.id}>{fmt.label}</option>
+          {/each}
+        </select>
+      </label>
+      <label class="flex items-center gap-1">
+        <input
+          type="checkbox"
+          checked={exportFrame.showGuide}
+          disabled={exporting || !onExportFrameChange}
+          onchange={(e) =>
+            onExportFrameChange?.({ ...exportFrame, showGuide: e.currentTarget.checked })}
+        />
+        Safe area
+      </label>
+      <label
+        class="flex items-center gap-1"
+        title="Transparent movies are GIF, WebM, or PNG frames. MP4 and MOV stay opaque."
+      >
+        <input
+          type="checkbox"
+          checked={exportFrame.transparentBg === true}
+          disabled={exporting || !onExportFrameChange}
+          onchange={(e) => {
+            const transparentBg = e.currentTarget.checked
+            onExportFrameChange?.({
+              ...exportFrame,
+              transparentBg,
+              exportFormat: coerceExportFormat(exportFrame.exportFormat, transparentBg)
+            })
+          }}
+        />
+        Transparent
+      </label>
+    </div>
+    <div class="ml-auto flex shrink-0 items-center gap-1" title="Timeline width">
+      <button
+        type="button"
+        class="rounded border border-neutral-300 px-1.5 py-0.5 text-[11px] leading-none hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:hover:bg-neutral-800"
+        aria-label="Zoom out timeline"
+        title="Zoom out"
+        disabled={exporting || zoom <= 1}
+        onclick={zoomOut}>−</button
+      >
+      <button
+        type="button"
+        class="rounded border border-neutral-300 px-1.5 py-0.5 text-[11px] leading-none hover:bg-neutral-200 disabled:opacity-40 dark:border-neutral-700 dark:hover:bg-neutral-800"
+        aria-label="Zoom in timeline"
+        title="Zoom in"
+        disabled={exporting || zoom >= zoomMax - 1e-6}
+        onclick={zoomIn}>+</button
+      >
+    </div>
   </div>
   {#if !workingDir}
     <p class="px-3 pb-1 text-[10px] text-amber-700 dark:text-amber-300">
@@ -1371,376 +1525,396 @@
   {/if}
 
   <div class="space-y-0.5 px-3 pb-2">
-    <!-- Time ruler -->
-    <div class="flex gap-2">
-      <div class="w-24 shrink-0 pt-3 text-[10px] font-medium text-neutral-500">Time</div>
-      <div class="relative min-w-0 flex-1">
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div
-          bind:this={rulerEl}
-          class="relative h-5 cursor-pointer border-b border-neutral-300/80 dark:border-neutral-700/80 {exporting
-            ? 'cursor-default opacity-70'
-            : draggingPlayhead
-              ? 'cursor-grabbing'
-              : ''}"
-          role="slider"
-          aria-label="Time ruler"
-          aria-valuemin={0}
-          aria-valuemax={duration_s}
-          aria-valuenow={shownPlayhead}
-          tabindex="0"
-          onpointerdown={onRulerPointerDown}
-          oncontextmenu={onTrackContextMenu}
-          onkeydown={(e) => {
-            if (exporting) return
-            if (e.key === 'ArrowLeft') {
-              e.preventDefault()
-              scrubTo(shownPlayhead - frameStep)
-            } else if (e.key === 'ArrowRight') {
-              e.preventDefault()
-              scrubTo(shownPlayhead + frameStep)
-            }
-          }}
-        >
-          {#each rulerTicks as tick (tick.time)}
-            {@const left = pct(tick.time)}
+    <div
+      bind:this={rulerScrollEl}
+      class="timeline-ruler-scroll overflow-x-auto"
+      onscroll={() => syncScroll(rulerScrollEl, trackScrollEl)}
+    >
+      <div class="min-w-full space-y-0.5" style="width: {zoom * 100}%">
+        <!-- Time ruler -->
+        <div class="flex gap-2">
+          <div class="{laneLabelClass} w-24 pt-3 text-[10px] font-medium text-neutral-500">
+            Time
+          </div>
+          <div class="relative min-w-0 flex-1">
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
-              class="pointer-events-none absolute bottom-0 z-0 -translate-x-1/2"
-              style="left: {left}%"
+              bind:this={rulerEl}
+              class="relative h-5 cursor-pointer border-b border-neutral-300/80 dark:border-neutral-700/80 {exporting
+                ? 'cursor-default opacity-70'
+                : draggingPlayhead
+                  ? 'cursor-grabbing'
+                  : ''}"
+              role="slider"
+              aria-label="Time ruler"
+              aria-valuemin={0}
+              aria-valuemax={duration_s}
+              aria-valuenow={shownPlayhead}
+              tabindex="0"
+              onpointerdown={onRulerPointerDown}
+              oncontextmenu={onTrackContextMenu}
+              onkeydown={(e) => {
+                if (exporting) return
+                if (e.key === 'ArrowLeft') {
+                  e.preventDefault()
+                  scrubTo(shownPlayhead - frameStep)
+                } else if (e.key === 'ArrowRight') {
+                  e.preventDefault()
+                  scrubTo(shownPlayhead + frameStep)
+                }
+              }}
             >
-              <div
-                class="{tick.major
-                  ? 'h-2.5 w-px bg-neutral-500 dark:bg-neutral-400'
-                  : 'h-1.5 w-px bg-neutral-400/70 dark:bg-neutral-600/70'}"
-              ></div>
+              {#each rulerTicks as tick (tick.time)}
+                {@const left = pct(tick.time)}
+                <div
+                  class="pointer-events-none absolute bottom-0 z-0 -translate-x-1/2"
+                  style="left: {left}%"
+                >
+                  <div
+                    class={tick.major
+                      ? 'h-2.5 w-px bg-neutral-500 dark:bg-neutral-400'
+                      : 'h-1.5 w-px bg-neutral-400/70 dark:bg-neutral-600/70'}
+                  ></div>
+                </div>
+              {/each}
+              {#each rulerTicks as tick (tick.time)}
+                {#if tick.label}
+                  {@const left = pct(tick.time)}
+                  <span
+                    class="pointer-events-none absolute top-0 z-10 -translate-x-1/2 text-[9px] font-medium whitespace-nowrap text-white tabular-nums drop-shadow-[0_1px_2px_rgba(0,0,0,0.95)]"
+                    style="left: {left}%">{tick.label}</span
+                  >
+                {/if}
+              {/each}
             </div>
-          {/each}
-          {#each rulerTicks as tick (tick.time)}
-            {#if tick.label}
-              {@const left = pct(tick.time)}
-              <span
-                class="pointer-events-none absolute top-0 z-10 -translate-x-1/2 whitespace-nowrap text-[9px] font-medium tabular-nums text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.95)]"
-                style="left: {left}%"
-                >{tick.label}</span
-              >
-            {/if}
-          {/each}
-        </div>
-      </div>
-    </div>
-
-    <!-- Camera + playhead (pinned) -->
-    <div class="flex gap-2">
-      <button
-        type="button"
-        class="w-24 shrink-0 truncate pt-0.5 text-left text-[10px] font-medium {isActiveTrack({ kind: 'camera' })
-          ? 'text-yellow-600 dark:text-yellow-400'
-          : 'text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'}"
-        title="Camera track — click to make Capture write camera keys"
-        onclick={() => selectTrack({ kind: 'camera' })}
-      >
-        Camera
-      </button>
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div
-        bind:this={trackEl}
-        class="relative h-5 min-w-0 flex-1 {exporting ? 'cursor-default' : draggingPlayhead ? 'cursor-grabbing' : 'cursor-pointer'}"
-        onpointerdown={onLanePointerDown}
-        oncontextmenu={onTrackContextMenu}
-      >
-        <div
-          class="pointer-events-none absolute inset-x-0 top-1/2 h-3 -translate-y-1/2 rounded-full bg-neutral-300 dark:bg-neutral-700 {exporting
-            ? 'opacity-70'
-            : ''}"
-        ></div>
-        <div
-          class="pointer-events-none absolute top-1/2 h-3 -translate-y-1/2 rounded-full bg-yellow-500/70"
-          style="left: 0; width: {pct(shownPlayhead)}%"
-        ></div>
-        {#each camSegments as seg (seg.to.id)}
-          {@const left = pct(seg.from.time_s)}
-          {@const width = Math.max(0.5, pct(seg.to.time_s) - left)}
-          {@const selected =
-            selectedSegment?.toKeyframeId === seg.to.id && selectedSegment?.channel === 'camera'}
-          {@const kind = seg.to.cameraEasing ?? 'easeInOutCubic'}
-          <button
-            type="button"
-            data-segment="camera"
-            class="absolute top-1/2 h-2 -translate-y-1/2 rounded-full border transition-colors {exporting
-              ? 'pointer-events-none opacity-60'
-              : 'cursor-pointer hover:border-sky-400/70 hover:bg-sky-500/25'} {selected
-              ? 'border-sky-400 bg-sky-500/35'
-              : kind === 'linear'
-                ? 'border-neutral-500/50 bg-neutral-500/20'
-                : 'border-violet-500/40 bg-violet-500/20'}"
-            style="left: {left}%; width: {width}%"
-            title="Camera · {easingLabel(kind, seg.to.cameraEasingBezier)} — click to edit"
-            onclick={(e) => onSegmentClick(e, seg.to.id, 'camera')}
-          ></button>
-        {/each}
-        {#each cameraKeys as kf (kf.id)}
-          {@const left = pct(kf.time_s)}
-          {@const active = Math.abs(shownPlayhead - kf.time_s) < frameStep * 0.51}
-          {@const dragging = draggingId === kf.id}
-          <button
-            type="button"
-            data-keyframe={kf.id}
-            class="absolute top-1/2 z-10 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-yellow-950/40 transition-transform {dragging
-              ? 'scale-125 cursor-grabbing bg-yellow-200'
-              : exporting
-                ? 'cursor-default'
-                : 'cursor-grab hover:scale-110'} {active
-              ? 'bg-yellow-300'
-              : 'bg-yellow-500/90'} {keySelectedClass(kf.id)}"
-            style="left: {left}%"
-            title="Camera · {snapTime(kf.time_s).toFixed(3)}s — drag to move, right-click to edit"
-            onpointerdown={(e) => onKeyframePointerDown(e, kf.id)}
-            onclick={(e) => onKeyframeClick(e, kf.id)}
-            oncontextmenu={(e) => openKeyframeMenu(e, kf.id)}
-          ></button>
-        {/each}
-        <button
-          type="button"
-          data-playhead="true"
-          class="absolute top-0 z-20 flex -translate-x-1/2 flex-col items-center {exporting
-            ? 'pointer-events-none'
-            : draggingPlayhead
-              ? 'cursor-grabbing'
-              : 'cursor-ew-resize'}"
-          style="left: {pct(shownPlayhead)}%"
-          title="Playhead · {snapTime(shownPlayhead).toFixed(3)}s — drag to scrub (snaps to frames), right-click to capture or delete"
-          aria-label="Playhead"
-          onpointerdown={startPlayheadDrag}
-          onclick={(e) => e.stopPropagation()}
-          oncontextmenu={onPlayheadContextMenu}
-        >
-          <div class="h-4 w-0.5 rounded-full bg-white shadow dark:bg-neutral-100"></div>
-          <div class="size-2 -mt-0.5 rotate-45 rounded-sm bg-white shadow dark:bg-neutral-100"></div>
-        </button>
-      </div>
-    </div>
-
-    <div class="mt-0.5 max-h-[40vh] space-y-0.5 overflow-y-auto overscroll-contain">
-      {#each structureRowIds as structureId (structureId)}
-        {@const structKeys = [...(structureTracks?.[structureId]?.keys ?? [])].sort(
-          (a, b) => a.time_s - b.time_s
-        )}
-        {@const structSegs = channelSegments(structKeys)}
-        {@const expanded = isStructureExpanded(structureId)}
-        {@const structActive = isActiveTrack({ kind: 'structure', structureId })}
-        <div class="flex gap-2">
-          <div class="flex w-24 shrink-0 items-start gap-0.5 pt-0.5">
-            <button
-              type="button"
-              class="shrink-0 rounded px-0.5 text-[10px] text-neutral-500 hover:bg-neutral-200/80 dark:hover:bg-neutral-800"
-              title={expanded ? 'Collapse representations' : 'Expand representations'}
-              onclick={() => toggleStructureExpanded(structureId)}
-            >
-              {expanded ? '▾' : '▸'}
-            </button>
-            <button
-              type="button"
-              class="min-w-0 flex-1 truncate text-left text-[10px] font-medium {structActive
-                ? 'text-amber-600 dark:text-amber-400'
-                : 'text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'}"
-              title="{structureLabel(structureId)} — click to capture motion on this structure"
-              onclick={() => selectTrack({ kind: 'structure', structureId })}
-            >
-              {structureLabel(structureId)}
-            </button>
-          </div>
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div
-            class="relative h-5 min-w-0 flex-1 {exporting ? '' : 'cursor-pointer'}"
-            onpointerdown={onLanePointerDown}
-          >
-            {#each structSegs as seg (`motion-${structureId}-${seg.to.id}`)}
-              {@const left = pct(seg.from.time_s)}
-              {@const width = Math.max(0.5, pct(seg.to.time_s) - left)}
-              {@const kind = seg.to.motionEasing ?? 'easeInOutCubic'}
-              {@const selected =
-                selectedSegment?.toKeyframeId === seg.to.id &&
-                selectedSegment?.channel === 'motion' &&
-                selectedSegment?.structureId === structureId}
-              <button
-                type="button"
-                data-segment="motion"
-                class="absolute top-1/2 h-2 -translate-y-1/2 rounded-full border transition-colors {exporting
-                  ? 'pointer-events-none opacity-60'
-                  : 'cursor-pointer hover:border-sky-400/70 hover:bg-sky-500/25'} {selected
-                  ? 'border-sky-400 bg-sky-500/35'
-                  : kind === 'linear'
-                    ? 'border-neutral-500/50 bg-neutral-500/20'
-                    : 'border-emerald-500/40 bg-emerald-500/20'}"
-                style="left: {left}%; width: {width}%"
-                title="{structureLabel(structureId)} · {easingLabel(kind, seg.to.motionEasingBezier)} — click to edit"
-                onclick={(e) => onSegmentClick(e, seg.to.id, 'motion', structureId)}
-              ></button>
-            {/each}
-            {#each structKeys as kf (kf.id)}
-              {@const left = pct(kf.time_s)}
-              {@const dragging = draggingId === kf.id}
-              <button
-                type="button"
-                data-keyframe={kf.id}
-                class="absolute top-1/2 z-10 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-amber-950/30 transition-transform {dragging
-                  ? 'scale-125 cursor-grabbing bg-amber-200'
-                  : exporting
-                    ? 'cursor-default'
-                    : 'cursor-grab hover:scale-110'} bg-amber-400 hover:bg-amber-300 {keySelectedClass(kf.id)}"
-                style="left: {left}%"
-                title="{structureLabel(structureId)} · {kf.time_s.toFixed(2)}s"
-                onpointerdown={(e) => onKeyframePointerDown(e, kf.id)}
-                onclick={(e) => onKeyframeClick(e, kf.id)}
-                oncontextmenu={(e) => openKeyframeMenu(e, kf.id)}
-              ></button>
-            {/each}
           </div>
         </div>
 
-        {#if expanded}
-          {#each viewsForStructure(structureId) as trackId (trackId)}
-            {@const viewKeys = [...(viewKeyTracks?.[trackId]?.keys ?? [])].sort(
-              (a, b) => a.time_s - b.time_s
-            )}
-            {@const viewSegs = channelSegments(viewKeys)}
-            {@const viewActive = isActiveTrack({ kind: 'view', viewId: trackId })}
-            <div class="flex gap-2">
-              <button
-                type="button"
-                class="w-24 shrink-0 truncate pl-4 pt-0.5 text-left font-mono text-[10px] {viewActive
-                  ? 'text-emerald-600 dark:text-emerald-400'
-                  : 'text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'}"
-                title="{trackLabel(trackId)} — click to capture this representation"
-                onclick={() => selectTrack({ kind: 'view', viewId: trackId })}
-              >
-                {trackLabel(trackId)}
-              </button>
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <div
-                class="relative h-5 min-w-0 flex-1 {exporting ? '' : 'cursor-pointer'}"
-                onpointerdown={onLanePointerDown}
-              >
-                {#each viewSegs as seg (`style-${trackId}-${seg.to.id}`)}
-                  {@const styleDiffers = !viewsApproximatelyEqual(seg.from.view, seg.to.view)}
-                  {#if styleDiffers}
-                    {@const left = pct(seg.from.time_s)}
-                    {@const width = Math.max(0.5, pct(seg.to.time_s) - left)}
-                    {@const kind = seg.to.styleEasing ?? 'easeInOutCubic'}
-                    {@const selected =
-                      selectedSegment?.toKeyframeId === seg.to.id &&
-                      selectedSegment?.channel === 'style' &&
-                      selectedSegment?.viewId === trackId}
-                    <button
-                      type="button"
-                      data-segment="style"
-                      class="absolute top-1/2 h-2 -translate-y-1/2 rounded-full border transition-colors {exporting
-                        ? 'pointer-events-none opacity-60'
-                        : 'cursor-pointer hover:border-fuchsia-400/70 hover:bg-fuchsia-500/25'} {selected
-                        ? 'border-fuchsia-400 bg-fuchsia-500/35'
-                        : kind === 'linear'
-                          ? 'border-neutral-500/50 bg-neutral-500/20'
-                          : 'border-fuchsia-500/40 bg-fuchsia-500/20'}"
-                      style="left: {left}%; width: {width}%"
-                      title="{trackLabel(trackId)} · style · {easingLabel(kind, seg.to.styleEasingBezier)} — click to edit"
-                      onclick={(e) => onSegmentClick(e, seg.to.id, 'style', null, trackId)}
-                    ></button>
-                  {/if}
-                {/each}
-                {#each viewKeys as kf (kf.id)}
-                  {@const left = pct(kf.time_s)}
-                  {@const dragging = draggingId === kf.id}
-                  <button
-                    type="button"
-                    data-keyframe={kf.id}
-                    class="absolute top-1/2 z-10 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-emerald-950/30 transition-transform {dragging
-                      ? 'scale-125 cursor-grabbing bg-emerald-200'
-                      : exporting
-                        ? 'cursor-default'
-                        : 'cursor-grab hover:scale-110'} bg-emerald-500 hover:bg-emerald-400 {keySelectedClass(kf.id)}"
-                    style="left: {left}%"
-                    title="{trackLabel(trackId)} · {kf.time_s.toFixed(2)}s"
-                    onpointerdown={(e) => onKeyframePointerDown(e, kf.id)}
-                    onclick={(e) => onKeyframeClick(e, kf.id)}
-                    oncontextmenu={(e) => openKeyframeMenu(e, kf.id)}
-                  ></button>
-                {/each}
-              </div>
-            </div>
-          {/each}
-        {/if}
-      {/each}
-
-      {#each orphanViewIds as trackId (trackId)}
-        {@const viewKeys = [...(viewKeyTracks?.[trackId]?.keys ?? [])].sort(
-          (a, b) => a.time_s - b.time_s
-        )}
-        {@const viewSegs = channelSegments(viewKeys)}
-        {@const viewActive = isActiveTrack({ kind: 'view', viewId: trackId })}
+        <!-- Camera + playhead (pinned) -->
         <div class="flex gap-2">
           <button
             type="button"
-            class="w-24 shrink-0 truncate pt-0.5 text-left font-mono text-[10px] {viewActive
-              ? 'text-emerald-600 dark:text-emerald-400'
+            class="{laneLabelClass} w-24 truncate pt-0.5 text-left text-[10px] font-medium {isActiveTrack(
+              { kind: 'camera' }
+            )
+              ? 'text-yellow-600 dark:text-yellow-400'
               : 'text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'}"
-            title="{trackLabel(trackId)} — click to capture this representation"
-            onclick={() => selectTrack({ kind: 'view', viewId: trackId })}
+            title="Camera track — click to make Capture write camera keys"
+            onclick={() => selectTrack({ kind: 'camera' })}
           >
-            {trackLabel(trackId)}
+            Camera
           </button>
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
-            class="relative h-5 min-w-0 flex-1 {exporting ? '' : 'cursor-pointer'}"
+            bind:this={trackEl}
+            class="relative h-5 min-w-0 flex-1 {exporting
+              ? 'cursor-default'
+              : draggingPlayhead
+                ? 'cursor-grabbing'
+                : 'cursor-pointer'}"
             onpointerdown={onLanePointerDown}
+            oncontextmenu={onTrackContextMenu}
           >
-            {#each viewSegs as seg (`style-orphan-${trackId}-${seg.to.id}`)}
-              {@const styleDiffers = !viewsApproximatelyEqual(seg.from.view, seg.to.view)}
-              {#if styleDiffers}
-                {@const left = pct(seg.from.time_s)}
-                {@const width = Math.max(0.5, pct(seg.to.time_s) - left)}
-                {@const kind = seg.to.styleEasing ?? 'easeInOutCubic'}
-                {@const selected =
-                  selectedSegment?.toKeyframeId === seg.to.id &&
-                  selectedSegment?.channel === 'style' &&
-                  selectedSegment?.viewId === trackId}
-                <button
-                  type="button"
-                  data-segment="style"
-                  class="absolute top-1/2 h-2 -translate-y-1/2 rounded-full border transition-colors {exporting
-                    ? 'pointer-events-none opacity-60'
-                    : 'cursor-pointer hover:border-fuchsia-400/70 hover:bg-fuchsia-500/25'} {selected
-                    ? 'border-fuchsia-400 bg-fuchsia-500/35'
-                    : kind === 'linear'
-                      ? 'border-neutral-500/50 bg-neutral-500/20'
-                      : 'border-fuchsia-500/40 bg-fuchsia-500/20'}"
-                  style="left: {left}%; width: {width}%"
-                  title="{trackLabel(trackId)} · style · {easingLabel(kind, seg.to.styleEasingBezier)} — click to edit"
-                  onclick={(e) => onSegmentClick(e, seg.to.id, 'style', null, trackId)}
-                ></button>
-              {/if}
+            <div
+              class="pointer-events-none absolute inset-x-0 top-1/2 h-3 -translate-y-1/2 rounded-full bg-neutral-300 dark:bg-neutral-700 {exporting
+                ? 'opacity-70'
+                : ''}"
+            ></div>
+            <div
+              class="pointer-events-none absolute top-1/2 h-3 -translate-y-1/2 rounded-full bg-yellow-500/70"
+              style="left: 0; width: {pct(shownPlayhead)}%"
+            ></div>
+            {#each camSegments as seg (seg.to.id)}
+              {@const left = pct(seg.from.time_s)}
+              {@const width = Math.max(0.5, pct(seg.to.time_s) - left)}
+              {@const selected =
+                selectedSegment?.toKeyframeId === seg.to.id &&
+                selectedSegment?.channel === 'camera'}
+              {@const kind = seg.to.cameraEasing ?? 'easeInOutCubic'}
+              <button
+                type="button"
+                data-segment="camera"
+                class={segmentClass(kind, selected)}
+                style="left: {left}%; width: {width}%"
+                title="Camera · {easingLabel(kind, seg.to.cameraEasingBezier)} — click to edit"
+                onclick={(e) => onSegmentClick(e, seg.to.id, 'camera')}
+              ></button>
             {/each}
-            {#each viewKeys as kf (kf.id)}
+            {#each cameraKeys as kf (kf.id)}
               {@const left = pct(kf.time_s)}
+              {@const active = Math.abs(shownPlayhead - kf.time_s) < frameStep * 0.51}
               {@const dragging = draggingId === kf.id}
               <button
                 type="button"
                 data-keyframe={kf.id}
-                class="absolute top-1/2 z-10 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-emerald-950/30 transition-transform {dragging
-                  ? 'scale-125 cursor-grabbing bg-emerald-200'
+                class="absolute top-1/2 z-10 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-yellow-950/40 transition-transform {dragging
+                  ? 'scale-125 cursor-grabbing bg-yellow-200'
                   : exporting
                     ? 'cursor-default'
-                    : 'cursor-grab hover:scale-110'} bg-emerald-500 hover:bg-emerald-400 {keySelectedClass(kf.id)}"
+                    : 'cursor-grab hover:scale-110'} {active
+                  ? 'bg-yellow-300'
+                  : 'bg-yellow-500/90'} {keySelectedClass(kf.id)}"
                 style="left: {left}%"
-                title="{trackLabel(trackId)} · {kf.time_s.toFixed(2)}s"
+                title="Camera · {snapTime(kf.time_s).toFixed(
+                  3
+                )}s — drag to move, right-click to edit"
                 onpointerdown={(e) => onKeyframePointerDown(e, kf.id)}
                 onclick={(e) => onKeyframeClick(e, kf.id)}
                 oncontextmenu={(e) => openKeyframeMenu(e, kf.id)}
               ></button>
             {/each}
+            <button
+              type="button"
+              data-playhead="true"
+              class="absolute top-0 z-20 flex -translate-x-1/2 flex-col items-center {exporting
+                ? 'pointer-events-none'
+                : draggingPlayhead
+                  ? 'cursor-grabbing'
+                  : 'cursor-ew-resize'}"
+              style="left: {pct(shownPlayhead)}%"
+              title="Playhead · {snapTime(shownPlayhead).toFixed(
+                3
+              )}s — drag to scrub (snaps to frames), right-click to capture or delete"
+              aria-label="Playhead"
+              onpointerdown={startPlayheadDrag}
+              onclick={(e) => e.stopPropagation()}
+              oncontextmenu={onPlayheadContextMenu}
+            >
+              <div class="h-4 w-0.5 rounded-full bg-white shadow dark:bg-neutral-100"></div>
+              <div
+                class="-mt-0.5 size-2 rotate-45 rounded-sm bg-white shadow dark:bg-neutral-100"
+              ></div>
+            </button>
           </div>
         </div>
-      {/each}
+      </div>
+    </div>
+
+    <div
+      bind:this={trackScrollEl}
+      class="mt-0.5 overflow-x-auto overflow-y-scroll overscroll-contain"
+      style="height: {trackListHeight}px"
+      onscroll={() => syncScroll(trackScrollEl, rulerScrollEl)}
+    >
+      <div class="min-w-full space-y-0.5" style="width: {zoom * 100}%">
+        {#each structureRowIds as structureId (structureId)}
+          {@const structKeys = [...(structureTracks?.[structureId]?.keys ?? [])].sort(
+            (a, b) => a.time_s - b.time_s
+          )}
+          {@const structSegs = channelSegments(structKeys)}
+          {@const expanded = isStructureExpanded(structureId)}
+          {@const structActive = isActiveTrack({ kind: 'structure', structureId })}
+          <div class="flex gap-2">
+            <div class="{laneLabelClass} flex w-24 items-start gap-0.5 pt-0.5">
+              <button
+                type="button"
+                class="shrink-0 rounded px-0.5 text-[10px] text-neutral-500 hover:bg-neutral-200/80 dark:hover:bg-neutral-800"
+                title={expanded ? 'Collapse representations' : 'Expand representations'}
+                onclick={() => toggleStructureExpanded(structureId)}
+              >
+                {expanded ? '▾' : '▸'}
+              </button>
+              <button
+                type="button"
+                class="min-w-0 flex-1 truncate text-left text-[10px] font-medium {structActive
+                  ? 'text-amber-600 dark:text-amber-400'
+                  : 'text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'}"
+                title="{structureLabel(structureId)} — click to capture motion on this structure"
+                onclick={() => selectTrack({ kind: 'structure', structureId })}
+              >
+                {structureLabel(structureId)}
+              </button>
+            </div>
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="relative h-5 min-w-0 flex-1 {exporting ? '' : 'cursor-pointer'}"
+              onpointerdown={onLanePointerDown}
+            >
+              {#each structSegs as seg (`motion-${structureId}-${seg.to.id}`)}
+                {@const left = pct(seg.from.time_s)}
+                {@const width = Math.max(0.5, pct(seg.to.time_s) - left)}
+                {@const kind = seg.to.motionEasing ?? 'easeInOutCubic'}
+                {@const selected =
+                  selectedSegment?.toKeyframeId === seg.to.id &&
+                  selectedSegment?.channel === 'motion' &&
+                  selectedSegment?.structureId === structureId}
+                <button
+                  type="button"
+                  data-segment="motion"
+                  class={segmentClass(kind, selected)}
+                  style="left: {left}%; width: {width}%"
+                  title="{structureLabel(structureId)} · {easingLabel(
+                    kind,
+                    seg.to.motionEasingBezier
+                  )} — click to edit"
+                  onclick={(e) => onSegmentClick(e, seg.to.id, 'motion', structureId)}
+                ></button>
+              {/each}
+              {#each structKeys as kf (kf.id)}
+                {@const left = pct(kf.time_s)}
+                {@const dragging = draggingId === kf.id}
+                <button
+                  type="button"
+                  data-keyframe={kf.id}
+                  class="absolute top-1/2 z-10 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-amber-950/30 transition-transform {dragging
+                    ? 'scale-125 cursor-grabbing bg-amber-200'
+                    : exporting
+                      ? 'cursor-default'
+                      : 'cursor-grab hover:scale-110'} bg-amber-400 hover:bg-amber-300 {keySelectedClass(
+                    kf.id
+                  )}"
+                  style="left: {left}%"
+                  title="{structureLabel(structureId)} · {kf.time_s.toFixed(2)}s"
+                  onpointerdown={(e) => onKeyframePointerDown(e, kf.id)}
+                  onclick={(e) => onKeyframeClick(e, kf.id)}
+                  oncontextmenu={(e) => openKeyframeMenu(e, kf.id)}
+                ></button>
+              {/each}
+            </div>
+          </div>
+
+          {#if expanded}
+            {#each viewsForStructure(structureId) as trackId (trackId)}
+              {@const viewKeys = [...(viewKeyTracks?.[trackId]?.keys ?? [])].sort(
+                (a, b) => a.time_s - b.time_s
+              )}
+              {@const viewSegs = channelSegments(viewKeys)}
+              {@const viewActive = isActiveTrack({ kind: 'view', viewId: trackId })}
+              <div class="flex gap-2">
+                <button
+                  type="button"
+                  class="{laneLabelClass} w-24 truncate pt-0.5 pl-4 text-left font-mono text-[10px] {viewActive
+                    ? 'text-emerald-600 dark:text-emerald-400'
+                    : 'text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'}"
+                  title="{trackLabel(trackId)} — click to capture this representation"
+                  onclick={() => selectTrack({ kind: 'view', viewId: trackId })}
+                >
+                  {trackLabel(trackId)}
+                </button>
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <div
+                  class="relative h-5 min-w-0 flex-1 {exporting ? '' : 'cursor-pointer'}"
+                  onpointerdown={onLanePointerDown}
+                >
+                  {#each viewSegs as seg (`style-${trackId}-${seg.to.id}`)}
+                    {@const styleDiffers = !viewsApproximatelyEqual(seg.from.view, seg.to.view)}
+                    {#if styleDiffers}
+                      {@const left = pct(seg.from.time_s)}
+                      {@const width = Math.max(0.5, pct(seg.to.time_s) - left)}
+                      {@const kind = seg.to.styleEasing ?? 'easeInOutCubic'}
+                      {@const selected =
+                        selectedSegment?.toKeyframeId === seg.to.id &&
+                        selectedSegment?.channel === 'style' &&
+                        selectedSegment?.viewId === trackId}
+                      <button
+                        type="button"
+                        data-segment="style"
+                        class={segmentClass(kind, selected)}
+                        style="left: {left}%; width: {width}%"
+                        title="{trackLabel(trackId)} · style · {easingLabel(
+                          kind,
+                          seg.to.styleEasingBezier
+                        )} — click to edit"
+                        onclick={(e) => onSegmentClick(e, seg.to.id, 'style', null, trackId)}
+                      ></button>
+                    {/if}
+                  {/each}
+                  {#each viewKeys as kf (kf.id)}
+                    {@const left = pct(kf.time_s)}
+                    {@const dragging = draggingId === kf.id}
+                    <button
+                      type="button"
+                      data-keyframe={kf.id}
+                      class="absolute top-1/2 z-10 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-emerald-950/30 transition-transform {dragging
+                        ? 'scale-125 cursor-grabbing bg-emerald-200'
+                        : exporting
+                          ? 'cursor-default'
+                          : 'cursor-grab hover:scale-110'} bg-emerald-500 hover:bg-emerald-400 {keySelectedClass(
+                        kf.id
+                      )}"
+                      style="left: {left}%"
+                      title="{trackLabel(trackId)} · {kf.time_s.toFixed(2)}s"
+                      onpointerdown={(e) => onKeyframePointerDown(e, kf.id)}
+                      onclick={(e) => onKeyframeClick(e, kf.id)}
+                      oncontextmenu={(e) => openKeyframeMenu(e, kf.id)}
+                    ></button>
+                  {/each}
+                </div>
+              </div>
+            {/each}
+          {/if}
+        {/each}
+
+        {#each orphanViewIds as trackId (trackId)}
+          {@const viewKeys = [...(viewKeyTracks?.[trackId]?.keys ?? [])].sort(
+            (a, b) => a.time_s - b.time_s
+          )}
+          {@const viewSegs = channelSegments(viewKeys)}
+          {@const viewActive = isActiveTrack({ kind: 'view', viewId: trackId })}
+          <div class="flex gap-2">
+            <button
+              type="button"
+              class="{laneLabelClass} w-24 truncate pt-0.5 text-left font-mono text-[10px] {viewActive
+                ? 'text-emerald-600 dark:text-emerald-400'
+                : 'text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'}"
+              title="{trackLabel(trackId)} — click to capture this representation"
+              onclick={() => selectTrack({ kind: 'view', viewId: trackId })}
+            >
+              {trackLabel(trackId)}
+            </button>
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="relative h-5 min-w-0 flex-1 {exporting ? '' : 'cursor-pointer'}"
+              onpointerdown={onLanePointerDown}
+            >
+              {#each viewSegs as seg (`style-orphan-${trackId}-${seg.to.id}`)}
+                {@const styleDiffers = !viewsApproximatelyEqual(seg.from.view, seg.to.view)}
+                {#if styleDiffers}
+                  {@const left = pct(seg.from.time_s)}
+                  {@const width = Math.max(0.5, pct(seg.to.time_s) - left)}
+                  {@const kind = seg.to.styleEasing ?? 'easeInOutCubic'}
+                  {@const selected =
+                    selectedSegment?.toKeyframeId === seg.to.id &&
+                    selectedSegment?.channel === 'style' &&
+                    selectedSegment?.viewId === trackId}
+                  <button
+                    type="button"
+                    data-segment="style"
+                    class={segmentClass(kind, selected)}
+                    style="left: {left}%; width: {width}%"
+                    title="{trackLabel(trackId)} · style · {easingLabel(
+                      kind,
+                      seg.to.styleEasingBezier
+                    )} — click to edit"
+                    onclick={(e) => onSegmentClick(e, seg.to.id, 'style', null, trackId)}
+                  ></button>
+                {/if}
+              {/each}
+              {#each viewKeys as kf (kf.id)}
+                {@const left = pct(kf.time_s)}
+                {@const dragging = draggingId === kf.id}
+                <button
+                  type="button"
+                  data-keyframe={kf.id}
+                  class="absolute top-1/2 z-10 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-emerald-950/30 transition-transform {dragging
+                    ? 'scale-125 cursor-grabbing bg-emerald-200'
+                    : exporting
+                      ? 'cursor-default'
+                      : 'cursor-grab hover:scale-110'} bg-emerald-500 hover:bg-emerald-400 {keySelectedClass(
+                    kf.id
+                  )}"
+                  style="left: {left}%"
+                  title="{trackLabel(trackId)} · {kf.time_s.toFixed(2)}s"
+                  onpointerdown={(e) => onKeyframePointerDown(e, kf.id)}
+                  onclick={(e) => onKeyframeClick(e, kf.id)}
+                  oncontextmenu={(e) => openKeyframeMenu(e, kf.id)}
+                ></button>
+              {/each}
+            </div>
+          </div>
+        {/each}
+      </div>
     </div>
   </div>
 </div>
@@ -1884,7 +2058,9 @@
         >
       </form>
       {#if editDialog.mode === 'time'}
-        <p class="mt-2 text-[10px] text-neutral-500">Snaps to {safeFps} FPS ({frameStep.toFixed(3)}s steps)</p>
+        <p class="mt-2 text-[10px] text-neutral-500">
+          Snaps to {safeFps} FPS ({frameStep.toFixed(3)}s steps)
+        </p>
       {/if}
     </div>
   </div>
@@ -1960,3 +2136,12 @@
   onCancel={closeConfirm}
   onConfirm={acceptConfirm}
 />
+
+<style>
+  .timeline-ruler-scroll {
+    scrollbar-width: none;
+  }
+  .timeline-ruler-scroll::-webkit-scrollbar {
+    display: none;
+  }
+</style>

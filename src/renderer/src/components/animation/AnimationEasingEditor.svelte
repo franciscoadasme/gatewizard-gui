@@ -6,6 +6,7 @@
     normalizeEasingKind,
     sampleEasingCurves
   } from '../../lib/animation/easing.js'
+  import { floatingPanel } from '../../lib/animation/floatingPanel.js'
 
   /**
    * @type {{
@@ -36,8 +37,14 @@
   const seedKind = $derived(normalizeEasingKind(easing))
   const seedBezier = $derived(normalizeBezier(easingBezier, seedKind))
 
-  let localKind = $state(/** @type {import('../../lib/animation/easing.js').AnimationEasingKind} */ (DEFAULT_EASING_KIND))
-  let localBezier = $state(/** @type {[number, number, number, number]} */ ([...EASING_PRESETS[DEFAULT_EASING_KIND].bezier]))
+  let localKind = $state(
+    /** @type {import('../../lib/animation/easing.js').AnimationEasingKind} */ (DEFAULT_EASING_KIND)
+  )
+  let localBezier = $state(
+    /** @type {[number, number, number, number]} */ ([
+      ...EASING_PRESETS[DEFAULT_EASING_KIND].bezier
+    ])
+  )
   let posCanvas = $state(/** @type {HTMLCanvasElement | null} */ (null))
   let velCanvas = $state(/** @type {HTMLCanvasElement | null} */ (null))
   /** @type {'p1' | 'p2' | null} */
@@ -48,7 +55,9 @@
     localBezier = [...seedBezier]
   })
 
-  const samples = $derived(sampleEasingCurves(localKind, localKind === 'bezier' ? localBezier : null))
+  const samples = $derived(
+    sampleEasingCurves(localKind, localKind === 'bezier' ? localBezier : null)
+  )
 
   function emitChange() {
     onChange({
@@ -193,7 +202,7 @@
     const span = Math.max(0.001, maxV - minV)
 
     // Reference line for constant velocity (linear)
-    const linY = (1 - (1 - minV) / span)
+    const linY = 1 - (1 - minV) / span
     ctx.strokeStyle = '#525252'
     ctx.setLineDash([3, 3])
     ctx.beginPath()
@@ -281,12 +290,16 @@
 </script>
 
 <div
-  class="fixed bottom-[7.5rem] left-1/2 z-[220] w-[min(22rem,calc(100vw-1.5rem))] -translate-x-1/2 rounded-lg border border-neutral-700 bg-neutral-900 shadow-2xl"
+  use:floatingPanel
+  class="fixed right-4 bottom-[7.5rem] z-[220] w-[min(22rem,calc(100vw-1.5rem))] rounded-lg border border-neutral-700 bg-neutral-900 shadow-2xl"
   role="dialog"
   aria-labelledby="easing-editor-title"
   tabindex="-1"
 >
-  <div class="flex items-start justify-between gap-2 border-b border-neutral-800 px-3 py-2">
+  <div
+    data-panel-drag
+    class="flex cursor-grab items-start justify-between gap-2 border-b border-neutral-800 px-3 py-2 active:cursor-grabbing"
+  >
     <div class="min-w-0">
       <p id="easing-editor-title" class="text-xs font-semibold text-neutral-100">{trackLabel}</p>
       <p class="truncate text-[10px] text-neutral-500">
@@ -329,7 +342,9 @@
     </div>
 
     {#if localKind !== 'linear'}
-      <p class="text-[10px] text-neutral-500">{EASING_PRESETS[localKind]?.hint ?? EASING_PRESETS.bezier.hint}</p>
+      <p class="text-[10px] text-neutral-500">
+        {EASING_PRESETS[localKind]?.hint ?? EASING_PRESETS.bezier.hint}
+      </p>
     {/if}
 
     <div>

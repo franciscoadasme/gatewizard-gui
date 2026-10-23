@@ -14,6 +14,7 @@
     sampleEasingCurves
   } from '../../lib/animation/easing.js'
   import RangeInput from '../ui/RangeInput.svelte'
+  import { floatingPanel } from '../../lib/animation/floatingPanel.js'
 
   /**
    * @type {{
@@ -62,8 +63,12 @@
   let localEnabled = $state(true)
   let localIn_s = $state(DEFAULT_FADE_IN_S)
   let localOut_s = $state(DEFAULT_FADE_OUT_S)
-  let localInKind = $state(/** @type {import('../../lib/animation/easing.js').AnimationEasingKind} */ (DEFAULT_FADE_EASING))
-  let localOutKind = $state(/** @type {import('../../lib/animation/easing.js').AnimationEasingKind} */ (DEFAULT_FADE_EASING))
+  let localInKind = $state(
+    /** @type {import('../../lib/animation/easing.js').AnimationEasingKind} */ (DEFAULT_FADE_EASING)
+  )
+  let localOutKind = $state(
+    /** @type {import('../../lib/animation/easing.js').AnimationEasingKind} */ (DEFAULT_FADE_EASING)
+  )
   let localInBezier = $state(/** @type {[number, number, number, number]} */ ([0.42, 0, 0.58, 1]))
   let localOutBezier = $state(/** @type {[number, number, number, number]} */ ([0.42, 0, 0.58, 1]))
   let canvas = $state(/** @type {HTMLCanvasElement | null} */ (null))
@@ -250,12 +255,16 @@
 </script>
 
 <div
-  class="fixed bottom-[7.5rem] left-1/2 z-[220] w-[min(22rem,calc(100vw-1.5rem))] -translate-x-1/2 rounded-lg border border-neutral-700 bg-neutral-900 shadow-2xl"
+  use:floatingPanel
+  class="fixed right-4 bottom-[7.5rem] z-[220] w-[min(22rem,calc(100vw-1.5rem))] rounded-lg border border-neutral-700 bg-neutral-900 shadow-2xl"
   role="dialog"
   aria-labelledby="fade-editor-title"
   tabindex="-1"
 >
-  <div class="flex items-start justify-between gap-2 border-b border-neutral-800 px-3 py-2">
+  <div
+    data-panel-drag
+    class="flex cursor-grab items-start justify-between gap-2 border-b border-neutral-800 px-3 py-2 active:cursor-grabbing"
+  >
     <div class="min-w-0">
       <p id="fade-editor-title" class="text-xs font-semibold text-neutral-100">Fade in / out</p>
       <p class="truncate text-[10px] text-neutral-500">{itemLabel}</p>
@@ -269,7 +278,9 @@
   </div>
 
   <div class="space-y-3 px-3 py-2">
-    <label class="flex cursor-pointer items-center gap-2 rounded border border-neutral-800 px-2 py-1.5 text-[11px] text-neutral-200">
+    <label
+      class="flex cursor-pointer items-center gap-2 rounded border border-neutral-800 px-2 py-1.5 text-[11px] text-neutral-200"
+    >
       <input
         type="checkbox"
         class="accent-yellow-500"
@@ -283,145 +294,154 @@
     </label>
 
     <div class="space-y-3 {localEnabled ? '' : 'pointer-events-none opacity-45'}">
-    <div class="flex gap-1">
-      <button
-        type="button"
-        class="flex-1 rounded border px-2 py-1 text-[10px] {activeDir === 'in'
-          ? 'border-yellow-500/70 bg-yellow-500/15 text-yellow-200'
-          : 'border-neutral-700 text-neutral-400 hover:bg-neutral-800'}"
-        onclick={() => (activeDir = 'in')}>Fade in</button
-      >
-      <button
-        type="button"
-        class="flex-1 rounded border px-2 py-1 text-[10px] {activeDir === 'out'
-          ? 'border-yellow-500/70 bg-yellow-500/15 text-yellow-200'
-          : 'border-neutral-700 text-neutral-400 hover:bg-neutral-800'}"
-        onclick={() => (activeDir = 'out')}>Fade out</button
-      >
-    </div>
-
-    {#if activeDir === 'in'}
-      <label class="flex flex-col gap-1 text-[10px] text-neutral-400">
-        <span>Duration (s) · 0 = instant</span>
-        <RangeInput
-          bind:value={
-            () => localIn_s,
-            (v) => {
-              localIn_s = v
-              emitChange()
-            }
-          }
-          min={0}
-          max={30}
-          step={0.05}
-          decimals={2}
-          rangeClassName="flex-1 accent-yellow-400"
-          inputClassName="w-16"
-        />
-      </label>
-      <div class="flex flex-wrap gap-1">
-        {#each presetList as preset (preset.kind)}
-          <button
-            type="button"
-            class="rounded border px-2 py-1 text-[10px] transition-colors {localInKind === preset.kind
-              ? 'border-yellow-500/70 bg-yellow-500/15 text-yellow-200'
-              : 'border-neutral-700 text-neutral-300 hover:border-neutral-600 hover:bg-neutral-800'}"
-            title={preset.hint}
-            onclick={() => selectPreset('in', preset.kind)}>{preset.label}</button
-          >
-        {/each}
+      <div class="flex gap-1">
         <button
           type="button"
-          class="rounded border px-2 py-1 text-[10px] transition-colors {localInKind === 'bezier'
+          class="flex-1 rounded border px-2 py-1 text-[10px] {activeDir === 'in'
             ? 'border-yellow-500/70 bg-yellow-500/15 text-yellow-200'
-            : 'border-neutral-700 text-neutral-300 hover:border-neutral-600 hover:bg-neutral-800'}"
-          onclick={() => selectCustom('in')}>Custom</button
+            : 'border-neutral-700 text-neutral-400 hover:bg-neutral-800'}"
+          onclick={() => (activeDir = 'in')}>Fade in</button
+        >
+        <button
+          type="button"
+          class="flex-1 rounded border px-2 py-1 text-[10px] {activeDir === 'out'
+            ? 'border-yellow-500/70 bg-yellow-500/15 text-yellow-200'
+            : 'border-neutral-700 text-neutral-400 hover:bg-neutral-800'}"
+          onclick={() => (activeDir = 'out')}>Fade out</button
         >
       </div>
-      <p class="text-[10px] text-neutral-500">
-        In: {localIn_s.toFixed(2)}s · {easingLabel(localInKind, localInKind === 'bezier' ? localInBezier : null)}
-      </p>
-    {:else}
-      <label class="flex flex-col gap-1 text-[10px] text-neutral-400">
-        <span>Duration (s) · 0 = instant</span>
-        <RangeInput
-          bind:value={
-            () => localOut_s,
-            (v) => {
-              localOut_s = v
-              emitChange()
+
+      {#if activeDir === 'in'}
+        <label class="flex flex-col gap-1 text-[10px] text-neutral-400">
+          <span>Duration (s) · 0 = instant</span>
+          <RangeInput
+            bind:value={
+              () => localIn_s,
+              (v) => {
+                localIn_s = v
+                emitChange()
+              }
             }
-          }
-          min={0}
-          max={30}
-          step={0.05}
-          decimals={2}
-          rangeClassName="flex-1 accent-yellow-400"
-          inputClassName="w-16"
-        />
-      </label>
-      <div class="flex flex-wrap gap-1">
-        {#each presetList as preset (preset.kind)}
+            min={0}
+            max={30}
+            step={0.05}
+            decimals={2}
+            rangeClassName="flex-1 accent-yellow-400"
+            inputClassName="w-16"
+          />
+        </label>
+        <div class="flex flex-wrap gap-1">
+          {#each presetList as preset (preset.kind)}
+            <button
+              type="button"
+              class="rounded border px-2 py-1 text-[10px] transition-colors {localInKind ===
+              preset.kind
+                ? 'border-yellow-500/70 bg-yellow-500/15 text-yellow-200'
+                : 'border-neutral-700 text-neutral-300 hover:border-neutral-600 hover:bg-neutral-800'}"
+              title={preset.hint}
+              onclick={() => selectPreset('in', preset.kind)}>{preset.label}</button
+            >
+          {/each}
           <button
             type="button"
-            class="rounded border px-2 py-1 text-[10px] transition-colors {localOutKind === preset.kind
+            class="rounded border px-2 py-1 text-[10px] transition-colors {localInKind === 'bezier'
               ? 'border-yellow-500/70 bg-yellow-500/15 text-yellow-200'
               : 'border-neutral-700 text-neutral-300 hover:border-neutral-600 hover:bg-neutral-800'}"
-            title={preset.hint}
-            onclick={() => selectPreset('out', preset.kind)}>{preset.label}</button
+            onclick={() => selectCustom('in')}>Custom</button
           >
-        {/each}
-        <button
-          type="button"
-          class="rounded border px-2 py-1 text-[10px] transition-colors {localOutKind === 'bezier'
-            ? 'border-yellow-500/70 bg-yellow-500/15 text-yellow-200'
-            : 'border-neutral-700 text-neutral-300 hover:border-neutral-600 hover:bg-neutral-800'}"
-          onclick={() => selectCustom('out')}>Custom</button
-        >
-      </div>
-      <p class="text-[10px] text-neutral-500">
-        Out: {localOut_s.toFixed(2)}s · {easingLabel(localOutKind, localOutKind === 'bezier' ? localOutBezier : null)}
-      </p>
-    {/if}
-
-    <div class="relative">
-      <canvas
-        bind:this={canvas}
-        class="h-24 w-full cursor-crosshair rounded border border-neutral-800 bg-neutral-950"
-        aria-label="Fade opacity curve"
-      ></canvas>
-      {#if activeKind === 'bezier' && canvas}
-        {@const pad = 16}
-        {@const w = canvas.clientWidth || 280}
-        {@const h = canvas.clientHeight || 88}
-        {@const plotW = w - pad * 2}
-        {@const plotH = h - pad * 2}
-        {@const [x1, y1, x2, y2] = activeBezier}
-        <button
-          type="button"
-          class="absolute size-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-yellow-300 bg-yellow-500/80"
-          style="left:{pad + x1 * plotW}px;top:{pad + (1 - y1) * plotH}px"
-          aria-label="Bezier handle 1"
-          onpointerdown={(e) => startHandleDrag(e, 'p1')}
-        ></button>
-        <button
-          type="button"
-          class="absolute size-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-yellow-300 bg-yellow-500/80"
-          style="left:{pad + x2 * plotW}px;top:{pad + (1 - y2) * plotH}px"
-          aria-label="Bezier handle 2"
-          onpointerdown={(e) => startHandleDrag(e, 'p2')}
-        ></button>
-      {/if}
-    </div>
-
-    <p class="text-[10px] text-neutral-600">
-      {#if localEnabled}
-        Fade settings are saved on capture keyframe and apply when this item appears, disappears,
-        or toggles visibility between keyframes.
+        </div>
+        <p class="text-[10px] text-neutral-500">
+          In: {localIn_s.toFixed(2)}s · {easingLabel(
+            localInKind,
+            localInKind === 'bezier' ? localInBezier : null
+          )}
+        </p>
       {:else}
-        Fade is off — visibility changes are instant at keyframe boundaries (no opacity animation).
+        <label class="flex flex-col gap-1 text-[10px] text-neutral-400">
+          <span>Duration (s) · 0 = instant</span>
+          <RangeInput
+            bind:value={
+              () => localOut_s,
+              (v) => {
+                localOut_s = v
+                emitChange()
+              }
+            }
+            min={0}
+            max={30}
+            step={0.05}
+            decimals={2}
+            rangeClassName="flex-1 accent-yellow-400"
+            inputClassName="w-16"
+          />
+        </label>
+        <div class="flex flex-wrap gap-1">
+          {#each presetList as preset (preset.kind)}
+            <button
+              type="button"
+              class="rounded border px-2 py-1 text-[10px] transition-colors {localOutKind ===
+              preset.kind
+                ? 'border-yellow-500/70 bg-yellow-500/15 text-yellow-200'
+                : 'border-neutral-700 text-neutral-300 hover:border-neutral-600 hover:bg-neutral-800'}"
+              title={preset.hint}
+              onclick={() => selectPreset('out', preset.kind)}>{preset.label}</button
+            >
+          {/each}
+          <button
+            type="button"
+            class="rounded border px-2 py-1 text-[10px] transition-colors {localOutKind === 'bezier'
+              ? 'border-yellow-500/70 bg-yellow-500/15 text-yellow-200'
+              : 'border-neutral-700 text-neutral-300 hover:border-neutral-600 hover:bg-neutral-800'}"
+            onclick={() => selectCustom('out')}>Custom</button
+          >
+        </div>
+        <p class="text-[10px] text-neutral-500">
+          Out: {localOut_s.toFixed(2)}s · {easingLabel(
+            localOutKind,
+            localOutKind === 'bezier' ? localOutBezier : null
+          )}
+        </p>
       {/if}
-    </p>
+
+      <div class="relative">
+        <canvas
+          bind:this={canvas}
+          class="h-24 w-full cursor-crosshair rounded border border-neutral-800 bg-neutral-950"
+          aria-label="Fade opacity curve"
+        ></canvas>
+        {#if activeKind === 'bezier' && canvas}
+          {@const pad = 16}
+          {@const w = canvas.clientWidth || 280}
+          {@const h = canvas.clientHeight || 88}
+          {@const plotW = w - pad * 2}
+          {@const plotH = h - pad * 2}
+          {@const [x1, y1, x2, y2] = activeBezier}
+          <button
+            type="button"
+            class="absolute size-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-yellow-300 bg-yellow-500/80"
+            style="left:{pad + x1 * plotW}px;top:{pad + (1 - y1) * plotH}px"
+            aria-label="Bezier handle 1"
+            onpointerdown={(e) => startHandleDrag(e, 'p1')}
+          ></button>
+          <button
+            type="button"
+            class="absolute size-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-yellow-300 bg-yellow-500/80"
+            style="left:{pad + x2 * plotW}px;top:{pad + (1 - y2) * plotH}px"
+            aria-label="Bezier handle 2"
+            onpointerdown={(e) => startHandleDrag(e, 'p2')}
+          ></button>
+        {/if}
+      </div>
+
+      <p class="text-[10px] text-neutral-600">
+        {#if localEnabled}
+          Fade settings are saved on capture keyframe and apply when this item appears, disappears,
+          or toggles visibility between keyframes.
+        {:else}
+          Fade is off — visibility changes are instant at keyframe boundaries (no opacity
+          animation).
+        {/if}
+      </p>
     </div>
   </div>
 </div>
