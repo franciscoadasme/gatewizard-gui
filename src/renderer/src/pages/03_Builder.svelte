@@ -335,7 +335,7 @@
   /** Ref to the poll interval so we can clear it */
   let pollIntervalId = $state(null)
 
-  /** Newest not_started job (sidebar Start Preparation target). */
+  /** Newest not_started job (sidebar Build system target). */
   const pendingJob = $derived(jobs.find((j) => j.status === 'not_started'))
   const pendingJobCount = $derived(jobs.filter((j) => j.status === 'not_started').length)
   const hasGeneratedInputFiles = $derived(
@@ -1201,7 +1201,7 @@
   async function cancelJob(index) {
     const job = jobs[index]
     if (!job || job.status !== 'running' || job.stopping) return
-    if (!confirm(`Cancel preparation job "${job.name}"? This cannot be undone.`)) return
+    if (!confirm(`Cancel build "${job.name}"? This cannot be undone.`)) return
     try {
       jobs[index] = { ...job, stopping: true }
       jobs = [...jobs]
@@ -1380,7 +1380,7 @@
         ffCheck = null
       }
     } catch {
-      /* Leave the last mark. Start Preparation reports a dead backend. */
+      /* Leave the last mark. Build system reports a dead backend. */
     }
   }
 
@@ -2392,7 +2392,7 @@
         folderPlaceholder={suggestedOutputFolderName}
         resolvedFolderName={resolveOutputFolderName()}
       />
-      <div role="group" aria-label="Generate preparation input files action">
+      <div role="group" aria-label="Generate input files action">
         <Button
           className="w-full"
           variant="outline"
@@ -2410,13 +2410,13 @@
           <p class="mt-1 text-[11px] text-amber-700 dark:text-amber-300">{generateProblems[0]}</p>
         {/if}
       </div>
-      <div role="group" aria-label="Run preparation action">
+      <div role="group" aria-label="Build system action">
         <Button className="w-full" onclick={onStartPreparation} disabled={!canStartPreparation}>
           {#if launching || pendingJob?.starting}
             <Spinner className="mr-1" />
             Launching...
           {:else}
-            Start Preparation
+            Build system
             {#if pendingJobCount > 1}
               <span class="ml-1 opacity-70">({pendingJobCount} pending)</span>
             {/if}
@@ -2567,7 +2567,7 @@
                   class="rounded border border-neutral-400 px-2 py-0.5 text-[11px] font-medium text-neutral-800 hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-600 dark:text-neutral-200 dark:hover:bg-neutral-800"
                   disabled={job.starting || generatingInputFiles}
                   onclick={() => startPreparationForJob(job.jobDir)}
-                  title="Run preparation for this generated folder"
+                  title="Build the system from this generated folder"
                 >
                   {job.starting ? 'Starting…' : 'Start'}
                 </button>
@@ -2589,7 +2589,7 @@
 
           {#if job.status === 'not_started'}
             <p class="mb-2 text-[11px] dark:text-neutral-500">
-              Input files generated — click Start when ready (or use Start Preparation for the newest
+              Input files generated — click Start when ready (or use Build system for the newest
               pending job).
             </p>
           {/if}
