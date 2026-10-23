@@ -7,11 +7,15 @@
  * control — do not show “dead” settings that confuse users.
  *
  * Keep this matrix in sync with gatewizard/tools/equilibration.py generators:
- * - NAMD: margin, pressure, surface_tension, dcd_freq
- * - Amber: pressure ({PRES0}), surface_tension ({GAMMA_TEN}), dcd_freq → ntwx
- * - OpenMM: dcd_freq ({NSTDCD}), pressure (p_ref), surface_tension (p_tens, dyn/cm)
+ * - NAMD: margin, pressure, surface_tension (NPgT), dcd_freq
+ * - Amber: pressure ({PRES0}), surface_tension ({GAMMA_TEN} on NPgT), dcd_freq → ntwx
+ * - OpenMM: dcd_freq ({NSTDCD}), pressure (p_ref), surface_tension (p_tens on NPT/NPgT)
  * - GROMACS: dcd_freq (nstxout-compressed), pressure/surface_tension (ref_p;
- *   γ dyn/cm → bar·nm via ×10 for surface-tension coupling)
+ *   γ dyn/cm → bar·nm via ×10 for NPgT surface-tension coupling)
+ *
+ * NPAT holds the membrane area fixed (NAMD useConstantArea, Amber Z-only
+ * scaling, GROMACS XY compressibility 0, OpenMM p_scale = Z). That card
+ * shows surface area, not a tension target.
  */
 
 import { formEnsembleValue } from './ensemble.js'
@@ -87,10 +91,7 @@ export function syncProtocolToSidebarEnsemble(protocol, sidebarEnsemble, engine 
       stage.pressure = 1.0
       changed = true
     }
-    const needsGamma =
-      ens === 'npat' ||
-      ens === 'npgt' ||
-      (eng === 'openmm' && ens === 'npt')
+    const needsGamma = ens === 'npgt' || (eng === 'openmm' && ens === 'npt')
     if (needsGamma && (stage.surface_tension == null || stage.surface_tension === '')) {
       stage.surface_tension = 0.0
       changed = true
@@ -119,14 +120,11 @@ export function stageFieldVisibility(
   const ens = effectiveStageEnsemble(stageEnsemble, sidebarEnsemble)
   const isMini = Boolean(opts.isMinimization)
   const barostatted = ens === 'npt' || ens === 'npat' || ens === 'npgt'
-  // Surface tension applies to NPAT/NPgT for NAMD/Amber; OpenMM membrane
-  // barostat also has p_tens on NPT; GROMACS surface-tension coupling is NPgT.
+  // NPgT (and the OpenMM NPT membrane barostat) takes a surface-tension target.
+  // NPAT holds the membrane area fixed and does not write a tension.
   const surfaceTension =
-    !isMini &&
-    ((eng === 'gromacs' && ens === 'npgt') ||
-      // OpenMM membrane barostat has p_tens on NPT/NPgT; NPAT is Z-only anisotropic.
-      (eng === 'openmm' && (ens === 'npt' || ens === 'npgt')) ||
-      ((eng === 'namd' || eng === 'amber') && (ens === 'npat' || ens === 'npgt')))
+    !isMini && (ens === 'npgt' || (eng === 'openmm' && ens === 'npt'))
+  const surfaceArea = !isMini && ens === 'npat'
 
   return {
     /** NAMD PME padding only (`{MARGIN}`). */
@@ -134,10 +132,13 @@ export function stageFieldVisibility(
     /** Target pressure — wired for all engines when a barostat is active. */
     pressure: !isMini && barostatted,
     /**
-     * Surface tension (dyn/cm). Useful for membrane deformation /
-     * mechanosensitive-channel setups; default protocol keeps γ = 0.
+     * Surface tension (dyn/cm) for NPgT, and for the OpenMM NPT membrane barostat.
      */
     surfaceTension,
+    /**
+     * NPAT holds the membrane XY area fixed. There is no tension target to edit.
+     */
+    surfaceArea,
     /**
      * Trajectory write frequency in steps.
      * Wired for all engines (Amber `ntwx`, GROMACS `nstxout-compressed`,

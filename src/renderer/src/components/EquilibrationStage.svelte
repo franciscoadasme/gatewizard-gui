@@ -318,6 +318,10 @@
         }}
       />
       <p class="text-xs text-neutral-500">dyn/cm</p>
+    {:else if fields.surfaceArea}
+      <label for="{uid}-surface-area">Surface area:</label>
+      <span id="{uid}-surface-area" class="text-sm">constant</span>
+      <p></p>
     {/if}
 
     {#if !isMinimization}
