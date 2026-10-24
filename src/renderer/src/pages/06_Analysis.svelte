@@ -11,6 +11,7 @@
   import Checkbox from '../components/ui/Checkbox.svelte'
   import Divider from '../components/ui/Divider.svelte'
   import SectionHelp from '../components/SectionHelp.svelte'
+  import { structuralDocsId, structuralHelpText } from '../lib/docsLinks.js'
   import { analysisStatus, logEvent, preparationStatus } from '../lib/pageStatus.svelte.js'
   import TitrationFigure from '../components/TitrationFigure.svelte'
   import {
@@ -8852,8 +8853,8 @@ Docs: https://docs.mdanalysis.org/stable/documentation_pages/selections.html`}</
         <div class="flex items-center justify-between gap-2">
           <h2 class="sidebar-heading">Structural Options</h2>
           <SectionHelp
-            docsId="structural"
-            text="Panel A is the pKa comparison, B is the protonated fraction, and C is the titration curve. Uncheck a residue type to hide it from A and B. A/B includes a residue in the pKa and fraction plots. C draws its titration curve. Cysteines in a disulfide bond are left out of A and B. Uncheck A/B for any other residue to leave it out of those panels."
+            docsId={structuralDocsId(structuralType)}
+            text={structuralHelpText(structuralType)}
           />
           {#if structuralTypeChanging || headgroupDetecting}
             <span class="flex shrink-0 items-center gap-1.5 text-[11px] text-neutral-500 dark:text-neutral-400">

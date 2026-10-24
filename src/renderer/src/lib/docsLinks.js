@@ -90,7 +90,12 @@ export const DOCS_LINKS = {
     guide: 'structural',
     api: [
       { label: 'RMSD', path: 'api/analysis/#calculate_rmsd' },
-      { label: 'Area per lipid', path: 'api/analysis/#calculate_area_per_lipid' }
+      { label: 'RMSF', path: 'api/analysis/#calculate_rmsf' },
+      { label: 'Distance', path: 'api/analysis/#calculate_distances' },
+      { label: 'Radius of gyration', path: 'api/analysis/#calculate_radius_of_gyration' },
+      { label: 'Membrane thickness', path: 'api/analysis/#calculate_membrane_thickness' },
+      { label: 'Area per lipid', path: 'api/analysis/#calculate_area_per_lipid' },
+      { label: 'Titration', path: 'api/preparation/#build_titration_figure' }
     ]
   },
   energetic: {
@@ -107,10 +112,89 @@ export const DOCS_LINKS = {
 }
 
 /**
+ * One row per Structural Options analysis. `guide` is the user-guide heading.
+ * The book menu lists every API link, with the selected type first.
+ * @type {Array<{ type: string, guide: string, label: string, path: string, help: string }>}
+ */
+export const STRUCTURAL_ANALYSIS_DOCS = [
+  {
+    type: 'rmsd',
+    guide: 'rmsd',
+    label: 'RMSD',
+    path: 'api/analysis/#calculate_rmsd',
+    help: 'RMSD is the deviation of the selection from a reference frame or a reference PDB. Alignment can be turned on. A protein trace uses protein and name CA.'
+  },
+  {
+    type: 'rmsf',
+    guide: 'rmsf',
+    label: 'RMSF',
+    path: 'api/analysis/#calculate_rmsf',
+    help: 'RMSF is the fluctuation of each residue in the selection across the trajectory. Peaks are the flexible parts.'
+  },
+  {
+    type: 'distance',
+    guide: 'distance',
+    label: 'Distance',
+    path: 'api/analysis/#calculate_distances',
+    help: 'Distance follows one or more MDAnalysis pairs over time. Each pair is its own trace.'
+  },
+  {
+    type: 'radius_of_gyration',
+    guide: 'radius-of-gyration',
+    label: 'Radius of gyration',
+    path: 'api/analysis/#calculate_radius_of_gyration',
+    help: 'Radius of gyration is the compactness of the selection over time. A steady trace means the selection keeps its size.'
+  },
+  {
+    type: 'membrane_thickness',
+    guide: 'membrane-thickness',
+    label: 'Membrane thickness',
+    path: 'api/analysis/#calculate_membrane_thickness',
+    help: 'Membrane thickness is the distance between the two leaflet headgroups. A PDB or GRO in the trajectory list is skipped because that file has no periodic box.'
+  },
+  {
+    type: 'area_per_lipid',
+    guide: 'area-per-lipid',
+    label: 'Area per lipid',
+    path: 'api/analysis/#calculate_area_per_lipid',
+    help: 'Area per lipid is the bilayer area from FATSLiM, GridMAT, or lipyphilic. A PDB or GRO in the trajectory list is skipped because that file has no periodic box.'
+  },
+  {
+    type: 'titration',
+    guide: 'titration',
+    label: 'Titration',
+    path: 'api/preparation/#build_titration_figure',
+    help: 'Panel A is the pKa comparison, B is the protonated fraction, and C is the titration curve. Uncheck a residue type to hide it from A and B. A/B includes a residue in the pKa and fraction plots. C draws its titration curve. Cysteines in a disulfide bond are left out of A and B. Uncheck A/B for any other residue to leave it out of those panels.'
+  }
+]
+
+/** @param {string} type */
+export function structuralDocsId(type) {
+  return STRUCTURAL_ANALYSIS_DOCS.some((item) => item.type === type) ? `structural-${type}` : 'structural'
+}
+
+/** @param {string} type */
+export function structuralHelpText(type) {
+  return STRUCTURAL_ANALYSIS_DOCS.find((item) => item.type === type)?.help || STRUCTURAL_ANALYSIS_DOCS[0].help
+}
+
+/**
  * @param {string} id
  * @returns {{ label: string, url: string }[]}
  */
 export function docsEntries(id) {
+  const structuralType = id.startsWith('structural-') ? id.slice('structural-'.length) : ''
+  const selected = STRUCTURAL_ANALYSIS_DOCS.find((item) => item.type === structuralType)
+  if (selected) {
+    const ordered = [
+      selected,
+      ...STRUCTURAL_ANALYSIS_DOCS.filter((item) => item.type !== selected.type)
+    ]
+    return [
+      { label: 'User guide', url: `${DOCS_BASE}#${selected.guide}` },
+      ...ordered.map((item) => ({ label: item.label, url: `${DOCS_SITE}${item.path}` }))
+    ]
+  }
   const entry = DOCS_LINKS[id]
   if (!entry) return [{ label: 'User guide', url: DOCS_BASE }]
   const links = [{ label: 'User guide', url: `${DOCS_BASE}#${entry.guide}` }]

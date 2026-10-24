@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Analysis help:** the Structural Options note follows the selected analysis. Its documentation menu lists the user guide for that analysis and an API page for RMSD, RMSF, distance, radius of gyration, membrane thickness, area per lipid, and titration.
 - **Sequence and structure checker:** Amber names such as GLH, ASH, and CYX stay in the sequence instead of looking like missing residues. Potassium (`K+`) and chloride (`Cl-`) are ions, so nearby copies are not alternate conformations. Clicking a finding highlights those atoms and centers the camera, including when the view was opened with a topology.
 - **Preparation:** the 3D view stays up after Run PropKa when the target pH was typed in. The status bar no longer crashes on that pH. Target pH shows one decimal, such as 7.0.
 - **Structure checker:** closing the panel removes the yellow highlight from the finding you clicked.

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import test from 'node:test'
-import { DOCS_LINKS } from './docsLinks.js'
+import { DOCS_BASE, DOCS_LINKS, STRUCTURAL_ANALYSIS_DOCS, docsEntries } from './docsLinks.js'
 
 const docsRoot = path.resolve(import.meta.dirname, '../../../../../gatewizard/docs')
 
@@ -53,6 +53,21 @@ test('documentation buttons point at headings in the user guide and the API', ()
         apiSlugs.set(file, slugs)
       }
       assert.ok(slugs.has(fragment), `${id} points at ${file}#${fragment}, which is not a heading`)
+    }
+  }
+
+  for (const item of STRUCTURAL_ANALYSIS_DOCS) {
+    assert.ok(
+      guideSlugs.has(item.guide),
+      `${item.type} points at #${item.guide}, which is not a user-guide heading`
+    )
+    const links = docsEntries(`structural-${item.type}`)
+    assert.equal(links[0].url, `${DOCS_BASE}#${item.guide}`)
+    assert.equal(links.length, 1 + STRUCTURAL_ANALYSIS_DOCS.length)
+    assert.equal(links[1].label, item.label)
+    const labels = links.slice(1).map((link) => link.label)
+    for (const other of STRUCTURAL_ANALYSIS_DOCS) {
+      assert.ok(labels.includes(other.label), `${item.type} menu is missing ${other.label}`)
     }
   }
 })
