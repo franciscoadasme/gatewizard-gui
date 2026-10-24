@@ -316,7 +316,7 @@
   </div>
   <div class="space-y-2 border-t dialog-divider px-4 py-3">
     {#if previewLabel}
-      <p class="text-[11px] text-neutral-500">Licorice on {previewLabel}. It goes away when you open another finding.</p>
+      <p class="text-[11px] text-neutral-500">Licorice on {previewLabel}. It goes away when you close the checker.</p>
     {/if}
     <div class="flex flex-wrap justify-end gap-2">
       <button type="button" class="dialog-btn-outline" disabled={!previewLabel} onclick={onKeepPreview}>

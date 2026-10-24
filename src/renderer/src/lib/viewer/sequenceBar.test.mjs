@@ -29,6 +29,20 @@ test('sequence rows keep chains apart and mark numbering holes', () => {
   assert.equal(rows[1].items[0].letter, 'V')
 })
 
+test('Amber protonation names stay in the sequence', () => {
+  const atoms = [
+    { res_name: 'ALA', res_id: 44, chain_id: 'A' },
+    { res_name: 'GLH', res_id: 45, chain_id: 'A' },
+    { res_name: 'CYX', res_id: 46, chain_id: 'A' },
+    { res_name: 'GLN', res_id: 47, chain_id: 'A' }
+  ]
+  const items = buildSequenceChains(atoms)[0].items
+  assert.deepEqual(
+    items.map((item) => (item.kind === 'gap' ? `gap${item.count}` : item.letter)),
+    ['A', 'E', 'C', 'Q']
+  )
+})
+
 test('a hole longer than 6 residues is not fillable', () => {
   const atoms = [
     { res_name: 'ALA', res_id: 1, chain_id: 'A' },

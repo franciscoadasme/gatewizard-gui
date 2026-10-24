@@ -7114,6 +7114,7 @@ class AssemblyBuildRequest(BaseModel):
 
 class StructureCheckRequest(BaseModel):
     path: str
+    topology: str | None = None
 
 
 class AltlocChoice(BaseModel):
@@ -7137,6 +7138,13 @@ def structure_check(payload: StructureCheckRequest) -> dict:
     try:
         if not os.path.isfile(payload.path):
             raise FileNotFoundError(f"Structure not found: {payload.path}")
+        topology = (payload.topology or "").strip()
+        if topology and os.path.isfile(topology):
+            try:
+                return diagnose_structure(payload.path, topology=topology)
+            except TypeError:
+                # An older installed gatewizard has no topology argument.
+                return diagnose_structure(payload.path)
         return diagnose_structure(payload.path)
     except Exception as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -7498,9 +7506,37 @@ def _refresh_running_mempro_state(state: dict, state_file: str | None = None) ->
     return state
 
 
+def _mempro_results_still_on_disk(state: dict) -> list:
+    """Orientation rows whose PDB is still in the working directory."""
+    kept = []
+    for row in state.get("results") or []:
+        if not isinstance(row, dict):
+            continue
+        pdb = row.get("pdb_path")
+        if pdb and os.path.isfile(str(pdb)):
+            kept.append(row)
+    return kept
+
+
+def _mempro_job_visible(state: dict, state_file: str | None = None) -> dict | None:
+    """Hide a finished job once its orientation PDBs have been removed."""
+    state = _refresh_running_mempro_state(state, state_file)
+    status = state.get("status")
+    if status in {"running", "error"}:
+        return state
+    results = _mempro_results_still_on_disk(state)
+    if not results:
+        return None
+    if len(results) != len(state.get("results") or []):
+        state = dict(state)
+        state["results"] = results
+    return state
+
+
 def _list_mempro_job_files(working_dir: str) -> list[tuple[str, dict]]:
     """Return [(path, state), ...] for persisted MemPro jobs (newest first)."""
     found: list[tuple[str, dict]] = []
+    seen_ids: set[str] = set()
     jobs_dir = _mempro_jobs_dir(working_dir)
     if os.path.isdir(jobs_dir):
         for name in os.listdir(jobs_dir):
@@ -7508,25 +7544,43 @@ def _list_mempro_job_files(working_dir: str) -> list[tuple[str, dict]]:
                 continue
             path = os.path.join(jobs_dir, name)
             state = _read_mempro_state(path)
-            if state and state.get("job_id"):
-                state = _refresh_running_mempro_state(state, path)
-                found.append((path, state))
-                _mempro_jobs[str(state["job_id"])] = state
+            if not state or not state.get("job_id"):
+                continue
+            job_id = str(state["job_id"])
+            state = _mempro_job_visible(state, path)
+            if not state:
+                _mempro_jobs.pop(job_id, None)
+                continue
+            found.append((path, state))
+            seen_ids.add(job_id)
+            _mempro_jobs[job_id] = state
 
     legacy = _legacy_mempro_state_file(working_dir)
     legacy_state = _read_mempro_state(legacy)
     if legacy_state and legacy_state.get("job_id"):
         job_id = str(legacy_state["job_id"])
-        if not any(s.get("job_id") == job_id for _, s in found):
-            legacy_state = _refresh_running_mempro_state(legacy_state, legacy)
-            # Migrate into the multi-job folder so later scans see it.
-            try:
-                migrated = _mempro_job_file(working_dir, job_id)
-                _write_mempro_state(migrated, legacy_state)
-                found.append((migrated, legacy_state))
-            except Exception:
-                found.append((legacy, legacy_state))
-            _mempro_jobs[job_id] = legacy_state
+        if job_id not in seen_ids:
+            legacy_state = _mempro_job_visible(legacy_state, legacy)
+            if not legacy_state:
+                _mempro_jobs.pop(job_id, None)
+            else:
+                # Migrate into the multi-job folder so later scans see it.
+                try:
+                    migrated = _mempro_job_file(working_dir, job_id)
+                    _write_mempro_state(migrated, legacy_state)
+                    found.append((migrated, legacy_state))
+                except Exception:
+                    found.append((legacy, legacy_state))
+                seen_ids.add(job_id)
+                _mempro_jobs[job_id] = legacy_state
+
+    wd = os.path.abspath(os.path.expanduser(working_dir))
+    for job_id, state in list(_mempro_jobs.items()):
+        if job_id in seen_ids:
+            continue
+        other = state.get("working_dir")
+        if other and os.path.abspath(os.path.expanduser(str(other))) == wd:
+            _mempro_jobs.pop(job_id, None)
 
     found.sort(key=lambda item: str(item[1].get("start_time") or ""), reverse=True)
     return found
@@ -7736,24 +7790,31 @@ def mempro_status(job_id: str, working_dir: str | None = None) -> dict:
         if wd and state.get("status") == "running":
             disk = _read_mempro_state(_mempro_job_file(wd, job_id))
             if disk:
-                disk = _refresh_running_mempro_state(disk, _mempro_job_file(wd, job_id))
-                _mempro_jobs[job_id] = disk
-                return disk
-        return state
+                state = disk
+        path = _mempro_job_file(wd, job_id) if wd else None
+        visible = _mempro_job_visible(state, path)
+        if not visible:
+            _mempro_jobs.pop(job_id, None)
+            raise HTTPException(404, f"MemPro job {job_id!r} not found")
+        _mempro_jobs[job_id] = visible
+        return visible
     if working_dir:
         path = _mempro_job_file(working_dir, job_id)
         state = _read_mempro_state(path)
         if state:
-            state = _refresh_running_mempro_state(state, path)
-            _mempro_jobs[job_id] = state
-            return state
-        legacy = _read_mempro_state(_legacy_mempro_state_file(working_dir))
+            visible = _mempro_job_visible(state, path)
+            if not visible:
+                raise HTTPException(404, f"MemPro job {job_id!r} not found")
+            _mempro_jobs[job_id] = visible
+            return visible
+        legacy_path = _legacy_mempro_state_file(working_dir)
+        legacy = _read_mempro_state(legacy_path)
         if legacy and str(legacy.get("job_id")) == job_id:
-            legacy = _refresh_running_mempro_state(
-                legacy, _legacy_mempro_state_file(working_dir)
-            )
-            _mempro_jobs[job_id] = legacy
-            return legacy
+            visible = _mempro_job_visible(legacy, legacy_path)
+            if not visible:
+                raise HTTPException(404, f"MemPro job {job_id!r} not found")
+            _mempro_jobs[job_id] = visible
+            return visible
     raise HTTPException(404, f"MemPro job {job_id!r} not found")
 
 

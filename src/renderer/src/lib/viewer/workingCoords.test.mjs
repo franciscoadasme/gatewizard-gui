@@ -13,6 +13,7 @@ import {
   normalizeCoordPatch,
   positionsToCoordPatch,
   snapshotAtomCoords,
+  retargetViewsAfterStructureReload,
   syncViewAtomsFromStructure
 } from './workingCoords.js'
 
@@ -155,4 +156,71 @@ test('syncViewAtomsFromStructure updates matching view.atoms for redraw', () => 
   assert.equal(next[0].atoms[0].x, 5)
   assert.equal(next[0].atoms[1].x, 6)
   assert.equal(next[1].atoms[0].x, 0)
+})
+
+test('retargetViewsAfterStructureReload keeps a matching representation on the new pose', () => {
+  const residue = { atom_indices: [0], sec: 'H' }
+  const views = [
+    {
+      id: 'protein',
+      structureId: 's1',
+      baseSelection: 'resname ALA',
+      selection: 'resname ALA',
+      atoms: [{ index: 0, res_name: 'ALA', name: 'CA', x: 0, y: 0, z: 0 }],
+      bonds: [],
+      residues: [residue]
+    },
+    {
+      id: 'other',
+      structureId: 's2',
+      baseSelection: 'all',
+      atoms: [{ index: 0, x: 1, y: 0, z: 0 }]
+    }
+  ]
+  const { views: next, skipFetchIds, droppedIds } = retargetViewsAfterStructureReload(views, 's1', {
+    path: '/tmp/oriented.pdb',
+    atoms: [
+      { index: 0, res_name: 'ALA', name: 'CA', x: 40, y: 0, z: 0 },
+      { index: 1, res_name: 'BGC', name: 'C1', x: 41, y: 0, z: 0 }
+    ],
+    bonds: [[0, 1]],
+    residues: null
+  })
+  assert.equal(next[0].path, '/tmp/oriented.pdb')
+  assert.equal(next[0].atoms.length, 1)
+  assert.equal(next[0].atoms[0].x, 40)
+  assert.equal(next[0].residues[0].sec, 'H')
+  assert.deepEqual(skipFetchIds, ['protein'])
+  assert.deepEqual(droppedIds, [])
+  assert.equal(next[1].atoms[0].x, 1)
+})
+
+test('retargetViewsAfterStructureReload drops a representation whose molecule is gone', () => {
+  const views = [
+    {
+      id: 'ligand',
+      structureId: 's1',
+      baseSelection: 'resname BGC',
+      selection: 'resname BGC',
+      atoms: [{ index: 10, res_name: 'BGC', name: 'C1', x: 0, y: 0, z: 0 }]
+    },
+    {
+      id: 'protein',
+      structureId: 's1',
+      baseSelection: 'resname ALA',
+      selection: 'resname ALA',
+      atoms: [{ index: 0, res_name: 'ALA', name: 'CA', x: 1, y: 0, z: 0 }],
+      residues: [{ atom_indices: [0], sec: 'H' }]
+    }
+  ]
+  const { views: next, droppedIds } = retargetViewsAfterStructureReload(views, 's1', {
+    path: '/tmp/cleaned.pdb',
+    atoms: [{ index: 0, res_name: 'ALA', name: 'CA', x: 3, y: 0, z: 0 }],
+    bonds: [],
+    residues: null
+  })
+  assert.deepEqual(droppedIds, ['ligand'])
+  assert.equal(next.length, 1)
+  assert.equal(next[0].id, 'protein')
+  assert.equal(next[0].atoms[0].x, 3)
 })

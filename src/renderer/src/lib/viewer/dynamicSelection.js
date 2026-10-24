@@ -82,6 +82,15 @@ const WATER_RESNAMES = new Set([
   'SPCE'
 ])
 
+/** Amber and PDB names for a single ion, including K+ and Cl-. */
+export function isIonResname(name) {
+  const token = String(name || '').toUpperCase().trim()
+  if (!token) return false
+  if (ION_RESNAMES.has(token)) return true
+  const stem = token.replace(/[+-]+$/g, '').replace(/\d+$/g, '')
+  return stem !== token && ION_RESNAMES.has(stem)
+}
+
 const ION_RESNAMES = new Set([
   'NA',
   'NA+',
@@ -189,7 +198,7 @@ function tokenize(raw) {
   const s = String(raw || '').replace(/\bsame\s+residue\s+as\b/gi, 'byres')
   const out = []
   const re =
-    /\s+|([()])|([<>]=|==|!=|<|>)|(:)|(-?\d+\.?\d*(?:[eE][+-]?\d+)?)|([A-Za-z_][A-Za-z0-9_']*)/g
+    /\s+|([()])|([<>]=|==|!=|<|>)|(:)|(-?\d+\.?\d*(?:[eE][+-]?\d+)?)|([A-Za-z_][A-Za-z0-9_']*[+-]?)/g
   let m
   while ((m = re.exec(s))) {
     if (m[0].trim() === '') continue

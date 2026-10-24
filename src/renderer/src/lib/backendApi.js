@@ -1873,10 +1873,13 @@ export function structureBuildAssembly(payload) {
 
 /**
  * Missing atoms, gaps, alternate conformations, and chain differences.
- * @param {{ path: string }} payload
+ * @param {{ path: string, topology?: string | null }} payload
  */
 export function structureCheck(payload) {
-  return backendJson('/structure/check', { path: payload.path })
+  return backendJson('/structure/check', {
+    path: payload.path,
+    topology: payload.topology ?? null
+  })
 }
 
 /**

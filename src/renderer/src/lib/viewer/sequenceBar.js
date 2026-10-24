@@ -26,7 +26,16 @@ export const AA1 = {
   HID: 'H',
   HIE: 'H',
   HIP: 'H',
-  MSE: 'M'
+  ASH: 'D',
+  GLH: 'E',
+  LYN: 'K',
+  CYX: 'C',
+  CYM: 'C',
+  TYM: 'Y',
+  ARN: 'R',
+  MSE: 'M',
+  SEC: 'U',
+  PYL: 'O'
 }
 
 const PROTEIN = new Set(Object.keys(AA1))

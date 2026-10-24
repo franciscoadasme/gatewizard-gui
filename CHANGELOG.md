@@ -30,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Sequence and structure checker:** Amber names such as GLH, ASH, and CYX stay in the sequence instead of looking like missing residues. Potassium (`K+`) and chloride (`Cl-`) are ions, so nearby copies are not alternate conformations. Clicking a finding highlights those atoms and centers the camera, including when the view was opened with a topology.
+- **Structure checker:** closing the panel removes the yellow highlight from the finding you clicked.
+- **Visualize delete and MemPro:** deleting a molecule removes the representation that contained only those atoms, and the yellow selection of those atoms. Saving the structure under a new PDB name updates the name MemPro shows for the active structure. Opening MemPro lists a finished orientation only while its result PDBs are still on disk.
 - **macOS working directory:** a launch folder of `/` leaves the working directory empty. Run PropKa asks for a folder you can write in instead of creating `01_preparation_*` at the filesystem root.
 - **Equilibration production card:** NPAT shows that the surface area is held constant. NPgT keeps the surface-tension target in dyn/cm. Switching the sidebar ensemble between those two updates the Production card.
 - **Selection mode:** hovering a chain or residue keeps the same highlight while the pointer stays on that group, and atom picking skips atoms far from the pointer. A cartoon or tube turns yellow by recoloring the ribbon, and a long chain does not add a second ball-and-stick model. Deleting the selection asks in the page instead of a system dialog.

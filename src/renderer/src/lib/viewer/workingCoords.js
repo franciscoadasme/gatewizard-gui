@@ -5,6 +5,8 @@
  * Absolute world coordinates (Å), not deltas.
  */
 
+import { trySubsetBySelection } from './dynamicSelection.js'
+
 /**
  * @typedef {{ indices: number[], xyz: number[] }} CoordPatch
  */
@@ -401,4 +403,106 @@ export function createCoordUndoStack(max = 32) {
       return stack.length
     }
   }
+}
+
+/**
+ * Point existing representations at a reloaded PDB.
+ * A selection that still matches keeps its atoms, so the 3D view is not left
+ * empty until a later fetch. A representation whose selection matches nothing
+ * in the reloaded file is removed: deleting a molecule takes that card with it.
+ * A selection that cannot be resolved locally is cleared so the view row can fetch.
+ *
+ * @param {Array<Record<string, any>>} views
+ * @param {string | null | undefined} structureId
+ * @param {{ path?: string, atoms?: Array<Record<string, any>>, bonds?: unknown[], residues?: Array<Record<string, any>> | null }} raw
+ * @returns {{ views: Array<Record<string, any>>, skipFetchIds: string[], droppedIds: string[] }}
+ */
+export function retargetViewsAfterStructureReload(views, structureId, raw) {
+  const atoms = Array.isArray(raw?.atoms) ? raw.atoms : []
+  const bonds = Array.isArray(raw?.bonds) ? raw.bonds : []
+  const loadedResidues =
+    Array.isArray(raw?.residues) && raw.residues.length ? raw.residues : null
+  const path = raw?.path
+  /** @type {Map<number, Record<string, any>>} */
+  const byIndex = new Map()
+  for (const atom of atoms) {
+    if (typeof atom?.index === 'number') byIndex.set(atom.index, atom)
+  }
+  /** @type {string[]} */
+  const skipFetchIds = []
+  /** @type {string[]} */
+  const droppedIds = []
+  let changed = false
+  /** @type {Array<Record<string, any>>} */
+  const next = []
+  for (const view of views || []) {
+    if (!view || view._isSelHighlight || view.structureId !== structureId) {
+      next.push(view)
+      continue
+    }
+    changed = true
+    const indices = (view.atoms || [])
+      .map((/** @type {{ index?: number }} */ atom) => atom.index)
+      .filter((/** @type {unknown} */ n) => typeof n === 'number')
+    const lockToIndices = /\bindex\b/i.test(String(view.selection || view.baseSelection || ''))
+    /** @type {Record<string, any>} */
+    const copy = {
+      ...view,
+      path: path || view.path,
+      _bondOrderFetchDone: false
+    }
+    if (lockToIndices && indices.length) {
+      const locked = indices.map((index) => byIndex.get(index)).filter(Boolean)
+      if (!locked.length) {
+        if (view.id) droppedIds.push(view.id)
+        continue
+      }
+      const idxSet = new Set(indices)
+      const residueSource = loadedResidues || view.residues || []
+      copy.atoms = locked
+      copy.bonds = bonds.filter(
+        (bond) =>
+          Array.isArray(bond) &&
+          bond.length >= 2 &&
+          idxSet.has(Number(bond[0])) &&
+          idxSet.has(Number(bond[1]))
+      )
+      const indexSel = `index ${indices.join(' ')}`
+      copy.selection = indexSel
+      copy.baseSelection = indexSel
+      copy.residues = residueSource.filter((residue) =>
+        (residue.atom_indices || []).some((/** @type {number} */ index) => idxSet.has(index))
+      )
+      copy._prefetched = true
+      copy._bondOrderFetchDone = true
+      if (view.id) skipFetchIds.push(view.id)
+      next.push(copy)
+      continue
+    }
+    const sel = String(view.baseSelection || view.selection || 'all')
+    const residueSource = loadedResidues || view.residues || []
+    const subset = trySubsetBySelection(atoms, bonds, residueSource, sel)
+    if (subset.ok && !subset.atoms?.length) {
+      if (view.id) droppedIds.push(view.id)
+      continue
+    }
+    if (subset.ok && subset.atoms?.length) {
+      copy.atoms = subset.atoms
+      copy.bonds = subset.bonds || []
+      copy.residues = subset.residues?.length ? subset.residues : view.residues || []
+      copy._prefetched = true
+      copy._bondOrderFetchDone = true
+      if (view.id) skipFetchIds.push(view.id)
+      next.push(copy)
+      continue
+    }
+    copy.atoms = []
+    copy.bonds = []
+    copy.residues = []
+    copy._prefetched = false
+    copy._residueFetchDone = false
+    copy._bondOrderFetchDone = false
+    next.push(copy)
+  }
+  return { views: changed ? next : views || [], skipFetchIds, droppedIds }
 }

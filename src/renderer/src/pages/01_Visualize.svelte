@@ -52,6 +52,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   import {
     evaluateSelectionIndices,
     filterByIndexSet,
+    isIonResname,
     trySubsetBySelection
   } from '../lib/viewer/dynamicSelection.js'
   import { Color } from 'three'
@@ -262,6 +263,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
     normalizeCoordPatch,
     positionsToCoordPatch,
     snapshotAtomCoords,
+    retargetViewsAfterStructureReload,
     syncViewAtomsFromStructure
   } from '../lib/viewer/workingCoords.js'
   import {
@@ -450,6 +452,8 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   let checkerShown = $state({})
   let checkerPreviewViewId = $state(/** @type {string | null} */ (null))
   let checkerPreviewLabel = $state('')
+  /** The yellow highlight belongs to the checker finding, not to Select mode. */
+  let checkerOwnsSelection = false
   let superOpen = $state(false)
   let superRefId = $state('')
   let superMobId = $state('')
@@ -3881,6 +3885,22 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
     centerCameraOnAtoms(collectVisibleStructureViewAtoms(structureId))
   }
 
+  /**
+   * True when a reload moved the structure far enough that the current camera
+   * would be looking at empty space.
+   * @param {Atom[] | undefined | null} before
+   * @param {Atom[] | undefined | null} after
+   */
+  function poseLeftTheCamera(before, after) {
+    const previous = getCameraForAtoms(before)
+    const next = getCameraForAtoms(after)
+    if (!previous || !next) return false
+    const dx = previous.center.x - next.center.x
+    const dy = previous.center.y - next.center.y
+    const dz = previous.center.z - next.center.z
+    return Math.hypot(dx, dy, dz) > 1 || Math.abs(previous.extent - next.extent) > 1
+  }
+
   /** Reframe camera to *atoms* and reset orbit pose (e.g. after auto-generate). @param {Atom[] | undefined | null} atoms */
   function reframeCameraOnAtoms(atoms) {
     const base = getCameraForAtoms(atoms)
@@ -4660,6 +4680,32 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
     )
   }
 
+  /**
+   * A reload removed these representations because none of their atoms remain.
+   * @param {string[]} ids
+   */
+  function forgetDroppedRepresentations(ids) {
+    if (!ids?.length) return
+    const drop = new Set(ids)
+    for (const id of ids) {
+      removeViewTrackFromProject(animProject, id)
+      viewAtomsCache.delete(id)
+      logEvent('detail', 'view', 'Removed representation', id)
+    }
+    animProject = { ...animProject }
+    selectedViewIds = new Set([...selectedViewIds].filter((id) => !drop.has(id)))
+    visibilityGroups = pruneVisibilityGroups(
+      visibilityGroups,
+      structures.map((s) => s.id),
+      views.filter((v) => !v._isSelHighlight).map((v) => v.id),
+      new Map(
+        views
+          .filter((v) => !v._isSelHighlight && v.structureId)
+          .map((v) => /** @type {[string, string]} */ ([v.id, v.structureId]))
+      )
+    )
+  }
+
   /** Duplicate a representation so the copy can be edited independently (e.g. selection). */
   /** @param {string} id */
   function duplicateView(id) {
@@ -5101,7 +5147,8 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       }
       logEvent('info', 'view', `Saved PDB: ${String(r.filePath).split(/[/\\]/).pop()}`, r.filePath)
       if (!(frameCount > 0 && traj?.files?.length)) {
-        patchActiveStructure({ path: r.filePath })
+        const savedName = String(r.filePath).split(/[/\\]/).pop() || structure.label
+        patchActiveStructure({ path: r.filePath, label: savedName })
         const sid = activeStructureId
         for (const v of views) {
           if (v.structureId === sid) v.path = r.filePath
@@ -5367,6 +5414,10 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   async function applyEditResult(result) {
     selectedGroupIndices = new Set()
     selectedAtom = null
+    showGizmo = false
+    // The yellow selection model keeps the atoms it was built from. Drop it
+    // with the selection, before the reload copies the remaining views.
+    _syncSelHighlightView()
     if (!result?.path) {
       alert('Edit finished but no structure path was returned.')
       return
@@ -5375,16 +5426,6 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       await loadStructure(result.path, { resetCamera: false })
       return
     }
-    // Snapshot per-view atom indices before clearing so index-/fragment-based
-    // representations (e.g. split molecules) can be rebuilt after rename/renumber.
-    const viewIndexSnapshots = views.map((v) => ({
-      id: v.id,
-      indices: (v.atoms || [])
-        .map((/** @type {{ index?: number }} */ a) => a.index)
-        .filter((/** @type {unknown} */ n) => typeof n === 'number'),
-      selection: String(v.selection || ''),
-      lockToIndices: /\bindex\b/i.test(String(v.selection || v.baseSelection || ''))
-    }))
     // Keep the previous structure on screen until reload succeeds.
     // Never null `structure` on failure (that blacked out the canvas while
     // leaving representation chips, and disabled Clear scene).
@@ -5400,13 +5441,17 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
         save_dir: workingDir || null
       })
       const editedId = activeStructureId
-      patchActiveStructure({
+      const previousAtoms = structure?.atoms
+      const structurePatch = {
         path: newStructure.path,
         atoms: newStructure.atoms,
         bonds: newStructure.bonds,
-        residues: newStructure.residues,
         bond_source: newStructure.bond_source
-      })
+      }
+      // A coordinate reload omits residues unless secondary structure was
+      // requested. Keep the ones the cartoons are already using.
+      if (newStructure.residues?.length) structurePatch.residues = newStructure.residues
+      patchActiveStructure(structurePatch)
       baseAtomCoords = snapshotAtomCoords(newStructure.atoms)
       if (editedId) baseAtomCoordsByStructure.set(editedId, baseAtomCoords)
       const editedPath = newStructure.path
@@ -5419,43 +5464,22 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       if (editedId) rematchOverlaysAfterMove(editedId, newStructure.atoms)
       measureMode = null
       ctxMenu = null
-      const byIndex = new Map()
-      for (const a of newStructure.atoms || []) {
-        if (typeof a.index === 'number') byIndex.set(a.index, a)
+      const retargeted = retargetViewsAfterStructureReload(views, editedId, {
+        path: editedPath,
+        atoms: newStructure.atoms,
+        bonds: newStructure.bonds,
+        residues: newStructure.residues
+      })
+      for (const id of retargeted.skipFetchIds) {
+        skipNextPathFetch.add(id)
+        skipNextAtomsFetch.add(id)
       }
-      const allBonds = Array.isArray(newStructure.bonds) ? newStructure.bonds : []
-      for (const v of views) {
-        if (v.structureId !== editedId) continue
-        const snap = viewIndexSnapshots.find((s) => s.id === v.id)
-        v.path = editedPath
-        v._bondOrderFetchDone = false
-        if (snap?.lockToIndices && snap.indices.length) {
-          const atoms = snap.indices.map((i) => byIndex.get(i)).filter(Boolean)
-          if (atoms.length) {
-            const idxSet = new Set(snap.indices)
-            v.atoms = atoms
-            v.bonds = allBonds.filter(
-              ([i, j]) => idxSet.has(i) && idxSet.has(j)
-            )
-            const indexSel = `index ${snap.indices.join(' ')}`
-            v.selection = indexSel
-            v.baseSelection = indexSel
-            v.residues = Array.isArray(newStructure.residues)
-              ? newStructure.residues.filter((r) =>
-                  (r.atom_indices || []).some((/** @type {number} */ i) => idxSet.has(i))
-                )
-              : []
-            v._prefetched = true
-            v._bondOrderFetchDone = true
-            continue
-          }
-        }
-        v.atoms = []
-        v.bonds = []
-        v.residues = []
-        v._prefetched = false
+      views = /** @type {View[]} */ (retargeted.views)
+      forgetDroppedRepresentations(retargeted.droppedIds)
+      // MemPro and other rigid moves leave the old camera on empty space.
+      if (poseLeftTheCamera(previousAtoms, newStructure.atoms)) {
+        reframeCameraOnAtoms(newStructure.atoms)
       }
-      views = [...views]
       // Optional: discover new molecule types (e.g. after MemPro). Do not
       // block the edit on detect-molecules — its legacy atom payload is heavy
       // and was a common "Failed to fetch" source after chain delete.
@@ -7069,23 +7093,20 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       return memproJobs
     }
     const r = await memproScan(workingDir)
-    const diskJobs = Array.isArray(r.jobs) ? r.jobs : r.found ? [r] : []
-    /** @type {Map<string, object>} */
-    const byId = new Map()
-    for (const j of memproJobs) {
-      if (j?.job_id) byId.set(String(j.job_id), j)
-    }
-    for (const j of diskJobs) {
-      if (j?.job_id) byId.set(String(j.job_id), { ...byId.get(String(j.job_id)), ...j })
-    }
-    memproJobs = Array.from(byId.values()).sort((a, b) =>
+    const diskJobs = (Array.isArray(r.jobs) ? r.jobs : r.found ? [r] : []).filter((j) => j?.job_id)
+    memproJobs = diskJobs.sort((a, b) =>
       String(b.start_time || '').localeCompare(String(a.start_time || ''))
     )
-    if (!memproSelectedJobId && memproJobs.length) {
-      applyMemproJobToPanel(memproJobs[0], { quiet: true })
-    } else if (memproSelectedJobId) {
+    if (!memproJobs.length) {
+      memproSelectedJobId = null
+      memproJobId = null
+      memproJobStatus = null
+      memproResults = []
+      memproError = null
+      memproShowNewRunForm = true
+    } else {
       const cur = memproJobs.find((j) => j.job_id === memproSelectedJobId)
-      if (cur) applyMemproJobToPanel(cur, { quiet: true })
+      applyMemproJobToPanel(cur || memproJobs[0], { quiet: true })
     }
     syncMemproStatusChip()
     return memproJobs
@@ -8812,7 +8833,11 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
     checkerChoices = {}
     checkerShown = {}
     try {
-      const report = await structureCheck({ path: structure.path || assemblySourcePath(structure) })
+      const report = checkerReportForViewer(
+        await structureCheck({
+          path: structure.path || assemblySourcePath(structure)
+        })
+      )
       checkerReport = report
       checkerChoices = checkerChoicesFromReport(report)
       checkerShown = checkerShownFromReport(report)
@@ -8823,20 +8848,54 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
     }
   }
 
+  /**
+   * A prmtop labels the segment SYSTEM, so the viewer chain is not the PDB letter.
+   * Drop chainID when the written selection misses, and keep the residue number.
+   * @param {object | null | undefined} report
+   */
+  function checkerReportForViewer(report) {
+    if (!report) return report
+    const altlocs = (report.altlocs || []).filter((group) => !isIonResname(group.resname))
+    const issues = (report.issues || []).filter((issue) => {
+      if (issue.kind !== 'unknown') return true
+      const match = String(issue.selection || '').match(/\bresname\s+(\S+)/i)
+      return !(match && isIonResname(match[1]))
+    })
+    return {
+      ...report,
+      altlocs,
+      issues,
+      summary: report.summary
+        ? { ...report.summary, altlocs: altlocs.length, other: issues.length }
+        : report.summary
+    }
+  }
+
   /** @param {string} selection */
   function atomsForCheckerSelection(selection) {
     let query = String(selection || '').trim()
     if (!structure || !query) return { query: '', atoms: /** @type {typeof structure.atoms} */ ([]) }
-    let indices = evaluateSelectionIndices(structure.atoms, query)
-    if (!indices?.size) {
-      const broader = query.replace(/\s+and\s+name\s+\S+/i, '').trim()
-      if (broader && broader !== query) {
-        query = broader
-        indices = evaluateSelectionIndices(structure.atoms, query)
+    /** @type {string[]} */
+    const attempts = [query]
+    const broader = query.replace(/\s+and\s+name\s+\S+/gi, '').trim()
+    if (broader && broader !== query) attempts.push(broader)
+    const noChain = query
+      .replace(/\bchainID\s+\S+\s+and\s+/gi, '')
+      .replace(/\s+and\s+chainID\s+\S+/gi, '')
+    if (noChain && noChain !== query) attempts.push(noChain)
+    /** @type {Set<number> | null} */
+    let indices = null
+    let used = query
+    for (const attempt of attempts) {
+      const found = evaluateSelectionIndices(structure.atoms, attempt)
+      if (found?.size) {
+        indices = found
+        used = attempt
+        break
       }
     }
-    if (!indices?.size) return { query, atoms: [] }
-    return { query, atoms: structure.atoms.filter((atom) => indices.has(atom.index)) }
+    if (!indices?.size) return { query: used, atoms: [] }
+    return { query: used, atoms: structure.atoms.filter((atom) => indices.has(atom.index)) }
   }
 
   function restoreCheckerHiddenAtoms() {
@@ -8888,14 +8947,18 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
 
   function clearCheckerPreview() {
     restoreCheckerHiddenAtoms()
-    if (!checkerPreviewViewId) {
-      checkerPreviewLabel = ''
-      return
+    if (checkerOwnsSelection) {
+      checkerOwnsSelection = false
+      selectedGroupIndices = new Set()
+      selectedAtom = null
+      showGizmo = false
+      _syncSelHighlightView()
     }
     const id = checkerPreviewViewId
     checkerPreviewViewId = null
     checkerPreviewLabel = ''
-    views = views.filter((view) => view.id !== id)
+    if (!id && !views.some((view) => view._isCheckerPreview)) return
+    views = views.filter((view) => view.id !== id && !view._isCheckerPreview)
   }
 
   /**
@@ -8924,6 +8987,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
     }
     selectedGroupIndices = picked
     selectedAtom = shown[0] || null
+    checkerOwnsSelection = true
     centerCameraOnAtoms(atomsAtCurrentTraj(shown))
     const owner = structure
     const subset = resolveViewAtomSubset(owner, found.query, 'licorice')
@@ -8987,7 +9051,9 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   function keepCheckerPreview() {
     if (!checkerPreviewViewId) return
     const id = checkerPreviewViewId
-    views = views.map((view) => (view.id === id ? { ...view, _isSelHighlight: false } : view))
+    views = views.map((view) =>
+      view.id === id ? { ...view, _isSelHighlight: false, _isCheckerPreview: false } : view
+    )
     checkerPreviewViewId = null
     checkerPreviewLabel = ''
   }
@@ -9240,6 +9306,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
     if (!entry) return
     loadingPDB = true
     try {
+      const previousAtoms = entry.atoms
       const raw = await getStructure({
         path: newPath,
         topology: entry.topologyPath || null,
@@ -9249,18 +9316,18 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
         needs_secondary_structure: false,
         save_dir: workingDir || null
       })
-      structures = structures.map((item) =>
-        item.id === entryId
-          ? {
-              ...item,
-              path: raw.path,
-              atoms: raw.atoms,
-              bonds: raw.bonds,
-              residues: raw.residues,
-              bond_source: raw.bond_source
-            }
-          : item
-      )
+      structures = structures.map((item) => {
+        if (item.id !== entryId) return item
+        const next = {
+          ...item,
+          path: raw.path,
+          atoms: raw.atoms,
+          bonds: raw.bonds,
+          bond_source: raw.bond_source
+        }
+        if (raw.residues?.length) next.residues = raw.residues
+        return next
+      })
       const snap = snapshotAtomCoords(raw.atoms)
       baseAtomCoordsByStructure.set(entryId, snap)
       if (entryId === activeStructureId) {
@@ -9271,16 +9338,16 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
         previewPositions = null
       }
       rematchOverlaysAfterMove(entryId, raw.atoms)
-      for (const view of views) {
-        if (view.structureId !== entryId) continue
-        view.path = raw.path
-        view.atoms = []
-        view.bonds = []
-        view.residues = []
-        view._prefetched = false
-        view._bondOrderFetchDone = false
+      const retargeted = retargetViewsAfterStructureReload(views, entryId, raw)
+      for (const id of retargeted.skipFetchIds) {
+        skipNextPathFetch.add(id)
+        skipNextAtomsFetch.add(id)
       }
-      views = [...views]
+      views = /** @type {View[]} */ (retargeted.views)
+      forgetDroppedRepresentations(retargeted.droppedIds)
+      if (entryId === activeStructureId && poseLeftTheCamera(previousAtoms, raw.atoms)) {
+        reframeCameraOnAtoms(raw.atoms)
+      }
     } finally {
       loadingPDB = false
     }

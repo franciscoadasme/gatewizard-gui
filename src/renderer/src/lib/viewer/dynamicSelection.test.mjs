@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   evaluateSelectionIndices,
   filterByIndexSet,
+  isIonResname,
   selectionLooksIncomplete,
   selectionNeedsEachFrame,
   selectionUsesByres,
@@ -132,6 +133,21 @@ test('index selects 0-based atom indices', () => {
   assert.deepEqual([...(evaluateSelectionIndices(atoms, 'index 12 to 13') ?? [])].sort((a, b) => a - b), [12, 13])
   assert.equal(selectionLooksIncomplete('index'), true)
   assert.equal(selectionLooksIncomplete('index 12'), false)
+})
+
+test('resname K+ selects potassium and not a broken token', () => {
+  const atoms = [
+    atom({ index: 1, res_name: 'K+', res_id: 1017, chain_id: 'S', name: 'K+' }),
+    atom({ index: 2, res_name: 'BGC', res_id: 490, chain_id: 'S', name: 'C1' })
+  ]
+  assert.deepEqual([...(evaluateSelectionIndices(atoms, 'resname K+') ?? [])], [1])
+  assert.deepEqual(
+    [...(evaluateSelectionIndices(atoms, 'resname K+ and resid 1017') ?? [])],
+    [1]
+  )
+  assert.equal(isIonResname('K+'), true)
+  assert.equal(isIonResname('Cl-'), true)
+  assert.equal(isIonResname('BGC'), false)
 })
 
 test('selectionLooksIncomplete detects mid-edit bonded drafts', () => {
