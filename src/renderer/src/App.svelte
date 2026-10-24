@@ -663,8 +663,10 @@
       preparationStatus.prepareDone
     ) {
       const details = []
-      if (preparationStatus.propkaDone)
-        details.push(`PropKa pH ${preparationStatus.propkaPh?.toFixed(1)} ✓`)
+      if (preparationStatus.propkaDone) {
+        const ph = Number(preparationStatus.propkaPh)
+        details.push(`PropKa pH ${Number.isFinite(ph) ? ph.toFixed(1) : '—'} ✓`)
+      }
       if (preparationStatus.bondsChecked)
         details.push(
           preparationStatus.bondsCount > 0
@@ -867,8 +869,12 @@
         class="pointer-events-none size-9 object-contain"
       />
     </div>
-    <div class="flex min-w-0 flex-1 items-stretch border-b border-neutral-200 dark:border-neutral-800">
-      <div class="titlebar-wordmark-slot flex shrink-0 items-center self-center pl-2 pr-1">
+    <div
+      class="flex min-w-0 flex-1 items-stretch overflow-hidden border-b border-neutral-200 dark:border-neutral-800"
+    >
+      <div
+        class="titlebar-wordmark-slot flex min-w-0 shrink items-center self-center overflow-hidden pl-2 pr-1"
+      >
         <img
           src={wordmark}
           alt="GateWizard"
@@ -876,27 +882,28 @@
           class="pointer-events-none h-4 w-auto max-w-[12rem] object-contain object-left"
         />
       </div>
-      <div class="titlebar-drag-zone min-w-8 flex-1" aria-hidden="true"></div>
-      <div class="titlebar-no-drag flex shrink-0 items-center gap-2 self-center">
-      <span class="titlebar-label shrink-0 text-xs font-medium text-neutral-600 dark:text-neutral-400"
-        >Working Directory:</span
-      >
-      <input
-        id="working-dir-input"
-        type="text"
-        readonly
-        placeholder="Select a directory..."
-        value={workingDir}
-        title={workingDir || undefined}
-        class="h-6 w-52 shrink-0 truncate rounded border border-neutral-300 px-2 text-xs transition-all dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:placeholder-neutral-600"
-      />
-      <Button size="sm" className="h-6 shrink-0 px-2.5 py-0 text-xs" onclick={onBrowseDirectory}
-        >Browse</Button
-      >
+      <div class="titlebar-drag-zone min-w-0 flex-1" aria-hidden="true"></div>
+      <div class="titlebar-no-drag flex min-w-0 items-center gap-2 self-center">
+        <span
+          class="titlebar-label min-w-0 shrink truncate text-xs font-medium text-neutral-600 dark:text-neutral-400"
+          >Working Directory:</span
+        >
+        <input
+          id="working-dir-input"
+          type="text"
+          readonly
+          placeholder="Select a directory..."
+          value={workingDir}
+          title={workingDir || undefined}
+          class="h-6 w-52 min-w-0 shrink-[999] truncate rounded border border-neutral-300 px-2 text-xs transition-all dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:placeholder-neutral-600"
+        />
+        <Button size="sm" className="h-6 shrink-0 px-2.5 py-0 text-xs" onclick={onBrowseDirectory}
+          >Browse</Button
+        >
+      </div>
+      <div class="titlebar-drag-zone min-w-0 flex-1" aria-hidden="true"></div>
     </div>
-    <div class="titlebar-drag-zone min-w-8 flex-1" aria-hidden="true"></div>
     <TitleBarControls />
-    </div>
   </header>
 
   <WindowResizeHandles />

@@ -31,7 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Sequence and structure checker:** Amber names such as GLH, ASH, and CYX stay in the sequence instead of looking like missing residues. Potassium (`K+`) and chloride (`Cl-`) are ions, so nearby copies are not alternate conformations. Clicking a finding highlights those atoms and centers the camera, including when the view was opened with a topology.
+- **Preparation:** the 3D view stays up after Run PropKa when the target pH was typed in. The status bar no longer crashes on that pH. Target pH shows one decimal, such as 7.0.
 - **Structure checker:** closing the panel removes the yellow highlight from the finding you clicked.
+- **Title bar:** minimize, maximize, and close stay on the right when the interface scale is above 100%. The working-directory path shrinks to make room.
 - **Visualize delete and MemPro:** deleting a molecule removes the representation that contained only those atoms, and the yellow selection of those atoms. Saving the structure under a new PDB name updates the name MemPro shows for the active structure. Opening MemPro lists a finished orientation only while its result PDBs are still on disk.
 - **macOS working directory:** a launch folder of `/` leaves the working directory empty. Run PropKa asks for a folder you can write in instead of creating `01_preparation_*` at the filesystem root.
 - **Equilibration production card:** NPAT shows that the surface area is held constant. NPgT keeps the surface-tension target in dyn/cm. Switching the sidebar ensemble between those two updates the Production card.

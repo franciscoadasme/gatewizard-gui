@@ -45,7 +45,7 @@
   /** @type {{ filled?: object[], skipped?: object[], error?: string } | null} */
   let gapReport = $state(null)
   let maxDisulfideDistance = $state(2.5)
-  let targetPh = $state(7.0)
+  let targetPh = $state('7.0')
   let workingFile = $state('')
   let outputFolderName = $state('')
   /** Parent directory for preparation output; defaults to the top-bar working directory. */
@@ -316,7 +316,20 @@
     }
   }
 
+  /** Show a whole pH as 7.0. The number box itself drops that trailing zero. */
+  function commitTargetPh() {
+    const raw = String(targetPh ?? '').trim()
+    const n = Number(raw)
+    if (!raw || !Number.isFinite(n)) {
+      targetPh = '7.0'
+      return
+    }
+    const clamped = Math.min(14, Math.max(0, n))
+    targetPh = clamped.toFixed(1)
+  }
+
   async function onRunPropKa() {
+    commitTargetPh()
     if (!resolvedOutputParent) {
       alert('Set a working directory you can write in before Run PropKa.')
       return
@@ -357,9 +370,10 @@
         }
       }
       preparationStatus.propkaDone = true
-      preparationStatus.propkaPh = targetPh
+      const ph = Number(targetPh)
+      preparationStatus.propkaPh = Number.isFinite(ph) ? ph : null
       lastPropKaFile = workingFile
-      lastPropKaPh = Number(targetPh)
+      lastPropKaPh = Number.isFinite(ph) ? ph : null
       lastPropKaCap = capProtein
       if (data.job_dir) {
         logEvent('info', 'prep', `PropKa output folder: "${outputFolderName}"`, data.job_dir)
@@ -441,7 +455,7 @@
         path: pdbPath,
         outputPath: protonatedFile,
         protonationStates,
-        targetPh,
+        targetPh: Number(targetPh),
         disulfideBonds,
         removeProteinHydrogens,
         preserveResidueNumbers,
@@ -473,7 +487,7 @@
     keepMostLikelyAltlocs = true
     gapReport = null
     maxDisulfideDistance = 2.5
-    targetPh = 7.0
+    targetPh = '7.0'
     workingFile = ''
     activeWorkingFile = ''
     preparationJobDir = ''
@@ -583,13 +597,12 @@
         <Input
           id="target-ph"
           name="target-ph"
-          type="number"
+          type="text"
+          inputmode="decimal"
           size="sm"
           className="w-20"
-          min="0"
-          max="14"
-          step="0.1"
           bind:value={targetPh}
+          onblur={commitTargetPh}
         />
       </div>
       <div class="flex items-center gap-1">

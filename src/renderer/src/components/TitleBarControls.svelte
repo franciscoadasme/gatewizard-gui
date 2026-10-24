@@ -5,7 +5,9 @@
   }
 </script>
 
-<div class="titlebar-controls flex shrink-0 items-stretch">
+<div
+  class="titlebar-controls flex shrink-0 items-stretch border-b border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950"
+>
   <button
     type="button"
     class="titlebar-btn"
