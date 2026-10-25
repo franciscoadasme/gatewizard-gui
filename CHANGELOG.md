@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.15] - 2026-10-25
+
 ### Added
 
 - **Builder tooltips:** Pre-oriented, Add bulk salt, the salt concentration, and Parametrize with tleap explain the choice on hover.
@@ -24,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Builder salt:** Add bulk salt no longer rejects concentrations above 2 M. Packmol-memgen `--saltcon` has no such cap. A negative value is still rejected.
 - **Builder:** the button that launches a generated job is **Build system**. The Builder page no longer calls that step preparation.
 - **MemPrO:** the Linux and macOS installer uses the CPU package `mempro` ≥ 0.3.1 from `gatewizard[full]`. The orientation panel shows CPU count and seed with the existing fields, and the other 0.3 options under Advanced settings. GPU stays off until JAX can see a GPU. GPU install opens the installation page.
-- **API requirement:** the app requires gatewizard **>= 1.0.55**.
+- **API requirement:** the app requires gatewizard **>= 1.0.56**.
 - **Documentation and Visualize menus:** the book icon lists the user guide and the matching API pages. Open, Select, Transform, and Tools on Visualize open on a click and close the menu that was already open.
 - **Animation timeline:** − and + change the timeline width, and the top edge sets how many representation rows stay visible. Each easing type has its own bar color. The easing and fade cards open on the right and can be dragged.
 
