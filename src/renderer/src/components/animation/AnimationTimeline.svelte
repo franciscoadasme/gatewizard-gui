@@ -146,6 +146,8 @@
   let trackScrollEl = $state(/** @type {HTMLDivElement | null} */ (null))
   let zoom = $state(1)
   let trackListHeight = $state(160)
+  /** Vertical scrollbar of the representation list, so those lanes stay as wide as the camera lane. */
+  let trackGutterPx = $state(0)
   const zoomMax = $derived(timelineZoomMax(safeDuration))
   const laneLabelClass = 'sticky left-0 z-20 shrink-0 bg-neutral-100 dark:bg-neutral-900'
   let draggingId = $state(/** @type {string | null} */ (null))
@@ -550,6 +552,22 @@
   $effect(() => {
     const max = zoomMax
     if (zoom > max) zoom = max
+  })
+
+  $effect(() => {
+    const el = trackScrollEl
+    if (!el) return
+    const measure = () => {
+      const style = getComputedStyle(el)
+      const border =
+        (Number.parseFloat(style.borderLeftWidth) || 0) +
+        (Number.parseFloat(style.borderRightWidth) || 0)
+      trackGutterPx = Math.max(0, Math.round(el.offsetWidth - el.clientWidth - border))
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+    return () => observer.disconnect()
   })
 
   let syncingScroll = false
@@ -1528,6 +1546,7 @@
     <div
       bind:this={rulerScrollEl}
       class="timeline-ruler-scroll overflow-x-auto"
+      style="margin-right: {trackGutterPx}px"
       onscroll={() => syncScroll(rulerScrollEl, trackScrollEl)}
     >
       <div class="min-w-full space-y-0.5" style="width: {zoom * 100}%">
