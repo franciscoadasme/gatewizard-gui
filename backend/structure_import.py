@@ -526,6 +526,354 @@ def write_bond_orders_sidecar(pdb_path: str | Path, orders: list[list[int]]) -> 
     return orders_path
 
 
+# Standard residues get bond orders from the name and the atom names. A membrane
+# PDB stays on this path; ligands and cofactors go through RDKit one residue at a time.
+_AMINO_ACIDS = {
+    "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",
+    "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
+    "HID", "HIE", "HIP", "HSD", "HSE", "HSP", "ASH", "GLH", "LYN", "CYX",
+    "CYM", "TYM", "ARN", "MSE", "SEC", "PYL",
+}
+_NA_BASE = {
+    "A": "A", "DA": "A", "RA": "A", "ADE": "A", "ADN": "A",
+    "G": "G", "DG": "G", "RG": "G", "GUA": "G", "GAN": "G",
+    "C": "C", "DC": "C", "RC": "C", "CYT": "C",
+    "T": "T", "DT": "T", "THY": "T",
+    "U": "U", "DU": "U", "RU": "U", "URA": "U", "URI": "U",
+}
+_NA_DOUBLES = {
+    "A": (("N1", "C6"), ("C2", "N3"), ("C4", "C5"), ("C8", "N7")),
+    "G": (("C6", "O6"), ("C2", "N3"), ("C4", "C5"), ("C8", "N7")),
+    "C": (("C2", "O2"), ("N3", "C4"), ("C5", "C6")),
+    "T": (("C2", "O2"), ("C4", "O4"), ("C5", "C6")),
+    "U": (("C2", "O2"), ("C4", "O4"), ("C5", "C6")),
+}
+_SIDECHAIN_DOUBLES = {
+    "ASN": (("CG", "OD1"),),
+    "GLN": (("CD", "OE1"),),
+    "ARG": (("CZ", "NH1"),),
+    "ARN": (("CZ", "NH1"),),
+    "PHE": (("CG", "CD2"), ("CD1", "CE1"), ("CE2", "CZ")),
+    "TYR": (("CG", "CD2"), ("CD1", "CE1"), ("CE2", "CZ")),
+    "TYM": (("CG", "CD2"), ("CD1", "CE1"), ("CE2", "CZ")),
+    "TRP": (("CG", "CD1"), ("CD2", "CE3"), ("CE2", "CZ2"), ("CZ3", "CH2")),
+}
+_CARBOXYL = {
+    "ASP": ("CG", ("OD1", "OD2")),
+    "ASH": ("CG", ("OD1", "OD2")),
+    "GLU": ("CD", ("OE1", "OE2")),
+    "GLH": ("CD", ("OE1", "OE2")),
+}
+_HIS_HID = {"HID", "HSD"}
+_HIS_HIE = {"HIE", "HSE", "HIS"}
+_HIS_HIP = {"HIP", "HSP"}
+_TEMPLATE_RESIDUES = _AMINO_ACIDS | set(_NA_BASE) | {"ACE", "NME"}
+_WATER = {
+    "HOH", "WAT", "H2O", "TIP", "TIP3", "TIP4", "TIP5", "T3P", "T4P", "T5P",
+    "SOL", "SPC", "SPCE", "OPC",
+}
+_IONS = {
+    "NA", "CL", "K", "MG", "ZN", "CA", "FE", "LI", "RB", "CS", "SR", "BA",
+    "CU", "MN", "CO", "NI", "SOD", "CLA", "POT",
+}
+_TWO_LETTER_ELEMENTS = {
+    "CL", "BR", "NA", "MG", "ZN", "FE", "CA", "SE", "MN", "CU", "CO", "NI",
+    "SI", "LI", "AL", "AG", "AU", "HG", "PB", "SN", "BA", "SR", "CD", "CR",
+    "MO", "PT", "AS", "SB",
+}
+_HETERO_ATOM_CAP = 300
+
+
+def _atom_names(atoms) -> set[str]:
+    return {str(getattr(atom, "name", "")).strip().upper() for atom in atoms}
+
+
+def _proton_on(heavy: str, names: set[str]) -> bool:
+    """Amber puts the hydrogen on OD2 in the name HD2."""
+    if len(heavy) < 2:
+        return False
+    stem = "H" + heavy[1:]
+    if stem in names:
+        return True
+    return any(name.endswith(stem) and name[0].isdigit() for name in names)
+
+
+def _looks_like_hydrogen_name(name: str) -> bool:
+    text = str(name).strip().upper()
+    if not text:
+        return False
+    if text[0].isdigit():
+        text = text.lstrip("0123456789")
+    return text.startswith("H")
+
+
+def _raw_element(atom) -> str:
+    try:
+        return str(getattr(atom, "element", "") or "").strip().upper()
+    except Exception:
+        return ""
+
+
+def _residue_has_hydrogen(atoms, *, use_names: bool) -> bool:
+    saw_element = False
+    for atom in atoms:
+        element = _raw_element(atom)
+        if element in {"H", "D"}:
+            return True
+        if element:
+            saw_element = True
+            continue
+        if use_names and _looks_like_hydrogen_name(getattr(atom, "name", "")):
+            return True
+    if saw_element:
+        return False
+    return any(_looks_like_hydrogen_name(getattr(atom, "name", "")) for atom in atoms)
+
+
+def _element_symbol(atom) -> str:
+    raw = _raw_element(atom)
+    if not raw:
+        letters = "".join(ch for ch in str(getattr(atom, "name", "")) if ch.isalpha()).upper()
+        if len(letters) >= 2 and letters[:2] in _TWO_LETTER_ELEMENTS:
+            raw = letters[:2]
+        else:
+            raw = letters[:1]
+    if raw in {"D", "T"}:
+        return "H"
+    if len(raw) <= 1:
+        return raw
+    return raw[0] + raw[1:].lower()
+
+
+def _his_pairs(resname: str, names: set[str]) -> list[tuple[str, str]]:
+    if resname in _HIS_HID:
+        kind = "HID"
+    elif resname in _HIS_HIP:
+        kind = "HIP"
+    elif resname in _HIS_HIE:
+        kind = "HIE"
+    else:
+        return []
+    if resname == "HIS":
+        on_nd = _proton_on("ND1", names)
+        on_ne = _proton_on("NE2", names)
+        if on_nd and on_ne:
+            kind = "HIP"
+        elif on_nd:
+            kind = "HID"
+    if kind == "HID":
+        return [("CG", "CD2"), ("CE1", "NE2")]
+    if kind == "HIP":
+        return [("CG", "CD2"), ("ND1", "CE1")]
+    return [("ND1", "CE1"), ("CG", "CD2")]
+
+
+def _carboxyl_pairs(resname: str, names: set[str]) -> list[tuple[str, str]]:
+    spec = _CARBOXYL.get(resname)
+    if spec is None:
+        return []
+    carbon, oxygens = spec
+    present = [oxygen for oxygen in oxygens if oxygen in names]
+    if carbon not in names or not present:
+        return []
+    protonated = [oxygen for oxygen in present if _proton_on(oxygen, names)]
+    if protonated:
+        return [(carbon, oxygen) for oxygen in present if oxygen not in protonated]
+    return [(carbon, present[0])]
+
+
+def _template_pairs(resname: str, names: set[str]) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    if resname in _AMINO_ACIDS or resname == "ACE":
+        if "C" in names and "O" in names:
+            pairs.append(("C", "O"))
+    base = _NA_BASE.get(resname)
+    if base:
+        pairs.extend(_NA_DOUBLES[base])
+    pairs.extend(_SIDECHAIN_DOUBLES.get(resname, ()))
+    pairs.extend(_his_pairs(resname, names))
+    pairs.extend(_carboxyl_pairs(resname, names))
+    return [(a, b) for a, b in pairs if a in names and b in names]
+
+
+def _indices_by_name(atoms) -> dict[str, int]:
+    found: dict[str, int] = {}
+    duplicated: set[str] = set()
+    for atom in atoms:
+        name = str(getattr(atom, "name", "")).strip().upper()
+        if not name:
+            continue
+        if name in found:
+            duplicated.add(name)
+        else:
+            found[name] = int(atom.index)
+    for name in duplicated:
+        found.pop(name, None)
+    return found
+
+
+def _append_order(out: list[list[int]], seen: set[tuple[int, int]], i: int, j: int, order: int) -> None:
+    if i == j or order < 2:
+        return
+    key = (i, j) if i < j else (j, i)
+    if key in seen:
+        return
+    seen.add(key)
+    out.append([key[0], key[1], int(order)])
+
+
+def _perceive_hetero_orders(atoms) -> list[list[int]]:
+    """Bond orders for one ligand or cofactor. Failure leaves that residue single."""
+    atom_list = list(atoms)
+    if len(atom_list) < 2 or len(atom_list) > _HETERO_ATOM_CAP:
+        return []
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import rdDetermineBonds
+        from rdkit.Geometry import Point3D
+    except Exception:
+        return []
+
+    table = Chem.GetPeriodicTable()
+    rw = Chem.RWMol()
+    index_map: list[int] = []
+    for atom in atom_list:
+        symbol = _element_symbol(atom)
+        try:
+            atomic_number = int(table.GetAtomicNumber(symbol))
+        except Exception:
+            return []
+        if atomic_number <= 0:
+            return []
+        rw.AddAtom(Chem.Atom(atomic_number))
+        index_map.append(int(atom.index))
+    mol = rw.GetMol()
+    conformer = Chem.Conformer(len(index_map))
+    try:
+        for i, atom in enumerate(atom_list):
+            pos = atom.position
+            conformer.SetAtomPosition(
+                i, Point3D(float(pos[0]), float(pos[1]), float(pos[2]))
+            )
+    except Exception:
+        return []
+    mol.AddConformer(conformer, assignId=True)
+
+    for charge in (0, -1, 1, -2, 2):
+        trial = Chem.Mol(mol)
+        try:
+            rdDetermineBonds.DetermineConnectivity(trial)
+            rdDetermineBonds.DetermineBondOrders(trial, charge=charge)
+        except Exception:
+            continue
+        try:
+            Chem.Kekulize(trial)
+        except Exception:
+            pass
+        raw = _bond_orders_from_mol(trial)
+        mapped = [
+            [index_map[i], index_map[j], order]
+            for i, j, order in raw
+            if order >= 2 and i < len(index_map) and j < len(index_map)
+        ]
+        if mapped:
+            return mapped
+    return []
+
+
+def perceive_bond_orders(residues) -> list[list[int]]:
+    """Double and triple bonds for a hydrogen-containing structure with no topology.
+
+    Protein, nucleic acid, and water orders come from the residue name. Every
+    other residue is one RDKit molecule. A residue with no hydrogen, or one
+    RDKit cannot perceive, contributes nothing and stays a single bond.
+    """
+    out: list[list[int]] = []
+    seen: set[tuple[int, int]] = set()
+    for residue in residues:
+        resname = str(getattr(residue, "resname", "")).strip().upper()
+        atoms = list(getattr(residue, "atoms", ()) or ())
+        if not atoms or resname in _WATER or resname in _IONS:
+            continue
+        if resname in _TEMPLATE_RESIDUES:
+            if not _residue_has_hydrogen(atoms, use_names=True):
+                continue
+            names = _atom_names(atoms)
+            by_name = _indices_by_name(atoms)
+            for left, right in _template_pairs(resname, names):
+                i = by_name.get(left)
+                j = by_name.get(right)
+                if i is None or j is None:
+                    continue
+                _append_order(out, seen, i, j, 2)
+            continue
+        if not _residue_has_hydrogen(atoms, use_names=False):
+            continue
+        for row in _perceive_hetero_orders(atoms):
+            _append_order(out, seen, int(row[0]), int(row[1]), int(row[2]))
+    return out
+
+
+def _sidecar_is_fresh(pdb_path: Path) -> bool:
+    sidecar = pdb_path.parent / f"{pdb_path.stem}.bonds.json"
+    try:
+        return sidecar.is_file() and sidecar.stat().st_mtime >= pdb_path.stat().st_mtime
+    except OSError:
+        return False
+
+
+def _restrict_orders_to_bonds(orders: list[list[int]], bonds: list | None) -> list[list[int]]:
+    """Keep perceived orders that sit on the connectivity already drawn."""
+    if bonds is None:
+        return orders
+    keys: set[tuple[int, int]] = set()
+    for row in bonds:
+        if not isinstance(row, (list, tuple)) or len(row) < 2:
+            continue
+        i, j = int(row[0]), int(row[1])
+        keys.add((i, j) if i <= j else (j, i))
+    kept: list[list[int]] = []
+    for row in orders:
+        i, j = int(row[0]), int(row[1])
+        key = (i, j) if i <= j else (j, i)
+        if key in keys:
+            kept.append([i, j, int(row[2]) if len(row) > 2 else 1])
+    return kept
+
+
+def resolve_viewer_bond_orders(
+    pdb_path: str | Path,
+    universe: Any | None,
+    topology_used: str | None,
+    bonds: list | None = None,
+) -> Optional[list[list[int]]]:
+    """Sidecar orders for Visualize, perceiving a bare PDB when the cache is stale.
+
+    A topology already supplies connectivity, so this does not invent orders for
+    it. ``name.bonds.json`` is rewritten when the PDB is newer than the cache.
+    Perception never writes ``CONECT`` back into the PDB.
+    """
+    path = Path(pdb_path)
+    if _sidecar_is_fresh(path):
+        return load_bond_orders_sidecar(path)
+    if topology_used or universe is None:
+        return load_bond_orders_sidecar(path)
+    if bonds is not None and len(bonds) == 0:
+        return None
+    try:
+        orders = perceive_bond_orders(getattr(universe, "residues", ()) or ())
+        orders = _restrict_orders_to_bonds(orders, bonds)
+    except Exception:
+        return load_bond_orders_sidecar(path)
+    if not orders:
+        return None
+    try:
+        write_bond_orders_sidecar(path, orders)
+    except Exception:
+        pass
+    return orders
+
+
 def _materialize_maestro_rdkit(
     path: Path,
     indices: list[int],

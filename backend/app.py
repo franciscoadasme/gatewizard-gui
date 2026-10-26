@@ -6297,11 +6297,15 @@ def get_structure(payload: StructureRequest) -> dict:
         bond_idx = []
     data["bonds"] = bond_idx
     # Maestro cache sidecars may carry bond orders [[i,j,order], ...] in full-structure
-    # atom index space. Merge onto connectivity (densify/topology) so doubles survive.
+    # atom index space. A prepared PDB has no sidecar: perceive orders (templates
+    # for standard residues, RDKit per ligand) and cache name.bonds.json. Merge
+    # onto connectivity so doubles survive. CONECT is not written back.
     try:
-        from structure_import import annotate_bonds_with_orders, load_bond_orders_sidecar
+        from structure_import import annotate_bonds_with_orders, resolve_viewer_bond_orders
 
-        orders = load_bond_orders_sidecar(payload.path)
+        orders = resolve_viewer_bond_orders(
+            payload.path, u, topology_used, bonds=bond_idx
+        )
     except Exception:
         orders = None
     if orders:
