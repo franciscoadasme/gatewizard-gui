@@ -16,6 +16,22 @@
     clusterDisconnect,
     clusterProbe
   } from '../lib/backendApi'
+  import { DOCS_BASE } from '../lib/docsLinks.js'
+
+  const SSH_KEY_DOCS_URL = `${DOCS_BASE}#settings-and-clusters`
+
+  /** @param {string} url */
+  async function openDocsUrl(url) {
+    if (window.api?.openExternalUrl) {
+      try {
+        await window.api.openExternalUrl(url)
+        return
+      } catch {
+        /* fall through */
+      }
+    }
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
 
   /** @type {{ onProfilesChanged?: (profiles: any[]) => void }} */
   let { onProfilesChanged = () => {} } = $props()
@@ -362,11 +378,25 @@
                 </p>
               {:else if sshIdentityScanned && sshDirExists}
                 <p class="text-[10px] text-neutral-500">
-                  No private keys found in ~/.ssh. Generate one (see README → Cluster profiles).
+                  No private keys found in ~/.ssh. Generate one —
+                  <button
+                    type="button"
+                    class="text-neutral-700 underline underline-offset-2 hover:text-neutral-900 dark:text-neutral-300 dark:hover:text-neutral-100"
+                    onclick={() => openDocsUrl(SSH_KEY_DOCS_URL)}
+                  >
+                    User guide → Settings and clusters
+                  </button>.
                 </p>
               {:else if sshIdentityScanned}
                 <p class="text-[10px] text-neutral-500">
-                  No ~/.ssh folder on this computer yet. Generate a key (see README → Cluster profiles).
+                  No ~/.ssh folder on this computer yet. Generate a key —
+                  <button
+                    type="button"
+                    class="text-neutral-700 underline underline-offset-2 hover:text-neutral-900 dark:text-neutral-300 dark:hover:text-neutral-100"
+                    onclick={() => openDocsUrl(SSH_KEY_DOCS_URL)}
+                  >
+                    User guide → Settings and clusters
+                  </button>.
                 </p>
               {/if}
             </label>

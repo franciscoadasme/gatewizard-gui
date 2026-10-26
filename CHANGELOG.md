@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **README:** MemPrO is listed with the other `[full]` packages. The membrane-builder line points at the lipid catalog instead of repeating the counts. Install, SSH cluster setup, display GPU notes, and development steps point at the API docs and CONTRIBUTING instead of duplicating them.
+- **Settings → Clusters:** the SSH key hint opens the user-guide section for generating an identity file.
+
 ### Added
 
 - **Visualize:** a prepared PDB that still has hydrogens, and no topology, shows double and triple bonds. Standard residues take their orders from the residue name; ligands and cofactors are perceived one residue at a time. Orders are cached in `name.bonds.json` beside the PDB and refreshed when the PDB is newer.

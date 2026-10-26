@@ -26,14 +26,23 @@ npm install
 npm run dev
 ```
 
-Node.js 20 or newer is required. `npm run dev:wsl` is only for debugging a broken GPU stack.
+Node.js 20 or newer is required. `npm run dev` applies the same display-GPU policy as the packaged app. `npm run dev:wsl` is only for debugging a broken GPU stack (`LIBGL_ALWAYS_SOFTWARE` + SwiftShader). Install `npm` dependencies in **WSL only**, not from Windows on the same folder.
 
-The backend uses the conda environment `gatewizard` from the API checkout:
+The backend uses the conda environment `gatewizard` from the API checkout. From Windows PowerShell, call that interpreter through WSL (`~/miniconda3/envs/gatewizard/bin/python`):
 
 ```bash
 conda activate gatewizard
 cd backend && python -m pytest
 ```
+
+### Build installers
+
+| Platform | Command | Release artifact (example) |
+|----------|---------|----------------------------|
+| Linux / WSL | `npm run build:linux` | `gatewizard-gui-*-linux-x86_64.AppImage`, `.deb` |
+| macOS | `npm run build:mac` (on macOS) | `gatewizard-gui-*-mac-arm64.dmg` |
+
+CI publishes **Linux and macOS only**. A native Windows `.exe` can be built locally (`npm run build:win:pack`) but is not shipped on GitHub Releases.
 
 ## Tests
 
