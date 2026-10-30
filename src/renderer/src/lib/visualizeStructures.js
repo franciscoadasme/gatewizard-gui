@@ -2,11 +2,13 @@
  * Multi-structure workspace helpers for Visualize.
  */
 
+import { normalizeMaestroProperties } from './maestroProperties.js'
+
 /**
  * @typedef {Object} StructureEntry
  * @property {string} id
  * @property {string} sourcePath
- * @property {'file' | 'maestro_ct' | 'pdb_model'} kind
+ * @property {'file' | 'maestro_ct' | 'pdb_model' | 'chem_mol'} kind
  * @property {number | null} [ctIndex]
  * @property {number | null} [modelIndex]
  * @property {string} label
@@ -19,6 +21,8 @@
  * @property {boolean} [collapsed]
  * @property {boolean} [componentsCollapsed]
  * @property {string} [bond_source]
+ * @property {import('./maestroProperties.js').MaestroProperty[]} [properties]
+ *   Maestro CT properties (memory only; never written to viewpoint / animation).
  * @property {{
  *   files: Array<{ path: string, stride: number }>,
  *   logicalFrame: number,
@@ -58,6 +62,7 @@ export function createStructureEntry(partial) {
     collapsed: partial.collapsed === true,
     componentsCollapsed: partial.componentsCollapsed === true,
     bond_source: partial.bond_source,
+    properties: normalizeMaestroProperties(partial.properties),
     trajectory: normalizeTrajectoryMeta(partial.trajectory)
   }
 }
@@ -168,6 +173,12 @@ export function isMaestroPath(path) {
   return lower.endsWith('.mae') || lower.endsWith('.maegz') || lower.endsWith('.mae.gz')
 }
 
+/** Multi-molecule chemical files that may open the entry picker. */
+export function isChemMultiPath(path) {
+  const lower = String(path || '').toLowerCase()
+  return lower.endsWith('.sdf') || lower.endsWith('.sd')
+}
+
 const COORD_TRAJ_EXT = /\.(dcd|xtc|trr|nc|mdcrd|crd|dtr|lammpstrj|h5md)$/i
 
 /** True for MD coordinate files (DCD/XTC/…). PRMTOP/PSF are not. */
@@ -263,7 +274,7 @@ export function serializeStructuresMeta(structures) {
   return (structures || []).map((s) => {
     const kind = s.kind || 'file'
     const sourcePath = String(s.sourcePath || s.path || '')
-    const isMulti = kind === 'maestro_ct' || kind === 'pdb_model'
+    const isMulti = kind === 'maestro_ct' || kind === 'pdb_model' || kind === 'chem_mol'
     const durablePath = isMulti && sourcePath ? sourcePath : String(s.path || sourcePath)
     const trajectory = serializeTrajectoryMeta(s.trajectory)
     return {
@@ -289,7 +300,7 @@ export function serializeStructuresMeta(structures) {
 export function isMultiEntryMeta(meta) {
   if (!meta) return false
   const kind = meta.kind || 'file'
-  if (kind === 'maestro_ct' || kind === 'pdb_model') return true
+  if (kind === 'maestro_ct' || kind === 'pdb_model' || kind === 'chem_mol') return true
   const src = meta.sourcePath || meta.path || ''
   if (kind === 'file' && isMaestroPath(src) && typeof meta.ctIndex === 'number') return true
   return false
@@ -316,7 +327,11 @@ export function groupStructureMetasForLoad(metas) {
       maestro.get(src).push(m)
       continue
     }
-    if (kind === 'pdb_model' && typeof m.modelIndex === 'number') {
+    // PDB multi-MODEL and multi-molecule SDF share modelIndex materialize.
+    if (
+      (kind === 'pdb_model' || kind === 'chem_mol') &&
+      typeof m.modelIndex === 'number'
+    ) {
       if (!models.has(src)) models.set(src, [])
       models.get(src).push(m)
       continue

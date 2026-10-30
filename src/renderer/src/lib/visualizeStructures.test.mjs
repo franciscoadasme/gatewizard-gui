@@ -208,14 +208,17 @@ test('serializeStructuresMeta prefers durable Maestro sourcePath', () => {
     ctIndex: 1,
     atoms: [{ index: 0, x: 0, y: 0, z: 0 }],
     label: 'CT 2',
-    collapsed: true
+    collapsed: true,
+    properties: [{ name: 'r_i_docking_score', type: 'real', value: -8.5 }]
   })
+  assert.equal(s.properties.length, 1)
   const meta = serializeStructuresMeta([s])[0]
   assert.equal(meta.path, '/data/ligands.maegz')
   assert.equal(meta.sourcePath, '/data/ligands.maegz')
   assert.equal(meta.ctIndex, 1)
   assert.equal(meta.kind, 'maestro_ct')
   assert.equal(meta.collapsed, true)
+  assert.equal('properties' in meta, false)
 })
 
 test('normalizeStructuresMeta preserves collapsed flag', () => {

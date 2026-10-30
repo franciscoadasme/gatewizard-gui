@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Visualize Maestro properties:** Glide, MM/GBSA, IFD / Prime, and other connection-table scores open with the poses. The entry picker and each structure row name the score (for example `MMGBSA ΔG bind  −42.30 kcal/mol`). Auto picks MMGBSA ΔG bind, then docking score, Glide gscore, Prime energy, or the first other real; **Show score** in the picker and **Score** on the Representations bar change that property and remember the choice. With several Maestro files open, only the group that holds the active structure is highlighted yellow; ↑ / ↓ reorder poses in that group alone. Auto-generate still builds representations for the active structure only. Values stay in memory and are re-read from the `.mae` / `.maegz` when a viewpoint or animation is opened; they are not written into those files. Reading uses `gatewizard.tools.maestro` when that module is installed.
 - **Visualize:** a prepared PDB that still has hydrogens, and no topology, shows double and triple bonds. Standard residues take their orders from the residue name; ligands and cofactors are perceived one residue at a time. Orders are cached in `name.bonds.json` beside the PDB and refreshed when the PDB is newer.
 
 ### Fixed
