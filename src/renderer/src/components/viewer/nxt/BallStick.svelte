@@ -153,7 +153,7 @@
     glowBulb = false,
     opacity = 1.0,
     showMultipleBonds = true,
-    bondColorMode = 'uniform',
+    bondColorMode = 'atoms',
     bondColor = '#b8b8bc'
   } = $props()
 

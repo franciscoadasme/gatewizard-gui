@@ -733,6 +733,9 @@ Coordinate clip (use Update each frame on a trajectory):
       await tick()
       await afterNextPaint()
       view.representation = { type: reprType }
+      if (reprType === 'ball-stick') {
+        view.bondColorMode = 'atoms'
+      }
       if (representationNeedsBonds(reprType)) {
         view._prefetched = false
         if (!bondsHaveMultiOrder(view.bonds)) {
@@ -1705,14 +1708,14 @@ Coordinate clip (use Update each frame on a trajectory):
                   type="radio"
                   class="radio radio-xs"
                   name="bond-color-{view.id}"
-                  checked={(view.bondColorMode ?? 'uniform') === 'uniform'}
+                  checked={(view.bondColorMode ?? 'atoms') === 'uniform'}
                   onchange={() => {
                     view.bondColorMode = 'uniform'
                   }}
                 />
                 <span class="text-neutral-700 dark:text-neutral-300">Uniform</span>
               </label>
-              {#if (view.bondColorMode ?? 'uniform') === 'uniform'}
+              {#if (view.bondColorMode ?? 'atoms') === 'uniform'}
                 <div class="flex items-center gap-2 pl-5">
                   <input
                     type="color"
@@ -1730,7 +1733,7 @@ Coordinate clip (use Update each frame on a trajectory):
                   type="radio"
                   class="radio radio-xs"
                   name="bond-color-{view.id}"
-                  checked={view.bondColorMode === 'atoms'}
+                  checked={(view.bondColorMode ?? 'atoms') === 'atoms'}
                   onchange={() => {
                     view.bondColorMode = 'atoms'
                   }}
