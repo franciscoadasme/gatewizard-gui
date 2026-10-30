@@ -9,12 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Desktop GROMACS:** the embedded micromamba install asks for conda-forge `gromacs>=2023` (and rejects builds older than 2022). A previous freeze could install 2019.6, which cannot read many current `.tpr` files. Relaunch the app so the runtime re-syncs.
 - **Visualize Open menu:** Structure… no longer says “(PDB / CIF)”; hover lists the supported formats. **Coordinates only…** opens the same files without auto-using a same-stem companion topology. **With topology…** hover notes `.tpr` and Amber restart coordinates.
 - **README:** MemPrO is listed with the other `[full]` packages. The membrane-builder line points at the lipid catalog instead of repeating the counts. Install, SSH cluster setup, display GPU notes, and development steps point at the API docs and CONTRIBUTING instead of duplicating them.
 - **Settings → Clusters:** the SSH key hint opens the user-guide section for generating an identity file.
 
 ### Added
 
+- **Tools → Fix PBC:** choose the `gmx` or `cpptraj` executable from discovered installs (or a custom path), like Equilibration. GROMACS candidates are listed newest first.
 - **Visualize Open formats:** Open structure accepts GROMACS `.gro`, MOL2, SDF/SD, XYZ, and Amber `.inpcrd` / `.rst7` coordinates. Open topology accepts GROMACS `.tpr` (with PRMTOP / PARM7 / PSF / TOP). Same-stem `.tpr` next to a `.gro` is auto-detected like `.prmtop` next to a PDB. Multi-molecule SDF opens the entry picker; MOL2 / SDF bond orders come from RDKit when available. Amber restarts require a topology (Open → topology + coordinates).
 - **Visualize Maestro properties:** Glide, MM/GBSA, IFD / Prime, and other connection-table scores open with the poses. The entry picker and each structure row name the score (for example `MMGBSA ΔG bind  −42.30 kcal/mol`). Auto picks MMGBSA ΔG bind, then docking score, Glide gscore, Prime energy, or the first other real; **Show score** in the picker and **Score** on the Representations bar change that property and remember the choice. With several Maestro files open, only the group that holds the active structure is highlighted yellow; ↑ / ↓ reorder poses in that group alone. Auto-generate still builds representations for the active structure only. Values stay in memory and are re-read from the `.mae` / `.maegz` when a viewpoint or animation is opened; they are not written into those files. Reading uses `gatewizard.tools.maestro` when that module is installed.
 - **Visualize:** a prepared PDB that still has hydrogens, and no topology, shows double and triple bonds. Standard residues take their orders from the residue name; ligands and cofactors are perceived one residue at a time. Orders are cached in `name.bonds.json` beside the PDB and refreshed when the PDB is newer.

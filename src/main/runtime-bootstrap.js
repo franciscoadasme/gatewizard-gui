@@ -375,7 +375,12 @@ function getMambaRoot() {
 const OPENMM_CONDA_REV = '2'
 
 /** Revision bumped when conda GROMACS install policy changes (existing runtimes re-sync). */
-const GROMACS_CONDA_REV = '2'
+/**
+ * Bump when the GROMACS install policy changes so existing runtimes re-sync.
+ * Rev 3: require a modern conda-forge build (≥2023). Unpinned ``gromacs`` with
+ * ``--freeze-installed`` could resolve to 2019.6, which cannot read current TPRs.
+ */
+const GROMACS_CONDA_REV = '3'
 
 /** Soft timeout for GROMACS CUDA solve — libmamba can hang for hours on CUDA conflicts. */
 const GROMACS_CUDA_TIMEOUT_MS = 8 * 60 * 1000
@@ -436,15 +441,32 @@ function getCondaGromacsInstallAttempts() {
         freezeInstalled: true
       })
     }
+    // Prefer a modern CPU build without freeze so OpenMM pins cannot force 2019.x.
     attempts.push({
-      label: 'GROMACS (CPU)',
-      matchspecs: ['gromacs'],
+      label: 'GROMACS (CPU ≥2023)',
+      matchspecs: ['gromacs>=2023'],
+      freezeInstalled: false
+    })
+    attempts.push({
+      label: 'GROMACS (CPU ≥2022, frozen deps)',
+      matchspecs: ['gromacs>=2022'],
       freezeInstalled: true
     })
     return attempts
   }
   // macOS: CPU builds only on conda-forge
-  return [{ label: 'GROMACS (CPU)', matchspecs: ['gromacs'], freezeInstalled: true }]
+  return [
+    {
+      label: 'GROMACS (CPU ≥2023)',
+      matchspecs: ['gromacs>=2023'],
+      freezeInstalled: false
+    },
+    {
+      label: 'GROMACS (CPU ≥2022, frozen deps)',
+      matchspecs: ['gromacs>=2022'],
+      freezeInstalled: true
+    }
+  ]
 }
 
 /** Lightweight base env — OpenMM/CUDA install in a later step so create stays smaller. */
@@ -890,6 +912,39 @@ async function restoreCondaOpenmmAfterPip(micromambaDest, runtimePrefix, mmEnv, 
 }
 
 /**
+ * @param {string} gmxBin
+ * @returns {Promise<string>}
+ */
+async function probeGmxVersionLine(gmxBin) {
+  try {
+    const out = spawnSync(gmxBin, ['--version'], {
+      encoding: 'utf-8',
+      maxBuffer: 1024 * 1024,
+      windowsHide: true,
+      timeout: 15000
+    })
+    const text = `${out.stdout || ''}\n${out.stderr || ''}`
+    const m = text.match(/GROMACS[^\n]*?\b(\d{4}(?:\.\d+)?(?:\.\d+)?)\b/i)
+    if (m) return `GROMACS ${m[1]}`
+    const m2 = text.match(/\bversion\s+(\d{4}(?:\.\d+)?)/i)
+    if (m2) return `GROMACS ${m2[1]}`
+    return ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * True when gmx is older than 2022 (cannot read many current tpx files).
+ * @param {string} versionLine
+ */
+function gmxVersionTooOld(versionLine) {
+  const m = String(versionLine || '').match(/\b(20\d{2})(?:\.\d+)?/)
+  if (!m) return false
+  return Number(m[1]) < 2022
+}
+
+/**
  * Install conda-forge GROMACS into the embedded runtime.
  * Default is CPU (reliable). CUDA is opt-in and time-bounded — not an EULA prompt
  * (installs already use -y); hangs come from the dependency solver vs OpenMM/CUDA.
@@ -948,8 +1003,23 @@ async function installCondaGromacs(micromambaDest, runtimePrefix, mmEnv, onStatu
       if (!(await fileExists(gmxBin))) {
         throw new Error(`${attempt.label} installed but gmx binary not found at ${gmxBin}`)
       }
-      onStatus(`${attempt.label} ready (${gmxBin})`)
-      await appendRuntimeLog(`[gromacs] installed ${attempt.label} → ${gmxBin}\n`)
+      const versionLine = await probeGmxVersionLine(gmxBin)
+      // Reject ancient builds that cannot read current Charmm-GUI / recent TPRs.
+      if (gmxVersionTooOld(versionLine)) {
+        throw new Error(
+          `${attempt.label} resolved to an old gmx (${versionLine || 'unknown version'}); ` +
+            'need GROMACS 2022 or newer for current .tpr files'
+        )
+      }
+      onStatus(
+        versionLine
+          ? `${attempt.label} ready (${versionLine}) — ${gmxBin}`
+          : `${attempt.label} ready (${gmxBin})`
+      )
+      await appendRuntimeLog(
+        `[gromacs] installed ${attempt.label} → ${gmxBin}` +
+          (versionLine ? ` (${versionLine})\n` : '\n')
+      )
       return {
         installed: true,
         variant: attempt.label.includes('CUDA') ? 'cuda' : 'cpu'

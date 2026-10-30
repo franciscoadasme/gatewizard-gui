@@ -4003,12 +4003,14 @@ def check_executable(payload: ExecutableCheckRequest) -> dict:
 
 
 class ListEngineExecutablesRequest(BaseModel):
-    engine: str = Field(description="Engine name: namd, gromacs, openmm, or amber")
+    engine: str = Field(
+        description="Engine name: namd, gromacs, openmm, amber, or cpptraj"
+    )
 
 
 @app.post("/list-engine-executables")
 def list_engine_executables(payload: ListEngineExecutablesRequest) -> dict:
-    """Discover NAMD / GROMACS / OpenMM installs for the Equilibration picker."""
+    """Discover MD engine installs for Equilibration / Fix PBC pickers."""
     engine = payload.engine.lower().strip()
     try:
         candidates = list_md_engine_candidates(engine)

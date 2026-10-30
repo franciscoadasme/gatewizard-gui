@@ -21,6 +21,7 @@
     detectPbcEngine,
     getJobLog,
     getJobStatus,
+    listEngineExecutables,
     listGromacsGroups,
     runFixPbc,
     scanToolsJobs
@@ -192,8 +193,17 @@
     outputFormat: 'same',
     trajectoryFiles: /** @type {TrajRow[]} */ ([]),
     detectInfo: null,
-    centerGroups: /** @type {Array<{ name: string, index: number, n_atoms: number, recommended?: boolean, lipid_like?: boolean }>} */ ([])
+    centerGroups: /** @type {Array<{ name: string, index: number, n_atoms: number, recommended?: boolean, lipid_like?: boolean }>} */ ([]),
+    gmxExecutable: '',
+    cpptrajExecutable: ''
   })
+  /** @type {Array<{ id: string, label: string, executable: string, version?: string|null, variant?: string|null, source?: string, gmxrc?: string|null, available?: boolean }>} */
+  let fixPbcGmxCandidates = $state([])
+  /** @type {Array<{ id: string, label: string, executable: string, version?: string|null, source?: string, available?: boolean }>} */
+  let fixPbcCpptrajCandidates = $state([])
+  let fixPbcGmxCandidateId = $state('custom')
+  let fixPbcCpptrajCandidateId = $state('custom')
+  let loadingFixPbcExecutables = $state(false)
   /** @type {number | null} */
   let centerSelectionAtomCount = $state(null)
   let centerSelectionCountLoading = $state(false)
@@ -370,6 +380,51 @@
     if (_top) {
       void refreshDetect()
     }
+  })
+
+  /** Discover gmx / cpptraj installs for Fix PBC (same catalog as Equilibration). */
+  async function refreshFixPbcExecutables() {
+    loadingFixPbcExecutables = true
+    try {
+      const [gmxRes, cppRes] = await Promise.all([
+        listEngineExecutables('gromacs').catch(() => ({ candidates: [] })),
+        listEngineExecutables('cpptraj').catch(() => ({ candidates: [] }))
+      ])
+      fixPbcGmxCandidates = Array.isArray(gmxRes.candidates) ? gmxRes.candidates : []
+      fixPbcCpptrajCandidates = Array.isArray(cppRes.candidates) ? cppRes.candidates : []
+
+      if (fixPbcGmxCandidates.length) {
+        const match = fixPbcGmxCandidates.find(
+          (c) => c.executable === fixPbc.gmxExecutable
+        )
+        if (match) {
+          fixPbcGmxCandidateId = match.id
+        } else if (!fixPbc.gmxExecutable || fixPbcGmxCandidateId === 'custom') {
+          const first = fixPbcGmxCandidates[0]
+          fixPbcGmxCandidateId = first.id
+          fixPbc.gmxExecutable = first.executable
+        }
+      }
+      if (fixPbcCpptrajCandidates.length) {
+        const match = fixPbcCpptrajCandidates.find(
+          (c) => c.executable === fixPbc.cpptrajExecutable
+        )
+        if (match) {
+          fixPbcCpptrajCandidateId = match.id
+        } else if (!fixPbc.cpptrajExecutable || fixPbcCpptrajCandidateId === 'custom') {
+          const first = fixPbcCpptrajCandidates[0]
+          fixPbcCpptrajCandidateId = first.id
+          fixPbc.cpptrajExecutable = first.executable
+        }
+      }
+    } finally {
+      loadingFixPbcExecutables = false
+    }
+  }
+
+  $effect(() => {
+    if (tool !== 'fix_pbc') return
+    void refreshFixPbcExecutables()
   })
 
   $effect(() => {
@@ -1107,6 +1162,16 @@
         skipCluster: eng === 'gromacs' ? fixPbc.skipCluster : false,
         tprPath: fixPbc.tprPath || null,
         ndxPath: fixPbc.ndxPath || null,
+        gmxExecutable:
+          eng === 'gromacs' && fixPbc.gmxExecutable.trim()
+            ? fixPbc.gmxExecutable.trim()
+            : null,
+        cpptrajExecutable:
+          eng !== 'gromacs' &&
+          eng !== 'mdanalysis' &&
+          fixPbc.cpptrajExecutable.trim()
+            ? fixPbc.cpptrajExecutable.trim()
+            : null,
         stride: 1,
         fileStrides,
         outputFormat: /** @type {'dcd'|'xtc'|'nc'|'trr'|'same'} */ (
@@ -1238,6 +1303,91 @@
           {#each fixPbc.detectInfo.warnings || [] as w (w)}
             <p class="gw-notice gw-notice-warning">{w}</p>
           {/each}
+        {/if}
+
+        {#if isGromacs || fixPbc.engine === 'gromacs'}
+          <div class="space-y-1">
+            <div class="flex items-center justify-between gap-2">
+              <p class="sidebar-label">gmx executable</p>
+              {#if loadingFixPbcExecutables}
+                <Spinner className="h-3.5 w-3.5" />
+              {/if}
+            </div>
+            {#if fixPbcGmxCandidates.length > 0}
+              <Select
+                size="sm"
+                className="w-full"
+                value={fixPbcGmxCandidateId}
+                onchange={(e) => {
+                  const id = e.currentTarget.value
+                  fixPbcGmxCandidateId = id
+                  if (id === 'custom') return
+                  const hit = fixPbcGmxCandidates.find((c) => c.id === id)
+                  if (hit) fixPbc.gmxExecutable = hit.executable
+                }}
+              >
+                {#each fixPbcGmxCandidates as c (c.id)}
+                  <option value={c.id}>{c.label}</option>
+                {/each}
+                <option value="custom">Custom path…</option>
+              </Select>
+            {/if}
+            {#if fixPbcGmxCandidateId === 'custom' || fixPbcGmxCandidates.length === 0}
+              <Input
+                size="sm"
+                className="w-full"
+                value={fixPbc.gmxExecutable}
+                oninput={(e) => {
+                  fixPbc.gmxExecutable = e.currentTarget.value
+                  fixPbcGmxCandidateId = 'custom'
+                }}
+                placeholder="gmx or /path/to/gmx"
+              />
+            {/if}
+            <p class="sidebar-hint">
+              Use a GROMACS at least as new as the one that wrote the .tpr (2019.x cannot read many current TPRs).
+            </p>
+          </div>
+        {:else if resolvedEngine === 'amber' || resolvedEngine === 'namd' || resolvedEngine === 'openmm' || fixPbc.engine === 'amber' || fixPbc.engine === 'namd' || fixPbc.engine === 'openmm'}
+          <div class="space-y-1">
+            <div class="flex items-center justify-between gap-2">
+              <p class="sidebar-label">cpptraj executable</p>
+              {#if loadingFixPbcExecutables}
+                <Spinner className="h-3.5 w-3.5" />
+              {/if}
+            </div>
+            {#if fixPbcCpptrajCandidates.length > 0}
+              <Select
+                size="sm"
+                className="w-full"
+                value={fixPbcCpptrajCandidateId}
+                onchange={(e) => {
+                  const id = e.currentTarget.value
+                  fixPbcCpptrajCandidateId = id
+                  if (id === 'custom') return
+                  const hit = fixPbcCpptrajCandidates.find((c) => c.id === id)
+                  if (hit) fixPbc.cpptrajExecutable = hit.executable
+                }}
+              >
+                {#each fixPbcCpptrajCandidates as c (c.id)}
+                  <option value={c.id}>{c.label}</option>
+                {/each}
+                <option value="custom">Custom path…</option>
+              </Select>
+            {/if}
+            {#if fixPbcCpptrajCandidateId === 'custom' || fixPbcCpptrajCandidates.length === 0}
+              <Input
+                size="sm"
+                className="w-full"
+                value={fixPbc.cpptrajExecutable}
+                oninput={(e) => {
+                  fixPbc.cpptrajExecutable = e.currentTarget.value
+                  fixPbcCpptrajCandidateId = 'custom'
+                }}
+                placeholder="cpptraj or /path/to/cpptraj"
+              />
+            {/if}
+          </div>
         {/if}
       </div>
 
