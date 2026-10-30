@@ -12323,7 +12323,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
               openMenuOpen = false
               trajDialogOpen = true
             }}
-            title="Open a topology plus one or more trajectories (stride per file)"
+            title="Open a topology plus one or more trajectories (stride per file; drag to reorder)"
           >
             Trajectory…
           </button>

@@ -1,8 +1,11 @@
 <script>
   /**
    * Open one topology + one or more trajectories with per-file stride.
+   * Drag ⠿ to live-reorder files before Load.
    */
+  import { flip } from 'svelte/animate'
   import { themeState } from '../lib/theme.svelte.js'
+  import { liveReorderAtMidpoint, LIST_REORDER_FLIP } from '../lib/liveListReorder.js'
 
   /** @typedef {{ path: string, stride: number }} TrajFile */
 
@@ -17,6 +20,8 @@
   let topologyPath = $state('')
   /** @type {TrajFile[]} */
   let files = $state([])
+  /** @type {string | null} */
+  let trajDragPath = $state(null)
   const isDark = $derived(themeState.current === 'dark')
   const canLoad = $derived(Boolean(topologyPath) && files.length > 0)
 
@@ -24,6 +29,7 @@
     if (open) {
       topologyPath = ''
       files = []
+      trajDragPath = null
     }
   })
 
@@ -73,6 +79,44 @@
     files = files.map((f) => (f.path === path ? { ...f, stride } : f))
   }
 
+  /** @param {number} index @param {DragEvent} [e] */
+  function onTrajDragStart(index, e) {
+    const row = files[index]
+    if (!row?.path) return
+    trajDragPath = row.path
+    if (e?.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move'
+      e.dataTransfer.setData('text/plain', row.path)
+    }
+  }
+
+  /** @param {DragEvent} e @param {number} index */
+  function onTrajDragOver(e, index) {
+    e.preventDefault()
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+    if (!trajDragPath) return
+    const from = files.findIndex((f) => f.path === trajDragPath)
+    const next = liveReorderAtMidpoint(
+      files,
+      from,
+      index,
+      e.clientY,
+      /** @type {Element} */ (e.currentTarget)
+    )
+    if (!next) return
+    files = next
+  }
+
+  function onTrajDragEnd() {
+    trajDragPath = null
+  }
+
+  /** @param {DragEvent} e */
+  function onDropTrajectory(e) {
+    e.preventDefault()
+    onTrajDragEnd()
+  }
+
   function confirm() {
     if (!canLoad) return
     onConfirm?.({ topologyPath, files: files.map((f) => ({ ...f })) })
@@ -119,7 +163,7 @@
             Open trajectory
           </h2>
           <p class="mt-0.5 text-xs text-neutral-500 dark:text-neutral-400">
-            One topology plus one or more coordinate files. Stride is per file.
+            One topology plus one or more coordinate files. Stride is per file. Drag ⠿ to reorder.
           </p>
         </div>
         <button
@@ -159,10 +203,27 @@
             </p>
           {:else}
             <ul class="space-y-1">
-              {#each files as file (file.path)}
+              {#each files as file, i (file.path)}
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <li
-                  class="flex items-center gap-2 rounded-md px-1 py-1 hover:bg-neutral-100 dark:hover:bg-neutral-800/80"
+                  animate:flip={LIST_REORDER_FLIP}
+                  ondragover={(e) => onTrajDragOver(e, i)}
+                  ondrop={onDropTrajectory}
+                  class="relative flex items-center gap-2 rounded-md border border-transparent px-1 py-1 transition-[opacity,box-shadow,border-color,background-color] duration-150 hover:bg-neutral-100 dark:hover:bg-neutral-800/80
+                    {trajDragPath === file.path
+                      ? 'z-10 border-dashed border-sky-500 bg-sky-500/15 opacity-95 shadow-md dark:border-sky-400 dark:bg-sky-500/20'
+                      : ''}"
                 >
+                  <span
+                    role="button"
+                    tabindex="0"
+                    draggable="true"
+                    ondragstart={(e) => onTrajDragStart(i, e)}
+                    ondragend={onTrajDragEnd}
+                    class="shrink-0 cursor-grab text-sky-700/80 select-none active:cursor-grabbing dark:text-sky-400/90"
+                    title="Drag to reorder"
+                    >⠿</span
+                  >
                   <span class="min-w-0 flex-1 truncate text-xs" title={file.path}
                     >{basename(file.path)}</span
                   >
@@ -185,6 +246,9 @@
                 </li>
               {/each}
             </ul>
+            <p class="text-[10px] text-neutral-500 dark:text-neutral-400">
+              Stride 1–999 (1 = all frames). Drag ⠿ to reorder the load order.
+            </p>
           {/if}
         </section>
       </div>
