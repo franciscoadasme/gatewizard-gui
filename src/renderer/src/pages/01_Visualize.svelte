@@ -157,6 +157,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
     createStructureEntry,
     findStructure,
     isMaestroPath,
+    isChemMultiPath,
     serializeStructuresMeta,
     normalizeStructuresMeta,
     groupStructureMetasForLoad,
@@ -189,7 +190,18 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   import SplitChainPanel from '../components/SplitChainPanel.svelte'
   import AssemblyPanel from '../components/AssemblyPanel.svelte'
   import StructureCheckerPanel from '../components/StructureCheckerPanel.svelte'
+  import MaestroPropertiesPanel from '../components/MaestroPropertiesPanel.svelte'
   import SuperimposePanel from '../components/SuperimposePanel.svelte'
+  import {
+    collectRealPropertyNames,
+    compareStructuresByHeadline,
+    displayPropertyLabel,
+    formatHeadlineLine,
+    loadSavedHeadlinePropertyName,
+    pickHeadlineProperty,
+    saveHeadlinePropertyName
+  } from '../lib/maestroProperties.js'
+  import ListOrderedIcon from '../components/icons/ListOrdered.svelte'
   import { defaultSelectionForStructuralType } from '../lib/analysisSets.js'
   import ApplyRepresentationPicker from '../components/ApplyRepresentationPicker.svelte'
   import {
@@ -442,6 +454,127 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   /** @type {Array<{ id: string, description: string, oligomeric_count: number, atom_count: number, atom_count_with_waters: number, already_biological_unit: boolean, needs_confirmation: boolean, needs_confirmation_with_waters: boolean }>} */
   let assemblyRows = $state([])
   let checkerOpen = $state(false)
+  let maestroPropertiesOpen = $state(false)
+  /** Empty = auto (MMGBSA ΔG bind → docking score → …). Remembered in localStorage. */
+  let maestroHeadlineProperty = $state(loadSavedHeadlinePropertyName())
+  const hasMaestroStructures = $derived(
+    structures.some((st) => st.kind === 'maestro_ct')
+  )
+  $effect(() => {
+    if (maestroPropertiesOpen && !hasMaestroStructures) {
+      maestroPropertiesOpen = false
+    }
+  })
+
+  /** @param {string} name */
+  function setMaestroHeadlineProperty(name) {
+    const next = typeof name === 'string' ? name.trim() : ''
+    maestroHeadlineProperty = next
+    saveHeadlinePropertyName(next)
+  }
+
+  const maestroRealPropertyNames = $derived(collectRealPropertyNames(structures))
+
+  /** Outer group that contains the active structure (one maegz / structure group). */
+  const activeOuterStructureGroup = $derived.by(() => {
+    if (!activeStructureId) return null
+    return (
+      visibilityGroups.find(
+        (g) =>
+          g.kind === 'structures' && (g.structureIds || []).includes(activeStructureId)
+      ) || null
+    )
+  })
+
+  /** Maestro CTs in the active outer group only (score ↑/↓ target). */
+  const activeMaestroGroupMembers = $derived.by(() => {
+    const g = activeOuterStructureGroup
+    if (!g) return []
+    return (g.structureIds || [])
+      .map((id) => findStructure(structures, id))
+      .filter((st) => st && st.kind === 'maestro_ct')
+  })
+
+  /**
+   * Reorder Maestro rows in ``structures`` and in one outer visibility group.
+   * Pass ``groupId`` so other maegz groups keep their order.
+   * @param {string[]} orderedMaestroIds
+   * @param {string | null} [groupId]
+   */
+  function reorderMaestroRows(orderedMaestroIds, groupId = null) {
+    if (!Array.isArray(orderedMaestroIds) || orderedMaestroIds.length < 2) return
+    const rank = new Map(orderedMaestroIds.map((id, i) => [id, i]))
+    const byId = new Map(structures.map((st) => [st.id, st]))
+
+    /** @type {typeof structures} */
+    const nextStructures = []
+    const seen = new Set()
+    const firstRanked = structures.findIndex((st) => rank.has(st.id))
+    const before =
+      firstRanked >= 0
+        ? structures.slice(0, firstRanked).filter((st) => !rank.has(st.id))
+        : []
+    for (const st of before) {
+      nextStructures.push(st)
+      seen.add(st.id)
+    }
+    for (const id of orderedMaestroIds) {
+      const st = byId.get(id)
+      if (!st || seen.has(id)) continue
+      nextStructures.push(st)
+      seen.add(id)
+    }
+    for (const st of structures) {
+      if (!seen.has(st.id)) nextStructures.push(st)
+    }
+    structures = nextStructures
+
+    visibilityGroups = visibilityGroups.map((g) => {
+      if (g.kind !== 'structures') return g
+      if (groupId && g.id !== groupId) return g
+      const ids = [...(g.structureIds || [])]
+      const inGroup = ids.filter((id) => rank.has(id))
+      if (inGroup.length < 2) return g
+      inGroup.sort((a, b) => (rank.get(a) ?? 0) - (rank.get(b) ?? 0))
+      let i = 0
+      return {
+        ...g,
+        structureIds: ids.map((id) => (rank.has(id) ? inGroup[i++] : id))
+      }
+    })
+  }
+
+  /**
+   * Reorder poses in the active Maestro group by the score under each row.
+   * @param {'asc' | 'desc'} dir
+   */
+  function sortStructuresByHeadline(dir) {
+    const preferred = maestroHeadlineProperty || null
+    const group = activeOuterStructureGroup
+    const maestro = activeMaestroGroupMembers
+    if (!group || maestro.length < 2) return
+    const sorted = [...maestro].sort((a, b) =>
+      compareStructuresByHeadline(a, b, preferred, dir)
+    )
+    reorderMaestroRows(
+      sorted.map((st) => st.id),
+      group.id
+    )
+  }
+
+  /** @param {string[]} orderedIds */
+  function applyMaestroStructureOrder(orderedIds) {
+    if (!Array.isArray(orderedIds) || !orderedIds.length) return
+    const group = activeOuterStructureGroup
+    if (!group) return
+    const allowed = new Set(group.structureIds || [])
+    const maestroIds = orderedIds.filter((id) => {
+      if (!allowed.has(id)) return false
+      const st = findStructure(structures, id)
+      return st?.kind === 'maestro_ct'
+    })
+    reorderMaestroRows(maestroIds, group.id)
+  }
   let checkerBusy = $state(false)
   let checkerError = $state('')
   /** @type {Record<string, any> | null} */
@@ -1483,8 +1616,9 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   /**
    * Open one-or-more structure files (multi-select). Maestro / multi-MODEL files
    * prompt the entry picker; every selection is APPENDED to the workspace.
+   * @param {{ useCompanionTopology?: boolean }} [opts]
    */
-  async function onOpenPdb() {
+  async function onOpenPdb(opts = {}) {
     const dlg = await window.api.openPdbDialog(workingDir || undefined)
     if (dlg.canceled) return
     const paths =
@@ -1494,7 +1628,14 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
           ? [dlg.filePath]
           : []
     if (!paths.length) return
-    await openFiles(paths)
+    await openFiles(paths, {
+      useCompanionTopology: opts.useCompanionTopology !== false
+    })
+  }
+
+  /** Same dialog as Structure…, but never auto-uses a same-stem companion topology. */
+  async function onOpenCoordinatesOnly() {
+    await onOpenPdb({ useCompanionTopology: false })
   }
 
   /** Explicit topology + coordinate pair when auto-detect is wrong or paths differ. */
@@ -2297,7 +2438,21 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
         trajXyzEpoch += 1
       }
 
-      logEvent('info', 'view', `Opened trajectory ${entry.label}`, trajFileLabel(entry))
+      {
+        const topName =
+          String(entry.topologyPath || topologyPathIn)
+            .split(/[/\\]/)
+            .pop() || topologyPathIn
+        console.log(
+          `[Visualize] Opened trajectory "${entry.label}" using topology ${topName}: ${entry.topologyPath || topologyPathIn}`
+        )
+        logEvent(
+          'info',
+          'view',
+          `Opened trajectory ${entry.label} · topology ${topName}`,
+          trajFileLabel(entry)
+        )
+      }
       if (opts.addDefaultView !== false && !views.some((v) => v.structureId === entry.id)) {
         addView('all', { type: 'points' }, { structureId: entry.id })
       }
@@ -2381,19 +2536,25 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
    * Open a list of paths, appending every resulting structure. Multi-entry files
    * (Maestro CT / multi-MODEL) prompt the entry picker.
    * @param {string[]} paths
+   * @param {{ useCompanionTopology?: boolean }} [opts]
    */
-  async function openFiles(paths) {
+  async function openFiles(paths, opts = {}) {
     for (const path of paths) {
-      await openOnePath(path)
+      await openOnePath(path, opts)
     }
   }
 
-  /** @param {string} path */
-  async function openOnePath(path) {
-    // Maestro inspect can take several seconds — show the picker in a loading
-    // state immediately so the UI does not look frozen before the CT list appears.
+  /**
+   * @param {string} path
+   * @param {{ useCompanionTopology?: boolean }} [opts]
+   */
+  async function openOnePath(path, opts = {}) {
+    const useCompanionTopology = opts.useCompanionTopology !== false
+    // Maestro / large SDF inspect can take seconds — show the picker in a loading
+    // state immediately so the UI does not look frozen before the list appears.
     const maestro = isMaestroPath(path)
-    if (maestro) {
+    const chemScan = isChemMultiPath(path)
+    if (maestro || chemScan) {
       beginEntryPickerScan(path)
       await tick()
     }
@@ -2407,12 +2568,18 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
     }
 
     // User cancelled the scan dialog while inspect was running.
-    if (maestro && (!entryPicker.open || entryPicker.sourcePath !== path)) {
+    if (
+      (maestro || chemScan) &&
+      (!entryPicker.open || entryPicker.sourcePath !== path)
+    ) {
       return
     }
 
     const entries = info?.entries ?? []
-    const isMulti = entries.length > 1 || (isMaestroPath(path) && entries.length >= 1)
+    const isMulti =
+      entries.length > 1 ||
+      (isMaestroPath(path) && entries.length >= 1) ||
+      (info?.kind === 'chem_mols' && entries.length > 1)
     if (info && isMulti) {
       const indices = await showEntryPicker(path, entries)
       if (!indices || !indices.length) return
@@ -2445,9 +2612,12 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       return
     }
 
-    if (maestro) closeEntryPicker()
+    if (maestro || chemScan) closeEntryPicker()
     // Single structure file.
-    await appendStructure(path, { topology: null })
+    await appendStructure(path, {
+      topology: null,
+      useCompanionTopology
+    })
   }
 
   /**
@@ -2536,7 +2706,9 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
     const kind =
       imported.kind === 'maestro'
         ? /** @type {'maestro_ct'} */ ('maestro_ct')
-        : /** @type {'pdb_model'} */ ('pdb_model')
+        : imported.kind === 'chem_mols'
+          ? /** @type {'chem_mol'} */ ('chem_mol')
+          : /** @type {'pdb_model'} */ ('pdb_model')
 
     loadingPDB = true
     loadingPhase = `Loading structures… 0 / ${list.length}`
@@ -2602,14 +2774,16 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
           sourcePath,
           kind,
           ctIndex: kind === 'maestro_ct' ? meta.index : null,
-          modelIndex: kind === 'pdb_model' ? meta.index : null,
+          modelIndex:
+            kind === 'pdb_model' || kind === 'chem_mol' ? meta.index : null,
           label: st.label || meta.label,
           path: raw.path,
           topologyPath: resolvedTopology,
           atoms: raw.atoms,
           bonds: raw.bonds || [],
           residues: raw.residues,
-          bond_source: raw.bond_source
+          bond_source: raw.bond_source,
+          properties: st.properties ?? meta.properties
         })
         newEntries.push(entry)
         // Defer XYZ base snapshots until a transform / animation needs them.
@@ -2638,7 +2812,11 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       // One outer group per source file so a later Maestro/multi-MODEL open stays distinct.
       const groupName =
         String(sourcePath).split(/[/\\]/).pop() ||
-        (kind === 'maestro_ct' ? 'Maestro' : 'Models')
+        (kind === 'maestro_ct'
+          ? 'Maestro'
+          : kind === 'chem_mol'
+            ? 'Molecules'
+            : 'Models')
       visibilityGroups = createVisibilityGroup(visibilityGroups, {
         name: groupName,
         structureIds: newEntries.map((e) => e.id)
@@ -2652,12 +2830,30 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       previewPositions = null
       animCoordOverlay = null
 
-      logEvent(
-        'info',
-        'view',
-        `Opened ${newEntries.length} structure(s)`,
-        sourcePath
-      )
+      {
+        const withTop = newEntries.filter((e) => e.topologyPath)
+        const topNames = [
+          ...new Set(
+            withTop.map((e) => String(e.topologyPath).split(/[/\\]/).pop() || e.topologyPath)
+          )
+        ]
+        if (topNames.length) {
+          console.log(
+            `[Visualize] Opened ${newEntries.length} structure(s) from ${sourcePath} using topology ${topNames.join(', ')}`
+          )
+          logEvent(
+            'info',
+            'view',
+            `Opened ${newEntries.length} structure(s) · topology ${topNames.join(', ')}`,
+            sourcePath
+          )
+        } else {
+          console.log(
+            `[Visualize] Opened ${newEntries.length} structure(s) from ${sourcePath} without a topology file`
+          )
+          logEvent('info', 'view', `Opened ${newEntries.length} structure(s)`, sourcePath)
+        }
+      }
       if (failures.length) {
         alert(`Some entries failed to load:\n${failures.slice(0, 12).join('\n')}`)
       }
@@ -2677,10 +2873,37 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   }
 
   /**
+   * History + DevTools console when a structure opens (topology name is easy to miss).
+   * @param {import('../lib/visualizeStructures.js').StructureEntry} entry
+   * @param {{ topologyExplicit?: boolean, eventLabel?: string }} [opts]
+   */
+  function logOpenedStructure(entry, opts = {}) {
+    const coordName = String(entry.path || '').split(/[/\\]/).pop() || entry.label
+    const topPath = entry.topologyPath || null
+    if (!topPath) {
+      console.log(`[Visualize] Opened "${entry.label}" (${coordName}) without a topology file`)
+      logEvent('info', 'view', opts.eventLabel || `Opened ${entry.label}`, entry.path)
+      return
+    }
+    const topName = String(topPath).split(/[/\\]/).pop() || topPath
+    const how = opts.topologyExplicit ? 'selected' : 'companion auto-detected'
+    console.log(
+      `[Visualize] Opened "${entry.label}" using topology ${topName} (${how}): ${topPath}`
+    )
+    const label = opts.eventLabel
+      ? `${opts.eventLabel} · topology ${topName}`
+      : `Opened ${entry.label} · topology ${topName}`
+    const detail = opts.topologyExplicit
+      ? `${entry.path} · topology ${topPath}`
+      : `${entry.path} · companion topology ${topPath}`
+    logEvent('info', 'view', label, detail)
+  }
+
+  /**
    * Fetch a structure and APPEND it to the workspace (never clobbers existing
    * structures). Becomes the active structure. Adds a default points view.
    * @param {string} path
-   * @param {{ topology?: string | null, sourcePath?: string, kind?: import('../lib/visualizeStructures.js').StructureEntry['kind'], ctIndex?: number | null, modelIndex?: number | null, label?: string | null, resetCamera?: boolean, needsSecondaryStructure?: boolean }} [opts]
+   * @param {{ topology?: string | null, useCompanionTopology?: boolean, sourcePath?: string, kind?: import('../lib/visualizeStructures.js').StructureEntry['kind'], ctIndex?: number | null, modelIndex?: number | null, label?: string | null, resetCamera?: boolean, needsSecondaryStructure?: boolean }} [opts]
    * @returns {Promise<import('../lib/visualizeStructures.js').StructureEntry | null>}
    */
   async function appendStructure(path, opts = {}) {
@@ -2697,13 +2920,17 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       }, 250)
 
       const top = opts.topology ?? null
+      const useCompanionTopology = opts.useCompanionTopology !== false
       loadingPhase = top
         ? 'Using topology for bonds…'
-        : 'Looking for companion topology / bonds…'
+        : useCompanionTopology
+          ? 'Looking for companion topology / bonds…'
+          : 'Loading coordinates only (no companion topology)…'
 
       const raw = await getStructure({
         path,
         topology: top,
+        use_companion_topology: useCompanionTopology,
         needs_bonds: true,
         needs_secondary_structure: opts.needsSecondaryStructure === true,
         save_dir: workingDir || null
@@ -2711,6 +2938,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       loadingPhase = 'Building atom list…'
 
       const resolvedTopology = raw.topology_used || top || null
+      const topologyExplicit = Boolean(top)
       if (resolvedTopology) {
         const topName = String(resolvedTopology).split(/[/\\]/).pop()
         const src = raw.bond_source || 'topology'
@@ -2747,7 +2975,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       previewPositions = null
       animCoordOverlay = null
 
-      logEvent('info', 'view', `Opened ${entry.label}`, entry.path)
+      logOpenedStructure(entry, { topologyExplicit })
 
       // Default "all" points view for the freshly added structure.
       addView('all', { type: 'points' }, { structureId: entry.id })
@@ -3523,7 +3751,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
         quality: 3,
         showMultipleBonds: true,
         stickRoundness: 1.0,
-        bondColorMode: 'uniform',
+        bondColorMode: representation?.type === 'ball-stick' ? 'atoms' : 'uniform',
         bondColor: '#b8b8bc',
         opacity: 1,
         surfaceInflate: 0.25,
@@ -3966,7 +4194,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
      * @param {string} sourcePath
      * @param {number[]} indices
      * @param {typeof list} metaSlice
-     * @param {'maestro_ct' | 'pdb_model'} kind
+     * @param {'maestro_ct' | 'pdb_model' | 'chem_mol'} kind
      */
     async function appendImportedGroup(sourcePath, indices, metaSlice, kind) {
       const base = String(sourcePath).split(/[/\\]/).pop() || 'file'
@@ -4004,7 +4232,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
           sourcePath,
           kind,
           ctIndex: kind === 'maestro_ct' ? idx : null,
-          modelIndex: kind === 'pdb_model' ? idx : null,
+          modelIndex: kind === 'pdb_model' || kind === 'chem_mol' ? idx : null,
           label: meta.label || st.label || `${idx} · ${String(sourcePath).split(/[/\\]/).pop() || 'entry'}`,
           path: raw.path,
           topologyPath: raw.topology_used || top || null,
@@ -4013,7 +4241,8 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
           residues: raw.residues,
           bond_source: raw.bond_source,
           visible: meta.visible !== false,
-          collapsed: meta.collapsed === true
+          collapsed: meta.collapsed === true,
+          properties: st.properties
         })
         loaded.push(entry)
         if (addDefaultViews) defaultViews.push(makeDefaultPointsView(entry))
@@ -4034,7 +4263,16 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
         .map((m) => m.modelIndex)
         .filter((n) => typeof n === 'number')
       if (!indices.length) continue
-      await appendImportedGroup(sourcePath, /** @type {number[]} */ (indices), slice, 'pdb_model')
+      const modelKind =
+        slice.some((m) => m.kind === 'chem_mol')
+          ? /** @type {'chem_mol'} */ ('chem_mol')
+          : /** @type {'pdb_model'} */ ('pdb_model')
+      await appendImportedGroup(
+        sourcePath,
+        /** @type {number[]} */ (indices),
+        slice,
+        modelKind
+      )
     }
     for (const meta of singles) {
       const path = meta.path || meta.sourcePath
@@ -6839,6 +7077,8 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       tubeRadius: 0.9,
       atomScale: 1.1,
       bondScale: 1.0,
+      bondColorMode: 'atoms',
+      bondColor: '#b8b8bc',
       quality: 3,
       opacity: 1,
       surfaceInflate: 0.25,
@@ -10159,6 +10399,13 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
             Sun,
             'size-4 stroke-2 stroke-neutral-800 dark:stroke-white'
           )}
+          {@render toolbarBtn(
+            maestroPropertiesOpen ? 'Hide Maestro properties' : 'Maestro pose properties',
+            () => (maestroPropertiesOpen = !maestroPropertiesOpen),
+            ListOrderedIcon,
+            `size-4 stroke-2 ${maestroPropertiesOpen || hasMaestroStructures ? 'stroke-neutral-800 dark:stroke-white' : 'stroke-neutral-400 dark:stroke-neutral-500'}`,
+            !hasMaestroStructures
+          )}
           <button
             type="button"
             class="flex h-7 max-w-7 min-w-[1.15rem] flex-[1_1_1.4rem] items-center justify-center rounded-lg border transition-colors
@@ -10495,26 +10742,41 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
                     onblur={() => commitStructureRename()}
                   />
                 {:else}
-                  <button
-                    type="button"
-                    class="min-w-0 flex-1 truncate text-left text-xs font-semibold {activeStructureId === st.id
-                      ? 'text-yellow-600 dark:text-yellow-400'
-                      : 'text-neutral-800 dark:text-neutral-100'}"
-                    title={st.label}
-                    ondblclick={(e) => {
-                      e.preventDefault()
-                      e.stopPropagation()
-                      beginStructureRename(st.id, st.label)
-                    }}
-                    onclick={(e) => {
-                      if (e.ctrlKey || e.metaKey || e.shiftKey) {
+                  {@const headline =
+                    st.kind === 'maestro_ct'
+                      ? pickHeadlineProperty(st.properties, maestroHeadlineProperty || null)
+                      : null}
+                  {@const headlineText = formatHeadlineLine(headline)}
+                  <div class="min-w-0 flex-1">
+                    <button
+                      type="button"
+                      class="block w-full truncate text-left text-xs font-semibold {activeStructureId === st.id
+                        ? 'text-yellow-600 dark:text-yellow-400'
+                        : 'text-neutral-800 dark:text-neutral-100'}"
+                      title={st.label}
+                      ondblclick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        beginStructureRename(st.id, st.label)
+                      }}
+                      onclick={(e) => {
+                        if (e.ctrlKey || e.metaKey || e.shiftKey) {
+                          onStructureRowSelect(st.id, e)
+                          return
+                        }
+                        setActiveStructure(st.id)
                         onStructureRowSelect(st.id, e)
-                        return
-                      }
-                      setActiveStructure(st.id)
-                      onStructureRowSelect(st.id, e)
-                    }}
-                  >{st.label}</button>
+                      }}
+                    >{st.label}</button>
+                    {#if st.kind === 'maestro_ct' && (headlineText || maestroHeadlineProperty)}
+                      <p
+                        class="truncate text-[10px] tabular-nums text-neutral-500 dark:text-neutral-400"
+                        title={headline
+                          ? `${headline.name} (kcal/mol). Change the score in Maestro properties or the entry picker.`
+                          : `${maestroHeadlineProperty} is missing on this pose.`}
+                      >{headlineText || '—'}</p>
+                    {/if}
+                  </div>
                 {/if}
                 <button
                   type="button"
@@ -10644,23 +10906,64 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
             </div>
           {/snippet}
 
-          {#if structures.length > 1}
-            <div class="flex items-center gap-1 border-b border-neutral-200 px-2 py-1 dark:border-neutral-800">
+          {#if structures.length > 1 || hasMaestroStructures}
+            <div class="flex flex-wrap items-center gap-1 border-b border-neutral-200 px-2 py-1 dark:border-neutral-800">
               <span class="min-w-0 flex-1 truncate text-[10px] font-semibold uppercase tracking-wide text-neutral-500"
                 >Workspace</span
               >
+              {#if structures.length > 1}
+                <button
+                  type="button"
+                  class="flex size-6 items-center justify-center rounded text-xs text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                  title={workspaceAnyExpanded ? 'Collapse all structures' : 'Expand all structures'}
+                  onclick={toggleWorkspaceCollapsed}
+                >{workspaceAnyExpanded ? '▾' : '▸'}</button>
+                <button
+                  type="button"
+                  class="flex size-6 items-center justify-center rounded text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                  title={workspaceAnyVisible ? 'Hide everything' : 'Show everything'}
+                  onclick={toggleWorkspaceVisible}
+                >{@render eyeIcon(workspaceAnyVisible)}</button>
+              {/if}
+            </div>
+          {/if}
+          {#if hasMaestroStructures && maestroRealPropertyNames.length}
+            <div
+              class="flex flex-wrap items-center gap-1.5 border-b border-neutral-200 px-2 py-1.5 dark:border-neutral-800"
+            >
+              <label
+                class="flex min-w-0 flex-1 items-center gap-1 text-[10px] text-neutral-600 dark:text-neutral-300"
+              >
+                <span class="shrink-0">Score</span>
+                <select
+                  class="min-w-0 flex-1 truncate rounded border border-neutral-300 bg-white px-1 py-0.5 text-[10px] text-neutral-900 dark:border-neutral-600 dark:bg-neutral-950 dark:text-neutral-100"
+                  value={maestroHeadlineProperty}
+                  title="Property shown under each Maestro pose. Auto uses MMGBSA ΔG bind, then docking score, Glide gscore, Prime energy, or the first other real."
+                  onchange={(e) => {
+                    const el = e.currentTarget
+                    if (el instanceof HTMLSelectElement) setMaestroHeadlineProperty(el.value)
+                  }}
+                >
+                  <option value="">Auto</option>
+                  {#each maestroRealPropertyNames as name (name)}
+                    <option value={name}>{displayPropertyLabel(name)}</option>
+                  {/each}
+                </select>
+              </label>
               <button
                 type="button"
-                class="flex size-6 items-center justify-center rounded text-xs text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
-                title={workspaceAnyExpanded ? 'Collapse all structures' : 'Expand all structures'}
-                onclick={toggleWorkspaceCollapsed}
-              >{workspaceAnyExpanded ? '▾' : '▸'}</button>
+                class="flex size-6 shrink-0 items-center justify-center rounded text-xs text-neutral-500 hover:bg-neutral-100 disabled:opacity-40 dark:hover:bg-neutral-800"
+                title="Sort poses in the active Maestro group by this score, low to high (typical for energies). Select a structure in that group first."
+                disabled={activeMaestroGroupMembers.length < 2}
+                onclick={() => sortStructuresByHeadline('asc')}
+              >↑</button>
               <button
                 type="button"
-                class="flex size-6 items-center justify-center rounded text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
-                title={workspaceAnyVisible ? 'Hide everything' : 'Show everything'}
-                onclick={toggleWorkspaceVisible}
-              >{@render eyeIcon(workspaceAnyVisible)}</button>
+                class="flex size-6 shrink-0 items-center justify-center rounded text-xs text-neutral-500 hover:bg-neutral-100 disabled:opacity-40 dark:hover:bg-neutral-800"
+                title="Sort poses in the active Maestro group by this score, high to low. Select a structure in that group first."
+                disabled={activeMaestroGroupMembers.length < 2}
+                onclick={() => sortStructuresByHeadline('desc')}
+              >↓</button>
             </div>
           {/if}
 
@@ -10670,11 +10973,16 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
               .map((id) => findStructure(structures, id))
               .filter(Boolean)}
             {@const sgAnyVisible = (sg.structureIds || []).some((id) => !structureHiddenIds.has(id))}
+            {@const sgActive = activeOuterStructureGroup?.id === sg.id}
             <div
-              class="mx-1.5 mb-2 overflow-hidden rounded-md border border-yellow-600/30 bg-yellow-500/[0.04] dark:border-yellow-500/25 dark:bg-yellow-500/[0.07]"
+              class="mx-1.5 mb-2 overflow-hidden rounded-md border {sgActive
+                ? 'border-yellow-600/30 bg-yellow-500/[0.04] dark:border-yellow-500/25 dark:bg-yellow-500/[0.07]'
+                : 'border-neutral-200 bg-neutral-50/40 dark:border-neutral-800 dark:bg-neutral-900/30'}"
             >
               <div
-                class="flex items-center gap-1 border-b border-yellow-600/20 bg-yellow-500/10 px-2 py-1.5 dark:border-yellow-500/20 dark:bg-yellow-500/15"
+                class="flex items-center gap-1 border-b px-2 py-1.5 {sgActive
+                  ? 'border-yellow-600/20 bg-yellow-500/10 dark:border-yellow-500/20 dark:bg-yellow-500/15'
+                  : 'border-neutral-200 bg-neutral-100/80 dark:border-neutral-800 dark:bg-neutral-900/60'}"
               >
                 <button
                   type="button"
@@ -10725,7 +11033,9 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
               </div>
               <div class:hidden={sg.collapsed}>
                 <div
-                  class="ml-2 border-l-2 border-yellow-500/45 bg-white/40 dark:border-yellow-500/35 dark:bg-neutral-950/30"
+                  class="ml-2 border-l-2 bg-white/40 dark:bg-neutral-950/30 {sgActive
+                    ? 'border-yellow-500/45 dark:border-yellow-500/35'
+                    : 'border-neutral-300 dark:border-neutral-700'}"
                 >
                   {#each memberStructs as st (st.id)}
                     {@render renderStructureBlock(st, true)}
@@ -11784,6 +12094,8 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
   entries={entryPicker.entries}
   loading={entryPicker.loading}
   loadingMessage="Reading Maestro file…"
+  headlineProperty={maestroHeadlineProperty}
+  onHeadlinePropertyChange={setMaestroHeadlineProperty}
   onConfirm={(indices) => resolveEntryPicker(indices)}
   onCancel={() => resolveEntryPicker(null)}
 />
@@ -11978,9 +12290,20 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
               openMenuOpen = false
               onOpenPdb()
             }}
-            title="Open PDB/CIF (auto-uses companion .prmtop/.psf in the same folder when found)"
+            title="Open PDB, mmCIF, Maestro (.mae/.maegz), GRO, MOL2, SDF/SD, or XYZ. Same-stem companion topology (.prmtop/.parm7/.psf/.tpr) is used when found. Amber .inpcrd/.rst7 need With topology. Use Coordinates only to ignore a companion."
           >
-            Structure (PDB / CIF)…
+            Structure…
+          </button>
+          <button
+            type="button"
+            class="viz-toolbar-menu-item"
+            onclick={() => {
+              openMenuOpen = false
+              onOpenCoordinatesOnly()
+            }}
+            title="Open the coordinate file alone. Does not use a same-folder .prmtop/.psf/.tpr even if one exists."
+          >
+            Coordinates only…
           </button>
           <button
             type="button"
@@ -11989,7 +12312,7 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
               openMenuOpen = false
               onOpenWithTopology()
             }}
-            title="Open topology (.prmtop/.psf) then a coordinate PDB"
+            title="Open a topology (.prmtop/.parm7/.psf/.top/.tpr), then coordinates (PDB, GRO, XYZ, or Amber .inpcrd/.rst7)."
           >
             With topology…
           </button>
@@ -13160,6 +13483,18 @@ import { atomsForTickedPoses, bondJoinsOnePose, poseLetterByAtom } from '../lib/
       checkerOpen = false
       clearCheckerPreview()
     }}
+  />
+{/if}
+
+{#if maestroPropertiesOpen}
+  <MaestroPropertiesPanel
+    {structures}
+    {activeStructureId}
+    headlineProperty={maestroHeadlineProperty}
+    onHeadlinePropertyChange={setMaestroHeadlineProperty}
+    onActivate={(id) => setActiveStructure(id)}
+    onApplyOrder={applyMaestroStructureOrder}
+    onClose={() => (maestroPropertiesOpen = false)}
   />
 {/if}
 

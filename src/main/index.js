@@ -1411,9 +1411,26 @@ ipcMain.handle('dialog:openPdb', async (_event, defaultPath = undefined) => {
     filters: [
       {
         name: 'Structure',
-        extensions: ['pdb', 'ent', 'cif', 'mmcif', 'mae', 'maegz']
+        extensions: [
+          'pdb',
+          'ent',
+          'cif',
+          'mmcif',
+          'mae',
+          'maegz',
+          'gro',
+          'mol2',
+          'sdf',
+          'sd',
+          'xyz',
+          'inpcrd',
+          'rst7'
+        ]
       },
+      { name: 'GROMACS', extensions: ['gro'] },
+      { name: 'Chemical', extensions: ['mol2', 'sdf', 'sd'] },
       { name: 'Maestro', extensions: ['mae', 'maegz'] },
+      { name: 'Coordinates', extensions: ['pdb', 'gro', 'xyz', 'inpcrd', 'rst7'] },
       { name: 'All files', extensions: ['*'] }
     ],
     properties: ['openFile', 'multiSelections']
@@ -1434,7 +1451,7 @@ ipcMain.handle('dialog:openTopology', async (_event, defaultPath = undefined) =>
     title: 'Open topology',
     defaultPath: resolveDialogDefaultPath(defaultPath),
     filters: [
-      { name: 'Topology', extensions: ['prmtop', 'parm7', 'psf', 'top'] },
+      { name: 'Topology', extensions: ['prmtop', 'parm7', 'psf', 'top', 'tpr'] },
       { name: 'All files', extensions: ['*'] }
     ],
     properties: ['openFile']

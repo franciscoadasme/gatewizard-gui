@@ -3,7 +3,8 @@
 Supports:
 - Maestro ``.mae`` / ``.maegz`` (RDKit MaeMolSupplier; Open Babel fallback)
 - Multi-MODEL PDB (``MODEL`` / ``ENDMDL``)
-- Single-file pass-through (PDB/CIF/…)
+- Multi-molecule SDF / SD (RDKit SDMolSupplier; MOL2 is single-entry)
+- Single-file pass-through (PDB/CIF/GRO/XYZ/…)
 
 Each selected entry is written as a single-frame PDB under a content-addressed
 cache so ``/get-structure`` and edits keep a simple path.
@@ -58,6 +59,10 @@ def _is_maestro(path: Path) -> bool:
     return name.endswith(".mae.gz")
 
 
+def _is_chem_file(path: Path) -> bool:
+    return path.suffix.lower() in {".mol2", ".sdf", ".sd"}
+
+
 def _count_pdb_models(path: Path) -> int:
     """Count MODEL records; 0 means a single implicit model (no MODEL keywords)."""
     n = 0
@@ -77,7 +82,64 @@ def _entry_label(source: Path, kind: str, index: int, title: str | None = None) 
         return f"CT {index + 1} · {base}"
     if kind == "pdb_model":
         return f"model {index + 1} · {base}"
+    if kind == "chem_mol":
+        return f"mol {index + 1} · {base}"
     return base
+
+
+# Prefer the API implementation (same rules as Visualize). Fall back when the
+# installed gatewizard pin is older than the Maestro properties module.
+try:
+    from gatewizard.tools.maestro import maestro_ct_properties as _maestro_ct_properties
+except ImportError:  # pragma: no cover - older gatewizard pin
+    _MAESTRO_PROP_STRING_MAX = 500
+    _MAESTRO_PROP_TYPES = {"r": "real", "i": "integer", "b": "boolean", "s": "string"}
+
+    def _maestro_ct_properties(mol: Any) -> list[dict[str, Any]]:
+        """CT-level Maestro properties from an RDKit molecule (local fallback)."""
+        if mol is None:
+            return []
+        try:
+            raw = mol.GetPropsAsDict(includePrivate=False, includeComputed=False)
+        except Exception:
+            raw = {}
+            try:
+                for name in mol.GetPropNames():
+                    raw[name] = mol.GetProp(name)
+            except Exception:
+                return []
+
+        out: list[dict[str, Any]] = []
+        for name, value in raw.items():
+            if not isinstance(name, str) or len(name) < 3:
+                continue
+            if name.startswith("_"):
+                continue
+            kind = _MAESTRO_PROP_TYPES.get(name[0])
+            if kind is None or name[1] != "_":
+                continue
+            if kind == "string":
+                text = str(value)
+                if len(text) > _MAESTRO_PROP_STRING_MAX:
+                    continue
+                value = text
+            elif kind == "real":
+                try:
+                    value = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if not (value == value):  # NaN
+                    continue
+            elif kind == "integer":
+                try:
+                    value = int(value)
+                except (TypeError, ValueError):
+                    continue
+            else:
+                value = bool(value)
+            out.append({"name": name, "type": kind, "value": value})
+        out.sort(key=lambda item: item["name"])
+        return out
 
 
 def inspect_structure_file(path: str | Path) -> dict[str, Any]:
@@ -111,6 +173,15 @@ def inspect_structure_file(path: str | Path) -> dict[str, Any]:
                 ],
             }
 
+    if _is_chem_file(p):
+        chem_entries = _inspect_chem(p)
+        if chem_entries is not None and len(chem_entries) > 1:
+            return {
+                "kind": "chem_mols",
+                "sourcePath": str(p),
+                "entries": chem_entries,
+            }
+
     return {
         "kind": "single",
         "sourcePath": str(p),
@@ -124,7 +195,77 @@ def inspect_structure_file(path: str | Path) -> dict[str, Any]:
     }
 
 
+def _mol_title(mol: Any) -> str | None:
+    if mol is None:
+        return None
+    for key in ("_Name", "name", "TITLE"):
+        try:
+            if mol.HasProp(key):
+                title = str(mol.GetProp(key)).strip()
+                if title:
+                    return title
+        except Exception:
+            continue
+    return None
+
+
+def _inspect_chem(path: Path) -> list[dict[str, Any]] | None:
+    """List molecules in MOL2/SDF. Returns None when RDKit cannot inspect."""
+    try:
+        from rdkit import Chem
+    except ImportError:
+        return None
+
+    suf = path.suffix.lower()
+    entries: list[dict[str, Any]] = []
+    if suf == ".mol2":
+        try:
+            mol = Chem.MolFromMol2File(str(path), sanitize=False, removeHs=False)
+        except Exception:
+            return None
+        if mol is None:
+            return None
+        return [
+            {
+                "index": 0,
+                "label": _entry_label(path, "chem_mol", 0, _mol_title(mol)),
+                "kind": "chem_mol",
+            }
+        ]
+
+    try:
+        supplier = Chem.SDMolSupplier(str(path), sanitize=False, removeHs=False)
+    except Exception:
+        return None
+    for i, mol in enumerate(supplier):
+        entries.append(
+            {
+                "index": i,
+                "label": _entry_label(path, "chem_mol", i, _mol_title(mol)),
+                "kind": "chem_mol",
+            }
+        )
+    if not entries:
+        return None
+    return entries
+
+
 def _inspect_maestro(path: Path) -> list[dict[str, Any]]:
+    try:
+        from gatewizard.tools.maestro import list_maestro_entries
+
+        return list_maestro_entries(path)["entries"]
+    except ImportError:
+        pass
+    except Exception as api_err:
+        try:
+            return _inspect_maestro_openbabel(path)
+        except Exception as ob_err:
+            raise RuntimeError(
+                f"Could not read Maestro file {path.name}: "
+                f"RDKit ({api_err}); Open Babel ({ob_err})"
+            ) from ob_err
+
     try:
         return _inspect_maestro_rdkit(path)
     except Exception as rdkit_err:
@@ -175,6 +316,7 @@ def _inspect_maestro_rdkit(path: Path) -> list[dict[str, Any]]:
                     "kind": "maestro_ct",
                     "atomCount": n_atoms,
                     "title": title,
+                    "properties": _maestro_ct_properties(mol),
                 }
             )
         if not entries:
@@ -212,6 +354,7 @@ def _inspect_maestro_openbabel(path: Path) -> list[dict[str, Any]]:
                 "index": i,
                 "label": _entry_label(path, "maestro_ct", i),
                 "kind": "maestro_ct",
+                "properties": [],
             }
             for i in range(n)
         ]
@@ -264,6 +407,8 @@ def import_structure_entries(
         structures = _materialize_pdb_models(p, chosen, out_dir, all_entries)
     elif kind == "maestro":
         structures = _materialize_maestro(p, chosen, out_dir, all_entries)
+    elif kind == "chem_mols":
+        structures = _materialize_chem(p, chosen, out_dir, all_entries)
     else:
         raise RuntimeError(f"Unsupported kind: {kind}")
 
@@ -363,6 +508,52 @@ def _materialize_pdb_models_text(
                 "modelIndex": i,
             }
         )
+    return structures
+
+
+def _materialize_chem(
+    path: Path,
+    indices: list[int],
+    out_dir: Path,
+    entries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Write selected SDF/SD molecules as cache PDBs with bond-order sidecars."""
+    from rdkit import Chem
+
+    want = set(indices)
+    structures: list[dict[str, Any]] = []
+    supplier = Chem.SDMolSupplier(str(path), sanitize=False, removeHs=False)
+    for i, mol in enumerate(supplier):
+        if i not in want:
+            continue
+        if mol is None:
+            raise RuntimeError(f"Molecule {i} failed to parse in {path.name}")
+        out_path = out_dir / f"mol_{i:04d}.pdb"
+        if not out_path.is_file() or out_path.stat().st_size == 0:
+            block = Chem.MolToPDBBlock(mol)
+            if not block or not block.strip():
+                raise RuntimeError(f"Molecule {i}: empty PDB block from RDKit")
+            out_path.write_text(block, encoding="utf-8")
+        bond_orders = _bond_orders_from_mol(mol)
+        orders_path = write_bond_orders_sidecar(out_path, bond_orders)
+        meta = next((e for e in entries if e.get("index") == i), None) or (
+            entries[i] if i < len(entries) else {}
+        )
+        structures.append(
+            {
+                "sourcePath": str(path),
+                "kind": "chem_mol",
+                "label": meta.get("label") or _entry_label(path, "chem_mol", i),
+                "path": str(out_path),
+                "pdbPath": str(out_path),
+                "ctIndex": None,
+                "modelIndex": i,
+                "bondOrdersPath": str(orders_path),
+            }
+        )
+    if len(structures) != len(want):
+        missing = want - {s["modelIndex"] for s in structures}
+        raise RuntimeError(f"Missing molecule indices: {sorted(missing)}")
     return structures
 
 
@@ -481,6 +672,27 @@ def annotate_bonds_with_orders(
     return out
 
 
+def _bond_orders_from_chem_path(path: Path) -> Optional[list[list[int]]]:
+    """Bond orders from a MOL2 / SDF / SD file via RDKit (first molecule)."""
+    try:
+        from rdkit import Chem
+    except ImportError:
+        return None
+    suf = path.suffix.lower()
+    mol = None
+    try:
+        if suf == ".mol2":
+            mol = Chem.MolFromMol2File(str(path), sanitize=False, removeHs=False)
+        elif suf in {".sdf", ".sd", ".mol"}:
+            mol = Chem.MolFromMolFile(str(path), sanitize=False, removeHs=False)
+    except Exception:
+        return None
+    if mol is None:
+        return None
+    orders = _bond_orders_from_mol(mol)
+    return orders or None
+
+
 def load_bond_orders_sidecar(pdb_path: str | Path) -> Optional[list[list[int]]]:
     """Load ``*.bonds.json`` next to a cached Maestro PDB, or derive from sibling SDF."""
 
@@ -495,6 +707,10 @@ def load_bond_orders_sidecar(pdb_path: str | Path) -> Optional[list[list[int]]]:
                 return data
         except Exception:
             pass
+
+    # Direct open of MOL2 / SDF / SD — orders live in the chemical file itself.
+    if _is_chem_file(p):
+        return _bond_orders_from_chem_path(p)
 
     # Fallback: ct_0000.sdf written during Maestro materialize.
     sdf = p.parent / f"{p.stem}.sdf"
@@ -913,7 +1129,9 @@ def _materialize_maestro_rdkit(
                     pass
             bond_orders = _bond_orders_from_mol(mol)
             orders_path = write_bond_orders_sidecar(out_path, bond_orders)
-            meta = entries[i] if i < len(entries) else {}
+            meta = next((e for e in entries if e.get("index") == i), None) or (
+                entries[i] if i < len(entries) else {}
+            )
             structures.append(
                 {
                     "sourcePath": str(path),
@@ -924,6 +1142,7 @@ def _materialize_maestro_rdkit(
                     "ctIndex": i,
                     "modelIndex": None,
                     "bondOrdersPath": str(orders_path),
+                    "properties": _maestro_ct_properties(mol),
                 }
             )
         if len(structures) != len(want):
@@ -988,7 +1207,9 @@ def _materialize_maestro_openbabel(
                         )
                 except Exception:
                     orders_path = None
-            meta = entries[i] if i < len(entries) else {}
+            meta = next((e for e in entries if e.get("index") == i), None) or (
+                entries[i] if i < len(entries) else {}
+            )
             entry = {
                 "sourcePath": str(path),
                 "kind": "maestro_ct",
@@ -997,6 +1218,7 @@ def _materialize_maestro_openbabel(
                 "pdbPath": str(out_path),
                 "ctIndex": i,
                 "modelIndex": None,
+                "properties": [],
             }
             if orders_path is not None:
                 entry["bondOrdersPath"] = str(orders_path)

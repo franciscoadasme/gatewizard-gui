@@ -343,7 +343,7 @@ FILE_CACHE_LOCK = threading.Lock()
 # select_atoms() calls corrupt its token stream (Unknown token: 'None').
 _MDA_SELECT_LOCK = threading.Lock()
 
-_TOPOLOGY_COMPANION_SUFFIXES = (".prmtop", ".parm7", ".psf")
+_TOPOLOGY_COMPANION_SUFFIXES = (".prmtop", ".parm7", ".psf", ".tpr")
 _WATER_RESNAMES = frozenset(
     {
         "HOH",
@@ -367,7 +367,7 @@ def _file_cache_key(coord_path: Path, topology_path: Path | None) -> str:
 
 
 def _find_companion_topology(coord_path: Path) -> Path | None:
-    """Locate a topology file next to coordinate PDB/CIF (prepared systems)."""
+    """Locate a topology next to coordinates (PDB/CIF/GRO; prmtop/psf/tpr)."""
     directory = coord_path.parent
     stem = coord_path.stem
     candidates: list[Path] = []
@@ -1022,7 +1022,7 @@ _HEURISTIC_SS_ATOM_COUNT = 80_000
 
 
 _TOPOLOGY_ONLY_SUFFIXES = frozenset(
-    {".psf", ".prmtop", ".parm7", ".top", ".itp"}
+    {".psf", ".prmtop", ".parm7", ".top", ".itp", ".tpr"}
 )
 _COORDINATE_TRAJECTORY_SUFFIXES = frozenset(
     {".dcd", ".xtc", ".trr", ".nc", ".mdcrd", ".crd", ".dtr", ".lammpstrj", ".h5md"}
@@ -1092,10 +1092,12 @@ def _companion_coordinate_file(topology: Path) -> Path | None:
     preferred_names = (
         topology.name.replace(topology.suffix, ".pdb"),
         topology.name.replace(topology.suffix, ".gro"),
+        topology.name.replace(topology.suffix, ".xyz"),
         topology.name.replace(topology.suffix, ".inpcrd"),
         topology.name.replace(topology.suffix, ".rst7"),
         "system.pdb",
         "system.gro",
+        "system.xyz",
         "system.inpcrd",
         "system.rst7",
     )
@@ -1104,7 +1106,7 @@ def _companion_coordinate_file(topology: Path) -> Path | None:
         if candidate.is_file() and not _is_topology_only_file(candidate):
             return candidate
 
-    for pattern in ("*.pdb", "*.gro", "*.inpcrd", "*.rst7"):
+    for pattern in ("*.pdb", "*.gro", "*.xyz", "*.inpcrd", "*.rst7"):
         for candidate in sorted(directory.glob(pattern)):
             if candidate.resolve() == topology.resolve():
                 continue
@@ -1188,10 +1190,13 @@ def load_structure(
     path: Path | str,
     topology: str | None = None,
     needs_bonds: bool = False,
+    use_companion_topology: bool = True,
 ) -> tuple[mda.Universe, str | None, str]:
     """Return (universe, topology_used_or_None, bond_source).
 
     ``bond_source`` is ``topology``, ``solute+water``, ``guessed``, or ``none``.
+    When ``topology`` is omitted and ``use_companion_topology`` is true, a
+    same-stem companion (``.prmtop`` / ``.psf`` / ``.tpr``, …) is used if found.
     """
     path = Path(path).resolve()
     stat = path.stat()
@@ -1200,15 +1205,18 @@ def load_structure(
 
     top_path: Path | None = None
     top_mtime: float | None = None
+    topology_how: str | None = None
     if topology:
         top_path = Path(os.path.abspath(os.path.expanduser(topology))).resolve()
         if not top_path.is_file():
             raise FileNotFoundError(f"Topology file not found: {top_path}")
         top_mtime = float(top_path.stat().st_mtime)
-    elif not _is_topology_only_file(path):
+        topology_how = "selected"
+    elif use_companion_topology and not _is_topology_only_file(path):
         top_path = _find_companion_topology(path)
         if top_path is not None:
             top_mtime = float(top_path.stat().st_mtime)
+            topology_how = "companion auto-detected"
 
     # PRMTOP/PSF have no xyz. A DCD/XTC path plus topology loads *frame 0 only*
     # (then frozen) so get-structure can return atoms without reading the movie.
@@ -1217,6 +1225,11 @@ def load_structure(
         raise ValueError(
             f"{path.name} is a coordinate trajectory. Open it with a topology "
             "(PSF/PRMTOP/PDB) instead of as a structure file."
+        )
+    if _is_amber_restart_file(path) and top_path is None:
+        raise ValueError(
+            f"{path.name} is an Amber coordinate restart. Open it with a "
+            "topology (PRMTOP/PARM7) via Open → topology + coordinates."
         )
 
     key = _file_cache_key(path, top_path)
@@ -1235,7 +1248,10 @@ def load_structure(
                 u = mda.Universe(str(top_path), str(coord_traj))
                 _freeze_universe_current_frame(u)
             elif top_path is not None and top_path != path:
-                u = mda.Universe(str(top_path), str(path))
+                if _is_amber_restart_file(path):
+                    u = mda.Universe(str(top_path), str(path), format="INPCRD")
+                else:
+                    u = mda.Universe(str(top_path), str(path))
             else:
                 # Converted mmCIF uses the extended reader so a new chain that
                 # restarts residue numbering is not shifted by +10000.
@@ -1264,6 +1280,11 @@ def load_structure(
             FILE_CACHE[key] = entry
             if bonds_complete:
                 bond_source = "topology"
+            if top_path is not None and topology_how is not None:
+                print(
+                    f"INFO:     /get-structure {path.name} using topology "
+                    f"{top_path.name} ({topology_how}): {top_path}"
+                )
         else:
             u = entry.universe
             if entry.bond_guessed and _universe_has_bonds(u):
@@ -6134,6 +6155,13 @@ def _resolve_structure_save_dir(save_dir: str | None) -> Path:
 class StructureRequest(BaseModel):
     path: str = Field(..., description="Absolute path to a PDB/mmCIF file")
     topology: str | None = Field(description="Topology file name", default=None)
+    use_companion_topology: bool = Field(
+        True,
+        description=(
+            "When topology is omitted, look for a same-stem companion "
+            "(.prmtop/.parm7/.psf/.tpr). Set false to load coordinates alone."
+        ),
+    )
     selection: str | None = Field(
         description="MDAnalysis selection string", default=None
     )
@@ -6258,7 +6286,10 @@ def get_structure(payload: StructureRequest) -> dict:
                 bond_source = "none"
         else:
             u, topology_used, bond_source = load_structure(
-                payload.path, payload.topology, needs_bonds
+                payload.path,
+                payload.topology,
+                needs_bonds,
+                use_companion_topology=bool(payload.use_companion_topology),
             )
     except AssemblyError as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex

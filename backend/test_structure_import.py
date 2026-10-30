@@ -372,3 +372,162 @@ def test_perceived_orders_merge_onto_guessed_bonds():
     guessed = [[0, 2], [2, 3], [3, 4]]
     merged = annotate_bonds_with_orders(guessed, orders)
     assert merged == [[0, 2, 1], [2, 3, 1], [3, 4, 2]]
+
+
+def _write_mae_with_props(path: Path) -> None:
+    """Write a one-CT Maestro file with score props via RDKit MaeWriter."""
+    from rdkit import Chem
+
+    mol = Chem.AddHs(Chem.MolFromSmiles("C=O"))
+    assert mol is not None
+    mol.SetProp("_Name", "pose1")
+    mol.SetDoubleProp("r_i_docking_score", -8.5)
+    mol.SetDoubleProp("r_psp_MMGBSA_dG_Bind", -42.3)
+    mol.SetIntProp("i_i_glide_lignum", 3)
+    mol.SetProp("s_user_note", "ok")
+    mol.SetProp("s_m_pdb_file", "X" * 600)
+    writer = Chem.MaeWriter(str(path))
+    writer.write(mol)
+    writer.close()
+
+
+def test_maestro_ct_properties_keeps_scores_and_drops_huge_strings(cache_tmp, tmp_path):
+    pytest.importorskip("rdkit")
+    from rdkit import Chem
+
+    from structure_import import _maestro_ct_properties
+
+    if not hasattr(Chem, "MaeWriter"):
+        pytest.skip("RDKit MaeWriter not available")
+
+    mae = tmp_path / "scored.mae"
+    _write_mae_with_props(mae)
+    supplier = Chem.MaeMolSupplier(str(mae), sanitize=False, removeHs=False)
+    mol = next(iter(supplier))
+    assert mol is not None
+    props = {p["name"]: p for p in _maestro_ct_properties(mol)}
+    assert props["r_i_docking_score"]["type"] == "real"
+    assert props["r_i_docking_score"]["value"] == pytest.approx(-8.5)
+    assert props["r_psp_MMGBSA_dG_Bind"]["value"] == pytest.approx(-42.3)
+    assert props["i_i_glide_lignum"] == {"name": "i_i_glide_lignum", "type": "integer", "value": 3}
+    assert props["s_user_note"] == {"name": "s_user_note", "type": "string", "value": "ok"}
+    assert "s_m_pdb_file" not in props
+    assert "_Name" not in props
+
+
+def test_inspect_and_import_maestro_include_properties(cache_tmp, tmp_path):
+    pytest.importorskip("rdkit")
+    from rdkit import Chem
+
+    if not hasattr(Chem, "MaeWriter") or not hasattr(Chem, "MaeMolSupplier"):
+        pytest.skip("RDKit Maestro I/O not available")
+
+    mae = tmp_path / "scored.mae"
+    _write_mae_with_props(mae)
+    info = inspect_structure_file(mae)
+    assert info["kind"] == "maestro"
+    assert len(info["entries"]) == 1
+    names = {p["name"] for p in info["entries"][0]["properties"]}
+    assert "r_i_docking_score" in names
+    assert "s_user_note" in names
+    assert "s_m_pdb_file" not in names
+
+    result = import_structure_entries(mae, [0])
+    assert len(result["structures"]) == 1
+    imported_names = {p["name"] for p in result["structures"][0]["properties"]}
+    assert "r_psp_MMGBSA_dG_Bind" in imported_names
+    assert "s_m_pdb_file" not in imported_names
+
+
+def test_maestro_without_extra_props_still_imports(cache_tmp, tmp_path):
+    pytest.importorskip("rdkit")
+    from rdkit import Chem
+
+    if not hasattr(Chem, "MaeWriter") or not hasattr(Chem, "MaeMolSupplier"):
+        pytest.skip("RDKit Maestro I/O not available")
+
+    mae = tmp_path / "plain.mae"
+    mol = Chem.AddHs(Chem.MolFromSmiles("C"))
+    assert mol is not None
+    mol.SetProp("_Name", "plain")
+    writer = Chem.MaeWriter(str(mae))
+    writer.write(mol)
+    writer.close()
+
+    info = inspect_structure_file(mae)
+    assert info["kind"] == "maestro"
+    assert info["entries"][0]["properties"] == [] or isinstance(
+        info["entries"][0]["properties"], list
+    )
+    result = import_structure_entries(mae, [0])
+    assert len(result["structures"]) == 1
+    assert isinstance(result["structures"][0].get("properties"), list)
+
+
+def test_inspect_multi_mol_sdf(cache_tmp, tmp_path):
+    pytest.importorskip("rdkit")
+    from rdkit import Chem
+
+    sdf = tmp_path / "ligands.sdf"
+    writer = Chem.SDWriter(str(sdf))
+    for smiles, name in (("CCO", "ethanol"), ("c1ccccc1", "benzene")):
+        mol = Chem.MolFromSmiles(smiles)
+        assert mol is not None
+        mol.SetProp("_Name", name)
+        writer.write(mol)
+    writer.close()
+
+    info = inspect_structure_file(sdf)
+    assert info["kind"] == "chem_mols"
+    assert len(info["entries"]) == 2
+    assert "ethanol" in info["entries"][0]["label"].lower()
+
+    result = import_structure_entries(sdf, [0, 1])
+    assert result["kind"] == "chem_mols"
+    assert len(result["structures"]) == 2
+    for s in result["structures"]:
+        assert s["kind"] == "chem_mol"
+        pdb_path = Path(s.get("pdbPath") or s["path"])
+        assert pdb_path.is_file()
+        text = pdb_path.read_text(encoding="utf-8")
+        assert "ATOM" in text or "HETATM" in text
+        orders = Path(pdb_path.parent / f"{pdb_path.stem}.bonds.json")
+        assert orders.is_file()
+
+
+def test_inspect_single_mol2_is_single(cache_tmp, tmp_path):
+    pytest.importorskip("rdkit")
+    from rdkit import Chem
+
+    mol2 = tmp_path / "one.mol2"
+    # Minimal Tripos MOL2 (RDKit may lack MolToMol2File on some builds).
+    mol2.write_text(
+        "@<TRIPOS>MOLECULE\n"
+        "ethanol\n"
+        "3 2 0 0 0\n"
+        "SMALL\n"
+        "NO_CHARGES\n"
+        "\n"
+        "@<TRIPOS>ATOM\n"
+        "      1 C1         0.0000    0.0000    0.0000 C.3       1 UNL      0.0000\n"
+        "      2 C2         1.5000    0.0000    0.0000 C.3       1 UNL      0.0000\n"
+        "      3 O1         2.2000    1.0000    0.0000 O.3       1 UNL      0.0000\n"
+        "@<TRIPOS>BOND\n"
+        "     1     1     2    1\n"
+        "     2     2     3    1\n",
+        encoding="utf-8",
+    )
+    # Confirm RDKit can read it; otherwise single-pass-through still applies.
+    mol = Chem.MolFromMol2File(str(mol2), sanitize=False, removeHs=False)
+    if mol is None:
+        pytest.skip("RDKit could not parse minimal MOL2")
+    info = inspect_structure_file(mol2)
+    assert info["kind"] == "single"
+
+
+def test_app_companion_suffixes_include_tpr():
+    """GRO/TPR companion wiring lives in app.py (heavy import; assert source)."""
+    text = (Path(__file__).parent / "app.py").read_text(encoding="utf-8")
+    assert '_TOPOLOGY_COMPANION_SUFFIXES = (".prmtop", ".parm7", ".psf", ".tpr")' in text
+    assert '".tpr"' in text
+    assert '".tpr"' in text[text.index("_TOPOLOGY_ONLY_SUFFIXES") :]

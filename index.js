@@ -1491,8 +1491,28 @@ electron.ipcMain.handle("dialog:openPdb", async (_event, defaultPath = void 0) =
     title: "Open structure",
     defaultPath,
     filters: [
-      { name: "Structure", extensions: ["pdb", "ent", "cif", "mmcif", "mae", "maegz"] },
+      {
+        name: "Structure",
+        extensions: [
+          "pdb",
+          "ent",
+          "cif",
+          "mmcif",
+          "mae",
+          "maegz",
+          "gro",
+          "mol2",
+          "sdf",
+          "sd",
+          "xyz",
+          "inpcrd",
+          "rst7"
+        ]
+      },
+      { name: "GROMACS", extensions: ["gro"] },
+      { name: "Chemical", extensions: ["mol2", "sdf", "sd"] },
       { name: "Maestro", extensions: ["mae", "maegz"] },
+      { name: "Coordinates", extensions: ["pdb", "gro", "xyz", "inpcrd", "rst7"] },
       { name: "All files", extensions: ["*"] }
     ],
     properties: ["openFile", "multiSelections"]
