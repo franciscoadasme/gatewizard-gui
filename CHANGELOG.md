@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.16] - 2026-10-30
+
 ### Changed
 
+- **API requirement:** the app requires gatewizard **>= 1.0.57**.
 - **Desktop GROMACS:** the embedded micromamba install asks for conda-forge `gromacs>=2023` (and rejects builds older than 2022). A previous freeze could install 2019.6, which cannot read many current `.tpr` files. Relaunch the app so the runtime re-syncs.
 - **Visualize Open menu:** Structure… no longer says “(PDB / CIF)”; hover lists the supported formats. **Coordinates only…** opens the same files without auto-using a same-stem companion topology. **With topology…** hover notes `.tpr` and Amber restart coordinates.
 - **README:** MemPrO is listed with the other `[full]` packages. The membrane-builder line points at the lipid catalog instead of repeating the counts. Install, SSH cluster setup, display GPU notes, and development steps point at the API docs and CONTRIBUTING instead of duplicating them.
